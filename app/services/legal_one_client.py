@@ -89,3 +89,43 @@ class LegalOneApiClient:
             logging.error(f"Erro na chamada à API do Legal One para criar tarefa: {e}")
             # Em um cenário real, poderíamos inspecionar e.response.json() para mais detalhes do erro.
             raise
+
+    def get_lawsuit_by_folder(self, folder_number: str, tenant_id: str) -> dict:
+        """
+        Busca um processo (lawsuit) no Legal One pelo número da pasta.
+        
+        Args:
+            folder_number: O número do processo/pasta.
+            tenant_id: O ID do tenant para a requisição.
+
+        Returns:
+            Os dados do processo encontrados.
+        """
+        self._refresh_token_if_needed()
+        
+        headers = {
+            "Authorization": f"Bearer {self._token}",
+            "X-Tenant-ID": tenant_id
+        }
+        
+        # Conforme nossa análise, a busca é feita via query string 'q'
+        url = f"{self.base_url}/legalone/v1/api/rest/litigation/lawsuits"
+        params = {"q": f'folder:"{folder_number}"'}
+        
+        try:
+            logging.info(f"Buscando processo com pasta '{folder_number}' para o tenant {tenant_id}")
+            response = requests.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            
+            data = response.json()
+            # A API retorna uma lista de itens, mesmo buscando por um campo único
+            if data and data.get("items"):
+                return data["items"][0] # Retornamos o primeiro resultado encontrado
+            
+            # Se a lista de itens estiver vazia, significa que não foi encontrado
+            logging.warning(f"Nenhum processo encontrado com a pasta '{folder_number}'")
+            return None
+
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Erro ao buscar processo '{folder_number}': {e}")
+            raise
