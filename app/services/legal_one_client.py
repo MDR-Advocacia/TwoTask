@@ -35,19 +35,24 @@ class LegalOneApiClient:
                 logging.error(f"Falha crítica ao obter token de autenticação: {e}")
                 raise
 
-    def get_lawsuit_by_identifier(self, identifier_number: str) -> dict:
+    def get_refined_lawsuit_data(self, identifier_number: str) -> dict:
+        """
+        Busca os dados refinados de um processo, selecionando apenas os campos essenciais
+        e filtrando os participantes relevantes, conforme especificado.
+        """
         self._refresh_token_if_needed()
         headers = {"Authorization": f"Bearer {self._token}"}
         url = f"{self.base_url}/Lawsuits"
         
-        # OTIMIZAÇÃO: Usando $expand para já trazer os participantes na mesma chamada.
+        # OTIMIZAÇÃO: Construindo a query OData para buscar apenas os dados necessários.
         params = {
             "$filter": f"identifierNumber eq '{identifier_number}'",
-            "$expand": "participants"
+            "$select": "folder,identifierNumber,responsibleOfficeId",
+            "$expand": "participants($filter=type eq 'Customer' or type eq 'PersonInCharge';$select=type,contactId,contactName)"
         }
         
         try:
-            logging.info(f"Buscando processo com $filter em identifierNumber='{identifier_number}' e expandindo 'participants'")
+            logging.info(f"Buscando dados refinados para o processo CNJ '{identifier_number}'")
             response = requests.get(url, headers=headers, params=params)
             response.raise_for_status()
             data = response.json()
@@ -56,37 +61,7 @@ class LegalOneApiClient:
             logging.warning(f"Nenhum processo encontrado com o Número CNJ '{identifier_number}'")
             return None
         except requests.exceptions.RequestException as e:
-            logging.error(f"Erro ao buscar processo '{identifier_number}': {e}")
+            logging.error(f"Erro ao buscar dados refinados do processo '{identifier_number}': {e}")
             raise
 
-    def get_office_department_name(self, office_id: int) -> str:
-        """NOVO: Busca o nome de um escritório/departamento pelo ID."""
-        self._refresh_token_if_needed()
-        headers = {"Authorization": f"Bearer {self._token}"}
-        url = f"{self.base_url}/OfficesDepartments/{office_id}"
-        try:
-            logging.info(f"Buscando nome do escritório com ID: {office_id}")
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            return data.get("name")
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Erro ao buscar escritório ID '{office_id}': {e}")
-            return None # Retorna None em caso de erro para não quebrar o fluxo
-
-    def get_contact_name(self, contact_id: int) -> str:
-        """NOVO: Busca o nome de um contato pelo ID."""
-        self._refresh_token_if_needed()
-        headers = {"Authorization": f"Bearer {self._token}"}
-        url = f"{self.base_url}/Contacts/{contact_id}"
-        try:
-            logging.info(f"Buscando nome do contato com ID: {contact_id}")
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            return data.get("name")
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Erro ao buscar contato ID '{contact_id}': {e}")
-            return None
-
-    # ... (método post_task permanece o mesmo) ...
+    # ... (outros métodos permanecem inalterados) ...
