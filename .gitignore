@@ -1,0 +1,75 @@
+# --- Credenciais e Variáveis de Ambiente ---
+# NUNCA versione arquivos que contenham segredos ou configurações locais.
+.env
+.env.*
+!.env.example
+
+# --- Artefatos do Python ---
+# Pastas de cache e arquivos compilados
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Pastas de ambientes virtuais
+.venv/
+venv/
+env/
+ENV/
+
+# Arquivos de distribuição e build
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Arquivos de teste e cobertura de código
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# --- Arquivos de IDEs e Editores de Código ---
+# Visual Studio Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# PyCharm
+.idea/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# --- Arquivos de Sistema Operacional ---
+# Mac
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Arquivos de Notebooks (se aplicável) ---
+.ipynb_checkpoints
