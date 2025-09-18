@@ -1,4 +1,5 @@
-# file: test_runner.py
+# feat(runner): call correct enriched method and improve logging
+# test_runner.py
 
 import os
 import json
@@ -6,32 +7,47 @@ import logging
 from dotenv import load_dotenv
 from app.services.legal_one_client import LegalOneApiClient
 
+# Carrega as variáveis do arquivo .env
+load_dotenv()
+
+# Configuração do logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def run_refined_query():
-    load_dotenv()
-    TEST_CNJ_NUMBER = "SEU_NUMERO_DE_PROCESSO_VALIDO_AQUI" 
+def run_test():
+    """
+    Executa um teste para buscar e exibir os dados ENRIQUECIDOS de um processo.
+    """
+    # IMPORTANTE: Use um número de processo que exista no seu ambiente de testes.
+    cnj_number_to_test = "0002309-61.2018.8.14.0013" 
 
-    logging.info("Iniciando o teste de consulta REFINADA de processo...")
+    if "LEGAL_ONE_CLIENT_ID" not in os.environ:
+        logging.error("ERRO: As variáveis de ambiente não foram carregadas. Verifique seu arquivo .env.")
+        return
 
+    logging.info(f"--- Iniciando teste de consulta ENRIQUECIDA para o processo CNJ: {cnj_number_to_test} ---")
+    
     try:
-        client = LegalOneApiClient()
-        logging.info(f"Buscando dados refinados para o processo CNJ: {TEST_CNJ_NUMBER}")
+        api_client = LegalOneApiClient()
         
-        # Chamando o novo método otimizado
-        lawsuit_data = client.get_refined_lawsuit_data(
-            identifier_number=TEST_CNJ_NUMBER
-        )
-
-        if lawsuit_data:
-            logging.info("Dados refinados encontrados! Resposta da API:")
-            pretty_json = json.dumps(lawsuit_data, indent=4, ensure_ascii=False)
-            print(pretty_json)
+        # --- CHAMADA CORRETA ---
+        # Garantindo que estamos chamando o método que faz o trabalho extra.
+        enriched_data = api_client.get_enriched_lawsuit_data(cnj_number_to_test)
+        
+        if enriched_data:
+            print("\n--- ✅ Sucesso! Dados do Processo Enriquecido ---")
+            print(json.dumps(enriched_data, indent=4, ensure_ascii=False))
+            print("\n-------------------------------------------------\n")
+            
+            # Verificação final para sua tranquilidade
+            if "responsibleOfficeName" in enriched_data and enriched_data["responsibleOfficeName"] != "Nome não encontrado":
+                logging.info("SUCESSO: O campo 'responsibleOfficeName' foi encontrado e preenchido!")
+            else:
+                logging.warning("ATENÇÃO: O campo 'responsibleOfficeName' não foi encontrado ou o ID não corresponde a nenhum escritório no cache.")
         else:
-            logging.warning("A consulta foi bem-sucedida, mas nenhum processo foi retornado.")
+            print(f"\n--- ⚠️ Atenção: Nenhum processo foi encontrado com o número {cnj_number_to_test} ---\n")
 
     except Exception as e:
-        logging.error(f"Ocorreu um erro durante a execução do teste: {e}")
+        logging.error(f"Ocorreu um erro fatal durante a execução do teste: {e}", exc_info=True)
 
-if __name__ == "__main__":
-    run_refined_query()
+if __name__ == '__main__':
+    run_test()
