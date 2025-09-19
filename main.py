@@ -1,24 +1,49 @@
 # file: main.py
 
-from fastapi import FastAPI
-from app.api.v1.endpoints import tasks as tasks_v1
 import os
 from dotenv import load_dotenv
 
-# Carrega as variáveis de ambiente de um arquivo .env (ótimo para desenvolvimento local)
+# AÇÃO CRÍTICA: Carrega as variáveis de ambiente ANTES de qualquer importação da app.
+# Isso garante que todas as variáveis estejam disponíveis quando os outros módulos forem lidos.
 load_dotenv()
 
-# Cria a instância principal da aplicação FastAPI
+# --- CÓDIGO DE DEBUG (OPCIONAL, PODE REMOVER DEPOIS) ---
+print("--- Verificando Variáveis de Ambiente ---")
+print(f"LEGAL_ONE_CLIENT_ID: {os.environ.get('LEGAL_ONE_CLIENT_ID')}")
+print(f"LEGAL_ONE_CLIENT_SECRET: {os.environ.get('LEGAL_ONE_CLIENT_SECRET')}")
+print(f"LEGAL_ONE_BASE_URL: {os.environ.get('LEGAL_ONE_BASE_URL')}")
+print(f"SQUADS_API_URL: {os.environ.get('SQUADS_API_URL')}")
+print(f"SUPABASE_ANON_KEY: {os.environ.get('SUPABASE_ANON_KEY')}")
+print("-----------------------------------------")
+# --- FIM DO DEBUG ---
+
+from fastapi import FastAPI, Depends
+from fastapi.responses import JSONResponse
+from app.api.v1.endpoints import tasks as tasks_v1
+from app.api.v1.endpoints import dashboard as dashboard_v1
+from app.core.squad_manager import get_squad_manager, SquadManager
+
 app = FastAPI(
     title="Legal One Integration Service",
-    description="Serviço para automatizar a criação de tarefas no Legal One.",
-    version="1.0.0"
+    description="Serviço para automatizar a criação de tarefas e gerenciar fluxos.",
+    version="1.1.0"
 )
 
-# Inclui o roteador com os endpoints de tarefas sob o prefixo /api/v1
+# Inclui os roteadores da aplicação
 app.include_router(tasks_v1.router, prefix="/api/v1")
+app.include_router(dashboard_v1.router)
 
 @app.get("/", tags=["Health Check"])
 def read_root():
     """Endpoint raiz para verificação de saúde (health check)."""
     return {"status": "ok", "service": "Legal One Integration Service"}
+
+@app.post("/api/v1/admin/refresh-squads", tags=["Admin"])
+def refresh_squads_cache(squad_manager: SquadManager = Depends(get_squad_manager)):
+    """
+    Força a recarga dos dados das squads a partir da API interna.
+    """
+    result = squad_manager.force_refresh()
+    if result.get("status") == "error":
+        return JSONResponse(status_code=500, content={"success": False, "detail": result.get("message")})
+    return JSONResponse(status_code=200, content={"success": True, "detail": "Cache de SQUADS atualizado com sucesso."})
