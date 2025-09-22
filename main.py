@@ -7,16 +7,6 @@ from dotenv import load_dotenv
 # Isso garante que todas as variáveis estejam disponíveis quando os outros módulos forem lidos.
 load_dotenv()
 
-# --- CÓDIGO DE DEBUG (OPCIONAL, PODE REMOVER DEPOIS) ---
-print("--- Verificando Variáveis de Ambiente ---")
-print(f"LEGAL_ONE_CLIENT_ID: {os.environ.get('LEGAL_ONE_CLIENT_ID')}")
-print(f"LEGAL_ONE_CLIENT_SECRET: {os.environ.get('LEGAL_ONE_CLIENT_SECRET')}")
-print(f"LEGAL_ONE_BASE_URL: {os.environ.get('LEGAL_ONE_BASE_URL')}")
-print(f"SQUADS_API_URL: {os.environ.get('SQUADS_API_URL')}")
-print(f"SUPABASE_ANON_KEY: {os.environ.get('SUPABASE_ANON_KEY')}")
-print("-----------------------------------------")
-# --- FIM DO DEBUG ---
-
 from fastapi import FastAPI, Depends
 from fastapi.responses import JSONResponse
 from app.api.v1.endpoints import tasks as tasks_v1

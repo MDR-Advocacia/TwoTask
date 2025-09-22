@@ -1,25 +1,36 @@
-# file: app/models/legal_one.py
+# Agora, este é o novo conteúdo para: app/models/legal_one.py
 
-from typing import List, Optional
-from pydantic import BaseModel, Field
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey
+from sqlalchemy.orm import relationship
+from app.db.session import Base
 
-class ResponsibleUser(BaseModel):
-    """Estrutura para o responsável pela tarefa no Legal One."""
-    id: int
-
-class Relationship(BaseModel):
-    """Estrutura para um vínculo (relacionamento) no Legal One."""
-    link_id: int = Field(..., alias="linkId")
-    link_type: str = Field(..., alias="linkType") # Ex: "Litigation"
-
-class LegalOneTaskPayload(BaseModel):
+class LegalOneTaskType(Base):
     """
-    Modelo do Payload exato a ser enviado no corpo da requisição 
-    POST /tasks para a API do Legal One.
+    REPRESENTAÇÃO NO BANCO DE DADOS de um tipo de tarefa sincronizado do L1.
+    Armazena a estrutura hierárquica (Tipo -> Subtipo) das tarefas.
     """
-    subject: str
-    description: Optional[str] = None
-    due_date: str = Field(..., alias="dueDate") # Espera o formato "YYYY-MM-DDTHH:mm:ss"
-    is_private: bool = Field(False, alias="isPrivate")
-    responsible_users: List[ResponsibleUser] = Field(..., alias="responsibleUsers")
-    relationships: List[Relationship]
+    __tablename__ = 'legal_one_task_types'
+
+    id = Column(Integer, primary_key=True, index=True)
+    external_id = Column(Integer, unique=True, index=True, nullable=False,
+                         comment="ID original da entidade no Legal One")
+    name = Column(String, nullable=False)
+    is_active = Column(Boolean, default=True)
+
+    # Auto-relacionamento para a estrutura de árvore
+    parent_id = Column(Integer, ForeignKey('legal_one_task_types.id'))
+    parent = relationship('LegalOneTaskType', remote_side=[id], back_populates='sub_types')
+    sub_types = relationship('LegalOneTaskType', back_populates='parent')
+
+class LegalOneOffice(Base):
+    """
+    REPRESENTAÇÃO NO BANCO DE DADOS de um escritório sincronizado do L1.
+    """
+    __tablename__ = 'legal_one_offices'
+
+    id = Column(Integer, primary_key=True, index=True)
+    external_id = Column(Integer, unique=True, index=True, nullable=False,
+                         comment="ID original da entidade no Legal One")
+    name = Column(String, nullable=False)
+    path = Column(String, comment="Caminho completo, ex: 'Jurídico / Filial SP / Contencioso'")
+    is_active = Column(Boolean, default=True)

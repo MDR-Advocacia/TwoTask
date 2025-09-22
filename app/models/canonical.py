@@ -2,6 +2,7 @@
 
 from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
+from ..db.session import Base
 
 class RelatedEntity(BaseModel):
     """Representa uma entidade a ser vinculada à tarefa em nosso modelo."""

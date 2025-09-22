@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from app.models.canonical import CreateTaskRequest
-from app.models.legal_one import LegalOneTaskPayload, ResponsibleUser, Relationship
+from app.schemas.legal_one import LegalOneTaskPayload, Relationship, ResponsibleUser
 from app.services.legal_one_client import LegalOneApiClient
 
 class TaskCreationService:

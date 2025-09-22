@@ -1,96 +1,81 @@
-# Mova este código para um novo arquivo: app/models/rules.py
+# Criar o arquivo: app/models/rules.py
 
 import enum
-from datetime import datetime
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Enum
+from sqlalchemy.orm import relationship
+from app.db.session import Base
 
-from sqlalchemy import (Column, Integer, String, DateTime, Boolean, Enum as SQLAlchemyEnum,
-                        ForeignKey, Table, JSON)
-from sqlalchemy.orm import relationship, declarative_base
-
-# Base declarativa padrão para os modelos do SQLAlchemy
-Base = declarative_base()
-
-# --- Enums de Negócio ---
-
-class DistributionActionEnum(str, enum.Enum):
-    """Define as ações de distribuição possíveis para uma regra."""
-    ASSIGN_TO_LEADER = "ASSIGN_TO_LEADER"
-    ASSIGN_TO_ASSISTANT_ROUND_ROBIN = "ASSIGN_TO_ASSISTANT_ROUND_ROBIN"
-
-# --- Tabelas de Metadados Sincronizados ---
-
-class LegalOneTaskType(Base):
-    """Representa um tipo de tarefa sincronizado do Legal One."""
-    __tablename__ = 'legal_one_task_types'
-
-    id = Column(Integer, primary_key=True, index=True)
-    l1_id = Column(String, unique=True, index=True, nullable=False)
-    name = Column(String, nullable=False)
-    parent_type = Column(String, nullable=True)
-    subtype = Column(String, nullable=True)
-
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    def __repr__(self):
-        return f"<LegalOneTaskType(name='{self.name}')>"
-
-# Adicionar a tabela de escritórios quando formos implementar a sincronização
-# class LegalOneOffice(Base): ...
-
-# --- Tabelas do Motor de Regras ---
-
-# Tabela de associação Muitos-para-Muitos entre Regras e Tipos de Tarefa
-rule_task_type_association = Table(
-    'rule_task_type_association',
-    Base.metadata,
-    Column('rule_id', Integer, ForeignKey('rules.id'), primary_key=True),
-    Column('task_type_id', Integer, ForeignKey('legal_one_task_types.id'), primary_key=True)
-)
+class ActionLogic(enum.Enum):
+    """
+    Define as lógicas de distribuição (Ações) que o administrador
+    poderá escolher. O sistema virá com estas lógicas pré-programadas.
+    """
+    ASSIGN_TO_LAWSUIT_LEADER = "ASSIGN_TO_LAWSUIT_LEADER" # Atribuir ao Responsável Principal da pasta
+    ASSIGN_TO_LEADER_ASSISTANT = "ASSIGN_TO_LEADER_ASSISTANT" # Atribuir a um Assistente do Responsável
 
 class Rule(Base):
-    """A regra principal de distribuição."""
+    """
+    A Regra de negócio principal.
+    Ex: 'Contestações BB para o time do Responsável Principal'.
+    """
     __tablename__ = 'rules'
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False, unique=True)
-    description = Column(String, nullable=True)
-    action = Column(SQLAlchemyEnum(DistributionActionEnum), nullable=False)
+    name = Column(String, unique=True, nullable=False)
+    description = Column(String)
     is_active = Column(Boolean, default=True, nullable=False)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # Relacionamentos
+    conditions = relationship('RuleCondition', back_populates='rule', cascade="all, delete-orphan")
+    task_types = relationship('RuleTaskTypeAssociation', back_populates='rule', cascade="all, delete-orphan")
+    action = relationship('RuleAction', uselist=False, back_populates='rule', cascade="all, delete-orphan")
 
-    # Relacionamento Muitos-para-Muitos com os tipos de tarefa
-    task_types = relationship(
-        "LegalOneTaskType",
-        secondary=rule_task_type_association,
-        backref="rules"
-    )
-    
-    # Relacionamento Um-para-Muitos com as condições
-    conditions = relationship("RuleCondition", back_populates="rule", cascade="all, delete-orphan")
+class RuleTaskTypeAssociation(Base):
+    """ Tabela de associação para vincular uma Regra a múltiplos Tipos de Tarefa. """
+    __tablename__ = 'rule_task_type_associations'
 
-    def __repr__(self):
-        return f"<Rule(name='{self.name}', action='{self.action.value}')>"
+    rule_id = Column(Integer, ForeignKey('rules.id'), primary_key=True)
+    task_type_id = Column(Integer, ForeignKey('legal_one_task_types.id'), primary_key=True)
+
+    rule = relationship('Rule', back_populates='task_types')
+    # Adicione um relacionamento para a task_type se precisar navegar no sentido inverso
+    task_type = relationship('LegalOneTaskType')
+
 
 class RuleCondition(Base):
-    """Uma condição que deve ser satisfeita para uma regra ser aplicada."""
+    """
+    Define uma condição específica (o 'SE') para uma Regra.
+    Uma regra pode ter várias condições. Ex:
+    SE 'responsible_office_id' É IGUAL A '123' E ...
+    """
     __tablename__ = 'rule_conditions'
 
     id = Column(Integer, primary_key=True, index=True)
     rule_id = Column(Integer, ForeignKey('rules.id'), nullable=False)
-    
-    # Ex: 'office.id', 'process_type.name'
-    field_name = Column(String, nullable=False) 
-    
-    # Ex: 'EQUALS', 'IN', 'NOT_EQUALS'
-    operator = Column(String, nullable=False) 
-    
-    # Usamos JSON para flexibilidade (pode ser string, número, lista de strings, etc.)
-    value = Column(JSON, nullable=False)
 
-    rule = relationship("Rule", back_populates="conditions")
+    # O campo do dado de entrada que será verificado.
+    # Ex: 'responsible_office_id', 'client_id'
+    field_name = Column(String, nullable=False)
 
-    def __repr__(self):
-        return f"<RuleCondition(field='{self.field_name}', op='{self.operator}')>"
+    # O operador de comparação. Começaremos com 'EQUALS'.
+    operator = Column(String, nullable=False, default='EQUALS')
+
+    # O valor com o qual o campo será comparado. Ex: '123'
+    value = Column(String, nullable=False)
+
+    rule = relationship('Rule', back_populates='conditions')
+
+class RuleAction(Base):
+    """
+    Define a Ação (o 'ENTÃO') a ser executada se todas as
+    condições de uma Regra forem satisfeitas.
+    """
+    __tablename__ = 'rule_actions'
+
+    id = Column(Integer, primary_key=True, index=True)
+    rule_id = Column(Integer, ForeignKey('rules.id'), unique=True, nullable=False)
+
+    # A lógica de distribuição a ser aplicada.
+    logic = Column(Enum(ActionLogic), nullable=False)
+
+    rule = relationship('Rule', back_populates='action')
