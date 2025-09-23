@@ -34,3 +34,18 @@ class LegalOneOffice(Base):
     name = Column(String, nullable=False)
     path = Column(String, comment="Caminho completo, ex: 'Jurídico / Filial SP / Contencioso'")
     is_active = Column(Boolean, default=True)
+
+class LegalOneUser(Base):
+    """
+    Representa um usuário sincronizado do Legal One.
+    Esta tabela serve como um cache local para validar e associar
+    usuários ao atribuir tarefas.
+    """
+    __tablename__ = 'legal_one_users'
+
+    id = Column(Integer, primary_key=True, index=True)
+    external_id = Column(Integer, unique=True, index=True, nullable=False,
+                         comment="ID original do usuário no Legal One")
+    name = Column(String, nullable=False)
+    email = Column(String, unique=True, index=True)
+    is_active = Column(Boolean, default=True)
