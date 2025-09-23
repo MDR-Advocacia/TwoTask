@@ -46,6 +46,6 @@ class LegalOneUser(Base):
     id = Column(Integer, primary_key=True, index=True)
     external_id = Column(Integer, unique=True, index=True, nullable=False,
                          comment="ID original do usuário no Legal One")
-    name = Column(String, nullable=False)
-    email = Column(String, unique=True, index=True)
-    is_active = Column(Boolean, default=True)
+    name = Column(String, index=True, nullable=False)
+    email = Column(String, index=True, unique=True)
+    is_active = Column(Boolean, default=True, nullable=False)
