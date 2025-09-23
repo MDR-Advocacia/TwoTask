@@ -1,11 +1,20 @@
-# Salvar como: app/db/session.py
+# Conteúdo completo e corrigido para: app/db/session.py
 
 from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.declarative import declarative_base
+from pathlib import Path
 
-# Define o caminho para o arquivo do banco de dados SQLite
-SQLALCHEMY_DATABASE_URL = "sqlite:///../database.db"
+# --- INÍCIO DA CORREÇÃO ---
+# Constrói o caminho absoluto para o arquivo do banco de dados na raiz do projeto.
+# Path(__file__) -> /caminho/completo/para/o/projeto/app/db/session.py
+# .parent -> app/db
+# .parent -> app
+# .parent -> raiz do projeto
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+DB_PATH = PROJECT_ROOT / "database.db"
+SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH}"
+# --- FIM DA CORREÇÃO ---
 
 # Cria o motor de conexão do SQLAlchemy
 engine = create_engine(
@@ -15,6 +24,5 @@ engine = create_engine(
 # Cria uma classe de sessão que será usada para interagir com o banco
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# --- A LINHA MAIS IMPORTANTE ---
 # Cria a classe Base da qual todos os seus modelos de banco de dados devem herdar.
 Base = declarative_base()
