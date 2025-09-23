@@ -1,4 +1,4 @@
-# Conteúdo completo, final e correto para: app/services/legal_one_client.py
+# Conteúdo completo e atualizado para: app/services/legal_one_client.py
 
 import requests
 import os
@@ -48,7 +48,6 @@ class LegalOneApiClient:
         self.client_secret = os.environ.get("LEGAL_ONE_CLIENT_SECRET")
         self._cache_manager = self._CacheManager()
         self.logger = logging.getLogger(__name__)
-        # O estado do token é agora gerenciado pela classe _Auth
         if not all([self.base_url, self.client_id, self.client_secret]):
             self.logger.error("As variáveis de ambiente da API Legal One não foram configuradas.")
             raise ValueError("As variáveis de ambiente da API Legal One devem ser configuradas.")
@@ -57,7 +56,6 @@ class LegalOneApiClient:
         try: return int(x)
         except (ValueError, TypeError, SystemError): return None
 
-    # --- SUA ARQUITETURA DE TOKEN ---
     def _refresh_token_if_needed(self, force: bool = False):
         now = datetime.utcnow()
         with self._Auth.lock:
@@ -142,8 +140,6 @@ class LegalOneApiClient:
         self.logger.info(f"Carregamento do catálogo '{endpoint}' concluído. Total baixado: {len(all_items)}.")
         return all_items
     
-    # ... (Todos os outros métodos permanecem os mesmos)
-
     def get_all_allocatable_areas(self) -> list[dict]:
         endpoint = "/areas"
         params = {"$select": "id,name,path,allocateData", "$orderby": "id", "$top": 30}
@@ -176,3 +172,16 @@ class LegalOneApiClient:
         self.logger.info(f"Join concluído: {len(task_types)} tipos, {len(relevant_subtypes)} subtipos relevantes.")
         
         return {"types": task_types, "subtypes": relevant_subtypes}
+
+    def get_all_users(self) -> list[dict]:
+        """
+        Busca todos os usuários do Legal One.
+        """
+        self.logger.info("Buscando todos os usuários...")
+        endpoint = "/Users"
+        params = {
+            "$select": "id,name,email,isActive",
+            "$orderby": "id",
+            "$top": 30
+        }
+        return self._paginated_catalog_loader(endpoint, params)
