@@ -13,12 +13,10 @@ services:
 
   frontend:
     build:
-      context: .
+      context: ./frontend  # Assumindo que o código do React estará em uma pasta 'frontend'
       dockerfile: Dockerfile.frontend
-    command: npm run build:dev
-    volumes:
-      - ./static:/app/static
-      - ./templates:/app/templates
-      - ./tailwind.config.js:/app/tailwind.config.js
     ports:
-      - "3000:3000" # Porta para o Live Server (opcional)
+      - "5173:5173"  # Porta padrão do Vite (React)
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules # Impede que o node_modules local sobrescreva o do container
