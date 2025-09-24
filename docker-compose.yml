@@ -1,3 +1,5 @@
+# Conteúdo CORRIGIDO para: docker-compose.yml
+
 services:
   api:
     build:
@@ -13,12 +15,12 @@ services:
 
   frontend:
     build:
-      context: .
+      context: ./frontend
       dockerfile: Dockerfile.frontend
-    command: npm run build:dev
-    volumes:
-      - ./static:/app/static
-      - ./templates:/app/templates
-      - ./tailwind.config.js:/app/tailwind.config.js
     ports:
-      - "3000:3000" # Porta para o Live Server (opcional)
+      # CORREÇÃO: Mapeia a porta 5173 do seu computador
+      # para a porta 8080 DENTRO do container, onde o Vite está rodando.
+      - "5173:8080"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
