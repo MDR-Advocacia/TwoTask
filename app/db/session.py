@@ -26,3 +26,16 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # Cria a classe Base da qual todos os seus modelos de banco de dados devem herdar.
 Base = declarative_base()
+
+# --- INÍCIO DA ADIÇÃO ---
+def get_db():
+    """
+    Função de dependência do FastAPI para obter uma sessão do banco de dados.
+    Garante que a sessão seja sempre fechada após a requisição.
+    """
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+# --- FIM DA ADIÇÃO ---

@@ -1,5 +1,11 @@
 # file: app/core/dependencies.py
 
+# --- INÍCIO DA ADIÇÃO ---
+# Importa a dependência da sessão do banco de dados para torná-la acessível
+# a partir deste módulo central de dependências.
+from app.db.session import get_db
+# --- FIM DA ADIÇÃO ---
+
 from app.services.legal_one_client import LegalOneApiClient
 from app.services.task_creation_service import TaskCreationService
 from app.services.orchestration_service import OrchestrationService
