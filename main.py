@@ -1,62 +1,19 @@
-# Conteúdo COMPLETO E ATUALIZADO para: app/api/v1/endpoints/admin.py
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from app.api.v1.endpoints import admin, dashboard, tasks
 
-import logging
-import asyncio
-from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
-from fastapi.responses import HTMLResponse
-from sqlalchemy.orm import Session
+# Cria a instância principal da aplicação FastAPI
+app = FastAPI(title="OneTask API", version="1.0.0")
 
-from app.core.dependencies import get_db
-from app.services.metadata_sync_service import MetadataSyncService
-from app.services.squad_sync_service import SquadSyncService
-from app.models.rules import SquadMember
-from app.api.v1.schemas import SquadMemberLinkUpdate
+# Monta o diretório 'static' para servir arquivos estáticos como CSS e JS
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
-router = APIRouter()
-logger = logging.getLogger(__name__)
+# Inclui os roteadores dos diferentes módulos da sua aplicação
+app.include_router(admin.router, prefix="/api/v1/admin", tags=["Admin"])
+app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["Dashboard"])
+app.include_router(tasks.router, prefix="/api/v1/tasks", tags=["Tasks"])
 
-# SEU ENDPOINT ORIGINAL PRESERVADO
-@router.post("/sync-metadata", status_code=202, summary="Sincronizar Metadados do Legal One")
-async def sync_metadata(
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
-):
-    """
-    Inicia o processo completo de sincronização de metadados do Legal One.
-    """
-    logger.info("Endpoint /sync-metadata chamado. Adicionando tarefa em background.")
-    sync_service = MetadataSyncService(db_session=db)
-    background_tasks.add_task(sync_service.sync_all_metadata)
-    return {"message": "Processo de sincronização de metadados do Legal One iniciado em segundo plano."}
-
-# --- NOVOS ENDPOINTS ADICIONADOS ---
-@router.post("/sync-squads", status_code=202, summary="Sincronizar Squads da API Interna")
-async def sync_squads(
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
-):
-    """
-    Dispara a sincronização da estrutura de squads e membros a partir da API interna.
-    """
-    logger.info("Endpoint /sync-squads chamado. Adicionando tarefa em background.")
-    squad_sync_service = SquadSyncService(db_session=db)
-    background_tasks.add_task(squad_sync_service.sync_squads)
-    return {"message": "Processo de sincronização de squads iniciado em segundo plano."}
-
-@router.post("/update-member-link", response_class=HTMLResponse, summary="Associa um Membro de Squad a um Usuário do Legal One")
-def update_member_link(
-    link_data: SquadMemberLinkUpdate,
-    db: Session = Depends(get_db)
-):
-    """
-    Atualiza o vínculo entre um membro de squad e um usuário do Legal One.
-    Retorna um fragmento HTML para HTMX.
-    """
-    member = db.query(SquadMember).filter(SquadMember.id == link_data.squad_member_id).first()
-    if not member:
-        return HTMLResponse('<span class="text-red-600 font-semibold">Erro: Membro do Squad não encontrado.</span>', status_code=404)
-    
-    member.legal_one_user_id = link_data.legal_one_user_id if link_data.legal_one_user_id else None
-    db.commit()
-    
-    return HTMLResponse('<span class="text-green-600 font-semibold">Vínculo salvo com sucesso!</span>')
+# Adiciona um endpoint raiz para verificação de saúde da API
+@app.get("/", tags=["Root"])
+async def read_root():
+    return {"message": "Bem-vindo à API OneTask"}

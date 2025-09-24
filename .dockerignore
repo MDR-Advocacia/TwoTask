@@ -1,0 +1,23 @@
+# .dockerignore
+
+# Python virtual environment
+.venv
+venv/
+**/venv/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Node.js dependencies (critical to ignore)
+node_modules/
+
+# Database file (managed by volume)
+database.db
+*.db-journal
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,22 @@
+# Estágio 1: Builder do Frontend
+# Usamos uma imagem Node.js leve, ideal para build e desenvolvimento.
+FROM node:20-alpine AS frontend-builder
+
+# Define o diretório de trabalho dentro do container.
+WORKDIR /app
+
+# Copia os arquivos de manifesto de pacotes.
+COPY package*.json ./
+
+# Instala as dependências. Isso aproveita o cache do Docker,
+# reinstalando dependências apenas quando o package.json muda.
+RUN npm install
+
+# Copia o restante dos arquivos de configuração e código-fonte do frontend.
+COPY tailwind.config.js ./
+COPY ./static ./static
+COPY ./templates ./templates
+
+# O comando a ser executado é definido no docker-compose.yml,
+# mas deixamos este CMD como documentação.
+CMD ["npm", "run", "build:dev"]

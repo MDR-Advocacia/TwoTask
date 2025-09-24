@@ -1,25 +1,14 @@
-# file: app/core/dependencies.py
+# --- CONTEÚDO COMPLETO E CORRIGIDO para: app/core/dependencies.py ---
 
-# --- INÍCIO DA ADIÇÃO ---
-# Importa a dependência da sessão do banco de dados para torná-la acessível
-# a partir deste módulo central de dependências.
-from app.db.session import get_db
-# --- FIM DA ADIÇÃO ---
-
+from app.db.session import SessionLocal
 from app.services.legal_one_client import LegalOneApiClient
 from app.services.task_creation_service import TaskCreationService
 from app.services.orchestration_service import OrchestrationService
 
 # --- Instâncias Singleton (criadas uma única vez e reutilizadas) ---
 
-# Criamos uma única instância do cliente de API para toda a aplicação.
-# Isso permite que ele gerencie o token de forma centralizada.
 api_client = LegalOneApiClient()
-
-# O Motor 1 depende do cliente de API.
 task_creation_service = TaskCreationService(api_client=api_client)
-
-# O Motor 2 depende de ambos.
 orchestration_service = OrchestrationService(
     api_client=api_client, 
     task_service=task_creation_service
@@ -29,7 +18,17 @@ orchestration_service = OrchestrationService(
 
 def get_orchestration_service() -> OrchestrationService:
     """
-    Esta função será usada pelo `Depends` do FastAPI para injetar
-    a instância do serviço orquestrador no nosso endpoint.
+    Injeta a instância do serviço orquestrador no endpoint.
     """
     return orchestration_service
+
+def get_db():
+    """
+    Dependência do FastAPI para obter uma sessão do banco de dados.
+    Garante que a sessão seja sempre fechada após a requisição.
+    """
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
