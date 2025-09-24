@@ -38,4 +38,4 @@ async def get_squad_management_page(request: Request, db: Session = Depends(get_
         "legal_one_users": legal_one_users,
         "page_title": "Gerenciamento de Squads"
     }
-    return templates.TemplateResponse("squad_management.html", context)
+    return templates.TemplateResponse("squads.html", context)
