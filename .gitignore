@@ -92,8 +92,8 @@ __pycache__/
 # Banco de dados local
 database.db
 
-# Dependências do Node.js
 node_modules/
+
 
 # Arquivos de build e log
 /dist
