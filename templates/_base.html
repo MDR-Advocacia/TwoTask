@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="pt-br" class="h-full">
 <head>
-    <meta charset="UTF-8">
+    <meta charset="UTF--8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}OneTask{% endblock %}</title>
     
@@ -12,23 +12,51 @@
     <link href="/static/css/output.css" rel="stylesheet">
     <script src="/static/js/htmx.min.js" defer></script>
     <style>
-        /* Define a fonte Inter como padrão para todo o corpo */
-        body {
-            font-family: 'Inter', sans-serif;
+        body { font-family: 'Inter', sans-serif; }
+        .htmx-request .htmx-request-target { opacity: 0.5; transition: opacity 300ms ease-in-out; }
+        /* Efeito de Aurora no Fundo */
+        .aurora-bg {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: -10;
+            background: #0D1117; /* Azul escuro base */
+            overflow: hidden;
         }
-        /* Efeito de carregamento sutil para ações HTMX */
-        .htmx-request .htmx-request-target {
-            opacity: 0.5;
-            transition: opacity 300ms ease-in-out;
+        .aurora-bg::before, .aurora-bg::after {
+            content: '';
+            position: absolute;
+            width: 800px;
+            height: 800px;
+            border-radius: 50%;
+            opacity: 0.15;
+            filter: blur(150px);
+            animation: move 20s infinite linear;
+        }
+        .aurora-bg::before {
+            background-color: #38BDF8; /* Azul claro (prata) */
+            top: -20%;
+            left: -20%;
+        }
+        .aurora-bg::after {
+            background-color: #D2B48C; /* Bege */
+            bottom: -20%;
+            right: -20%;
+            animation-direction: reverse;
+        }
+        @keyframes move {
+            0% { transform: translate(0, 0) rotate(0deg); }
+            50% { transform: translate(100px, 100px) rotate(180deg); }
+            100% { transform: translate(0, 0) rotate(360deg); }
         }
     </style>
 </head>
-<body class="bg-slate-900 text-beige-200 antialiased">
-    <div class="absolute inset-0 -z-10 h-full w-full bg-slate-900 bg-[linear-gradient(to_right,#8080800a_1px,transparent_1px),linear-gradient(to_bottom,#8080800a_1px,transparent_1px)] bg-[size:14px_24px]"></div>
-    <div class="absolute left-0 right-0 top-0 -z-10 m-auto h-[310px] w-[310px] rounded-full bg-blue-400 opacity-20 blur-[100px]"></div>
-
-    <div class="min-h-full">
-        <div class="container mx-auto px-4 sm:px-6 lg:px-8 py-10">
+<body class="text-beige-200 antialiased">
+    <div class="aurora-bg"></div>
+    <div class="relative min-h-screen flex flex-col items-center justify-center p-4 sm:p-6 lg:p-8">
+        <div class="container mx-auto">
             {% block content %}{% endblock %}
         </div>
     </div>
