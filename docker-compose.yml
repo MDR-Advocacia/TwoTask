@@ -1,3 +1,5 @@
+# Conteúdo CORRIGIDO para: docker-compose.yml
+
 services:
   api:
     build:
@@ -13,10 +15,12 @@ services:
 
   frontend:
     build:
-      context: ./frontend  # Assumindo que o código do React estará em uma pasta 'frontend'
+      context: ./frontend
       dockerfile: Dockerfile.frontend
     ports:
-      - "5173:5173"  # Porta padrão do Vite (React)
+      # CORREÇÃO: Mapeia a porta 5173 do seu computador
+      # para a porta 8080 DENTRO do container, onde o Vite está rodando.
+      - "5173:8080"
     volumes:
       - ./frontend:/app
-      - /app/node_modules # Impede que o node_modules local sobrescreva o do container
+      - /app/node_modules
