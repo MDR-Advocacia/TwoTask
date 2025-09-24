@@ -79,3 +79,48 @@ class RuleAction(Base):
     logic = Column(Enum(ActionLogic), nullable=False)
 
     rule = relationship('Rule', back_populates='action')
+
+# --- INÍCIO DA ADIÇÃO DOS MODELOS FALTANTES ---
+
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Enum
+from sqlalchemy.orm import relationship
+from sqlalchemy.dialects.postgresql import UUID
+import uuid
+from app.db.session import Base
+from app.models.legal_one import LegalOneUser # Importar para o relacionamento
+
+class Squad(Base):
+    """
+    Representa uma equipe ou squad, contendo vários membros.
+    """
+    __tablename__ = 'squads'
+
+    id = Column(Integer, primary_key=True, index=True)
+    external_id = Column(UUID(as_uuid=True), unique=True, index=True, nullable=False, default=uuid.uuid4)
+    name = Column(String, nullable=False)
+    sector = Column(String)
+    is_active = Column(Boolean, default=True, nullable=False)
+
+    members = relationship('SquadMember', back_populates='squad', cascade="all, delete-orphan")
+
+class SquadMember(Base):
+    """
+    Representa um membro de uma squad. Pode ou não estar associado a um
+    usuário do Legal One.
+    """
+    __tablename__ = 'squad_members'
+
+    id = Column(Integer, primary_key=True, index=True)
+    external_id = Column(UUID(as_uuid=True), unique=True, index=True, nullable=False, default=uuid.uuid4)
+    name = Column(String, nullable=False)
+    role = Column(String)
+    is_leader = Column(Boolean, default=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+
+    squad_id = Column(Integer, ForeignKey('squads.id'), nullable=False)
+    legal_one_user_id = Column(Integer, ForeignKey('legal_one_users.id'), nullable=True)
+
+    squad = relationship('Squad', back_populates='members')
+    legal_one_user = relationship('LegalOneUser')
+
+# --- FIM DA ADIÇÃO ---
