@@ -4,7 +4,8 @@
   "version": "1.0.0",
   "description": "Frontend assets for OneTask",
   "scripts": {
-    "build:css": "tailwindcss -i ./static/css/input.css -o ./static/css/output.css --watch"
+    "build:css": "tailwindcss -i ./static/css/input.css -o ./static/css/output.css --watch",
+    "build:prod": "tailwindcss -i ./static/css/input.css -o ./static/css/output.css"
   },
   "devDependencies": {
     "tailwindcss": "^3.4.3"
