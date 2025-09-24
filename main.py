@@ -1,43 +1,62 @@
-# file: main.py
+# Conteúdo COMPLETO E ATUALIZADO para: app/api/v1/endpoints/admin.py
 
-import os
-from dotenv import load_dotenv
+import logging
+import asyncio
+from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
+from fastapi.responses import HTMLResponse
+from sqlalchemy.orm import Session
 
-# AÇÃO CRÍTICA: Carrega as variáveis de ambiente ANTES de qualquer importação da app.
-# Isso garante que todas as variáveis estejam disponíveis quando os outros módulos forem lidos.
-load_dotenv()
+from app.core.dependencies import get_db
+from app.services.metadata_sync_service import MetadataSyncService
+from app.services.squad_sync_service import SquadSyncService
+from app.models.rules import SquadMember
+from app.api.v1.schemas import SquadMemberLinkUpdate
 
-from fastapi import FastAPI, Depends
-from fastapi.responses import JSONResponse
-from app.api.v1.endpoints import tasks as tasks_v1
-from app.api.v1.endpoints import dashboard as dashboard_v1
-# --- MUDANÇA 1: Importar o novo roteador do admin ---
-from app.api.v1.endpoints import admin
-from app.core.squad_manager import get_squad_manager, SquadManager
+router = APIRouter()
+logger = logging.getLogger(__name__)
 
-app = FastAPI(
-    title="Legal One Integration Service",
-    description="Serviço para automatizar a criação de tarefas e gerenciar fluxos.",
-    version="1.1.0"
-)
-
-# Inclui os roteadores da aplicação
-app.include_router(tasks_v1.router, prefix="/api/v1")
-app.include_router(dashboard_v1.router)
-app.include_router(admin.router, prefix="/v1/admin", tags=["Admin"])
-
-@app.get("/", tags=["Health Check"])
-def read_root():
-    """Endpoint raiz para verificação de saúde (health check)."""
-    return {"status": "ok", "service": "Legal One Integration Service"}
-
-@app.post("/api/v1/admin/refresh-squads", tags=["Admin"])
-def refresh_squads_cache(squad_manager: SquadManager = Depends(get_squad_manager)):
+# SEU ENDPOINT ORIGINAL PRESERVADO
+@router.post("/sync-metadata", status_code=202, summary="Sincronizar Metadados do Legal One")
+async def sync_metadata(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
     """
-    Força a recarga dos dados das squads a partir da API interna.
+    Inicia o processo completo de sincronização de metadados do Legal One.
     """
-    result = squad_manager.force_refresh()
-    if result:
-        return JSONResponse(status_code=200, content={"message": "Cache de squads recarregado com sucesso."})
-    else:
-        return JSONResponse(status_code=500, content={"message": "Falha ao recarregar o cache de squads."})
+    logger.info("Endpoint /sync-metadata chamado. Adicionando tarefa em background.")
+    sync_service = MetadataSyncService(db_session=db)
+    background_tasks.add_task(sync_service.sync_all_metadata)
+    return {"message": "Processo de sincronização de metadados do Legal One iniciado em segundo plano."}
+
+# --- NOVOS ENDPOINTS ADICIONADOS ---
+@router.post("/sync-squads", status_code=202, summary="Sincronizar Squads da API Interna")
+async def sync_squads(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """
+    Dispara a sincronização da estrutura de squads e membros a partir da API interna.
+    """
+    logger.info("Endpoint /sync-squads chamado. Adicionando tarefa em background.")
+    squad_sync_service = SquadSyncService(db_session=db)
+    background_tasks.add_task(squad_sync_service.sync_squads)
+    return {"message": "Processo de sincronização de squads iniciado em segundo plano."}
+
+@router.post("/update-member-link", response_class=HTMLResponse, summary="Associa um Membro de Squad a um Usuário do Legal One")
+def update_member_link(
+    link_data: SquadMemberLinkUpdate,
+    db: Session = Depends(get_db)
+):
+    """
+    Atualiza o vínculo entre um membro de squad e um usuário do Legal One.
+    Retorna um fragmento HTML para HTMX.
+    """
+    member = db.query(SquadMember).filter(SquadMember.id == link_data.squad_member_id).first()
+    if not member:
+        return HTMLResponse('<span class="text-red-600 font-semibold">Erro: Membro do Squad não encontrado.</span>', status_code=404)
+    
+    member.legal_one_user_id = link_data.legal_one_user_id if link_data.legal_one_user_id else None
+    db.commit()
+    
+    return HTMLResponse('<span class="text-green-600 font-semibold">Vínculo salvo com sucesso!</span>')

@@ -1,29 +1,46 @@
-# file: app/api/v1/endpoints/dashboard.py
+# app/api/v1/endpoints/dashboard.py
 
-from fastapi import APIRouter, Request, Depends
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy.orm import Session, joinedload
 
-from app.core.squad_manager import get_squad_manager, SquadManager
+from app.core.dependencies import get_db
+from app.models.rules import Squad, SquadMember # SquadMember é novo aqui
+from app.models.legal_one import LegalOneUser
 
 router = APIRouter()
-
-# Garanta que você tem uma pasta 'templates' na raiz do projeto
 templates = Jinja2Templates(directory="templates")
 
-@router.get("/dashboard", response_class=HTMLResponse, tags=["Painel de Controle"])
-async def read_dashboard(request: Request):
+@router.get("/", response_class=HTMLResponse)
+async def read_dashboard(request: Request, db: Session = Depends(get_db)):
     """
-    Renderiza a página principal do painel de controle.
+    Renderiza a página principal do dashboard.
     """
-    return templates.TemplateResponse("dashboard.html", {"request": request})
+    return templates.TemplateResponse("dashboard.html", {"request": request, "page_title": "Dashboard Principal"})
 
-@router.get("/api/v1/squads", response_class=JSONResponse, tags=["Painel de Controle"])
-def get_squads_data(squad_manager: SquadManager = Depends(get_squad_manager)):
+# --- NOVO ENDPOINT ADICIONADO AQUI ---
+@router.get("/squad-management", response_class=HTMLResponse, summary="Página de Gestão de Squads")
+async def get_squad_management_page(request: Request, db: Session = Depends(get_db)):
     """
-    Endpoint de API para o frontend buscar os dados das squads.
+    Busca os dados necessários e renderiza a página de gerenciamento
+    e associação de membros de squad com usuários do Legal One.
     """
-    config = squad_manager.get_config()
-    if "error" in config:
-        return JSONResponse(status_code=500, content=config)
-    return JSONResponse(status_code=200, content=config)
+    # 1. Busca squads com seus membros e o usuário L1 já vinculados (para evitar múltiplas queries)
+    squads = db.query(Squad).options(
+        joinedload(Squad.members).joinedload(SquadMember.legal_one_user)
+    ).filter(Squad.is_active == True).order_by(Squad.name).all()
+
+    # 2. Busca todos os usuários ativos do Legal One para popular os dropdowns
+    legal_one_users = db.query(LegalOneUser).filter(LegalOneUser.is_active == True).order_by(LegalOneUser.name).all()
+
+    # 3. Prepara o contexto para o template
+    context = {
+        "request": request,
+        "page_title": "Gestão de Squads e Usuários",
+        "squads": squads,
+        "legal_one_users_options": legal_one_users
+    }
+    
+    # 4. Renderiza o novo template que vamos criar
+    return templates.TemplateResponse("squad_management.html", context)

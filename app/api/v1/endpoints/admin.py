@@ -1,12 +1,16 @@
-# Conteúdo COMPLETO e ATUALIZADO para: app/api/v1/endpoints/admin.py
+# app/api/v1/endpoints/admin.py
 
 import logging
-from fastapi import APIRouter, Depends, BackgroundTasks
+import asyncio
+from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_db
 from app.services.metadata_sync_service import MetadataSyncService
-from app.services.squad_sync_service import SquadSyncService # NOVO IMPORT
+from app.services.squad_sync_service import SquadSyncService
+from app.models.rules import SquadMember
+from app.api.v1.schemas import SquadMemberLinkUpdate
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -26,7 +30,7 @@ async def sync_metadata(
     background_tasks.add_task(sync_service.sync_all_metadata)
     return {"message": "Processo de sincronização de metadados do Legal One iniciado em segundo plano."}
 
-# --- NOVO ENDPOINT ADICIONADO AQUI ---
+
 @router.post("/sync-squads", status_code=202, summary="Sincronizar Squads da API Interna")
 async def sync_squads(
     background_tasks: BackgroundTasks,
@@ -48,3 +52,26 @@ async def sync_squads(
     background_tasks.add_task(squad_sync_service.sync_squads)
     
     return {"message": "Processo de sincronização de squads iniciado em segundo plano."}
+
+@router.post("/update-member-link", response_class=HTMLResponse, summary="Associa um Membro de Squad a um Usuário do Legal One")
+def update_member_link(
+    link_data: SquadMemberLinkUpdate,
+    db: Session = Depends(get_db)
+):
+    """
+    Atualiza o vínculo entre um membro de squad (do sistema interno) e
+    um usuário do Legal One. Retorna um fragmento HTML para HTMX.
+    """
+    logger.info(f"Recebida solicitação para vincular membro {link_data.squad_member_id} ao usuário L1 {link_data.legal_one_user_id}")
+    
+    member = db.query(SquadMember).filter(SquadMember.id == link_data.squad_member_id).first()
+    
+    if not member:
+        return HTMLResponse('<span class="text-red-600 font-semibold">Erro: Membro do Squad não encontrado.</span>', status_code=404)
+
+    # Converte o valor do dropdown para None se for 0 ou não existir
+    member.legal_one_user_id = link_data.legal_one_user_id if link_data.legal_one_user_id else None
+    
+    db.commit()
+    
+    return HTMLResponse('<span class="text-green-600 font-semibold">Vínculo salvo com sucesso!</span>')
