@@ -1,1 +1,9 @@
 pydantic
+fastapi
+sqlalchemy
+python-dotenv
+httpx
+alembic
+psycopg2-binary
+requests
+uvicorn[standard]
