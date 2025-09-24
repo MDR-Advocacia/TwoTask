@@ -11,7 +11,7 @@ __pycache__/
 *$py.class
 
 # Node.js dependencies (critical to ignore)
-node_modules/
+/node_modules/
 
 # Database file (managed by volume)
 database.db
