@@ -6,4 +6,4 @@ httpx
 alembic
 psycopg2-binary
 requests
-uvicorn[standard]
+uvicorn
