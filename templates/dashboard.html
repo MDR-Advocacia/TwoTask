@@ -1,140 +1,45 @@
-<!DOCTYPE html>
-<html lang="pt-br">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Painel de Controle - Integração Legal One</title>
-    <style>
-        body { font-family: sans-serif; margin: 2em; background-color: #f4f4f9; color: #333; }
-        h1, h2 { color: #444; }
-        hr { border: 0; height: 1px; background: #ddd; margin: 2em 0; }
-        .container { max-width: 900px; margin: auto; }
-        .squad { border: 1px solid #ccc; padding: 1em; margin-bottom: 1em; border-radius: 8px; background-color: #fff; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .squad h3 { margin-top: 0; color: #0056b3; }
-        ul { padding-left: 20px; }
-        li { margin-bottom: 0.5em; }
-        #squads-list p { color: #777; }
-        .form-section { background-color: #fff; padding: 2em; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        textarea { width: 100%; min-height: 100px; padding: 0.5em; border-radius: 4px; border: 1px solid #ccc; }
-        button { background-color: #007bff; color: white; padding: 0.8em 1.2em; border: none; border-radius: 4px; cursor: pointer; font-size: 1em; }
-        button:hover { background-color: #0056b3; }
-        #results { margin-top: 1em; }
-        .result { padding: 0.5em; margin-bottom: 0.5em; border-radius: 4px; }
-        .result.success { background-color: #d4edda; color: #155724; }
-        .result.error { background-color: #f8d7da; color: #721c24; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Painel de Controle</h1>
+{% extends "_base.html" %}
 
-        <div class="form-section">
-            <h2>Criar Tarefas Manuais</h2>
-            <p>Insira um ou mais números de processo (CNJ), um por linha.</p>
-            <textarea id="process-numbers" placeholder="0002309-61.2018.8.14.0013&#10;..."></textarea>
-            <br><br>
-            <button onclick="createTasks()">Criar Tarefas</button>
-            <div id="results"></div>
+{% block title %}{{ page_title }} - OneTask{% endblock %}
+
+{% block content %}
+<header class="mb-12 text-center">
+    <h1 class="text-5xl font-bold tracking-tight text-white">Bem-vindo ao OneTask</h1>
+    <p class="mt-4 text-xl text-beige-200/70">Sua plataforma central para automação de tarefas.</p>
+</header>
+
+<main>
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+        
+        <a href="/api/v1/dashboard/squads" class="block group">
+            <div class="h-full rounded-2xl border border-slate-300/20 bg-slate-800/40 p-8 backdrop-blur-lg shadow-2xl transition-all duration-300 group-hover:border-blue-400/50 group-hover:scale-105 group-hover:shadow-blue-500/20">
+                <h2 class="text-2xl font-semibold text-white">Gerenciamento de Squads</h2>
+                <p class="mt-2 text-beige-200/70">Vincule os membros dos seus squads aos usuários do sistema de origem para automatizar a distribuição de tarefas.</p>
+                <div class="mt-6 text-blue-400 font-semibold flex items-center">
+                    Acessar Módulo
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 ml-2 transition-transform duration-300 group-hover:translate-x-1" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M10.293 3.293a1 1 0 011.414 0l6 6a1 1 0 010 1.414l-6 6a1 1 0 01-1.414-1.414L14.586 11H3a1 1 0 110-2h11.586l-4.293-4.293a1 1 0 010-1.414z" clip-rule="evenodd" />
+                    </svg>
+                </div>
+            </div>
+        </a>
+
+        <div class="h-full rounded-2xl border border-slate-300/20 bg-slate-800/40 p-8 backdrop-blur-lg shadow-2xl opacity-50 cursor-not-allowed">
+            <h2 class="text-2xl font-semibold text-white">Criação de Tarefas</h2>
+            <p class="mt-2 text-beige-200/70">Módulo para criação e disparo de tarefas em lote (em breve).</p>
+            <div class="mt-6 text-gray-400 font-semibold">
+                Em Desenvolvimento
+            </div>
         </div>
 
-        <hr>
-
-        <h2>Composição das Squads</h2>
-        <div id="squads-list">
-            <p>Carregando dados das squads...</p>
+        <div class="h-full rounded-2xl border border-slate-300/20 bg-slate-800/40 p-8 backdrop-blur-lg shadow-2xl opacity-50 cursor-not-allowed">
+            <h2 class="text-2xl font-semibold text-white">Relatórios</h2>
+            <p class="mt-2 text-beige-200/70">Visualize relatórios de produtividade e tarefas concluídas (em breve).</p>
+             <div class="mt-6 text-gray-400 font-semibold">
+                Em Desenvolvimento
+            </div>
         </div>
+
     </div>
-
-    <script>
-        // Função para buscar e renderizar os dados das squads
-        async function fetchAndDisplaySquads() {
-            const container = document.getElementById('squads-list');
-            try {
-                const response = await fetch('/api/v1/squads');
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(`Erro na API: ${errorData.error || response.statusText}`);
-                }
-                const data = await response.json();
-                container.innerHTML = '';
-
-                // O backend agora sempre envia no formato { "squads": [...] }
-                if (data.squads && data.squads.length > 0) {
-                    data.squads.forEach(squad => {
-                        const squadDiv = document.createElement('div');
-                        squadDiv.className = 'squad';
-
-                        let membersHtml = '<ul>';
-                        if (squad.members && squad.members.length > 0) {
-                            squad.members.forEach(member => {
-                                const isLeader = member.user_id === squad.squad_leader_id;
-                                membersHtml += `<li>${member.name} ${isLeader ? '<strong>(Líder)</strong>' : ''}</li>`;
-                            });
-                        } else {
-                            membersHtml += '<li>Nenhum membro cadastrado.</li>';
-                        }
-                        membersHtml += '</ul>';
-
-                        squadDiv.innerHTML = `<h3>${squad.squad_name || 'Squad sem nome'}</h3>${membersHtml}`;
-                        container.appendChild(squadDiv);
-                    });
-                } else {
-                    container.innerHTML = '<p>Nenhuma squad encontrada.</p>';
-                }
-
-            } catch (error) {
-                console.error('Falha ao buscar squads:', error);
-                container.innerHTML = `<p style="color: red;"><strong>Erro:</strong> Não foi possível carregar os dados das squads. Detalhe: ${error.message}</p>`;
-            }
-        }
-
-        // Função para criar tarefas (JÁ EXISTENTE)
-        async function createTasks() {
-            const processNumbersText = document.getElementById('process-numbers').value;
-            const resultsDiv = document.getElementById('results');
-            resultsDiv.innerHTML = 'Processando...';
-            const processNumbers = processNumbersText.split('\n').map(n => n.trim()).filter(n => n);
-
-            if (processNumbers.length === 0) {
-                resultsDiv.innerHTML = '<div class="result error">Por favor, insira ao menos um número de processo.</div>';
-                return;
-            }
-
-            for (const processNumber of processNumbers) {
-                try {
-                    const payload = {
-                        tenantId: "default",
-                        eventSourceId: `manual-${processNumber}-${new Date().getTime()}`,
-                        sourceSystemName: "PainelManual",
-                        processNumber: processNumber
-                    };
-                    const response = await fetch('/api/v1/trigger/task', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                    const result = await response.json();
-                    const resultDiv = document.createElement('div');
-                    resultDiv.className = 'result';
-                    if (response.ok) {
-                        resultDiv.classList.add('success');
-                        resultDiv.textContent = `✅ Sucesso para ${processNumber}: Tarefa criada com ID ${result.legalOneTaskId}.`;
-                    } else {
-                        resultDiv.classList.add('error');
-                        resultDiv.textContent = `❌ Erro para ${processNumber}: ${result.detail || 'Erro desconhecido'}`;
-                    }
-                    resultsDiv.appendChild(resultDiv);
-                } catch (error) {
-                    const errorDiv = document.createElement('div');
-                    errorDiv.className = 'result error';
-                    errorDiv.textContent = `❌ Erro de rede ao processar ${processNumber}: ${error.message}`;
-                    resultsDiv.appendChild(errorDiv);
-                }
-            }
-        }
-
-        // Executa a função para carregar as squads
-        document.addEventListener('DOMContentLoaded', fetchAndDisplaySquads);
-    </script>
-</body>
-</html>
+</main>
+{% endblock %}
