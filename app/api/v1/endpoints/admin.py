@@ -2,6 +2,7 @@
 
 import logging
 from fastapi import APIRouter, Depends, BackgroundTasks
+from sqlalchemy.orm import Session
 from app.core.dependencies import get_db
 from app.services.metadata_sync_service import MetadataSyncService
 

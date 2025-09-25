@@ -5,35 +5,82 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from app.core.dependencies import get_db
-from app.models import rules as rules_models
 from app.models import legal_one as legal_one_models
 from app.api.v1 import schemas
+from app.services.squad_service import SquadService
 
-# --- A LINHA QUE FALTAVA ---
 router = APIRouter()
-# -------------------------
+
+def get_squad_service(db: Session = Depends(get_db)) -> SquadService:
+    """
+    Dependência para injetar o SquadService nos endpoints.
+    """
+    return SquadService(db)
+
+@router.post("", response_model=schemas.Squad, status_code=201)
+def create_squad(
+    squad_data: schemas.SquadCreateSchema,
+    service: SquadService = Depends(get_squad_service)
+):
+    """
+    Cria um novo squad.
+    """
+    try:
+        squad = service.create_squad(squad_data)
+        return squad
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("", response_model=List[schemas.Squad])
-def get_squads(db: Session = Depends(get_db)):
+def get_squads(service: SquadService = Depends(get_squad_service)):
     """
     Endpoint para buscar todos os squads e membros ATIVOS.
+    A lógica de filtragem de membros inativos foi movida para cá.
     """
-    squads = (
-        db.query(rules_models.Squad)
-        .filter(rules_models.Squad.is_active == True)
-        .all()
-    )
+    squads = service.get_all_squads()
     if not squads:
         raise HTTPException(status_code=404, detail="Nenhum squad ativo encontrado.")
     
-    # Filtra membros inativos na resposta
+    # Filtra membros inativos (com base no status do usuário do Legal One) na resposta
     active_squads_data = []
     for squad in squads:
-        active_members = [member for member in squad.members if member.is_active]
+        active_members = [
+            member for member in squad.members if member.user and member.user.is_active
+        ]
         squad.members = active_members
         active_squads_data.append(squad)
 
     return active_squads_data
+
+@router.put("/{squad_id}", response_model=schemas.Squad)
+def update_squad(
+    squad_id: int,
+    squad_data: schemas.SquadUpdateSchema,
+    service: SquadService = Depends(get_squad_service)
+):
+    """
+    Atualiza um squad existente (nome e/ou membros).
+    """
+    try:
+        updated_squad = service.update_squad(squad_id, squad_data)
+        if not updated_squad:
+            raise HTTPException(status_code=404, detail=f"Squad com ID {squad_id} não encontrado.")
+        return updated_squad
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.delete("/{squad_id}", status_code=204)
+def deactivate_squad(
+    squad_id: int,
+    service: SquadService = Depends(get_squad_service)
+):
+    """
+    Desativa um squad, marcando-o como inativo.
+    """
+    deactivated_squad = service.deactivate_squad(squad_id)
+    if not deactivated_squad:
+        raise HTTPException(status_code=404, detail=f"Squad com ID {squad_id} não encontrado.")
+    return None # Retorna 204 No Content
 
 @router.get("/legal-one-users", response_model=List[schemas.LegalOneUser])
 def get_legal_one_users(db: Session = Depends(get_db)):
@@ -45,23 +92,3 @@ def get_legal_one_users(db: Session = Depends(get_db)):
     if not users:
         raise HTTPException(status_code=404, detail="Nenhum usuário do Legal One encontrado.")
     return users
-
-@router.put("/members/link", response_model=schemas.SquadMember)
-def update_squad_member_link(
-    link_data: schemas.SquadMemberLinkUpdate,
-    db: Session = Depends(get_db)
-):
-    """
-    Atualiza o vínculo entre um membro de squad e um usuário do Legal One.
-    """
-    member = db.query(rules_models.SquadMember).filter(rules_models.SquadMember.id == link_data.squad_member_id).first()
-    
-    if not member:
-        raise HTTPException(status_code=404, detail="Membro do Squad não encontrado.")
-
-    member.legal_one_user_id = link_data.legal_one_user_id if link_data.legal_one_user_id else None
-    
-    db.commit()
-    db.refresh(member)
-    
-    return member

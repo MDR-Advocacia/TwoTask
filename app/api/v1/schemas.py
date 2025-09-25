@@ -43,18 +43,27 @@ class TaskCreationRequest(BaseModel):
 # --- Schemas para Usuários e Squads ---
 
 class LegalOneUser(BaseModel):
+    """
+    Representa um usuário do Legal One, conforme retornado pela nossa API.
+    Não expõe todos os campos do banco de dados.
+    """
     id: int
     name: str
-    role: Optional[str] = None
+    is_active: bool
     model_config = ConfigDict(from_attributes=True)
 
+
 class SquadMember(BaseModel):
+    """
+    Representa a associação de um usuário a um squad, incluindo detalhes do usuário.
+    """
     id: int
-    name: str
-    role: Optional[str] = None
-    is_active: bool
     is_leader: bool
     legal_one_user_id: Optional[int] = None
+
+    # Aninha os detalhes do usuário para uma resposta mais limpa e estruturada
+    user: LegalOneUser
+
     model_config = ConfigDict(from_attributes=True)
 
 class Squad(BaseModel):
@@ -72,10 +81,6 @@ class SquadCreateSchema(BaseModel):
 class SquadUpdateSchema(BaseModel):
     name: Optional[str] = None
     member_ids: Optional[List[int]] = None
-
-class SquadMemberLinkUpdate(BaseModel):
-    squad_member_id: int
-    legal_one_user_id: Optional[int] = None
 
 # --- Schema para Task Templates ---
 
