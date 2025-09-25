@@ -49,7 +49,7 @@ const Dashboard = () => {
       default: return 'bg-gray-100 text-gray-800 border-gray-200';
     }
   };
-
+''
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-muted/20 to-background">
       {/* Header */}
@@ -59,9 +59,6 @@ const Dashboard = () => {
             <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
               OneTask Dashboard
             </h1>
-            <p className="text-muted-foreground mt-1">
-              Automação inteligente para o Legal One
-            </p>
           </div>
           <div className="flex gap-3">
             <Button variant="outline" size="sm">
