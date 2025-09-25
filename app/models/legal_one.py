@@ -3,6 +3,8 @@
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey
 from sqlalchemy.orm import relationship
 from app.db.session import Base
+from .associations import squad_task_type_association
+
 
 class LegalOneTaskType(Base):
     """
@@ -21,6 +23,13 @@ class LegalOneTaskType(Base):
     parent_id = Column(Integer, ForeignKey('legal_one_task_types.id'))
     parent = relationship('LegalOneTaskType', remote_side=[id], back_populates='sub_types')
     sub_types = relationship('LegalOneTaskType', back_populates='parent')
+
+    # Relação muitos-para-muitos com Squad
+    squads = relationship(
+        'Squad',
+        secondary=squad_task_type_association,
+        back_populates='task_types'
+    )
 
 class LegalOneOffice(Base):
     """

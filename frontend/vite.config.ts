@@ -8,14 +8,14 @@ import { componentTagger } from "lovable-tagger";
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
   server: {
-    host: "::",
+    host: "127.0.0.1",
     port: 8080,
     watch: {
       usePolling: true,
     },
     proxy: {
       '/api': {
-        target: 'http://api:8000',
+        target: 'http://127.0.0.1:8000',
         changeOrigin: true,
       },
     }
