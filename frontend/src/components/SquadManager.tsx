@@ -94,6 +94,7 @@ const SquadManager = () => {
     sector_id: null,
     members: [],
   });
+  const [searchTerm, setSearchTerm] = useState("");
 
   // --- Data Fetching ---
   const fetchData = async () => {
@@ -299,13 +300,22 @@ const SquadManager = () => {
                 </div>
                 <div className="grid grid-cols-4 items-start gap-4">
                     <Label className="text-right pt-2">Membros</Label>
-                    <div className="col-span-3 border rounded-md p-4 max-h-60 overflow-y-auto">
+                    <div className="col-span-3 border rounded-md p-4">
                         <div className="flex items-center justify-between mb-2">
                             <h4 className="font-medium">Usuários do Legal One</h4>
                             <Badge variant="outline">{currentSquad.members.length} selecionado(s)</Badge>
                         </div>
-                        <div className="space-y-2">
-                            {legalOneUsers.map(user => {
+                        <div className="mb-4">
+                            <Input
+                                placeholder="Buscar usuário por nome..."
+                                value={searchTerm}
+                                onChange={(e) => setSearchTerm(e.target.value)}
+                            />
+                        </div>
+                        <div className="space-y-2 max-h-60 overflow-y-auto">
+                            {legalOneUsers
+                                .filter(user => user.name.toLowerCase().includes(searchTerm.toLowerCase()))
+                                .map(user => {
                                 const selection = currentSquad.members.find(m => m.user_id === user.id);
                                 return (
                                     <div key={user.id} className="flex items-center justify-between p-2 rounded-md hover:bg-muted">
