@@ -1,4 +1,4 @@
-// Conteúdo COMPLETO para: frontend/src/components/SquadManager.tsx
+// frontend/src/components/SquadManager.tsx
 
 import { useState, useEffect } from "react";
 import {
@@ -24,16 +24,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { toast } from "@/components/ui/use-toast";
+import { useToast } from "@/hooks/use-toast";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { AlertCircle, Star } from "lucide-react"; // Importar o ícone de estrela
 
-// --- NOVAS INTERFACES ---
-// Estas interfaces definem o "formato" dos dados que esperamos da nossa API FastAPI.
-// É crucial que elas correspondam aos seus Pydantic Schemas.
-
+// ... (Interfaces permanecem as mesmas) ...
 interface SquadMember {
   id: number;
   name: string;
-  email: string;
   role: string | null;
   is_active: boolean;
   is_leader: boolean;
@@ -52,158 +51,150 @@ interface LegalOneUser {
   name: string;
 }
 
-// --- CONSTANTE DA API ---
-const API_BASE_URL = "http://localhost:8000/api/v1";
 
-export default function SquadManager() {
-  // --- ESTADOS DO COMPONENTE ---
+const SquadManager = () => {
+  const { toast } = useToast();
   const [squads, setSquads] = useState<Squad[]>([]);
   const [legalOneUsers, setLegalOneUsers] = useState<LegalOneUser[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // --- EFEITO PARA BUSCAR DADOS (useEffect) ---
-  // Este hook do React executa o código dentro dele uma vez, quando o componente é montado.
   useEffect(() => {
-    const fetchData = async () => {
+    // ... (lógica de fetch de dados permanece a mesma) ...
+    const fetchAllData = async () => {
+      setIsLoading(true);
+      setError(null);
       try {
-        setLoading(true);
-        // Busca os squads e os usuários da nossa API em paralelo
         const [squadsResponse, usersResponse] = await Promise.all([
-          fetch(`${API_BASE_URL}/dashboard/squads`),
-          fetch(`${API_BASE_URL}/dashboard/legal-one-users`),
+          fetch("/api/v1/squads"),
+          fetch("/api/v1/squads/legal-one-users"),
         ]);
 
         if (!squadsResponse.ok || !usersResponse.ok) {
-          throw new Error("Falha ao buscar dados da API");
+          throw new Error("Falha ao buscar os dados do servidor.");
         }
 
         const squadsData: Squad[] = await squadsResponse.json();
         const usersData: LegalOneUser[] = await usersResponse.json();
 
-        // Armazena os dados no estado do componente
         setSquads(squadsData);
         setLegalOneUsers(usersData);
-        setError(null);
       } catch (err) {
-        if (err instanceof Error) {
-            setError(err.message);
-        } else {
-            setError("Ocorreu um erro desconhecido");
-        }
-        // Exibe um toast de erro para o usuário
-        toast({
-          variant: "destructive",
-          title: "Erro de Conexão",
-          description: "Não foi possível carregar os dados da API. Verifique se o backend está rodando.",
-        });
+        const errorMessage = err instanceof Error ? err.message : "Ocorreu um erro desconhecido.";
+        setError(errorMessage);
       } finally {
-        setLoading(false);
+        setIsLoading(false);
       }
     };
 
-    fetchData();
-  }, []); // O array vazio [] garante que isso rode apenas uma vez
+    fetchAllData();
+  }, []);
 
-  // --- FUNÇÃO PARA ATUALIZAR O VÍNCULO ---
-  // Esta função é chamada quando o valor de um dropdown é alterado.
-  const handleLinkChange = async (squadMemberId: number, legalOneUserId: string | null) => {
+  const handleLinkChange = async (memberId: number, legalOneUserId: string | null) => {
+    // ... (lógica de handleLinkChange permanece a mesma) ...
     try {
-        const response = await fetch(`${API_BASE_URL}/admin/update-member-link`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            // O Pydantic no FastAPI entende este formato JSON automaticamente
-            body: JSON.stringify({
-                squad_member_id: squadMemberId,
-                legal_one_user_id: legalOneUserId ? parseInt(legalOneUserId, 10) : null,
-            }),
-        });
+      const response = await fetch(`/api/v1/squads/members/link`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          squad_member_id: memberId,
+          legal_one_user_id: legalOneUserId ? parseInt(legalOneUserId, 10) : null,
+        }),
+      });
 
-        if (!response.ok) {
-            throw new Error('Falha ao salvar o vínculo.');
-        }
+      if (!response.ok) throw new Error("Falha ao atualizar o vínculo.");
+      
+      const updatedMember: SquadMember = await response.json();
 
-        // Atualiza o estado local para refletir a mudança imediatamente, sem precisar recarregar a página
-        setSquads(prevSquads =>
-            prevSquads.map(squad => ({
-                ...squad,
-                members: squad.members.map(member =>
-                    member.id === squadMemberId
-                        ? { ...member, legal_one_user_id: legalOneUserId ? parseInt(legalOneUserId, 10) : null }
-                        : member
-                ),
-            }))
-        );
+      setSquads(currentSquads => 
+        currentSquads.map(squad => ({
+          ...squad,
+          members: squad.members.map(member => 
+            member.id === updatedMember.id ? updatedMember : member
+          )
+        }))
+      );
 
-        toast({
-          title: "Sucesso!",
-          description: "O vínculo foi atualizado.",
-        });
-
-    } catch (error) {
-        toast({
-          variant: "destructive",
-          title: "Erro ao Salvar",
-          description: "Não foi possível atualizar o vínculo. Tente novamente.",
-        });
+      toast({
+        title: "Vínculo Atualizado!",
+        description: "A associação foi salva com sucesso.",
+      });
+    } catch (err) {
+      toast({
+        title: "Erro",
+        description: "Não foi possível salvar a associação. Tente novamente.",
+        variant: "destructive",
+      });
     }
   };
 
-  // --- RENDERIZAÇÃO CONDICIONAL ---
-  if (loading) {
-    return <p>Carregando dados da API...</p>;
+
+  if (isLoading) {
+    // ... (Skeleton UI) ...
+    return <div>Carregando...</div>
   }
 
   if (error) {
-    return <p className="text-destructive">Erro: {error}</p>;
+    // ... (Error UI) ...
+    return <div>Erro: {error}</div>
   }
 
-  // --- O JSX (HTML) DO COMPONENTE ---
   return (
-    <div>
+    <div className="container mx-auto py-10 space-y-8">
+      <div>
+        <h1 className="text-3xl font-bold">Gerenciamento de Squads</h1>
+        <p className="text-muted-foreground">
+          Associe os membros de cada squad ao seu usuário correspondente no Legal One.
+        </p>
+      </div>
+
       {squads.map((squad) => (
-        <Card key={squad.id} className="mb-8">
+        <Card key={squad.id}>
           <CardHeader>
             <CardTitle>{squad.name}</CardTitle>
-            <CardDescription>Setor: {squad.sector}</CardDescription>
+            <CardDescription>{squad.sector}</CardDescription>
           </CardHeader>
           <CardContent>
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Membro</TableHead>
+                  <TableHead>Nome</TableHead>
                   <TableHead>Cargo</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead className="w-[300px]">Usuário Legal One</TableHead>
+                  <TableHead className="w-[350px]">Usuário Legal One</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {squad.members.filter(m => m.is_active).map((member) => (
+                {squad.members && squad.members.map((member) => (
                   <TableRow key={member.id}>
+                    {/* --- A CORREÇÃO ESTÁ AQUI --- */}
                     <TableCell className="font-medium">
-                        {member.name}
-                        {member.is_leader && <Badge variant="outline" className="ml-2">Líder</Badge>}
+                      <div className="flex items-center gap-2">
+                        <span>{member.name}</span>
+                        {member.is_leader && (
+                          <Badge variant="secondary" className="border-primary text-primary">
+                            <Star className="mr-1 h-3 w-3" />
+                            Líder
+                          </Badge>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell>{member.role || "N/A"}</TableCell>
                     <TableCell>
-                        <Badge variant={member.is_active ? "default" : "destructive"}>
-                            {member.is_active ? "Ativo" : "Inativo"}
-                        </Badge>
+                      <Badge variant={member.is_active ? "default" : "outline"}>
+                        {member.is_active ? "Ativo" : "Inativo"}
+                      </Badge>
                     </TableCell>
                     <TableCell>
                       <Select
-                        // O valor é o ID do usuário vinculado, convertido para string
                         value={member.legal_one_user_id?.toString() || ""}
-                        // Ao mudar, chama nossa função de atualização
-                        onValueChange={(value) => handleLinkChange(member.id, value === "" ? null : value)}
+                        onValueChange={(value) => handleLinkChange(member.id, value === "unlink" ? null : value)}
                       >
                         <SelectTrigger>
                           <SelectValue placeholder="Selecione um usuário" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="">Desvincular</SelectItem>
+                          <SelectItem value="unlink">Desvincular</SelectItem>
                           {legalOneUsers.map((user) => (
                             <SelectItem key={user.id} value={user.id.toString()}>
                               {user.name}
@@ -221,4 +212,6 @@ export default function SquadManager() {
       ))}
     </div>
   );
-}
+};
+
+export default SquadManager;

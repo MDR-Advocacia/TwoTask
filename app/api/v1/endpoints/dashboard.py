@@ -1,32 +1,55 @@
-# Conteúdo ATUALIZADO para: app/api/v1/endpoints/dashboard.py
+# app/api/v1/endpoints/dashboard.py
 
-from fastapi import APIRouter, Depends, Request
-from sqlalchemy.orm import Session
-from app.core.dependencies import get_db
-from app.models.rules import Squad
-from app.models.legal_one import LegalOneUser
-from app.api.v1.schemas import Squad as SquadSchema, LegalOneUser as LegalOneUserSchema
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session, joinedload
 from typing import List
+
+from app.core.dependencies import get_db
+# Importar os modelos de 'rules' e 'canonical'
+from app.models import canonical as canonical_models
+from app.models import rules as rules_models # <--- MUDANÇA IMPORTANTE
+from app.api.v1 import schemas
 
 router = APIRouter()
 
-# Removido:
-# templates = Jinja2Templates(directory="templates")
+@router.get("/task_templates", response_model=List[schemas.TaskTemplate])
+def get_task_templates(db: Session = Depends(get_db)):
+    """
+    Endpoint para buscar todos os templates de tarefas canônicos.
+    (Este endpoint continua o mesmo, pois lê de 'canonical')
+    """
+    templates = db.query(canonical_models.CanonicalTaskTemplate).all()
+    if not templates:
+        raise HTTPException(status_code=404, detail="Nenhum template de tarefa encontrado.")
+    return templates
 
-# Endpoint que retorna os dados para a página de gerenciamento de squads
-@router.get("/squads", response_model=List[SquadSchema])
-def get_squads_data(db: Session = Depends(get_db)):
+# --- CORREÇÃO APLICADA AQUI ---
+@router.get("/squads", response_model=List[schemas.Squad])
+def get_squads(db: Session = Depends(get_db)):
     """
-    Retorna uma lista de todos os squads com seus membros.
+    Endpoint para buscar todos os squads e membros ATIVOS a partir dos
+    dados sincronizados (tabelas de 'rules').
     """
-    squads = db.query(Squad).order_by(Squad.name).all()
-    return squads
+    # A consulta agora é feita nos modelos 'rules_models'
+    # e filtra para trazer apenas os registros ativos.
+    squads = (
+        db.query(rules_models.Squad)
+        .filter(rules_models.Squad.is_active == True) # <--- Garante que apenas squads ativos sejam retornados
+        .options(
+            joinedload(rules_models.Squad.members)
+        )
+        .all()
+    )
+    
+    if not squads:
+        raise HTTPException(status_code=404, detail="Nenhum squad ativo encontrado.")
+        
+    # Precisamos filtrar os membros inativos manualmente se o relacionamento não o fizer
+    active_squads = []
+    for squad in squads:
+        # Cria um novo objeto Squad para a resposta, contendo apenas membros ativos
+        squad_data = schemas.Squad.from_orm(squad)
+        squad_data.members = [member for member in squad.members if member.is_active]
+        active_squads.append(squad_data)
 
-# Endpoint que retorna a lista de usuários do Legal One para o dropdown
-@router.get("/legal-one-users", response_model=List[LegalOneUserSchema])
-def get_legal_one_users_data(db: Session = Depends(get_db)):
-    """
-    Retorna uma lista de todos os usuários do Legal One.
-    """
-    users = db.query(LegalOneUser).order_by(LegalOneUser.name).all()
-    return users
+    return active_squads
