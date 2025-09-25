@@ -9,6 +9,7 @@ import { RefreshCw, Database } from 'lucide-react';
 
 import SectorManager from '@/components/SectorManager';
 import SquadManager from '@/components/SquadManager';
+import TaskManager from '@/components/TaskManager';
 import Layout from '@/components/Layout';
 
 const AdminPage = () => {
@@ -54,12 +55,17 @@ const AdminPage = () => {
         <Tabs defaultValue="squads" className="space-y-4">
           <TabsList>
             <TabsTrigger value="squads">Gerenciar Squads</TabsTrigger>
+            <TabsTrigger value="tasks">Gerenciar Tarefas</TabsTrigger>
             <TabsTrigger value="sectors">Gerenciar Setores</TabsTrigger>
             <TabsTrigger value="sync">Sincronização</TabsTrigger>
           </TabsList>
 
           <TabsContent value="squads">
             <SquadManager />
+          </TabsContent>
+
+          <TabsContent value="tasks">
+            <TaskManager />
           </TabsContent>
 
           <TabsContent value="sectors">

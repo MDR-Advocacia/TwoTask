@@ -18,6 +18,7 @@ from app.db.session import Base
 from app.models.canonical import *
 from app.models.legal_one import *
 from app.models.rules import *
+from app.models.associations import *
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

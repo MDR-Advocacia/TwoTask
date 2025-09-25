@@ -6,6 +6,7 @@ from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Enum
 from sqlalchemy.orm import relationship
 from app.db.session import Base
 from app.models.legal_one import LegalOneUser, LegalOneTaskType
+from .associations import squad_task_type_association
 
 class ActionLogic(enum.Enum):
     ASSIGN_TO_LAWSUIT_LEADER = "ASSIGN_TO_LAWSUIT_LEADER"
@@ -69,6 +70,13 @@ class Squad(Base):
     sector = relationship('Sector', back_populates='squads')
 
     members = relationship('SquadMember', back_populates='squad', cascade="all, delete-orphan")
+
+    # Relação muitos-para-muitos com LegalOneTaskType
+    task_types = relationship(
+        'LegalOneTaskType',
+        secondary=squad_task_type_association,
+        back_populates='squads'
+    )
 
 class SquadMember(Base):
     """ Tabela de associação que conecta um LegalOneUser a um Squad. """
