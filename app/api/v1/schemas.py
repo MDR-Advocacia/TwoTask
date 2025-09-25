@@ -51,17 +51,18 @@ class LegalOneUser(BaseModel):
 class SquadMember(BaseModel):
     id: int
     name: str
-    # email: str # Removido temporariamente se não existir no modelo User
     role: Optional[str] = None
+    is_active: bool
+    is_leader: bool
     legal_one_user_id: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
 
 class Squad(BaseModel):
     id: int
     name: str
+    sector: Optional[str] = None
     members: List[SquadMember] = []
     model_config = ConfigDict(from_attributes=True)
-
 # --- Schemas para Gerenciamento de Squads (Admin) ---
 
 class SquadCreateSchema(BaseModel):
