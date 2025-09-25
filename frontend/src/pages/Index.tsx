@@ -1,8 +1,21 @@
+// frontend/src/pages/Index.tsx
+
 import { useState } from "react";
+import { Link } from "react-router-dom"; // 1. Importar o componente Link
 import { Button } from "@/components/ui/button";
 import Dashboard from "@/components/Dashboard";
 import SquadManager from "@/components/SquadManager";
 import TaskCreator from "@/components/TaskCreator";
+import { Settings } from "lucide-react"; // 2. Importar o ícone
+
+// 3. Importar os componentes do DropdownMenu
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+
 
 const Index = () => {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'squads' | 'tasks'>('dashboard');
@@ -37,7 +50,8 @@ const Index = () => {
               </span>
             </div>
             
-            <div className="flex gap-1">
+            <div className="flex items-center gap-2"> {/* Agrupar todos os botões */}
+              {/* Botões de Navegação Principal */}
               <Button
                 variant={activeTab === 'dashboard' ? 'default' : 'ghost'}
                 onClick={() => setActiveTab('dashboard')}
@@ -59,6 +73,21 @@ const Index = () => {
               >
                 Criar Tarefas
               </Button>
+
+              {/* --- NOVO MENU DE ADMINISTRAÇÃO --- */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="icon">
+                    <Settings className="h-4 w-4" />
+                    <span className="sr-only">Abrir configurações</span>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem asChild>
+                    <Link to="/admin">Administração</Link>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
         </div>

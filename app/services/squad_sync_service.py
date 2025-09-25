@@ -2,11 +2,13 @@
 
 import os
 import logging
+import json # Import json para o tratamento de erro
 from uuid import UUID
 import httpx
 from sqlalchemy.orm import Session
 from sqlalchemy import select, update
 
+# Corrigido: Importar os modelos corretos
 from app.models.rules import Squad, SquadMember
 
 class SquadSyncService:
@@ -46,35 +48,37 @@ class SquadSyncService:
         try:
             squads_from_api = await self._fetch_squads_from_api()
 
-            # Mapear dados existentes
             existing_squads = {s.external_id: s for s in self.db.execute(select(Squad)).scalars()}
             existing_members = {m.external_id: m for m in self.db.execute(select(SquadMember)).scalars()}
             
-            api_squad_ids = {UUID(s['id']) for s in squads_from_api}
+            # --- MUDANÇA IMPORTANTE AQUI ---
+            # Vamos trabalhar com os IDs como strings, que é o que o SQLite entende.
+            api_squad_ids = {s['id'] for s in squads_from_api}
             api_member_ids = set()
 
-            # Upsert de Squads e Membros
             for squad_data in squads_from_api:
-                squad_ext_id = UUID(squad_data['id'])
-                squad = existing_squads.get(squad_ext_id)
+                # O ID externo agora é tratado como uma string desde o início.
+                squad_ext_id_str = squad_data['id']
+                squad = existing_squads.get(squad_ext_id_str)
 
                 if not squad:
-                    squad = Squad(external_id=squad_ext_id)
+                    squad = Squad(external_id=squad_ext_id_str)
                     self.db.add(squad)
-                    existing_squads[squad_ext_id] = squad # Adiciona ao mapa para uso imediato
+                    existing_squads[squad_ext_id_str] = squad
                 
                 squad.name = squad_data['name']
                 squad.sector = squad_data['sector']
                 squad.is_active = True
-                self.db.flush() # Garante que o squad.id esteja disponível
+                self.db.flush()
 
                 for member_data in squad_data.get('members', []):
-                    member_ext_id = UUID(member_data['id'])
-                    api_member_ids.add(member_ext_id)
-                    member = existing_members.get(member_ext_id)
+                    # O ID do membro também é uma string.
+                    member_ext_id_str = member_data['id']
+                    api_member_ids.add(member_ext_id_str)
+                    member = existing_members.get(member_ext_id_str)
 
                     if not member:
-                        member = SquadMember(external_id=member_ext_id)
+                        member = SquadMember(external_id=member_ext_id_str)
                         self.db.add(member)
                     
                     member.name = member_data['name']
@@ -83,7 +87,7 @@ class SquadSyncService:
                     member.squad_id = squad.id
                     member.is_active = True
 
-            # Soft delete (desativação) de squads e membros que não vieram na API
+            # Lógica de desativação (soft delete)
             inactive_squad_ids = set(existing_squads.keys()) - api_squad_ids
             if inactive_squad_ids:
                 stmt = update(Squad).where(Squad.external_id.in_(inactive_squad_ids)).values(is_active=False)

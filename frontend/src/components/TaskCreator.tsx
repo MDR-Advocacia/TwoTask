@@ -1,27 +1,37 @@
-import { useState } from "react";
+// frontend/src/components/TaskCreator.tsx
+
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Plus, Target, Users, Calendar, FileText, Send, Trash2, Eye } from "lucide-react";
+import { Plus, Target, Users, Calendar, FileText, Send, Trash2, Eye, AlertCircle, RefreshCw } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
+import { Skeleton } from "@/components/ui/skeleton";
 
+// --- INTERFACES ALINHADAS COM O BACKEND ---
 interface TaskTemplate {
-  id: string;
+  id: number;
   name: string;
   description: string;
-  estimatedTime: string;
+  estimated_time: string; // Snake case vindo da API
   fields: string[];
 }
 
-interface SelectedSquad {
-  id: string;
-  name: string;
-  members: { id: string; name: string; role: string }[];
+interface SquadMember {
+    id: number;
+    name: string;
+    role: string;
 }
+
+interface SelectedSquad {
+  id: number;
+  name: string;
+  members: SquadMember[];
+}
+// --- FIM DAS INTERFACES ---
 
 interface TaskRequest {
   template: string;
@@ -33,6 +43,12 @@ interface TaskRequest {
 }
 
 const TaskCreator = () => {
+  const [taskTemplates, setTaskTemplates] = useState<TaskTemplate[]>([]);
+  const [availableSquads, setAvailableSquads] = useState<SelectedSquad[]>([]);
+  
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
   const [taskData, setTaskData] = useState<TaskRequest>({
     template: "",
     squads: [],
@@ -43,79 +59,59 @@ const TaskCreator = () => {
   });
 
   const [processInput, setProcessInput] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
 
-  // Mock data
-  const taskTemplates: TaskTemplate[] = [
-    {
-      id: "1",
-      name: "Elaborar Petição Inicial",
-      description: "Criar petição inicial para processo judicial",
-      estimatedTime: "2-4 horas",
-      fields: ["Tipo de Ação", "Valor da Causa", "Observações"]
-    },
-    {
-      id: "2", 
-      name: "Analisar Documentos",
-      description: "Revisar e analisar documentos do processo",
-      estimatedTime: "1-2 horas",
-      fields: ["Tipo de Documento", "Prazo de Análise", "Prioridade"]
-    },
-    {
-      id: "3",
-      name: "Preparar Contestação",
-      description: "Elaborar contestação para processo em andamento",
-      estimatedTime: "3-5 horas", 
-      fields: ["Tipo de Defesa", "Fundamentos", "Documentos Necessários"]
-    }
-  ];
+  const fetchInitialData = async () => {
+    try {
+      setIsInitialLoading(true);
+      setError(null);
 
-  const availableSquads: SelectedSquad[] = [
-    {
-      id: "1",
-      name: "Squad Comercial",
-      members: [
-        { id: "1", name: "Ana Silva", role: "Advogada Sênior" },
-        { id: "2", name: "João Santos", role: "Advogado Júnior" }
-      ]
-    },
-    {
-      id: "2",
-      name: "Squad Tributário", 
-      members: [
-        { id: "3", name: "Carlos Lima", role: "Advogado Especialista" },
-        { id: "4", name: "Fernanda Oliveira", role: "Advogada Pleno" }
-      ]
-    },
-    {
-      id: "3",
-      name: "Squad Trabalhista",
-      members: [
-        { id: "5", name: "Roberto Silva", role: "Advogado Sênior" },
-        { id: "6", name: "Juliana Pereira", role: "Advogada Júnior" }
-      ]
-    }
-  ];
+      // Usamos Promise.all para buscar os dados em paralelo, melhorando a performance.
+      const [templatesResponse, squadsResponse] = await Promise.all([
+        fetch("/api/v1/task_templates"),
+        fetch("/api/v1/squads")
+      ]);
 
-  const selectedTemplate = taskTemplates.find(t => t.id === taskData.template);
-  const selectedSquadObjects = availableSquads.filter(s => taskData.squads.includes(s.id));
+      if (!templatesResponse.ok || !squadsResponse.ok) {
+        throw new Error("Falha ao buscar dados iniciais do servidor.");
+      }
+
+      const templates = await templatesResponse.json();
+      const squads = await squadsResponse.json();
+
+      setTaskTemplates(templates);
+      setAvailableSquads(squads);
+
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : "Ocorreu um erro desconhecido.";
+      setError(errorMessage);
+      toast({
+        title: "Erro ao Carregar Dados",
+        description: "Não foi possível buscar os templates e squads. Tente recarregar a página.",
+        variant: "destructive"
+      });
+    } finally {
+      setIsInitialLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchInitialData();
+  }, []);
+
+  const selectedTemplate = taskTemplates.find(t => t.id === Number(taskData.template));
+  const selectedSquadObjects = availableSquads.filter(s => taskData.squads.includes(String(s.id)));
 
   const addProcess = () => {
     if (processInput.trim() && !taskData.processes.includes(processInput.trim())) {
-      setTaskData(prev => ({
-        ...prev,
-        processes: [...prev.processes, processInput.trim()]
-      }));
+      setTaskData(prev => ({ ...prev, processes: [...prev.processes, processInput.trim()] }));
       setProcessInput("");
     }
   };
 
   const removeProcess = (process: string) => {
-    setTaskData(prev => ({
-      ...prev,
-      processes: prev.processes.filter(p => p !== process)
-    }));
+    setTaskData(prev => ({ ...prev, processes: prev.processes.filter(p => p !== process) }));
   };
 
   const handleSquadToggle = (squadId: string) => {
@@ -128,13 +124,7 @@ const TaskCreator = () => {
   };
 
   const handleCustomFieldChange = (field: string, value: string) => {
-    setTaskData(prev => ({
-      ...prev,
-      customFields: {
-        ...prev.customFields,
-        [field]: value
-      }
-    }));
+    setTaskData(prev => ({ ...prev, customFields: { ...prev.customFields, [field]: value } }));
   };
 
   const handleSubmit = async () => {
@@ -147,20 +137,20 @@ const TaskCreator = () => {
       return;
     }
 
-    setIsLoading(true);
+    setIsSubmitting(true);
     
-    // Simulate API call
+    // Simulação de chamada de API
     await new Promise(resolve => setTimeout(resolve, 3000));
     
     const totalTasks = taskData.processes.length * selectedSquadObjects.reduce((acc, squad) => acc + squad.members.length, 0);
     
-    setIsLoading(false);
+    setIsSubmitting(false);
     toast({
       title: "Tarefas criadas com sucesso!",
       description: `${totalTasks} tarefas foram criadas no Legal One.`,
     });
 
-    // Reset form
+    // Resetar o formulário
     setTaskData({
       template: "",
       squads: [],
@@ -180,10 +170,23 @@ const TaskCreator = () => {
       default: return 'bg-gray-100 text-gray-800 border-gray-200';
     }
   };
+  
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-background text-center p-4">
+        <AlertCircle className="w-16 h-16 text-destructive mb-4" />
+        <h1 className="text-2xl font-bold mb-2">Ocorreu um Erro</h1>
+        <p className="text-muted-foreground mb-6 max-w-md">{error}</p>
+        <Button onClick={fetchInitialData}>
+          <RefreshCw className="w-4 h-4 mr-2" />
+          Tentar Novamente
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-muted/20 to-background">
-      {/* Header */}
       <div className="glass-card rounded-none border-x-0 border-t-0 mb-8 p-6">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div>
@@ -205,9 +208,7 @@ const TaskCreator = () => {
 
       <div className="container mx-auto px-6">
         <div className="grid lg:grid-cols-3 gap-8">
-          {/* Main Form */}
           <div className="lg:col-span-2 space-y-6">
-            {/* Template Selection */}
             <Card className="glass-card border-0 animate-fade-in">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -219,30 +220,33 @@ const TaskCreator = () => {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <Select value={taskData.template} onValueChange={(value) => setTaskData(prev => ({ ...prev, template: value }))}>
-                  <SelectTrigger className="border-glass-border">
-                    <SelectValue placeholder="Selecione um template de tarefa..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {taskTemplates.map(template => (
-                      <SelectItem key={template.id} value={template.id}>
-                        <div className="flex flex-col">
-                          <span className="font-medium">{template.name}</span>
-                          <span className="text-xs text-muted-foreground">{template.description}</span>
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {isInitialLoading ? (
+                  <Skeleton className="h-10 w-full" />
+                ) : (
+                  <Select value={taskData.template} onValueChange={(value) => setTaskData(prev => ({ ...prev, template: value, customFields: {} }))}>
+                    <SelectTrigger className="border-glass-border">
+                      <SelectValue placeholder="Selecione um template de tarefa..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {taskTemplates.map(template => (
+                        <SelectItem key={template.id} value={String(template.id)}>
+                          <div className="flex flex-col">
+                            <span className="font-medium">{template.name}</span>
+                            <span className="text-xs text-muted-foreground">{template.description}</span>
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
                 
                 {selectedTemplate && (
                   <div className="mt-4 p-4 bg-muted/30 rounded-lg">
                     <div className="flex items-center justify-between mb-2">
                       <h4 className="font-medium">{selectedTemplate.name}</h4>
-                      <Badge variant="secondary">{selectedTemplate.estimatedTime}</Badge>
+                      <Badge variant="secondary">{selectedTemplate.estimated_time}</Badge>
                     </div>
                     <p className="text-sm text-muted-foreground mb-3">{selectedTemplate.description}</p>
-                    
                     <div className="space-y-3">
                       {selectedTemplate.fields.map(field => (
                         <div key={field}>
@@ -261,7 +265,6 @@ const TaskCreator = () => {
               </CardContent>
             </Card>
 
-            {/* Squad Selection */}
             <Card className="glass-card border-0 animate-slide-up" style={{ animationDelay: '100ms' }}>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -273,29 +276,35 @@ const TaskCreator = () => {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="space-y-3">
-                  {availableSquads.map(squad => (
-                    <div key={squad.id} className="flex items-center space-x-3 p-3 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors">
-                      <Checkbox
-                        checked={taskData.squads.includes(squad.id)}
-                        onCheckedChange={() => handleSquadToggle(squad.id)}
-                      />
-                      <div className="flex-1">
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium">{squad.name}</span>
-                          <Badge variant="secondary">{squad.members.length} membros</Badge>
+                {isInitialLoading ? (
+                  <div className="space-y-3">
+                    <Skeleton className="h-16 w-full" />
+                    <Skeleton className="h-16 w-full" />
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {availableSquads.map(squad => (
+                      <div key={squad.id} className="flex items-center space-x-3 p-3 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors">
+                        <Checkbox
+                          checked={taskData.squads.includes(String(squad.id))}
+                          onCheckedChange={() => handleSquadToggle(String(squad.id))}
+                        />
+                        <div className="flex-1">
+                          <div className="flex items-center justify-between">
+                            <span className="font-medium">{squad.name}</span>
+                            <Badge variant="secondary">{squad.members.length} membros</Badge>
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            {squad.members.map(m => m.name).join(', ')}
+                          </p>
                         </div>
-                        <p className="text-xs text-muted-foreground mt-1">
-                          {squad.members.map(m => m.name).join(', ')}
-                        </p>
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </CardContent>
             </Card>
 
-            {/* Process Numbers */}
             <Card className="glass-card border-0 animate-slide-up" style={{ animationDelay: '200ms' }}>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -319,7 +328,6 @@ const TaskCreator = () => {
                     <Plus className="w-4 h-4" />
                   </Button>
                 </div>
-                
                 {taskData.processes.length > 0 && (
                   <div className="space-y-2 max-h-40 overflow-y-auto">
                     {taskData.processes.map((process, index) => (
@@ -340,7 +348,6 @@ const TaskCreator = () => {
               </CardContent>
             </Card>
 
-            {/* Additional Settings */}
             <Card className="glass-card border-0 animate-slide-up" style={{ animationDelay: '300ms' }}>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -377,7 +384,6 @@ const TaskCreator = () => {
             </Card>
           </div>
 
-          {/* Preview/Summary Sidebar */}
           <div className="lg:col-span-1">
             <Card className={`glass-card border-0 sticky top-6 transition-all duration-300 ${showPreview ? 'animate-fade-in' : 'opacity-50'}`}>
               <CardHeader>
@@ -395,7 +401,6 @@ const TaskCreator = () => {
                     </Badge>
                   </div>
                 )}
-
                 {taskData.squads.length > 0 && (
                   <div>
                     <h4 className="font-medium mb-2">Squads ({taskData.squads.length})</h4>
@@ -408,7 +413,6 @@ const TaskCreator = () => {
                     </div>
                   </div>
                 )}
-
                 {taskData.processes.length > 0 && (
                   <div>
                     <h4 className="font-medium mb-2">Processos ({taskData.processes.length})</h4>
@@ -422,7 +426,6 @@ const TaskCreator = () => {
                     </div>
                   </div>
                 )}
-
                 <div className="space-y-2">
                   <div className="flex justify-between text-sm">
                     <span>Prioridade:</span>
@@ -430,15 +433,13 @@ const TaskCreator = () => {
                       {taskData.priority === 'high' ? 'Alta' : taskData.priority === 'medium' ? 'Média' : 'Baixa'}
                     </Badge>
                   </div>
-                  
                   {taskData.dueDate && (
                     <div className="flex justify-between text-sm">
                       <span>Vencimento:</span>
-                      <span className="text-muted-foreground">{new Date(taskData.dueDate).toLocaleDateString('pt-BR')}</span>
+                      <span className="text-muted-foreground">{new Date(taskData.dueDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}</span>
                     </div>
                   )}
                 </div>
-
                 {selectedTemplate && taskData.squads.length > 0 && taskData.processes.length > 0 && (
                   <div className="pt-4 border-t border-glass-border">
                     <div className="text-center mb-4">
@@ -447,14 +448,13 @@ const TaskCreator = () => {
                       </div>
                       <div className="text-sm text-muted-foreground">tarefas serão criadas</div>
                     </div>
-                    
                     <Button 
                       onClick={handleSubmit}
-                      disabled={isLoading}
+                      disabled={isSubmitting}
                       className="w-full glass-button border-0 text-white"
                     >
-                      <Send className={`w-4 h-4 mr-2 ${isLoading ? 'animate-pulse' : ''}`} />
-                      {isLoading ? 'Criando Tarefas...' : 'Criar Tarefas'}
+                      <Send className={`w-4 h-4 mr-2 ${isSubmitting ? 'animate-pulse' : ''}`} />
+                      {isSubmitting ? 'Criando Tarefas...' : 'Criar Tarefas'}
                     </Button>
                   </div>
                 )}
