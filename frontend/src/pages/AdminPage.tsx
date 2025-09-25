@@ -1,24 +1,24 @@
-// frontend/src/components/AdminPage.tsx
+// frontend/src/pages/AdminPage.tsx
 
 import { useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { RefreshCw, Database, Users } from 'lucide-react';
+import { RefreshCw, Database } from 'lucide-react';
+
+// Importa os novos componentes de gerenciamento
+import SectorManager from '@/components/SectorManager';
+import SquadManager from '@/components/SquadManager';
 
 const AdminPage = () => {
   const { toast } = useToast();
   const [isMetadataLoading, setIsMetadataLoading] = useState(false);
-  const [isSquadsLoading, setIsSquadsLoading] = useState(false);
 
-  const handleSync = async (
-    endpoint: string, 
-    setLoading: (isLoading: boolean) => void,
-    successMessage: string
-  ) => {
-    setLoading(true);
+  // A função handleSync foi simplificada para cuidar apenas dos metadados
+  const handleSyncMetadata = async () => {
+    setIsMetadataLoading(true);
     try {
-      const response = await fetch(`/api/v1/admin/${endpoint}`, {
+      const response = await fetch(`/api/v1/admin/sync-metadata`, {
         method: 'POST',
       });
 
@@ -30,7 +30,7 @@ const AdminPage = () => {
 
       toast({
         title: "Sincronização Iniciada",
-        description: successMessage,
+        description: "Sincronização de metadados do Legal One iniciada.",
       });
 
     } catch (error) {
@@ -41,65 +41,50 @@ const AdminPage = () => {
         variant: "destructive",
       });
     } finally {
-      setLoading(false);
+      setIsMetadataLoading(false);
     }
   };
   
   return (
-    <div className="container mx-auto py-10">
-      <Card className="max-w-2xl mx-auto glass-card">
+    <div className="container mx-auto py-10 space-y-8">
+      <div>
+        <h1 className="text-3xl font-bold">Painel de Administração</h1>
+        <p className="text-muted-foreground">
+          Gerencie os dados mestres e a estrutura das equipes da sua aplicação.
+        </p>
+      </div>
+
+      {/* Card de Sincronização de Metadados (Mantido) */}
+      <Card>
         <CardHeader>
-          <CardTitle className="text-2xl">Painel de Administração</CardTitle>
+          <CardTitle className="text-xl flex items-center gap-2">
+            <Database className="h-5 w-5" />
+            Sincronização de Dados Mestres
+          </CardTitle>
           <CardDescription>
-            Use estas ações para sincronizar os dados da aplicação com as fontes externas.
+            Busca e atualiza os dados essenciais do Legal One, como usuários e tipos de tarefa.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="p-4 border rounded-lg bg-muted/30">
-            <div className="flex items-start">
-              <div className="flex-shrink-0">
-                <Database className="h-6 w-6 text-primary" />
-              </div>
-              <div className="ml-4 flex-1">
-                <h3 className="text-lg font-semibold">Sincronizar Metadados do Legal One</h3>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Busca e atualiza os dados essenciais do Legal One, como usuários, tipos de tarefa e escritórios. Execute esta ação quando houver novas configurações no Legal One.
-                </p>
-                <Button
-                  className="mt-4"
-                  onClick={() => handleSync('sync-metadata', setIsMetadataLoading, 'Sincronização de metadados do Legal One iniciada.')}
-                  disabled={isMetadataLoading}
-                >
-                  <RefreshCw className={`mr-2 h-4 w-4 ${isMetadataLoading ? 'animate-spin' : ''}`} />
-                  {isMetadataLoading ? 'Sincronizando...' : 'Sincronizar Metadados'}
-                </Button>
-              </div>
-            </div>
-          </div>
-
-          <div className="p-4 border rounded-lg bg-muted/30">
-            <div className="flex items-start">
-              <div className="flex-shrink-0">
-                <Users className="h-6 w-6 text-primary" />
-              </div>
-              <div className="ml-4 flex-1">
-                <h3 className="text-lg font-semibold">Sincronizar Squads</h3>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Busca e atualiza a estrutura de squads e membros a partir da API interna. Execute após mudanças na organização das equipes.
-                </p>
-                <Button
-                  className="mt-4"
-                  onClick={() => handleSync('sync-squads', setIsSquadsLoading, 'Sincronização de squads iniciada.')}
-                  disabled={isSquadsLoading}
-                >
-                  <RefreshCw className={`mr-2 h-4 w-4 ${isSquadsLoading ? 'animate-spin' : ''}`} />
-                  {isSquadsLoading ? 'Sincronizando...' : 'Sincronizar Squads'}
-                </Button>
-              </div>
-            </div>
-          </div>
+        <CardContent>
+          <p className="text-sm text-muted-foreground mb-4">
+            Execute esta ação quando houver novas configurações no Legal One que precisam ser refletidas aqui.
+          </p>
+          <Button
+            onClick={handleSyncMetadata}
+            disabled={isMetadataLoading}
+          >
+            <RefreshCw className={`mr-2 h-4 w-4 ${isMetadataLoading ? 'animate-spin' : ''}`} />
+            {isMetadataLoading ? 'Sincronizando...' : 'Sincronizar Metadados'}
+          </Button>
         </CardContent>
       </Card>
+
+      {/* Componente de Gerenciamento de Setores */}
+      <SectorManager />
+
+      {/* Componente de Gerenciamento de Squads */}
+      <SquadManager />
+
     </div>
   );
 };
