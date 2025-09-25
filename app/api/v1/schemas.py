@@ -3,6 +3,23 @@
 from pydantic import BaseModel, ConfigDict
 from typing import List, Optional, Dict, Any
 
+# --- Schemas para Tarefas (NOVOS) ---
+class Relationship(BaseModel):
+    id: int
+    type: str
+
+class ResponsibleUser(BaseModel):
+    id: int
+    name: str
+
+class LegalOneTaskPayload(BaseModel):
+    description: str
+    case_id: int
+    task_type_id: int
+    deadline: str  # Formato: "YYYY-MM-DD"
+    relationships: List[Relationship]
+    responsibles: List[ResponsibleUser]
+
 # --- Schemas para os Usuários do Legal One ---
 class LegalOneUserBase(BaseModel):
     id: int

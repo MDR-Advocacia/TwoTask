@@ -101,3 +101,12 @@ node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Banco de dados local
+*.db
+*.sqlite
+*.sqlite3
+
+# Scripts de teste e execução manual
+test_*.py
+run_*.py
