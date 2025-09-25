@@ -1,4 +1,5 @@
 import type { Config } from "tailwindcss";
+import tailwindcssAnimate from "tailwindcss-animate";
 
 export default {
   darkMode: ["class"],
@@ -18,11 +19,11 @@ export default {
       },
       colors: {
         border: "hsl(var(--border))",
-        input: "hsl(var(--input))", 
+        input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",
         background: "hsl(var(--background))",
         foreground: "hsl(var(--foreground))",
-        
+
         // Liquid Glass Colors
         'glass-primary': "hsl(var(--glass-primary))",
         'glass-secondary': "hsl(var(--glass-secondary))",
@@ -99,15 +100,15 @@ export default {
           "50%": { boxShadow: "0 0 20px hsl(var(--glass-primary) / 0.6)" },
         },
       },
-      animation: {
-        "accordion-down": "accordion-down 0.3s ease-out",
-        "accordion-up": "accordion-up 0.3s ease-out",
-        "fade-in": "fade-in 0.5s ease-out",
-        "slide-up": "slide-up 0.4s ease-out",
-        "glass-float": "glass-float 3s ease-in-out infinite",
-        "pulse-glow": "pulse-glow 2s ease-in-out infinite",
+        animation: {
+          "accordion-down": "accordion-down 0.3s ease-out",
+          "accordion-up": "accordion-up 0.3s ease-out",
+          "fade-in": "fade-in 0.5s ease-out",
+          "slide-up": "slide-up 0.4s ease-out",
+          "glass-float": "glass-float 3s ease-in-out infinite",
+          "pulse-glow": "pulse-glow 2s ease-in-out infinite",
+        },
       },
     },
-  },
-  plugins: [require("tailwindcss-animate")],
-} satisfies Config;
+    plugins: [tailwindcssAnimate],
+  } satisfies Config;

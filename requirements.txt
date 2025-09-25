@@ -1,10 +1,22 @@
-pydantic
+# Core do FastAPI
 fastapi
+uvicorn[standard]
+
+# Banco de Dados e Migrations
 sqlalchemy
-python-dotenv
-httpx
 alembic
 psycopg2-binary
+
+# Validação e Configurações
+pydantic
+pydantic-settings
+
+# Segurança e Autenticação
+passlib[bcrypt]
+python-jose[cryptography]
+
+# Comunicação e Utilitários
+python-multipart
+python-dotenv
 requests
-uvicorn
-jinja2
+httpx

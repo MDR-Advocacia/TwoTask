@@ -1,89 +1,83 @@
-# file: app/services/task_creation_service.py
+# app/services/task_creation_service.py
 
-from datetime import datetime
-from app.models.canonical import CreateTaskRequest
-from app.api.v1.schemas import LegalOneTaskPayload, Relationship, ResponsibleUser
-from app.services.legal_one_client import LegalOneApiClient
+from sqlalchemy.orm import Session
+from app.services.legal_one_client import LegalOneClient
+from app.api.v1.schemas import (
+    LegalOneTaskPayload, Relationship, ResponsibleUser
+)
+
 
 class TaskCreationService:
-    """
-    Motor 1: Serviço de alto nível que contém a lógica de negócio
-    para a criação de tarefas.
-    """
+    def __init__(self, db: Session):
+        self.db = db
+        self.legal_one_client = LegalOneClient()
 
-    def __init__(self, api_client: LegalOneApiClient):
+    def create_task_in_legal_one(self, task_data: dict, responsibles: list):
         """
-        Inicializa o serviço com suas dependências.
-
-        Args:
-            api_client: Uma instância do cliente de API para o Legal One.
+        Prepara e envia os dados da tarefa para a API do Legal One.
         """
-        self.api_client = api_client
-        # A lógica de idempotência seria injetada aqui.
-        # Ex: self.idempotency_repository = IdempotencyRepository()
+        access_token = self.legal_one_client.get_access_token()
+        if not access_token:
+            print("Erro ao obter o token de acesso.")
+            return None
 
-    def _map_to_legal_one_payload(self, request: CreateTaskRequest) -> LegalOneTaskPayload:
-        """
-        Mapeia (traduz) nosso modelo de dados canônico para o formato de payload 
-        esperado pela API do Legal One.
-        """
-        task = request.task
+        relationships = [
+            Relationship(id=resp['id'], type="CONTACT")
+            for resp in responsibles
+        ]
 
-        # A API espera um datetime completo, então adicionamos a hora final do dia.
-        due_date_obj = datetime.strptime(task.due_date, "%Y-%m-%d")
-        formatted_due_date = due_date_obj.strftime("%Y-%m-%dT23:59:59")
+        responsible_users = [
+            ResponsibleUser(id=resp['id'], name=resp['name'])
+            for resp in responsibles
+        ]
 
-        # Mapeia as entidades relacionadas para o formato de 'relationships'
-        relationships = []
-        link_type_map = {
-            "Processo": "Litigation",
-            "Empresa": "Company",
-            "Contato": "Contact"
-        }
-        for entity in task.related_to:
-            link_type = link_type_map.get(entity.entity_type)
-            if link_type:
-                relationships.append(Relationship(
-                    linkId=entity.legal_one_id,
-                    linkType=link_type
-                ))
-
-        return LegalOneTaskPayload(
-            subject=task.title,
-            description=task.description,
-            dueDate=formatted_due_date,
-            responsibleUsers=[ResponsibleUser(id=task.owner_id)],
-            relationships=relationships
+        payload = LegalOneTaskPayload(
+            description=task_data.get("description", "Descrição Padrão"),
+            case_id=task_data.get("case_id", 0),
+            task_type_id=task_data.get("task_type_id"),
+            deadline=task_data.get("deadline"),
+            relationships=relationships,
+            responsibles=responsible_users
         )
 
-    def create_task(self, request: CreateTaskRequest) -> dict:
-        """
-        Orquestra a criação de uma tarefa: valida idempotência, mapeia os dados
-        e chama o cliente da API.
-        """
-        # Passo 1: Checagem de Idempotência (espaço reservado para a lógica real)
-        # if self.idempotency_repository.exists(request.idempotency_key):
-        #     raise ConflictError("A tarefa com esta chave de idempotência já foi criada.")
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
 
-        # Passo 2: Mapear o payload canônico para o formato do Legal One
-        legal_one_payload = self._map_to_legal_one_payload(request)
-
-        # Passo 3: Chamar o cliente da API
-        # O método .dict() do Pydantic converte nosso modelo em um dicionário.
-        # by_alias=True garante que 'dueDate' seja usado em vez de 'due_date'.
-        # exclude_none=True remove campos opcionais que não foram preenchidos (ex: description).
-        created_task_response = self.api_client.post_task(
-            task_payload=legal_one_payload.dict(by_alias=True, exclude_none=True),
-            tenant_id=request.tenant_id
+        endpoint = "/v1/tasks"
+        response = self.legal_one_client.post(
+            endpoint,
+            headers=headers,
+            json=payload.dict()
         )
 
-        # Passo 4: Salvar o resultado para futuras checagens de idempotência
-        # self.idempotency_repository.save(request.idempotency_key, created_task_response['id'])
+        if response and response.status_code == 201:
+            print("Tarefa criada com sucesso no Legal One.")
+            return response.json()
+        else:
+            error_details = response.text if response else "N/A"
+            status_code = response.status_code if response else "N/A"
+            print(
+                "Falha ao criar tarefa no Legal One. "
+                f"Status: {status_code}, Detalhes: {error_details}"
+            )
+            return None
 
-        # Passo 5: Retornar uma resposta padronizada e rica
-        return {
-            "status": "success",
-            "message": "Tarefa criada com sucesso no Legal One.",
-            "legalOneTaskId": created_task_response.get("id"),
-            "sourceSystem": request.source_system
-        }
+    def process_task_trigger(self, trigger_data: dict):
+        """
+        Processa um gatilho para criar uma ou mais tarefas.
+        """
+        task_details = trigger_data.get("task_details", {})
+        squad_member_ids = trigger_data.get("squad_member_ids", [])
+
+        responsibles = [
+            {"id": member_id, "name": f"Usuário {member_id}"}
+            for member_id in squad_member_ids
+        ]
+
+        if not responsibles:
+            print("Nenhum responsável encontrado para os IDs fornecidos.")
+            return
+
+        return self.create_task_in_legal_one(task_details, responsibles)
