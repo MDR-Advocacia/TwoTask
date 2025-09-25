@@ -1,7 +1,7 @@
 # app/services/task_creation_service.py
 
 from sqlalchemy.orm import Session
-from app.services.legal_one_client import LegalOneClient
+from app.services.legal_one_client import LegalOneApiClient
 from app.api.v1.schemas import (
     LegalOneTaskPayload, Relationship, ResponsibleUser
 )
@@ -10,7 +10,7 @@ from app.api.v1.schemas import (
 class TaskCreationService:
     def __init__(self, db: Session):
         self.db = db
-        self.legal_one_client = LegalOneClient()
+        self.legal_one_client = LegalOneApiClient()
 
     def create_task_in_legal_one(self, task_data: dict, responsibles: list):
         """

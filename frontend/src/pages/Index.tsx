@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import Dashboard from "@/components/Dashboard";
 import SquadManager from "@/components/SquadManager";
 import TaskCreator from "@/components/TaskCreator";
@@ -28,11 +27,13 @@ const Index = () => {
         <div className="container mx-auto px-6 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-accent flex items-center justify-center">
-                <span className="text-black font-bold text-sm">MDR</span>
-              </div>
+              <img
+                src="/logo-escritorio2.png"
+                alt="Logo do Escritório"
+                className="w-15 h-12 square object-cover"
+              />
               <span className="font-bold text-xl bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-                OneTask2
+                OneTask
               </span>
             </div>
             
