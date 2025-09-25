@@ -15,9 +15,9 @@ class SectorService:
 
     def get_all_sectors(self) -> List[models.Sector]:
         """
-        Retorna todos os setores ativos.
+        Retorna todos os setores ativos, ordenados alfabeticamente.
         """
-        return self.db.query(models.Sector).filter(models.Sector.is_active == True).all()
+        return self.db.query(models.Sector).filter(models.Sector.is_active == True).order_by(models.Sector.name).all()
 
     def create_sector(self, sector_data: schemas.SectorCreateSchema) -> models.Sector:
         """

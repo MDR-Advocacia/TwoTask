@@ -23,6 +23,7 @@ class SquadService:
             self.db.query(models.Squad)
             .options(joinedload(models.Squad.members).joinedload(models.SquadMember.user))
             .filter(models.Squad.is_active == True)
+            .order_by(models.Squad.name)
             .all()
         )
 
