@@ -9,6 +9,7 @@ import { RefreshCw, Database } from 'lucide-react';
 
 import SectorManager from '@/components/SectorManager';
 import SquadManager from '@/components/SquadManager';
+import Layout from '@/components/Layout';
 
 const AdminPage = () => {
   const { toast } = useToast();
@@ -41,56 +42,58 @@ const AdminPage = () => {
   };
 
   return (
-    <div className="container mx-auto py-10">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold">Painel de Administração</h1>
-        <p className="text-muted-foreground">
-          Gerencie os dados mestres e a estrutura das equipes da sua aplicação.
-        </p>
+    <Layout>
+      <div className="container mx-auto py-10">
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold">Painel de Administração</h1>
+          <p className="text-muted-foreground">
+            Gerencie os dados mestres e a estrutura das equipes da sua aplicação.
+          </p>
+        </div>
+
+        <Tabs defaultValue="squads" className="space-y-4">
+          <TabsList>
+            <TabsTrigger value="squads">Gerenciar Squads</TabsTrigger>
+            <TabsTrigger value="sectors">Gerenciar Setores</TabsTrigger>
+            <TabsTrigger value="sync">Sincronização</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="squads">
+            <SquadManager />
+          </TabsContent>
+
+          <TabsContent value="sectors">
+            <SectorManager />
+          </TabsContent>
+
+          <TabsContent value="sync">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-xl flex items-center gap-2">
+                  <Database className="h-5 w-5" />
+                  Sincronização de Dados Mestres
+                </CardTitle>
+                <CardDescription>
+                  Busca e atualiza os dados essenciais do Legal One, como usuários e tipos de tarefa.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-muted-foreground mb-4">
+                  Execute esta ação quando houver novas configurações no Legal One que precisam ser refletidas aqui.
+                </p>
+                <Button
+                  onClick={handleSyncMetadata}
+                  disabled={isMetadataLoading}
+                >
+                  <RefreshCw className={`mr-2 h-4 w-4 ${isMetadataLoading ? 'animate-spin' : ''}`} />
+                  {isMetadataLoading ? 'Sincronizando...' : 'Sincronizar Metadados'}
+                </Button>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
       </div>
-
-      <Tabs defaultValue="squads" className="space-y-4">
-        <TabsList>
-          <TabsTrigger value="squads">Gerenciar Squads</TabsTrigger>
-          <TabsTrigger value="sectors">Gerenciar Setores</TabsTrigger>
-          <TabsTrigger value="sync">Sincronização</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="squads">
-          <SquadManager />
-        </TabsContent>
-
-        <TabsContent value="sectors">
-          <SectorManager />
-        </TabsContent>
-
-        <TabsContent value="sync">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-xl flex items-center gap-2">
-                <Database className="h-5 w-5" />
-                Sincronização de Dados Mestres
-              </CardTitle>
-              <CardDescription>
-                Busca e atualiza os dados essenciais do Legal One, como usuários e tipos de tarefa.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground mb-4">
-                Execute esta ação quando houver novas configurações no Legal One que precisam ser refletidas aqui.
-              </p>
-              <Button
-                onClick={handleSyncMetadata}
-                disabled={isMetadataLoading}
-              >
-                <RefreshCw className={`mr-2 h-4 w-4 ${isMetadataLoading ? 'animate-spin' : ''}`} />
-                {isMetadataLoading ? 'Sincronizando...' : 'Sincronizar Metadados'}
-              </Button>
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
-    </div>
+    </Layout>
   );
 };
 
