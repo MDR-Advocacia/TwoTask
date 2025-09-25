@@ -40,47 +40,72 @@ class TaskCreationRequest(BaseModel):
     priority: str
     custom_fields: Dict[str, str]
 
+# --- Schemas para Setores ---
+
+class SectorBase(BaseModel):
+    name: str
+
+class SectorCreateSchema(SectorBase):
+    pass
+
+class SectorUpdateSchema(BaseModel):
+    name: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class Sector(SectorBase):
+    id: int
+    is_active: bool
+    model_config = ConfigDict(from_attributes=True)
+
+
 # --- Schemas para Usuários e Squads ---
 
 class LegalOneUser(BaseModel):
     """
     Representa um usuário do Legal One, conforme retornado pela nossa API.
-    Não expõe todos os campos do banco de dados.
     """
     id: int
     name: str
     is_active: bool
     model_config = ConfigDict(from_attributes=True)
 
-
 class SquadMember(BaseModel):
     """
-    Representa a associação de um usuário a um squad, incluindo detalhes do usuário.
+    Representa a associação de um usuário a um squad, aninhando os detalhes do usuário.
     """
     id: int
     is_leader: bool
-    legal_one_user_id: Optional[int] = None
-
-    # Aninha os detalhes do usuário para uma resposta mais limpa e estruturada
     user: LegalOneUser
-
     model_config = ConfigDict(from_attributes=True)
 
 class Squad(BaseModel):
+    """
+    Schema de resposta para um Squad, incluindo o setor e os membros.
+    """
     id: int
     name: str
-    sector: Optional[str] = None
+    is_active: bool
+    sector: Sector  # Aninha os detalhes do setor
     members: List[SquadMember] = []
     model_config = ConfigDict(from_attributes=True)
+
+
 # --- Schemas para Gerenciamento de Squads (Admin) ---
+
+class SquadMemberSchema(BaseModel):
+    """Schema para definir um membro ao criar/atualizar um squad."""
+    user_id: int
+    is_leader: bool = False
 
 class SquadCreateSchema(BaseModel):
     name: str
-    member_ids: List[int]
+    sector_id: int
+    members: List[SquadMemberSchema]
 
 class SquadUpdateSchema(BaseModel):
     name: Optional[str] = None
-    member_ids: Optional[List[int]] = None
+    sector_id: Optional[int] = None
+    members: Optional[List[SquadMemberSchema]] = None
 
 # --- Schema para Task Templates ---
 

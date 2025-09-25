@@ -38,8 +38,8 @@ def get_squads(service: SquadService = Depends(get_squad_service)):
     A lógica de filtragem de membros inativos foi movida para cá.
     """
     squads = service.get_all_squads()
-    if not squads:
-        raise HTTPException(status_code=404, detail="Nenhum squad ativo encontrado.")
+    # Não levanta mais exceção se a lista estiver vazia.
+    # Apenas retorna a lista vazia, que é o comportamento esperado pelo frontend.
     
     # Filtra membros inativos (com base no status do usuário do Legal One) na resposta
     active_squads_data = []

@@ -44,18 +44,30 @@ class RuleAction(Base):
     logic = Column(Enum(ActionLogic), nullable=False)
     rule = relationship('Rule', back_populates='action')
 
-# --- MODELOS DE SQUAD SIMPLIFICADOS ---
+# --- MODELOS DE SETOR E SQUAD ---
+
+class Sector(Base):
+    """ Representa um setor ou área do escritório, ao qual squads podem ser associados. """
+    __tablename__ = 'sectors'
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, unique=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+
+    squads = relationship('Squad', back_populates='sector')
 
 class Squad(Base):
-    """ Representa uma equipe ou squad criada e gerenciada internamente. """
+    """ Representa uma equipe ou squad, agora vinculada a um setor. """
     __tablename__ = 'squads'
     
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False, unique=True) # Nome do squad deve ser único
-    sector = Column(String, index=True)
+    name = Column(String, nullable=False, unique=True)
     is_active = Column(Boolean, default=True, nullable=False)
     
-    # A relação agora é com a nova tabela de associação `squad_members`
+    # Chave estrangeira para o setor
+    sector_id = Column(Integer, ForeignKey('sectors.id'), nullable=False)
+    sector = relationship('Sector', back_populates='squads')
+
     members = relationship('SquadMember', back_populates='squad', cascade="all, delete-orphan")
 
 class SquadMember(Base):

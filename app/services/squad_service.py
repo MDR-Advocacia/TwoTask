@@ -28,25 +28,29 @@ class SquadService:
 
     def create_squad(self, squad_data: schemas.SquadCreateSchema) -> models.Squad:
         """
-        Cria um novo squad e associa os membros a ele.
+        Cria um novo squad, associando-o a um setor e definindo seus membros e líderes.
         """
-        # Verifica se já existe um squad com o mesmo nome
-        existing_squad = self.db.query(models.Squad).filter(models.Squad.name == squad_data.name).first()
-        if existing_squad:
+        # Validações
+        if self.db.query(models.Squad).filter(models.Squad.name == squad_data.name).first():
             raise ValueError(f"Squad com o nome '{squad_data.name}' já existe.")
+        if not self.db.query(models.Sector).filter(models.Sector.id == squad_data.sector_id).first():
+            raise ValueError(f"Setor com ID '{squad_data.sector_id}' não encontrado.")
 
-        # Cria a nova instância do Squad
-        new_squad = models.Squad(name=squad_data.name, is_active=True)
+        # Criação do Squad
+        new_squad = models.Squad(
+            name=squad_data.name,
+            sector_id=squad_data.sector_id,
+            is_active=True
+        )
         self.db.add(new_squad)
-        self.db.flush()  # Garante que o new_squad.id esteja disponível
+        self.db.flush()
 
-        # Associa os membros
-        for user_id in squad_data.member_ids:
-            # Aqui, poderíamos adicionar uma verificação se o usuário existe em `legal_one_users`
+        # Associação de Membros
+        for member_info in squad_data.members:
             squad_member = models.SquadMember(
                 squad_id=new_squad.id,
-                legal_one_user_id=user_id,
-                is_leader=False # A lógica de líder pode ser adicionada depois
+                legal_one_user_id=member_info.user_id,
+                is_leader=member_info.is_leader
             )
             self.db.add(squad_member)
 
@@ -56,31 +60,34 @@ class SquadService:
 
     def update_squad(self, squad_id: int, squad_data: schemas.SquadUpdateSchema) -> Optional[models.Squad]:
         """
-        Atualiza um squad existente, incluindo nome e lista de membros.
+        Atualiza um squad existente: nome, setor, e/ou lista de membros/líderes.
         """
         squad = self.db.query(models.Squad).filter(models.Squad.id == squad_id).first()
         if not squad:
             return None
 
-        # Atualiza o nome se fornecido
-        if squad_data.name:
-            # Verifica se o novo nome já está em uso por outro squad
-            existing_squad = self.db.query(models.Squad).filter(models.Squad.name == squad_data.name, models.Squad.id != squad_id).first()
-            if existing_squad:
+        # Atualiza o nome
+        if squad_data.name and squad_data.name != squad.name:
+            if self.db.query(models.Squad).filter(models.Squad.name == squad_data.name, models.Squad.id != squad_id).first():
                 raise ValueError(f"Squad com o nome '{squad_data.name}' já existe.")
             squad.name = squad_data.name
 
-        # Atualiza os membros se fornecido
-        if squad_data.member_ids is not None:
-            # Remove os membros existentes
-            self.db.query(models.SquadMember).filter(models.SquadMember.squad_id == squad_id).delete()
+        # Atualiza o setor
+        if squad_data.sector_id:
+            if not self.db.query(models.Sector).filter(models.Sector.id == squad_data.sector_id).first():
+                raise ValueError(f"Setor com ID '{squad_data.sector_id}' não encontrado.")
+            squad.sector_id = squad_data.sector_id
 
-            # Adiciona os novos membros
-            for user_id in squad_data.member_ids:
+        # Atualiza os membros (se a lista for fornecida)
+        if squad_data.members is not None:
+            # Remove membros antigos
+            self.db.query(models.SquadMember).filter(models.SquadMember.squad_id == squad_id).delete()
+            # Adiciona novos membros
+            for member_info in squad_data.members:
                 squad_member = models.SquadMember(
                     squad_id=squad_id,
-                    legal_one_user_id=user_id,
-                    is_leader=False
+                    legal_one_user_id=member_info.user_id,
+                    is_leader=member_info.is_leader
                 )
                 self.db.add(squad_member)
 
