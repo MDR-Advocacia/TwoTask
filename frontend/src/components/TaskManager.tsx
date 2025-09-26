@@ -21,10 +21,12 @@ interface Squad {
   name: string;
 }
 
+import { MultiSelect } from "@/components/ui/MultiSelect";
+
 interface SubType {
   id: number;
   name: string;
-  squad_id: number | null;
+  squad_ids: number[];
 }
 
 interface TaskTypeGroup {
@@ -54,8 +56,8 @@ const TaskManager: React.FC<TaskManagerProps> = ({ syncCounter }) => {
   const [editingGroup, setEditingGroup] = useState<{ id: number; name: string } | null>(null);
   const [newGroupName, setNewGroupName] = useState("");
 
-  // Mapeamento local para o squad selecionado por grupo
-  const [selectedSquads, setSelectedSquads] = useState<Record<number, string>>({});
+  // Mapeamento local para os squads selecionados por grupo
+  const [selectedSquads, setSelectedSquads] = useState<Record<number, string[]>>({});
 
   const handleEditClick = (group: { parent_id: number; parent_name: string }) => {
     setEditingGroup({ id: group.parent_id, name: group.parent_name });
@@ -117,12 +119,14 @@ const TaskManager: React.FC<TaskManagerProps> = ({ syncCounter }) => {
       setSquads([]); // Squads will be loaded based on sector selection
 
       // Inicializa o estado dos squads selecionados com base nos dados recebidos
-      const initialSelectedSquads: Record<number, string> = {};
+      const initialSelectedSquads: Record<number, string[]> = {};
       tasksData.forEach((group: TaskTypeGroup) => {
-        const representativeSubType = group.sub_types.find(st => st.squad_id !== null);
-        if (representativeSubType && representativeSubType.squad_id) {
-          initialSelectedSquads[group.parent_id] = String(representativeSubType.squad_id);
-        }
+        // Coleta todos os IDs de squad únicos de todos os subtipos do grupo
+        const squadIdsInGroup = new Set<string>();
+        group.sub_types.forEach(st => {
+          st.squad_ids.forEach(id => squadIdsInGroup.add(String(id)));
+        });
+        initialSelectedSquads[group.parent_id] = Array.from(squadIdsInGroup);
       });
       setSelectedSquads(initialSelectedSquads);
 
@@ -168,16 +172,12 @@ const TaskManager: React.FC<TaskManagerProps> = ({ syncCounter }) => {
     }
   }, [selectedSector]);
 
-  const handleSquadChange = (groupId: number, squadId: string) => {
-    setSelectedSquads(prev => ({ ...prev, [groupId]: squadId }));
+  const handleSquadChange = (groupId: number, squadIds: string[]) => {
+    setSelectedSquads(prev => ({ ...prev, [groupId]: squadIds }));
   };
 
   const handleSaveChanges = async (groupId: number) => {
-    const squadId = selectedSquads[groupId];
-    if (!squadId) {
-      toast({ title: "Nenhum squad selecionado", variant: "destructive" });
-      return;
-    }
+    const squadIds = selectedSquads[groupId] || [];
 
     const group = taskGroups.find(g => g.parent_id === groupId);
     if (!group) return;
@@ -194,7 +194,7 @@ const TaskManager: React.FC<TaskManagerProps> = ({ syncCounter }) => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          squad_id: parseInt(squadId, 10),
+          squad_ids: squadIds.map(id => parseInt(id, 10)),
           task_type_ids: group.sub_types.map(st => st.id),
         }),
       });
@@ -292,36 +292,27 @@ const TaskManager: React.FC<TaskManagerProps> = ({ syncCounter }) => {
                       <div className="space-y-4 p-2">
                         <div className="flex flex-col md:flex-row items-start md:items-center gap-4 p-4 border rounded-lg bg-muted/40">
                           <div className="flex-grow w-full md:w-auto">
-                            <label htmlFor={`squad-select-${group.parent_id}`} className="text-sm font-medium">
-                              Associar todo o grupo ao Squad:
+                            <label htmlFor={`squad-multiselect-${group.parent_id}`} className="text-sm font-medium">
+                              Associar todo o grupo aos Squads:
                             </label>
-                            <Select
-                              value={selectedSquads[group.parent_id] || ""}
+                            <MultiSelect
+                              options={squads.map(s => ({ label: s.name, value: String(s.id) }))}
+                              defaultValue={selectedSquads[group.parent_id] || []}
                               onValueChange={(value) => handleSquadChange(group.parent_id, value)}
-                              disabled={squads.length === 0}
-                            >
-                              <SelectTrigger id={`squad-select-${group.parent_id}`}>
-                                <SelectValue placeholder={squads.length > 0 ? "Selecione um squad..." : "Nenhum squad neste setor"} />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {squads.map(squad => (
-                                  <SelectItem key={squad.id} value={String(squad.id)}>
-                                    {squad.name}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                              placeholder="Selecione os squads..."
+                              className="mt-1"
+                            />
                           </div>
-                          <Button onClick={() => handleSaveChanges(group.parent_id)} disabled={saving || !selectedSquads[group.parent_id]}>
+                          <Button onClick={() => handleSaveChanges(group.parent_id)} disabled={saving}>
                             <Save className="mr-2 h-4 w-4" />
-                            {saving ? "Salvando..." : "Salvar"}
+                            {saving ? "Salvando..." : "Salvar Associações"}
                           </Button>
                         </div>
                         <Table>
                           <TableHeader>
                             <TableRow>
                               <TableHead>Subtipo de Tarefa</TableHead>
-                              <TableHead>Squad Associado Atualmente</TableHead>
+                              <TableHead>Squads Associados Atualmente</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
@@ -329,7 +320,17 @@ const TaskManager: React.FC<TaskManagerProps> = ({ syncCounter }) => {
                               <TableRow key={subType.id}>
                                 <TableCell>{subType.name}</TableCell>
                                 <TableCell>
-                                  {squads.find(s => s.id === subType.squad_id)?.name || <span className="text-muted-foreground">Nenhum</span>}
+                                  {subType.squad_ids.length > 0 ? (
+                                    <div className="flex flex-wrap gap-1">
+                                      {subType.squad_ids.map(squadId => (
+                                        <Badge key={squadId} variant="secondary">
+                                          {squads.find(s => s.id === squadId)?.name || 'ID desconhecido'}
+                                        </Badge>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <span className="text-muted-foreground">Nenhum</span>
+                                  )}
                                 </TableCell>
                               </TableRow>
                             ))}
