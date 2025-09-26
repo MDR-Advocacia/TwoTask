@@ -1,83 +1,101 @@
 # app/services/task_creation_service.py
 
+import logging
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 from app.services.legal_one_client import LegalOneApiClient
-from app.api.v1.schemas import (
-    LegalOneTaskPayload, Relationship, ResponsibleUser
-)
+
+# --- Exceções Customizadas para clareza no tratamento de erros ---
+
+class LawsuitNotFoundError(Exception):
+    """Lançada quando um processo não é encontrado pelo CNJ."""
+    def __init__(self, cnj: str):
+        self.cnj = cnj
+        super().__init__(f"Nenhum processo (lawsuit) encontrado para o CNJ: {cnj}")
+
+class TaskCreationError(Exception):
+    """Lançada quando a criação da tarefa principal falha no Legal One."""
+    def __init__(self, detail: str):
+        self.detail = detail
+        super().__init__(f"Falha ao criar a tarefa no Legal One: {detail}")
+
+class TaskLinkingError(Exception):
+    """Lançada quando o vínculo da tarefa ao processo falha."""
+    pass
+
+# --- Modelos de Dados (DTOs) para a Lógica do Serviço ---
+
+class TaskParticipant(BaseModel):
+    contact_id: int = Field(..., description="ID do contato (usuário) no Legal One.")
+    is_responsible: bool = False
+    is_requester: bool = False
+    is_executer: bool = True # Padrão para executor
+
+class TaskCreationRequest(BaseModel):
+    cnj_number: str = Field(..., description="Número do processo (CNJ) ao qual a tarefa será vinculada.")
+    task_payload: Dict[str, Any] = Field(..., description="Payload JSON para a criação da tarefa, conforme a API do Legal One.")
+    participants: List[TaskParticipant] = Field([], description="Lista de participantes a serem adicionados à tarefa.")
 
 
 class TaskCreationService:
+    """
+    Orquestra a criação de uma tarefa no Legal One, incluindo a busca pelo
+    processo, a criação da tarefa, o vínculo e a adição de participantes.
+    """
     def __init__(self, db: Session):
         self.db = db
         self.legal_one_client = LegalOneApiClient()
+        self.logger = logging.getLogger(__name__)
 
-    def create_task_in_legal_one(self, task_data: dict, responsibles: list):
+    def create_full_task_process(self, request: TaskCreationRequest) -> Dict[str, Any]:
         """
-        Prepara e envia os dados da tarefa para a API do Legal One.
+        Executa o fluxo completo de criação de tarefa.
+        1. Busca o processo pelo CNJ.
+        2. Cria a tarefa.
+        3. Vincula a tarefa ao processo.
+        4. Adiciona os participantes.
         """
-        access_token = self.legal_one_client.get_access_token()
-        if not access_token:
-            print("Erro ao obter o token de acesso.")
-            return None
+        # Passo 1: Buscar o processo
+        self.logger.info(f"Iniciando processo de criação de tarefa para o CNJ: {request.cnj_number}")
+        lawsuit = self.legal_one_client.search_lawsuit_by_cnj(request.cnj_number)
+        if not lawsuit or 'id' not in lawsuit:
+            raise LawsuitNotFoundError(request.cnj_number)
 
-        relationships = [
-            Relationship(id=resp['id'], type="CONTACT")
-            for resp in responsibles
-        ]
+        lawsuit_id = lawsuit['id']
+        self.logger.info(f"Processo ID {lawsuit_id} encontrado.")
 
-        responsible_users = [
-            ResponsibleUser(id=resp['id'], name=resp['name'])
-            for resp in responsibles
-        ]
+        # Passo 2: Criar a tarefa
+        created_task = self.legal_one_client.create_task(request.task_payload)
+        if not created_task or 'id' not in created_task:
+            raise TaskCreationError("A resposta da API não continha um ID de tarefa válido.")
 
-        payload = LegalOneTaskPayload(
-            description=task_data.get("description", "Descrição Padrão"),
-            case_id=task_data.get("case_id", 0),
-            task_type_id=task_data.get("task_type_id"),
-            deadline=task_data.get("deadline"),
-            relationships=relationships,
-            responsibles=responsible_users
-        )
+        task_id = created_task['id']
+        self.logger.info(f"Tarefa ID {task_id} criada com sucesso.")
 
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json"
-        }
+        # Passo 3: Vincular a tarefa ao processo
+        link_success = self.legal_one_client.link_task_to_lawsuit(task_id, lawsuit_id)
+        if not link_success:
+            # Em um cenário real, poderíamos tentar reverter a criação da tarefa
+            self.logger.error(f"Falha crítica ao vincular a tarefa {task_id} ao processo {lawsuit_id}. A tarefa foi criada mas não está vinculada.")
+            raise TaskLinkingError(f"Não foi possível vincular a tarefa {task_id} ao processo {lawsuit_id}.")
 
-        endpoint = "/v1/tasks"
-        response = self.legal_one_client.post(
-            endpoint,
-            headers=headers,
-            json=payload.dict()
-        )
+        self.logger.info("Vínculo com o processo realizado com sucesso.")
 
-        if response and response.status_code == 201:
-            print("Tarefa criada com sucesso no Legal One.")
-            return response.json()
-        else:
-            error_details = response.text if response else "N/A"
-            status_code = response.status_code if response else "N/A"
-            print(
-                "Falha ao criar tarefa no Legal One. "
-                f"Status: {status_code}, Detalhes: {error_details}"
+        # Passo 4: Adicionar participantes
+        for participant in request.participants:
+            self.legal_one_client.add_participant_to_task(
+                task_id=task_id,
+                contact_id=participant.contact_id,
+                is_responsible=participant.is_responsible,
+                is_requester=participant.is_requester,
+                is_executer=participant.is_executer
             )
-            return None
+            # O tratamento de falha aqui é opcional. Pode-se optar por logar e continuar.
 
-    def process_task_trigger(self, trigger_data: dict):
-        """
-        Processa um gatilho para criar uma ou mais tarefas.
-        """
-        task_details = trigger_data.get("task_details", {})
-        squad_member_ids = trigger_data.get("squad_member_ids", [])
+        self.logger.info(f"Processo de criação de tarefa para o CNJ {request.cnj_number} concluído.")
 
-        responsibles = [
-            {"id": member_id, "name": f"Usuário {member_id}"}
-            for member_id in squad_member_ids
-        ]
-
-        if not responsibles:
-            print("Nenhum responsável encontrado para os IDs fornecidos.")
-            return
-
-        return self.create_task_in_legal_one(task_details, responsibles)
+        return {
+            "message": "Tarefa criada e vinculada com sucesso!",
+            "created_task": created_task
+        }
