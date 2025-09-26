@@ -6,7 +6,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Loader2, AlertTriangle, Save } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Loader2, AlertTriangle, Save, Pencil } from "lucide-react";
 
 // Definição de tipos para os dados da API
 interface Sector {
@@ -47,8 +49,53 @@ const TaskManager: React.FC<TaskManagerProps> = ({ syncCounter }) => {
   // State for selected sector
   const [selectedSector, setSelectedSector] = useState<string | null>(null);
 
+  // State for the rename dialog
+  const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
+  const [editingGroup, setEditingGroup] = useState<{ id: number; name: string } | null>(null);
+  const [newGroupName, setNewGroupName] = useState("");
+
   // Mapeamento local para o squad selecionado por grupo
   const [selectedSquads, setSelectedSquads] = useState<Record<number, string>>({});
+
+  const handleEditClick = (group: { parent_id: number; parent_name: string }) => {
+    setEditingGroup({ id: group.parent_id, name: group.parent_name });
+    setNewGroupName(group.parent_name);
+    setIsEditDialogOpen(true);
+  };
+
+  const handleRenameSave = async () => {
+    if (!editingGroup || !newGroupName.trim()) {
+      toast({ title: "Nome inválido", description: "O nome do grupo não pode ser vazio.", variant: "destructive" });
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/v1/admin/task-parent-groups/${editingGroup.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newGroupName.trim() }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || "Falha ao renomear o grupo.");
+      }
+
+      toast({
+        title: "Sucesso!",
+        description: `Grupo renomeado para "${newGroupName.trim()}".`,
+      });
+      setIsEditDialogOpen(false);
+      fetchInitialData(); // Refresh data to show the new name
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : "Erro desconhecido";
+      toast({
+        title: "Erro ao Renomear",
+        description: errorMessage,
+        variant: "destructive",
+      });
+    }
+  };
 
   const fetchInitialData = async () => {
     setLoading(true);
@@ -227,7 +274,20 @@ const TaskManager: React.FC<TaskManagerProps> = ({ syncCounter }) => {
               <Accordion type="single" collapsible className="w-full">
                 {taskGroups.map(group => (
                   <AccordionItem value={`item-${group.parent_id}`} key={group.parent_id}>
-                    <AccordionTrigger>{group.parent_name}</AccordionTrigger>
+                    <AccordionTrigger>
+                      <span className="flex-grow text-left">{group.parent_name}</span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="ml-4 h-8 w-8"
+                        onClick={(e) => {
+                          e.stopPropagation(); // Impede que o acordeão abra/feche
+                          handleEditClick(group);
+                        }}
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                    </AccordionTrigger>
                     <AccordionContent>
                       <div className="space-y-4 p-2">
                         <div className="flex flex-col md:flex-row items-start md:items-center gap-4 p-4 border rounded-lg bg-muted/40">
@@ -293,6 +353,35 @@ const TaskManager: React.FC<TaskManagerProps> = ({ syncCounter }) => {
           )}
         </div>
       </CardContent>
+      <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Renomear Grupo de Tarefas</DialogTitle>
+          </DialogHeader>
+          <div className="py-4">
+            <label htmlFor="group-name" className="text-sm font-medium">
+              Novo nome para "{editingGroup?.name}"
+            </label>
+            <Input
+              id="group-name"
+              value={newGroupName}
+              onChange={(e) => setNewGroupName(e.target.value)}
+              className="mt-2"
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button type="button" variant="secondary">
+                Cancelar
+              </Button>
+            </DialogClose>
+            <Button type="button" onClick={handleRenameSave}>
+              Salvar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 };

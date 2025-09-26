@@ -9,6 +9,7 @@ from typing import List, Dict, Optional
 from app.core.dependencies import get_db
 from app.services.metadata_sync_service import MetadataSyncService
 from app.models.legal_one import LegalOneTaskType
+from app.models.task_group import TaskParentGroup
 from app.models.rules import Squad
 
 router = APIRouter()
@@ -39,45 +40,40 @@ async def sync_metadata(
 @router.get("/task-types", summary="Listar Tipos de Tarefa Agrupados")
 def get_task_types_grouped(db: Session = Depends(get_db)):
     """
-    Retorna uma lista de tipos de tarefa pai, com seus subtipos aninhados.
-    Esta implementação é mais robusta, construindo a hierarquia manualmente
-    para garantir que os dados sejam sempre processados corretamente.
-    Um pai é identificado se `parent_id` é `NULL` ou se `parent_id` == `id`.
+    Retorna uma lista de tipos de tarefa agrupados pelo seu `parent_id`,
+    utilizando a tabela `task_parent_groups` para obter os nomes dos grupos.
     """
-    all_task_types = db.query(LegalOneTaskType).options(joinedload(LegalOneTaskType.squads)).all()
+    all_tasks = db.query(LegalOneTaskType).options(joinedload(LegalOneTaskType.squads)).all()
+    parent_group_names = {group.id: group.name for group in db.query(TaskParentGroup).all()}
 
-    parents = {}
-    children_map = {}
+    grouped_tasks = {}
 
-    # Primeira passagem: separar pais e filhos
-    for tt in all_task_types:
-        # Um tipo de tarefa é um pai se seu parent_id for NULO ou igual ao seu próprio id
-        if tt.parent_id is None or tt.parent_id == tt.id:
-            parents[tt.id] = {
-                "parent_id": tt.id,
-                "parent_name": tt.name,
-                "sub_types": []
-            }
-        else:
-            # Este é um subtipo de tarefa
-            if tt.parent_id not in children_map:
-                children_map[tt.parent_id] = []
+    for task in all_tasks:
+        if not task.parent_id:
+            continue
 
-            squad_id = tt.squads[0].id if tt.squads else None
-            children_map[tt.parent_id].append({
-                "id": tt.id,
-                "name": tt.name,
-                "squad_id": squad_id
-            })
+        if task.parent_id not in grouped_tasks:
+            grouped_tasks[task.parent_id] = []
 
-    # Segunda passagem: anexar filhos aos pais
-    for parent_id, parent_data in parents.items():
-        if parent_id in children_map:
-            # Ordena os subtipos alfabeticamente pelo nome
-            parent_data["sub_types"] = sorted(children_map[parent_id], key=lambda x: x['name'])
+        squad_id = task.squads[0].id if task.squads else None
+        grouped_tasks[task.parent_id].append({
+            "id": task.id,
+            "name": task.name,
+            "squad_id": squad_id
+        })
 
-    # Retorna a lista de pais, ordenada alfabeticamente pelo nome do pai
-    return sorted(list(parents.values()), key=lambda x: x['parent_name'])
+    response_data = []
+    for parent_id, children in grouped_tasks.items():
+        # Usa o nome customizado ou o ID como fallback, conforme solicitado
+        parent_name = parent_group_names.get(parent_id, f"Grupo ID: {parent_id}")
+
+        response_data.append({
+            "parent_id": parent_id,
+            "parent_name": parent_name,
+            "sub_types": sorted(children, key=lambda x: x['name'])
+        })
+
+    return sorted(response_data, key=lambda x: x['parent_name'])
 
 @router.post("/task-types/associate", summary="Associar Tipos de Tarefa a um Squad")
 def associate_task_types(payload: TaskTypeAssociationPayload, db: Session = Depends(get_db)):
@@ -111,3 +107,28 @@ def associate_task_types(payload: TaskTypeAssociationPayload, db: Session = Depe
 
     db.commit()
     return {"message": "Associação de tipos de tarefa atualizada com sucesso."}
+
+class TaskParentGroupUpdatePayload(BaseModel):
+    name: str
+
+@router.put("/task-parent-groups/{parent_id}", summary="Renomear ou Criar um Grupo de Tarefas Pai")
+def upsert_task_parent_group(
+    parent_id: int,
+    payload: TaskParentGroupUpdatePayload,
+    db: Session = Depends(get_db)
+):
+    """
+    Atualiza o nome de um grupo de tarefas pai existente ou cria um novo.
+    """
+    parent_group = db.query(TaskParentGroup).filter(TaskParentGroup.id == parent_id).first()
+
+    if parent_group:
+        parent_group.name = payload.name
+    else:
+        parent_group = TaskParentGroup(id=parent_id, name=payload.name)
+        db.add(parent_group)
+
+    db.commit()
+    db.refresh(parent_group)
+
+    return {"id": parent_group.id, "name": parent_group.name}
