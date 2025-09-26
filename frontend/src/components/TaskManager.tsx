@@ -152,7 +152,7 @@ const TaskManager = () => {
         description: `Tarefas do grupo "${group.parent_name}" associadas com sucesso.`,
       });
       // Opcional: recarregar os dados para refletir o estado do servidor
-      fetchData();
+      fetchInitialData();
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Erro desconhecido";
       toast({
