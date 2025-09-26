@@ -16,7 +16,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 class TaskTypeAssociationPayload(BaseModel):
-    squad_id: int
+    squad_ids: List[int]
     task_type_ids: List[int]
 
 @router.post("/sync-metadata", status_code=202, summary="Sincronizar Metadados do Legal One")
@@ -55,11 +55,11 @@ def get_task_types_grouped(db: Session = Depends(get_db)):
         if task.parent_id not in grouped_tasks:
             grouped_tasks[task.parent_id] = []
 
-        squad_id = task.squads[0].id if task.squads else None
+        squad_ids = [squad.id for squad in task.squads]
         grouped_tasks[task.parent_id].append({
             "id": task.id,
             "name": task.name,
-            "squad_id": squad_id
+            "squad_ids": squad_ids
         })
 
     response_data = []
@@ -75,35 +75,31 @@ def get_task_types_grouped(db: Session = Depends(get_db)):
 
     return sorted(response_data, key=lambda x: x['parent_name'])
 
-@router.post("/task-types/associate", summary="Associar Tipos de Tarefa a um Squad")
+@router.post("/task-types/associate", summary="Associar Tipos de Tarefa a Squads")
 def associate_task_types(payload: TaskTypeAssociationPayload, db: Session = Depends(get_db)):
     """
-    Associa um grupo de subtipos de tarefa (que compartilham o mesmo pai) a um squad específico.
+    Associa ou desassocia um grupo de subtipos de tarefa a um ou mais squads.
+    A lógica agora é "replace all": todas as associações do grupo são removidas
+    e as novas, da lista `squad_ids`, são adicionadas.
     """
-    squad = db.query(Squad).filter(Squad.id == payload.squad_id).first()
-    if not squad:
-        raise HTTPException(status_code=404, detail="Squad não encontrado.")
+    # Valida e busca os squads
+    squads_to_associate = db.query(Squad).filter(Squad.id.in_(payload.squad_ids)).all()
+    if len(squads_to_associate) != len(payload.squad_ids):
+        raise HTTPException(status_code=404, detail="Um ou mais squads não foram encontrados.")
 
-    task_types_to_associate = db.query(LegalOneTaskType).filter(LegalOneTaskType.id.in_(payload.task_type_ids)).all()
-    if not task_types_to_associate:
+    # Valida e busca os tipos de tarefa (subtipos)
+    task_types_in_group = db.query(LegalOneTaskType).filter(LegalOneTaskType.id.in_(payload.task_type_ids)).all()
+    if not task_types_in_group:
         raise HTTPException(status_code=404, detail="Nenhum tipo de tarefa encontrado.")
 
-    # Identificar o pai comum e todos os seus filhos
-    parent_id = task_types_to_associate[0].parent_id
-    if not parent_id:
-        raise HTTPException(status_code=400, detail="A associação só é permitida para subtipos de tarefa.")
+    # Limpa todas as associações existentes para todas as tarefas no grupo
+    for task_type in task_types_in_group:
+        task_type.squads.clear()
 
-    all_sub_types = db.query(LegalOneTaskType).filter(LegalOneTaskType.parent_id == parent_id).all()
-
-    # Remover associação existente *apenas para o squad alvo* em todo o grupo
-    for task_type in all_sub_types:
-        if squad in task_type.squads:
-            task_type.squads.remove(squad)
-
-    # Adicionar a nova associação
-    for task_type in task_types_to_associate:
-        if squad not in task_type.squads:
-            task_type.squads.append(squad)
+    # Adiciona as novas associações
+    if squads_to_associate:
+        for task_type in task_types_in_group:
+            task_type.squads.extend(squads_to_associate)
 
     db.commit()
     return {"message": "Associação de tipos de tarefa atualizada com sucesso."}
