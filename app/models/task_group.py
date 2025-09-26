@@ -5,10 +5,11 @@ from app.db.session import Base
 
 class TaskParentGroup(Base):
     """
-    Tabela para armazenar os nomes personalizados dos grupos de tarefas pai.
-    O 'id' desta tabela corresponde ao 'parent_id' da tabela 'legal_one_task_types'.
+    Representa um grupo pai para tipos de tarefa.
+    Esta tabela armazena o mapeamento manual entre um ID de grupo (parent_id)
+    e o nome exibido para esse grupo, que pode ser editado pelo administrador.
     """
     __tablename__ = 'task_parent_groups'
 
-    id = Column(Integer, primary_key=True, index=True, comment="Corresponde ao parent_id de legal_one_task_types")
-    name = Column(String, nullable=False, unique=True)
+    id = Column(Integer, primary_key=True, index=True, comment="Corresponde ao 'parent_id' usado nos tipos de tarefa do Legal One")
+    name = Column(String, nullable=False, comment="O nome do grupo de tarefas, ex: 'Audiência', 'Prazo'")

@@ -93,11 +93,18 @@ class MetadataSyncService:
 
             self.db.flush() # Garante que os tipos pais existam antes de associar subtipos
 
+            # Coleta os IDs externos dos tipos pais para evitar que sejam tratados como subtipos
+            parent_external_ids = {self._to_int(t.get("id")) for t in types_from_api if t.get("id")}
+
             # Processa os subtipos
             for subtype_data in subtypes_from_api:
                 external_id = self._to_int(subtype_data.get("id"))
                 parent_id = self._to_int(subtype_data.get("parentTypeId"))
                 if not external_id or not parent_id: continue
+
+                # CORREÇÃO: Ignora a atualização de um tipo pai como se fosse um subtipo
+                if external_id in parent_external_ids:
+                    continue
 
                 parent_obj = existing_map.get(parent_id)
                 if not parent_obj: continue # Pula se o pai não foi encontrado

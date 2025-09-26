@@ -19,6 +19,7 @@ from app.models.canonical import *
 from app.models.legal_one import *
 from app.models.rules import *
 from app.models.associations import *
+from app.models.task_group import *
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
