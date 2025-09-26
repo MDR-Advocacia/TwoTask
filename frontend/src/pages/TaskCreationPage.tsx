@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Layout from '@/components/Layout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -6,12 +6,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Search } from 'lucide-react';
 
-import { useEffect } from 'react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
+import UserSelector, { SelectableUser } from '@/components/ui/UserSelector'; // Importando o novo componente
 
-// Define tipos para os dados que vamos manipular
+// --- Interfaces ---
 interface Lawsuit {
   id: number;
   identifierNumber: string;
@@ -26,13 +26,7 @@ interface TaskSubType {
   id: number;
   name: string;
   parentTypeId: number;
-}
-
-interface LegalOneUser {
-  id: number; // ID do usuário no nosso BD
-  external_id: number; // ID do usuário no Legal One (usado como contact_id)
-  name: string;
-  email: string;
+  squad_ids: number[]; // Squads associados a este subtipo
 }
 
 const TaskCreationPage = () => {
@@ -45,57 +39,61 @@ const TaskCreationPage = () => {
   // Estado para os dados do formulário
   const [taskTypes, setTaskTypes] = useState<TaskType[]>([]);
   const [subTypes, setSubTypes] = useState<TaskSubType[]>([]);
-  const [users, setUsers] = useState<LegalOneUser[]>([]);
-  const [filteredSubTypes, setFilteredSubTypes] = useState<TaskSubType[]>([]);
+  const [users, setUsers] = useState<SelectableUser[]>([]); // Usando a interface do UserSelector
+  const [isFormLoading, setIsFormLoading] = useState(true);
 
   // Estado dos campos do formulário
   const [selectedTaskTypeId, setSelectedTaskTypeId] = useState<string>('');
   const [selectedSubTypeId, setSelectedSubTypeId] = useState<string>('');
-  const [selectedResponsibleId, setSelectedResponsibleId] = useState<string>('');
+  const [selectedResponsibleId, setSelectedResponsibleId] = useState<string | null>(null); // Pode ser null
   const [description, setDescription] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Carregar dados para os seletores do formulário
+  // Carregar dados usando o novo endpoint
   useEffect(() => {
     const fetchFormData = async () => {
+      setIsFormLoading(true);
       try {
-        // Usaremos o endpoint que já agrupa tipos e subtipos
-        const taskTypesResponse = await fetch('/api/v1/admin/task-types');
-        const usersResponse = await fetch('/api/v1/squads/legal-one-users');
-
-        if (!taskTypesResponse.ok || !usersResponse.ok) {
-          throw new Error('Falha ao carregar dados para o formulário.');
+        const response = await fetch('/api/v1/tasks/task-creation-data');
+        if (!response.ok) {
+          throw new Error('Falha ao carregar os dados necessários para o formulário.');
         }
-
-        const taskTypeGroups = await taskTypesResponse.json();
-        const usersData = await usersResponse.json();
-
-        // Achatando os grupos para listas simples de tipos e subtipos
-        const allTypes = taskTypeGroups.map((group: any) => ({ id: group.parent_id, name: group.parent_name }));
-        const allSubTypes = taskTypeGroups.flatMap((group: any) =>
-          group.sub_types.map((st: any) => ({ ...st, parentTypeId: group.parent_id }))
-        );
-
-        setTaskTypes(allTypes);
-        setSubTypes(allSubTypes);
-        setUsers(usersData);
+        const data = await response.json();
+        setTaskTypes(data.task_types);
+        setSubTypes(data.sub_types);
+        setUsers(data.users);
       } catch (error) {
-        toast({ title: 'Erro ao carregar dados', description: error.message, variant: 'destructive' });
+        const msg = error instanceof Error ? error.message : 'Erro desconhecido';
+        toast({ title: 'Erro ao Carregar Dados', description: msg, variant: 'destructive' });
+      } finally {
+        setIsFormLoading(false);
       }
     };
     fetchFormData();
   }, [toast]);
 
-  // Filtrar subtipos quando um tipo de tarefa é selecionado
-  useEffect(() => {
-    if (selectedTaskTypeId) {
-      const parentId = parseInt(selectedTaskTypeId, 10);
-      setFilteredSubTypes(subTypes.filter(st => st.parentTypeId === parentId));
-      setSelectedSubTypeId(''); // Reseta o subtipo selecionado
-    } else {
-      setFilteredSubTypes([]);
-    }
+  // Memoizando listas filtradas para otimização
+  const filteredSubTypes = useMemo(() => {
+    if (!selectedTaskTypeId) return [];
+    return subTypes.filter(st => st.parentTypeId === parseInt(selectedTaskTypeId, 10));
   }, [selectedTaskTypeId, subTypes]);
+
+  const squadIdsForFilter = useMemo(() => {
+    if (!selectedSubTypeId) return [];
+    const selectedSubType = subTypes.find(st => st.id === parseInt(selectedSubTypeId, 10));
+    return selectedSubType?.squad_ids || [];
+  }, [selectedSubTypeId, subTypes]);
+
+  // Resetar seleções quando o tipo ou subtipo muda
+  useEffect(() => {
+    setSelectedSubTypeId('');
+    setSelectedResponsibleId(null);
+  }, [selectedTaskTypeId]);
+
+  useEffect(() => {
+    setSelectedResponsibleId(null);
+  }, [selectedSubTypeId]);
+
 
   const handleSubmit = async () => {
     if (!foundLawsuit || !selectedSubTypeId || !selectedResponsibleId) {
@@ -114,12 +112,11 @@ const TaskCreationPage = () => {
       description: description || 'Tarefa criada via sistema',
       startDateTime: new Date().toISOString(),
       priority: 'Normal',
-      // Você pode adicionar mais campos aqui se necessário, como responsibleOfficeId
     };
 
     const participants = [{
       contact_id: parseInt(selectedResponsibleId, 10),
-      is_responsible: true, // Marcando este como o responsável principal
+      is_responsible: true,
       is_executer: true,
     }];
 
@@ -270,19 +267,21 @@ const TaskCreationPage = () => {
                   </Select>
                 </div>
 
-                {/* Responsável */}
+                {/* Responsável com o novo UserSelector */}
                 <div className="space-y-2">
                   <Label htmlFor="responsible">Responsável</Label>
-                  <Select value={selectedResponsibleId} onValueChange={setSelectedResponsibleId}>
-                    <SelectTrigger id="responsible">
-                      <SelectValue placeholder="Selecione o responsável..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {users.map(user => (
-                        <SelectItem key={user.id} value={String(user.external_id)}>{user.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <UserSelector
+                    users={users}
+                    selectedUserId={selectedResponsibleId}
+                    onUserSelect={setSelectedResponsibleId}
+                    filterBySquadIds={squadIdsForFilter}
+                    disabled={!selectedSubTypeId || users.length === 0}
+                  />
+                   {squadIdsForFilter.length > 0 && (
+                     <p className="text-xs text-muted-foreground">
+                       Mostrando usuários dos squads associados a este subtipo.
+                     </p>
+                   )}
                 </div>
 
                 {/* Descrição */}
@@ -297,9 +296,9 @@ const TaskCreationPage = () => {
                 </div>
 
                 <div className="flex justify-end">
-                  <Button onClick={handleSubmit} disabled={isSubmitting || !selectedSubTypeId || !selectedResponsibleId}>
-                    {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                    <span className="ml-2">Criar Tarefa</span>
+                  <Button onClick={handleSubmit} disabled={isSubmitting || !selectedSubTypeId || !selectedResponsibleId || isFormLoading}>
+                    {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                    Criar Tarefa
                   </Button>
                 </div>
               </div>
