@@ -31,15 +31,18 @@ def create_squad(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+from typing import Optional
+
 @router.get("", response_model=List[schemas.Squad])
-def get_squads(service: SquadService = Depends(get_squad_service)):
+def get_squads(
+    sector_id: Optional[int] = None,
+    service: SquadService = Depends(get_squad_service)
+):
     """
     Endpoint para buscar todos os squads e membros ATIVOS.
-    A lógica de filtragem de membros inativos foi movida para cá.
+    Pode ser filtrado por `sector_id`.
     """
-    squads = service.get_all_squads()
-    # Não levanta mais exceção se a lista estiver vazia.
-    # Apenas retorna a lista vazia, que é o comportamento esperado pelo frontend.
+    squads = service.get_all_squads(sector_id=sector_id)
     
     # Filtra membros inativos (com base no status do usuário do Legal One) na resposta
     active_squads_data = []

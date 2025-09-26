@@ -9,6 +9,11 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Loader2, AlertTriangle, Save } from "lucide-react";
 
 // Definição de tipos para os dados da API
+interface Sector {
+  id: number;
+  name: string;
+}
+
 interface Squad {
   id: number;
   name: string;
@@ -29,36 +34,40 @@ interface TaskTypeGroup {
 const TaskManager = () => {
   const { toast } = useToast();
   const [taskGroups, setTaskGroups] = useState<TaskTypeGroup[]>([]);
+  const [sectors, setSectors] = useState<Sector[]>([]);
   const [squads, setSquads] = useState<Squad[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  // State for selected sector
+  const [selectedSector, setSelectedSector] = useState<string | null>(null);
+
   // Mapeamento local para o squad selecionado por grupo
   const [selectedSquads, setSelectedSquads] = useState<Record<number, string>>({});
 
-  const fetchData = async () => {
+  const fetchInitialData = async () => {
     setLoading(true);
     setError(null);
     try {
-      const [tasksResponse, squadsResponse] = await Promise.all([
+      const [tasksResponse, sectorsResponse] = await Promise.all([
         fetch('/api/v1/admin/task-types'),
-        fetch('/api/v1/squads'),
+        fetch('/api/v1/sectors'),
       ]);
 
       if (!tasksResponse.ok) throw new Error('Falha ao buscar os tipos de tarefa.');
-      if (!squadsResponse.ok) throw new Error('Falha ao buscar os squads.');
+      if (!sectorsResponse.ok) throw new Error('Falha ao buscar os setores.');
 
       const tasksData = await tasksResponse.json();
-      const squadsData = await squadsResponse.json();
+      const sectorsData = await sectorsResponse.json();
 
       setTaskGroups(tasksData);
-      setSquads(squadsData);
+      setSectors(sectorsData);
+      setSquads([]); // Squads will be loaded based on sector selection
 
       // Inicializa o estado dos squads selecionados com base nos dados recebidos
       const initialSelectedSquads: Record<number, string> = {};
       tasksData.forEach((group: TaskTypeGroup) => {
-        // Usa o squad do primeiro subtipo como o valor para o grupo inteiro
         const representativeSubType = group.sub_types.find(st => st.squad_id !== null);
         if (representativeSubType && representativeSubType.squad_id) {
           initialSelectedSquads[group.parent_id] = String(representativeSubType.squad_id);
@@ -70,7 +79,7 @@ const TaskManager = () => {
       const errorMessage = err instanceof Error ? err.message : "Erro desconhecido";
       setError(errorMessage);
       toast({
-        title: "Erro ao Carregar Dados",
+        title: "Erro ao Carregar Dados Iniciais",
         description: errorMessage,
         variant: "destructive",
       });
@@ -79,9 +88,34 @@ const TaskManager = () => {
     }
   };
 
+  const fetchSquadsBySector = async (sectorId: string) => {
+    try {
+      const squadsResponse = await fetch(`/api/v1/squads?sector_id=${sectorId}`);
+      if (!squadsResponse.ok) throw new Error('Falha ao buscar os squads para o setor.');
+      const squadsData = await squadsResponse.json();
+      setSquads(squadsData);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : "Erro desconhecido";
+      toast({
+        title: "Erro ao Carregar Squads",
+        description: errorMessage,
+        variant: "destructive",
+      });
+    }
+  };
+
   useEffect(() => {
-    fetchData();
+    fetchInitialData();
   }, []);
+
+  useEffect(() => {
+    if (selectedSector) {
+      fetchSquadsBySector(selectedSector);
+      setSelectedSquads({}); // Limpa a seleção de squad ao trocar de setor
+    } else {
+      setSquads([]); // Limpa a lista de squads se nenhum setor estiver selecionado
+    }
+  }, [selectedSector]);
 
   const handleSquadChange = (groupId: number, squadId: string) => {
     setSelectedSquads(prev => ({ ...prev, [groupId]: squadId }));
@@ -159,40 +193,60 @@ const TaskManager = () => {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <Accordion type="single" collapsible className="w-full">
-          {taskGroups.map(group => (
-            <AccordionItem value={`item-${group.parent_id}`} key={group.parent_id}>
-              <AccordionTrigger>{group.parent_name}</AccordionTrigger>
-              <AccordionContent>
-                <div className="space-y-4">
-                  <div className="flex items-center gap-4 p-4 border rounded-lg">
-                    <div className="flex-grow">
-                      <label htmlFor={`squad-select-${group.parent_id}`} className="text-sm font-medium">
-                        Associar todo o grupo ao Squad:
-                      </label>
-                      <Select
-                        value={selectedSquads[group.parent_id] || ""}
-                        onValueChange={(value) => handleSquadChange(group.parent_id, value)}
-                      >
-                        <SelectTrigger id={`squad-select-${group.parent_id}`}>
-                          <SelectValue placeholder="Selecione um squad..." />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {squads.map(squad => (
-                            <SelectItem key={squad.id} value={String(squad.id)}>
-                              {squad.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <Button onClick={() => handleSaveChanges(group.parent_id)} disabled={saving || !selectedSquads[group.parent_id]}>
-                      <Save className="mr-2 h-4 w-4" />
-                      {saving ? "Salvando..." : "Salvar Grupo"}
-                    </Button>
-                  </div>
+        <div className="space-y-4">
+          <div className="w-1/3">
+            <label htmlFor="sector-select" className="text-sm font-medium mb-2 block">
+              Filtrar por Setor:
+            </label>
+            <Select onValueChange={setSelectedSector} value={selectedSector || ""}>
+              <SelectTrigger id="sector-select">
+                <SelectValue placeholder="Selecione um setor..." />
+              </SelectTrigger>
+              <SelectContent>
+                {sectors.map(sector => (
+                  <SelectItem key={sector.id} value={String(sector.id)}>
+                    {sector.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-                  <Table>
+          <Accordion type="single" collapsible className="w-full" disabled={!selectedSector}>
+            {taskGroups.map(group => (
+              <AccordionItem value={`item-${group.parent_id}`} key={group.parent_id}>
+                <AccordionTrigger>{group.parent_name}</AccordionTrigger>
+                <AccordionContent>
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-4 p-4 border rounded-lg">
+                      <div className="flex-grow">
+                        <label htmlFor={`squad-select-${group.parent_id}`} className="text-sm font-medium">
+                          Associar todo o grupo ao Squad:
+                        </label>
+                        <Select
+                          value={selectedSquads[group.parent_id] || ""}
+                          onValueChange={(value) => handleSquadChange(group.parent_id, value)}
+                          disabled={!selectedSector || squads.length === 0}
+                        >
+                          <SelectTrigger id={`squad-select-${group.parent_id}`}>
+                            <SelectValue placeholder={squads.length > 0 ? "Selecione um squad..." : "Nenhum squad neste setor"} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {squads.map(squad => (
+                              <SelectItem key={squad.id} value={String(squad.id)}>
+                                {squad.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <Button onClick={() => handleSaveChanges(group.parent_id)} disabled={saving || !selectedSquads[group.parent_id]}>
+                        <Save className="mr-2 h-4 w-4" />
+                        {saving ? "Salvando..." : "Salvar Grupo"}
+                      </Button>
+                    </div>
+
+                    <Table>
                     <TableHeader>
                       <TableRow>
                         <TableHead>Subtipo de Tarefa</TableHead>

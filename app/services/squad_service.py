@@ -13,19 +13,21 @@ class SquadService:
     def __init__(self, db: Session):
         self.db = db
 
-    def get_all_squads(self) -> List[models.Squad]:
+    def get_all_squads(self, sector_id: Optional[int] = None) -> List[models.Squad]:
         """
         Retorna todos os squads ativos com seus membros.
-        A filtragem de membros inativos é feita no endpoint para garantir que a resposta da API
-        esteja correta, enquanto o serviço retorna os dados brutos.
+        Pode ser filtrado por sector_id.
         """
-        return (
+        query = (
             self.db.query(models.Squad)
             .options(joinedload(models.Squad.members).joinedload(models.SquadMember.user))
             .filter(models.Squad.is_active == True)
-            .order_by(models.Squad.name)
-            .all()
         )
+
+        if sector_id:
+            query = query.filter(models.Squad.sector_id == sector_id)
+
+        return query.order_by(models.Squad.name).all()
 
     def create_squad(self, squad_data: schemas.SquadCreateSchema) -> models.Squad:
         """
