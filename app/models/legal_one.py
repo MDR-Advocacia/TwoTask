@@ -19,12 +19,11 @@ class LegalOneTaskType(Base):
     name = Column(String, nullable=False)
     is_active = Column(Boolean, default=True)
 
-    # Auto-relacionamento para a estrutura de árvore
-    parent_id = Column(Integer, ForeignKey('legal_one_task_types.id'))
-    parent = relationship('LegalOneTaskType', remote_side=[id], back_populates='sub_types')
-    sub_types = relationship('LegalOneTaskType', back_populates='parent')
+    # Este campo armazena o ID do grupo pai, que é mapeado na tabela TaskParentGroup.
+    # A chave estrangeira e a relação foram removidas para refletir a nova arquitetura.
+    parent_id = Column(Integer, index=True)
 
-    # Relação muitos-para-muitos com Squad
+    # Relação muitos-para-muitos com Squad (permanece a mesma)
     squads = relationship(
         'Squad',
         secondary=squad_task_type_association,

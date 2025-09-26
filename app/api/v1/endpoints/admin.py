@@ -10,6 +10,7 @@ from app.core.dependencies import get_db
 from app.services.metadata_sync_service import MetadataSyncService
 from app.models.legal_one import LegalOneTaskType
 from app.models.rules import Squad
+from app.models.task_group import TaskParentGroup # Importando o novo modelo
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -34,26 +35,32 @@ async def sync_metadata(
     background_tasks.add_task(sync_service.sync_all_metadata)
     return {"message": "Processo de sincronização de metadados do Legal One iniciado em segundo plano."}
 
-from sqlalchemy import or_
-
 @router.get("/task-types", summary="Listar Tipos de Tarefa Agrupados")
 def get_task_types_grouped(db: Session = Depends(get_db)):
     """
-    Retorna uma lista de tipos de tarefa pai, com seus subtipos aninhados e squads associados.
-    Esta consulta foi ajustada para lidar com dados onde um tipo pai pode ter seu `parent_id`
-    apontando para si mesmo, em vez de ser nulo.
+    Retorna uma lista de grupos de tarefa, com seus subtipos aninhados e squads associados,
+    usando a tabela de mapeamento manual.
     """
-    parent_task_types = db.query(LegalOneTaskType).filter(
-        or_(LegalOneTaskType.parent_id.is_(None), LegalOneTaskType.parent_id == LegalOneTaskType.id)
-    ).options(
-        joinedload(LegalOneTaskType.sub_types).joinedload(LegalOneTaskType.squads)
-    ).order_by(LegalOneTaskType.name).all()
+    # 1. Busca todos os grupos pai da nova tabela.
+    parent_groups = db.query(TaskParentGroup).order_by(TaskParentGroup.name).all()
 
+    # 2. Busca todos os subtipos de tarefa e os agrupa por parent_id para eficiência.
+    all_sub_types = db.query(LegalOneTaskType).options(
+        joinedload(LegalOneTaskType.squads)
+    ).filter(LegalOneTaskType.parent_id.isnot(None)).all()
+
+    sub_types_by_parent = {}
+    for st in all_sub_types:
+        if st.parent_id not in sub_types_by_parent:
+            sub_types_by_parent[st.parent_id] = []
+        sub_types_by_parent[st.parent_id].append(st)
+
+    # 3. Constrói a resposta aninhada.
     response_data = []
-    for parent in parent_task_types:
+    for parent in parent_groups:
         sub_types_data = []
-        # Garante que um pai não apareça como seu próprio subtipo
-        for sub_type in [st for st in parent.sub_types if st.id != parent.id]:
+        # Pega os subtipos para este grupo pai do mapa que criamos.
+        for sub_type in sub_types_by_parent.get(parent.id, []):
             squad_ids = [squad.id for squad in sub_type.squads]
             sub_types_data.append({
                 "id": sub_type.id,
@@ -72,26 +79,32 @@ def get_task_types_grouped(db: Session = Depends(get_db)):
 @router.post("/task-types/associate", summary="Associar Tipos de Tarefa a Squads")
 def associate_task_types(payload: TaskTypeAssociationPayload, db: Session = Depends(get_db)):
     """
-    Associa um grupo de subtipos de tarefa a uma lista de squads.
+    Associa um grupo de subtipos de tarefa (identificados pelo parent_id implícito) a uma lista de squads.
     """
     squads = db.query(Squad).filter(Squad.id.in_(payload.squad_ids)).all()
-    if len(squads) != len(payload.squad_ids):
+    if len(squads) != len(set(payload.squad_ids)):
         raise HTTPException(status_code=404, detail="Um ou mais squads não foram encontrados.")
+
+    if not payload.task_type_ids:
+         return {"message": "Nenhum subtipo de tarefa fornecido para associação."}
 
     task_types_to_process = db.query(LegalOneTaskType).filter(LegalOneTaskType.id.in_(payload.task_type_ids)).all()
     if not task_types_to_process:
-        raise HTTPException(status_code=404, detail="Nenhum tipo de tarefa encontrado para associação.")
+        raise HTTPException(status_code=404, detail="Nenhum tipo de tarefa encontrado para os IDs fornecidos.")
 
+    # Usa o parent_id do primeiro subtipo para identificar o grupo
     parent_id = task_types_to_process[0].parent_id
     if not parent_id:
-        raise HTTPException(status_code=400, detail="A associação só é permitida para subtipos de tarefa.")
+        raise HTTPException(status_code=400, detail="A associação só é permitida para subtipos que pertencem a um grupo.")
 
+    # Limpa as associações existentes para todos os subtipos do mesmo grupo pai
     all_sub_types_in_group = db.query(LegalOneTaskType).filter(LegalOneTaskType.parent_id == parent_id).all()
     for task_type in all_sub_types_in_group:
         task_type.squads.clear()
 
+    # Adiciona as novas associações apenas aos subtipos que foram enviados no payload
     for task_type in task_types_to_process:
-        task_type.squads.extend(squads)
+        task_type.squads = squads
             
     db.commit()
     return {"message": "Associação de tipos de tarefa atualizada com sucesso."}
@@ -99,15 +112,17 @@ def associate_task_types(payload: TaskTypeAssociationPayload, db: Session = Depe
 @router.put("/task-parent-groups/{group_id}", summary="Renomear um Grupo de Tarefas Pai")
 def rename_parent_task_group(group_id: int, payload: ParentGroupNameUpdate, db: Session = Depends(get_db)):
     """
-    Atualiza o nome de um tipo de tarefa que é um pai.
+    Atualiza o nome de um grupo de tarefas pai na tabela `task_parent_groups`.
     """
-    parent_group = db.query(LegalOneTaskType).filter(
-        LegalOneTaskType.id == group_id,
-        LegalOneTaskType.parent_id.is_(None)
-    ).first()
+    parent_group = db.query(TaskParentGroup).filter(TaskParentGroup.id == group_id).first()
 
     if not parent_group:
         raise HTTPException(status_code=404, detail="Grupo de tarefas pai não encontrado.")
+
+    # Verifica se o novo nome já está em uso por outro grupo
+    existing_group = db.query(TaskParentGroup).filter(TaskParentGroup.name == payload.name, TaskParentGroup.id != group_id).first()
+    if existing_group:
+        raise HTTPException(status_code=400, detail=f"O nome '{payload.name}' já está em uso por outro grupo.")
 
     parent_group.name = payload.name
     db.commit()

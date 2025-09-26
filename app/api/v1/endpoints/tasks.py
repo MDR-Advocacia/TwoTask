@@ -63,20 +63,21 @@ class TaskCreationDataResponse(BaseModel):
 router = APIRouter()
 
 
+from app.models.task_group import TaskParentGroup
+
 @router.get("/task-creation-data", response_model=TaskCreationDataResponse, summary="Obter dados para o formulário de criação de tarefas")
 def get_data_for_task_form(db: Session = Depends(get_db)):
     """
-    Endpoint otimizado para fornecer todos os dados necessários para a página de criação de tarefas.
+    Endpoint otimizado para fornecer todos os dados necessários para a página de criação de tarefas,
+    utilizando a tabela de mapeamento de grupos.
     """
-    # 1. Buscar Tipos de Tarefa (Pais) - Lógica corrigida
-    parent_types = db.query(LegalOneTaskType).filter(
-        or_(LegalOneTaskType.parent_id.is_(None), LegalOneTaskType.parent_id == LegalOneTaskType.id)
-    ).all()
-    parent_type_ids = {pt.id for pt in parent_types}
+    # 1. Buscar os nomes dos grupos pai da tabela de mapeamento.
+    parent_groups = db.query(TaskParentGroup).order_by(TaskParentGroup.name).all()
+    parent_group_ids = {pg.id for pg in parent_groups}
 
-    # 2. Buscar todos os outros tipos como subtipos
+    # 2. Buscar todos os subtipos de tarefa que pertencem a esses grupos.
     all_sub_types = db.query(LegalOneTaskType).filter(
-        LegalOneTaskType.id.notin_(parent_type_ids)
+        LegalOneTaskType.parent_id.in_(parent_group_ids)
     ).options(
         joinedload(LegalOneTaskType.squads)
     ).all()
@@ -90,7 +91,7 @@ def get_data_for_task_form(db: Session = Depends(get_db)):
         ) for st in all_sub_types if st.parent_id is not None
     ]
 
-    # 3. Buscar Usuários ativos com seus squads
+    # 3. Buscar Usuários ativos com seus squads (lógica inalterada).
     users_query = db.query(LegalOneUser).filter(LegalOneUser.is_active == True).options(
         joinedload(LegalOneUser.squad_members).joinedload(SquadMember.squad)
     ).all()
@@ -110,8 +111,11 @@ def get_data_for_task_form(db: Session = Depends(get_db)):
             )
         )
 
+    # Mapeia os grupos para o formato de resposta TaskTypeForForm
+    task_types_for_form = [TaskTypeForForm(id=pg.id, name=pg.name) for pg in parent_groups]
+
     return TaskCreationDataResponse(
-        task_types=parent_types,
+        task_types=task_types_for_form,
         sub_types=sub_types_for_form,
         users=users_for_form
     )
