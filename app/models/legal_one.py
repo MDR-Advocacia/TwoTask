@@ -58,3 +58,6 @@ class LegalOneUser(Base):
     name = Column(String, index=True, nullable=False)
     email = Column(String, index=True, unique=True)
     is_active = Column(Boolean, default=True, nullable=False)
+
+    # Relação para acessar as associações de squad
+    squad_members = relationship('SquadMember', back_populates='user')
