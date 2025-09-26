@@ -1,8 +1,8 @@
-"""Add squad_task_type_association table
+"""Add squad_task_type_association table and relationships
 
-Revision ID: 319315b44427
+Revision ID: 033c40ecc172
 Revises: 2f0fcacffe31
-Create Date: 2025-09-25 20:41:02.332901
+Create Date: 2025-09-26 14:22:42.644153
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '319315b44427'
+revision: str = '033c40ecc172'
 down_revision: Union[str, Sequence[str], None] = '2f0fcacffe31'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

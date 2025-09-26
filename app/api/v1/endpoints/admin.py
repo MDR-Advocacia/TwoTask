@@ -28,22 +28,16 @@ async def sync_metadata(
 ):
     """
     Inicia o processo completo de sincronização de metadados do Legal One.
-    Isso inclui escritórios, tipos de tarefa e usuários.
-    A operação é executada em segundo plano.
     """
     logger.info("Endpoint /sync-metadata chamado. Adicionando tarefa em background.")
     sync_service = MetadataSyncService(db_session=db)
     background_tasks.add_task(sync_service.sync_all_metadata)
     return {"message": "Processo de sincronização de metadados do Legal One iniciado em segundo plano."}
 
-# A rota /sync-squads e suas importações relacionadas foram removidas.
-# A rota /update-member-link também foi removida, pois será recriada no endpoint de squads.
-
 @router.get("/task-types", summary="Listar Tipos de Tarefa Agrupados")
 def get_task_types_grouped(db: Session = Depends(get_db)):
     """
-    Retorna uma lista de tipos de tarefa pai, com seus subtipos aninhados.
-    Cada tipo de tarefa inclui a quais squads está associado.
+    Retorna uma lista de tipos de tarefa pai, com seus subtipos aninhados e squads associados.
     """
     parent_task_types = db.query(LegalOneTaskType).filter(LegalOneTaskType.parent_id.is_(None)).options(
         joinedload(LegalOneTaskType.sub_types).joinedload(LegalOneTaskType.squads)
@@ -72,7 +66,6 @@ def get_task_types_grouped(db: Session = Depends(get_db)):
 def associate_task_types(payload: TaskTypeAssociationPayload, db: Session = Depends(get_db)):
     """
     Associa um grupo de subtipos de tarefa a uma lista de squads.
-    A associação é feita para todos os subtipos que compartilham o mesmo pai.
     """
     squads = db.query(Squad).filter(Squad.id.in_(payload.squad_ids)).all()
     if len(squads) != len(payload.squad_ids):
@@ -86,12 +79,10 @@ def associate_task_types(payload: TaskTypeAssociationPayload, db: Session = Depe
     if not parent_id:
         raise HTTPException(status_code=400, detail="A associação só é permitida para subtipos de tarefa.")
 
-    # Limpa todas as associações existentes para os subtipos deste grupo pai
     all_sub_types_in_group = db.query(LegalOneTaskType).filter(LegalOneTaskType.parent_id == parent_id).all()
     for task_type in all_sub_types_in_group:
         task_type.squads.clear()
 
-    # Adiciona as novas associações para os subtipos selecionados
     for task_type in task_types_to_process:
         task_type.squads.extend(squads)
 
@@ -101,7 +92,7 @@ def associate_task_types(payload: TaskTypeAssociationPayload, db: Session = Depe
 @router.put("/task-parent-groups/{group_id}", summary="Renomear um Grupo de Tarefas Pai")
 def rename_parent_task_group(group_id: int, payload: ParentGroupNameUpdate, db: Session = Depends(get_db)):
     """
-    Atualiza o nome de um tipo de tarefa que é um pai (não tem parent_id).
+    Atualiza o nome de um tipo de tarefa que é um pai.
     """
     parent_group = db.query(LegalOneTaskType).filter(
         LegalOneTaskType.id == group_id,
