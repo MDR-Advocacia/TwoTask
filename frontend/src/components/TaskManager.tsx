@@ -269,6 +269,7 @@ const TaskManager = () => {
             </AccordionItem>
           ))}
         </Accordion>
+      </div>
       </CardContent>
     </Card>
   );
