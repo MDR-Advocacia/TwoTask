@@ -15,6 +15,7 @@ import Layout from '@/components/Layout';
 const AdminPage = () => {
   const { toast } = useToast();
   const [isMetadataLoading, setIsMetadataLoading] = useState(false);
+  const [syncCounter, setSyncCounter] = useState(0); // State to trigger refresh
 
   const handleSyncMetadata = async () => {
     setIsMetadataLoading(true);
@@ -28,8 +29,9 @@ const AdminPage = () => {
       }
       toast({
         title: "Sincronização Iniciada",
-        description: "Sincronização de metadados do Legal One iniciada.",
+        description: "Sincronização de metadados do Legal One iniciada. A página irá recarregar os dados em breve.",
       });
+      setSyncCounter(prev => prev + 1); // Increment to trigger refresh
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Erro desconhecido";
       toast({
@@ -65,7 +67,7 @@ const AdminPage = () => {
           </TabsContent>
 
           <TabsContent value="tasks">
-            <TaskManager />
+            <TaskManager syncCounter={syncCounter} />
           </TabsContent>
 
           <TabsContent value="sectors">
