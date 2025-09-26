@@ -87,7 +87,6 @@ const AssociateTasks = () => {
     useEffect(() => {
         if (selectedSector) {
             fetchSquadsBySector(selectedSector);
-            setSelectedSquads({});
         } else {
             setSquads([]);
         }
