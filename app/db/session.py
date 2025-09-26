@@ -11,8 +11,9 @@ from pathlib import Path
 # .parent -> app/db
 # .parent -> app
 # .parent -> raiz do projeto
+# O banco de dados agora fica em um diretório 'data' para persistência via volume.
 PROJECT_ROOT = Path(__file__).parent.parent.parent
-DB_PATH = PROJECT_ROOT / "database.db"
+DB_PATH = PROJECT_ROOT / "data" / "database.db"
 SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH}"
 # --- FIM DA CORREÇÃO ---
 
