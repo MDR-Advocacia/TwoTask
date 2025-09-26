@@ -34,19 +34,26 @@ async def sync_metadata(
     background_tasks.add_task(sync_service.sync_all_metadata)
     return {"message": "Processo de sincronização de metadados do Legal One iniciado em segundo plano."}
 
+from sqlalchemy import or_
+
 @router.get("/task-types", summary="Listar Tipos de Tarefa Agrupados")
 def get_task_types_grouped(db: Session = Depends(get_db)):
     """
     Retorna uma lista de tipos de tarefa pai, com seus subtipos aninhados e squads associados.
+    Esta consulta foi ajustada para lidar com dados onde um tipo pai pode ter seu `parent_id`
+    apontando para si mesmo, em vez de ser nulo.
     """
-    parent_task_types = db.query(LegalOneTaskType).filter(LegalOneTaskType.parent_id.is_(None)).options(
+    parent_task_types = db.query(LegalOneTaskType).filter(
+        or_(LegalOneTaskType.parent_id.is_(None), LegalOneTaskType.parent_id == LegalOneTaskType.id)
+    ).options(
         joinedload(LegalOneTaskType.sub_types).joinedload(LegalOneTaskType.squads)
     ).order_by(LegalOneTaskType.name).all()
 
     response_data = []
     for parent in parent_task_types:
         sub_types_data = []
-        for sub_type in parent.sub_types:
+        # Garante que um pai não apareça como seu próprio subtipo
+        for sub_type in [st for st in parent.sub_types if st.id != parent.id]:
             squad_ids = [squad.id for squad in sub_type.squads]
             sub_types_data.append({
                 "id": sub_type.id,

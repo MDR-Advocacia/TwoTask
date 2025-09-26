@@ -16,9 +16,105 @@ from app.services.task_creation_service import (
     TaskLinkingError,
 )
 from app.services.legal_one_client import LegalOneApiClient
+from app.models.legal_one import LegalOneTaskType, LegalOneUser
+from app.models.rules import Squad, SquadMember
+from pydantic import BaseModel
+from typing import List, Optional
+from sqlalchemy.orm import joinedload
+from sqlalchemy import or_
+
+# --- Pydantic Schemas for the new endpoint ---
+class UserSquadInfo(BaseModel):
+    id: int
+    name: str
+
+class UserForTaskForm(BaseModel):
+    id: int # User ID in our DB
+    external_id: int # User ID in Legal One
+    name: str
+    squads: List[UserSquadInfo]
+
+    class Config:
+        orm_mode = True
+
+class TaskSubTypeForForm(BaseModel):
+    id: int
+    name: str
+    parentTypeId: int
+    squad_ids: List[int]
+
+    class Config:
+        orm_mode = True
+
+class TaskTypeForForm(BaseModel):
+    id: int
+    name: str
+
+    class Config:
+        orm_mode = True
+
+class TaskCreationDataResponse(BaseModel):
+    task_types: List[TaskTypeForForm]
+    sub_types: List[TaskSubTypeForForm]
+    users: List[UserForTaskForm]
+
 
 # O APIRouter funciona como um "mini-aplicativo" para agrupar endpoints relacionados.
 router = APIRouter()
+
+
+@router.get("/task-creation-data", response_model=TaskCreationDataResponse, summary="Obter dados para o formulário de criação de tarefas")
+def get_data_for_task_form(db: Session = Depends(get_db)):
+    """
+    Endpoint otimizado para fornecer todos os dados necessários para a página de criação de tarefas.
+    """
+    # 1. Buscar Tipos de Tarefa (Pais) - Lógica corrigida
+    parent_types = db.query(LegalOneTaskType).filter(
+        or_(LegalOneTaskType.parent_id.is_(None), LegalOneTaskType.parent_id == LegalOneTaskType.id)
+    ).all()
+    parent_type_ids = {pt.id for pt in parent_types}
+
+    # 2. Buscar todos os outros tipos como subtipos
+    all_sub_types = db.query(LegalOneTaskType).filter(
+        LegalOneTaskType.id.notin_(parent_type_ids)
+    ).options(
+        joinedload(LegalOneTaskType.squads)
+    ).all()
+
+    sub_types_for_form = [
+        TaskSubTypeForForm(
+            id=st.id,
+            name=st.name,
+            parentTypeId=st.parent_id,
+            squad_ids=[squad.id for squad in st.squads]
+        ) for st in all_sub_types if st.parent_id is not None
+    ]
+
+    # 3. Buscar Usuários ativos com seus squads
+    users_query = db.query(LegalOneUser).filter(LegalOneUser.is_active == True).options(
+        joinedload(LegalOneUser.squad_members).joinedload(SquadMember.squad)
+    ).all()
+
+    users_for_form = []
+    for user in users_query:
+        squads = [
+            UserSquadInfo(id=member.squad.id, name=member.squad.name)
+            for member in user.squad_members if member.squad.is_active
+        ]
+        users_for_form.append(
+            UserForTaskForm(
+                id=user.id,
+                external_id=user.external_id,
+                name=user.name,
+                squads=squads
+            )
+        )
+
+    return TaskCreationDataResponse(
+        task_types=parent_types,
+        sub_types=sub_types_for_form,
+        users=users_for_form
+    )
 
 @router.post("/trigger/task", tags=["Tasks"])
 def trigger_task_creation(

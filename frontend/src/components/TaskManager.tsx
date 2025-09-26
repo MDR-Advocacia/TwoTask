@@ -153,32 +153,42 @@ const AssociateTasks = () => {
                     <Label htmlFor="sector-select">1. Selecione um Setor</Label>
                     <Select onValueChange={setSelectedSector} value={selectedSector || ""}><SelectTrigger><SelectValue placeholder="Escolha um setor..." /></SelectTrigger><SelectContent>{sectors.map(s => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}</SelectContent></Select>
                 </div>
-                {selectedSector && (
-                    <div className="border-t pt-6">
-                        <h3 className="text-lg font-medium mb-4">2. Associe os Grupos de Tarefas</h3>
-                        <Accordion type="single" collapsible className="w-full">
-                            {taskGroups.map(group => (
-                                <AccordionItem value={`item-${group.parent_id}`} key={group.parent_id}>
-                                    <AccordionTrigger>
-                                        <span className="flex-grow text-left">{group.parent_name}</span>
-                                        <Button variant="ghost" size="icon" className="ml-4 h-8 w-8" onClick={(e) => { e.stopPropagation(); handleEditClick(group); }}><Pencil className="h-4 w-4" /></Button>
-                                    </AccordionTrigger>
-                                    <AccordionContent>
-                                        <div className="space-y-4 p-2">
-                                            <div className="flex flex-col md:flex-row items-start md:items-center gap-4 p-4 border rounded-lg">
-                                                <div className="flex-grow w-full">
-                                                    <Label>Associar grupo aos Squads:</Label>
-                                                    <MultiSelect options={squads.map(s => ({ label: s.name, value: String(s.id) }))} defaultValue={selectedSquads[group.parent_id] || []} onValueChange={(v) => setSelectedSquads(p => ({ ...p, [group.parent_id]: v }))} placeholder="Selecione squads..." />
-                                                </div>
-                                                <Button onClick={() => handleSaveChanges(group.parent_id)} disabled={saving}><Save className="mr-2 h-4 w-4" />{saving ? "Salvando..." : "Salvar"}</Button>
+                <div className="border-t pt-6">
+                    <h3 className="text-lg font-medium mb-4">2. Associe os Grupos de Tarefas</h3>
+                    <p className="text-sm text-muted-foreground mb-4">
+                        Cada grupo de tarefas abaixo pode ser associado a um ou mais squads do setor selecionado. As associações são salvas por grupo.
+                    </p>
+                    <Accordion type="single" collapsible className="w-full">
+                        {taskGroups.map(group => (
+                            <AccordionItem value={`item-${group.parent_id}`} key={group.parent_id}>
+                                <AccordionTrigger>
+                                    <span className="flex-grow text-left">{group.parent_name}</span>
+                                    <Button variant="ghost" size="icon" className="ml-4 h-8 w-8" onClick={(e) => { e.stopPropagation(); handleEditClick(group); }}><Pencil className="h-4 w-4" /></Button>
+                                </AccordionTrigger>
+                                <AccordionContent>
+                                    <div className="space-y-4 p-2">
+                                        <div className="flex flex-col md:flex-row items-start md:items-center gap-4 p-4 border rounded-lg">
+                                            <div className="flex-grow w-full">
+                                                <Label className={!selectedSector ? "text-muted-foreground" : ""}>Associar grupo aos Squads:</Label>
+                                                <MultiSelect
+                                                    options={squads.map(s => ({ label: s.name, value: String(s.id) }))}
+                                                    defaultValue={selectedSquads[group.parent_id] || []}
+                                                    onValueChange={(v) => setSelectedSquads(p => ({ ...p, [group.parent_id]: v }))}
+                                                    placeholder={!selectedSector ? "Selecione um setor para carregar squads" : "Selecione squads..."}
+                                                    disabled={!selectedSector || squads.length === 0}
+                                                />
                                             </div>
+                                            <Button onClick={() => handleSaveChanges(group.parent_id)} disabled={saving || !selectedSector}>
+                                                <Save className="mr-2 h-4 w-4" />
+                                                {saving ? "Salvando..." : "Salvar"}
+                                            </Button>
                                         </div>
-                                    </AccordionContent>
-                                </AccordionItem>
-                            ))}
-                        </Accordion>
-                    </div>
-                )}
+                                    </div>
+                                </AccordionContent>
+                            </AccordionItem>
+                        ))}
+                    </Accordion>
+                </div>
             </CardContent>
             <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}><DialogContent><DialogHeader><DialogTitle>Renomear Grupo</DialogTitle></DialogHeader><div className="py-4"><Label htmlFor="group-name">Novo nome para "{editingGroup?.name}"</Label><Input id="group-name" value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} className="mt-2" autoFocus /></div><DialogFooter><DialogClose asChild><Button type="button" variant="secondary">Cancelar</Button></DialogClose><Button type="button" onClick={handleRenameSave}>Salvar</Button></DialogFooter></DialogContent></Dialog>
         </Card>
