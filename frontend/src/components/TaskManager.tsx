@@ -124,7 +124,10 @@ const TaskManager: React.FC<TaskManagerProps> = ({ syncCounter }) => {
         // Coleta todos os IDs de squad únicos de todos os subtipos do grupo
         const squadIdsInGroup = new Set<string>();
         group.sub_types.forEach(st => {
-          st.squad_ids.forEach(id => squadIdsInGroup.add(String(id)));
+          // Adiciona a verificação de segurança aqui
+          if (st.squad_ids) {
+            st.squad_ids.forEach(id => squadIdsInGroup.add(String(id)));
+          }
         });
         initialSelectedSquads[group.parent_id] = Array.from(squadIdsInGroup);
       });
@@ -320,7 +323,7 @@ const TaskManager: React.FC<TaskManagerProps> = ({ syncCounter }) => {
                               <TableRow key={subType.id}>
                                 <TableCell>{subType.name}</TableCell>
                                 <TableCell>
-                                  {subType.squad_ids.length > 0 ? (
+                                  {(subType.squad_ids && subType.squad_ids.length > 0) ? (
                                     <div className="flex flex-wrap gap-1">
                                       {subType.squad_ids.map(squadId => (
                                         <Badge key={squadId} variant="secondary">
