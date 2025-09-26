@@ -61,7 +61,7 @@ class TaskCreationService:
         lawsuit = self.legal_one_client.search_lawsuit_by_cnj(request.cnj_number)
         if not lawsuit or 'id' not in lawsuit:
             raise LawsuitNotFoundError(request.cnj_number)
-
+        
         lawsuit_id = lawsuit['id']
         self.logger.info(f"Processo ID {lawsuit_id} encontrado.")
 
@@ -69,7 +69,7 @@ class TaskCreationService:
         created_task = self.legal_one_client.create_task(request.task_payload)
         if not created_task or 'id' not in created_task:
             raise TaskCreationError("A resposta da API não continha um ID de tarefa válido.")
-
+            
         task_id = created_task['id']
         self.logger.info(f"Tarefa ID {task_id} criada com sucesso.")
 
@@ -79,7 +79,7 @@ class TaskCreationService:
             # Em um cenário real, poderíamos tentar reverter a criação da tarefa
             self.logger.error(f"Falha crítica ao vincular a tarefa {task_id} ao processo {lawsuit_id}. A tarefa foi criada mas não está vinculada.")
             raise TaskLinkingError(f"Não foi possível vincular a tarefa {task_id} ao processo {lawsuit_id}.")
-
+        
         self.logger.info("Vínculo com o processo realizado com sucesso.")
 
         # Passo 4: Adicionar participantes
@@ -92,9 +92,9 @@ class TaskCreationService:
                 is_executer=participant.is_executer
             )
             # O tratamento de falha aqui é opcional. Pode-se optar por logar e continuar.
-
+        
         self.logger.info(f"Processo de criação de tarefa para o CNJ {request.cnj_number} concluído.")
-
+        
         return {
             "message": "Tarefa criada e vinculada com sucesso!",
             "created_task": created_task

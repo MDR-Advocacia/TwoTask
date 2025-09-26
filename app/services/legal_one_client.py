@@ -226,7 +226,7 @@ class LegalOneApiClient:
         self.logger.info(f"Criando tarefa com payload: {task_payload}")
         endpoint = "/Tasks"
         url = f"{self.base_url}{endpoint}"
-
+        
         try:
             response = self._request_with_retry("POST", url, json=task_payload)
             created_task = response.json()
@@ -250,7 +250,7 @@ class LegalOneApiClient:
             "linkType": "Litigation",
             "linkId": lawsuit_id
         }
-
+        
         try:
             # A resposta pode ser 201 ou 204, sem corpo JSON.
             self._request_with_retry("POST", url, json=payload)
@@ -273,7 +273,7 @@ class LegalOneApiClient:
             "isRequester": is_requester,
             "isExecuter": is_executer
         }
-
+        
         try:
             self._request_with_retry("POST", url, json=payload)
             self.logger.info(f"Participante adicionado com sucesso à tarefa {task_id}.")

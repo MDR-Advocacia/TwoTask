@@ -70,7 +70,7 @@ class Squad(Base):
     sector = relationship('Sector', back_populates='squads')
 
     members = relationship('SquadMember', back_populates='squad', cascade="all, delete-orphan")
-
+    
     # Relação muitos-para-muitos com LegalOneTaskType
     task_types = relationship(
         'LegalOneTaskType',
