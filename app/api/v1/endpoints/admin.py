@@ -40,30 +40,44 @@ async def sync_metadata(
 def get_task_types_grouped(db: Session = Depends(get_db)):
     """
     Retorna uma lista de tipos de tarefa pai, com seus subtipos aninhados.
-    Cada tipo de tarefa inclui a qual squad está associado.
+    Esta implementação é mais robusta, construindo a hierarquia manualmente
+    para garantir que os dados sejam sempre processados corretamente.
+    Um pai é identificado se `parent_id` é `NULL` ou se `parent_id` == `id`.
     """
-    parent_task_types = db.query(LegalOneTaskType).filter(LegalOneTaskType.parent_id.is_(None)).options(
-        joinedload(LegalOneTaskType.sub_types).joinedload(LegalOneTaskType.squads),
-    ).order_by(LegalOneTaskType.name).all()
+    all_task_types = db.query(LegalOneTaskType).options(joinedload(LegalOneTaskType.squads)).all()
 
-    response_data = []
-    for parent in parent_task_types:
-        sub_types_data = []
-        for sub_type in parent.sub_types:
-            squad_id = sub_type.squads[0].id if sub_type.squads else None
-            sub_types_data.append({
-                "id": sub_type.id,
-                "name": sub_type.name,
+    parents = {}
+    children_map = {}
+
+    # Primeira passagem: separar pais e filhos
+    for tt in all_task_types:
+        # Um tipo de tarefa é um pai se seu parent_id for NULO ou igual ao seu próprio id
+        if tt.parent_id is None or tt.parent_id == tt.id:
+            parents[tt.id] = {
+                "parent_id": tt.id,
+                "parent_name": tt.name,
+                "sub_types": []
+            }
+        else:
+            # Este é um subtipo de tarefa
+            if tt.parent_id not in children_map:
+                children_map[tt.parent_id] = []
+
+            squad_id = tt.squads[0].id if tt.squads else None
+            children_map[tt.parent_id].append({
+                "id": tt.id,
+                "name": tt.name,
                 "squad_id": squad_id
             })
 
-        response_data.append({
-            "parent_id": parent.id,
-            "parent_name": parent.name,
-            "sub_types": sub_types_data
-        })
+    # Segunda passagem: anexar filhos aos pais
+    for parent_id, parent_data in parents.items():
+        if parent_id in children_map:
+            # Ordena os subtipos alfabeticamente pelo nome
+            parent_data["sub_types"] = sorted(children_map[parent_id], key=lambda x: x['name'])
 
-    return response_data
+    # Retorna a lista de pais, ordenada alfabeticamente pelo nome do pai
+    return sorted(list(parents.values()), key=lambda x: x['parent_name'])
 
 @router.post("/task-types/associate", summary="Associar Tipos de Tarefa a um Squad")
 def associate_task_types(payload: TaskTypeAssociationPayload, db: Session = Depends(get_db)):
