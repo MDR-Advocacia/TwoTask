@@ -185,3 +185,99 @@ class LegalOneApiClient:
             "$top": 30
         }
         return self._paginated_catalog_loader(endpoint, params)
+
+    def search_lawsuit_by_cnj(self, cnj_number: str) -> Optional[Dict[str, Any]]:
+        """
+        Busca um processo (Lawsuit) pelo seu número CNJ.
+        Retorna o primeiro resultado encontrado ou None.
+        """
+        self.logger.info(f"Buscando processo com CNJ: {cnj_number}")
+        endpoint = "/Lawsuits"
+        # OData filter requires strings to be in single quotes
+        params = {
+            "$filter": f"identifierNumber eq '{cnj_number}'",
+            "$select": "id,identifierNumber",
+            "$top": 1
+        }
+        url = f"{self.base_url}{endpoint}"
+        try:
+            response = self._request_with_retry("GET", url, params=params)
+            data = response.json()
+            results = data.get("value", [])
+            if results:
+                lawsuit = results[0]
+                self.logger.info(f"Processo encontrado: ID {lawsuit.get('id')} para o CNJ {cnj_number}")
+                return lawsuit
+            else:
+                self.logger.warning(f"Nenhum processo encontrado para o CNJ: {cnj_number}")
+                return None
+        except requests.exceptions.HTTPError as e:
+            self.logger.error(f"Erro HTTP ao buscar processo por CNJ '{cnj_number}': {e.response.text}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Erro inesperado ao buscar processo por CNJ '{cnj_number}': {e}")
+            return None
+
+    def create_task(self, task_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Cria uma nova tarefa no Legal One.
+        Retorna o dicionário da tarefa criada ou None em caso de erro.
+        """
+        self.logger.info(f"Criando tarefa com payload: {task_payload}")
+        endpoint = "/Tasks"
+        url = f"{self.base_url}{endpoint}"
+
+        try:
+            response = self._request_with_retry("POST", url, json=task_payload)
+            created_task = response.json()
+            self.logger.info(f"Tarefa criada com sucesso. ID: {created_task.get('id')}")
+            return created_task
+        except requests.exceptions.HTTPError as e:
+            self.logger.error(f"Erro HTTP ao criar tarefa: {e.response.text}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Erro inesperado ao criar tarefa: {e}")
+            return None
+
+    def link_task_to_lawsuit(self, task_id: int, lawsuit_id: int) -> bool:
+        """
+        Cria uma relação entre uma tarefa e um processo (Litigation).
+        """
+        self.logger.info(f"Vinculando tarefa ID {task_id} ao processo ID {lawsuit_id}")
+        endpoint = f"/tasks/{task_id}/relationships"
+        url = f"{self.base_url}{endpoint}"
+        payload = {
+            "linkType": "Litigation",
+            "linkId": lawsuit_id
+        }
+
+        try:
+            # A resposta pode ser 201 ou 204, sem corpo JSON.
+            self._request_with_retry("POST", url, json=payload)
+            self.logger.info("Vínculo entre tarefa e processo criado com sucesso.")
+            return True
+        except requests.exceptions.HTTPError as e:
+            self.logger.error(f"Erro HTTP ao vincular tarefa {task_id} ao processo {lawsuit_id}: {e.response.text}")
+            return False
+
+    def add_participant_to_task(self, task_id: int, contact_id: int, is_responsible: bool = False, is_requester: bool = False, is_executer: bool = False) -> bool:
+        """
+        Adiciona um participante a uma tarefa.
+        """
+        self.logger.info(f"Adicionando participante (contato ID {contact_id}) à tarefa ID {task_id}")
+        endpoint = f"/tasks/{task_id}/participants"
+        url = f"{self.base_url}{endpoint}"
+        payload = {
+            "contact": {"id": contact_id},
+            "isResponsible": is_responsible,
+            "isRequester": is_requester,
+            "isExecuter": is_executer
+        }
+
+        try:
+            self._request_with_retry("POST", url, json=payload)
+            self.logger.info(f"Participante adicionado com sucesso à tarefa {task_id}.")
+            return True
+        except requests.exceptions.HTTPError as e:
+            self.logger.error(f"Erro HTTP ao adicionar participante à tarefa {task_id}: {e.response.text}")
+            return False
