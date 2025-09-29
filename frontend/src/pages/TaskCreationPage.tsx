@@ -272,16 +272,16 @@ const TaskCreationPage = () => {
                   <Label htmlFor="responsible">Responsável</Label>
                   <UserSelector
                     users={users}
-                    value={selectedResponsibleId}
-                    onChange={setSelectedResponsibleId}
+                    selectedUserId={selectedResponsibleId}
+                    onUserSelect={setSelectedResponsibleId}
                     filterBySquadIds={squadIdsForFilter}
                     disabled={!selectedSubTypeId || users.length === 0}
                   />
-                  {squadIdsForFilter.length > 0 && (
-                    <p className="text-xs text-muted-foreground">
-                      Mostrando usuários dos squads associados a este subtipo.
-                    </p>
-                  )}
+                   {squadIdsForFilter.length > 0 && (
+                     <p className="text-xs text-muted-foreground">
+                       Mostrando usuários dos squads associados a este subtipo.
+                     </p>
+                   )}
                 </div>
 
                 {/* Descrição */}

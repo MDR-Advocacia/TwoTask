@@ -27,6 +27,7 @@ from sqlalchemy import or_
 class UserSquadInfo(BaseModel):
     id: int
     name: str
+    is_leader: bool
 
 class UserForTaskForm(BaseModel):
     id: int # User ID in our DB
@@ -99,7 +100,7 @@ def get_data_for_task_form(db: Session = Depends(get_db)):
     users_for_form = []
     for user in users_query:
         squads = [
-            UserSquadInfo(id=member.squad.id, name=member.squad.name)
+            UserSquadInfo(id=member.squad.id, name=member.squad.name, is_leader=member.is_leader)
             for member in user.squad_members if member.squad.is_active
         ]
         users_for_form.append(
