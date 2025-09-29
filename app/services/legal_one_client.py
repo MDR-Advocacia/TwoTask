@@ -196,7 +196,7 @@ class LegalOneApiClient:
         # OData filter requires strings to be in single quotes
         params = {
             "$filter": f"identifierNumber eq '{cnj_number}'",
-            "$select": "id,identifierNumber",
+            "$select": "id,identifierNumber,responsibleOfficeId",
             "$top": 1
         }
         url = f"{self.base_url}{endpoint}"
