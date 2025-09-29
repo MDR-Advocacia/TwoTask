@@ -1,6 +1,6 @@
 # app/api/v1/schemas.py
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, computed_field
 from typing import List, Optional, Dict, Any
 
 # --- Schemas para a API Externa (Legal One) ---
@@ -60,11 +60,45 @@ class Sector(SectorBase):
 
 # --- Schemas para Usuários e Squads ---
 
+class UserSquadInfo(BaseModel):
+    """Schema simples para representar o squad de um usuário."""
+    id: int
+    name: str
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserWithSquads(BaseModel):
+    """
+    Schema para um usuário do Legal One com a lista de squads associados.
+    Usado para popular seletores no frontend.
+    """
+    id: int
+    external_id: int
+    name: str
+
+    @computed_field
+    def squads(self) -> List[UserSquadInfo]:
+        """
+        Calcula a lista de squads únicos aos quais o usuário pertence.
+        A propriedade 'members' é carregada via joinedload na query da API.
+        """
+        if not hasattr(self, 'members') or not self.members:
+            return []
+        
+        squad_dict = {member.squad.id: member.squad for member in self.members if member.squad}
+        sorted_squads = sorted(squad_dict.values(), key=lambda s: s.name)
+        
+        return [UserSquadInfo.from_orm(s) for s in sorted_squads]
+
+    model_config = ConfigDict(from_attributes=True, arbitrary_types_allowed=True)
+
+
 class LegalOneUser(BaseModel):
     """
     Representa um usuário do Legal One, conforme retornado pela nossa API.
     """
     id: int
+    external_id: int
     name: str
     is_active: bool
     model_config = ConfigDict(from_attributes=True)

@@ -1,41 +1,50 @@
 // frontend/src/components/TaskCreator.tsx
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Plus, Target, Users, Calendar, FileText, Send, Trash2, Eye, AlertCircle, RefreshCw } from "lucide-react";
+import { Plus, Target, User, Calendar, FileText, Send, Trash2, Eye, AlertCircle, RefreshCw, Users } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
+import UserSelector, { SelectableUser } from "./ui/UserSelector";
+import { MultiSelect } from "./ui/MultiSelect";
 
 // --- INTERFACES ALINHADAS COM O BACKEND ---
 interface TaskTemplate {
   id: number;
   name: string;
   description: string;
-  estimated_time: string; // Snake case vindo da API
+  estimated_time: string;
   fields: string[];
 }
 
 interface SquadMember {
-    id: number;
-    name: string;
-    role: string;
+  id: number;
+  name: string;
+  role: string;
 }
 
-interface SelectedSquad {
+interface Squad {
   id: number;
   name: string;
   members: SquadMember[];
+}
+
+interface LegalOneUser {
+  id: number; // ID interno do sistema
+  external_id: number; // ID no Legal One
+  name: string;
+  is_active: boolean;
+  squads: { id: number; name: string }[];
 }
 // --- FIM DAS INTERFACES ---
 
 interface TaskRequest {
   template: string;
-  squads: string[];
+  responsibleId: string | null; // Alterado de squads para responsibleId
   processes: string[];
   dueDate: string;
   priority: string;
@@ -44,20 +53,22 @@ interface TaskRequest {
 
 const TaskCreator = () => {
   const [taskTemplates, setTaskTemplates] = useState<TaskTemplate[]>([]);
-  const [availableSquads, setAvailableSquads] = useState<SelectedSquad[]>([]);
+  const [availableSquads, setAvailableSquads] = useState<Squad[]>([]);
+  const [allUsers, setAllUsers] = useState<SelectableUser[]>([]);
   
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [taskData, setTaskData] = useState<TaskRequest>({
     template: "",
-    squads: [],
+    responsibleId: null, // Alterado
     processes: [],
     dueDate: "",
     priority: "medium",
-    customFields: {}
+    customFields: {},
   });
 
+  const [selectedSquadIds, setSelectedSquadIds] = useState<string[]>([]);
   const [processInput, setProcessInput] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
@@ -67,29 +78,39 @@ const TaskCreator = () => {
       setIsInitialLoading(true);
       setError(null);
 
-      // Usamos Promise.all para buscar os dados em paralelo, melhorando a performance.
-      const [templatesResponse, squadsResponse] = await Promise.all([
+      const [templatesResponse, squadsResponse, usersResponse] = await Promise.all([
         fetch("/api/v1/task_templates"),
-        fetch("/api/v1/squads")
+        fetch("/api/v1/squads"),
+        fetch("/api/v1/users/with-squads"), // Endpoint hipotético, ajuste se necessário
       ]);
 
-      if (!templatesResponse.ok || !squadsResponse.ok) {
+      if (!templatesResponse.ok || !squadsResponse.ok || !usersResponse.ok) {
         throw new Error("Falha ao buscar dados iniciais do servidor.");
       }
 
       const templates = await templatesResponse.json();
       const squads = await squadsResponse.json();
+      const users: LegalOneUser[] = await usersResponse.json();
 
       setTaskTemplates(templates);
       setAvailableSquads(squads);
+      
+      // Transforma os usuários para o formato esperado pelo UserSelector
+      const selectableUsers: SelectableUser[] = users.map(user => ({
+        id: user.id,
+        external_id: user.external_id,
+        name: user.name,
+        squads: user.squads,
+      }));
+      setAllUsers(selectableUsers);
 
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Ocorreu um erro desconhecido.";
       setError(errorMessage);
       toast({
         title: "Erro ao Carregar Dados",
-        description: "Não foi possível buscar os templates e squads. Tente recarregar a página.",
-        variant: "destructive"
+        description: "Não foi possível buscar os templates, squads e usuários. Tente recarregar a página.",
+        variant: "destructive",
       });
     } finally {
       setIsInitialLoading(false);
@@ -101,7 +122,7 @@ const TaskCreator = () => {
   }, []);
 
   const selectedTemplate = taskTemplates.find(t => t.id === Number(taskData.template));
-  const selectedSquadObjects = availableSquads.filter(s => taskData.squads.includes(String(s.id)));
+  const selectedUser = allUsers.find(u => String(u.external_id) === taskData.responsibleId);
 
   const addProcess = () => {
     if (processInput.trim() && !taskData.processes.includes(processInput.trim())) {
@@ -114,25 +135,16 @@ const TaskCreator = () => {
     setTaskData(prev => ({ ...prev, processes: prev.processes.filter(p => p !== process) }));
   };
 
-  const handleSquadToggle = (squadId: string) => {
-    setTaskData(prev => ({
-      ...prev,
-      squads: prev.squads.includes(squadId)
-        ? prev.squads.filter(id => id !== squadId)
-        : [...prev.squads, squadId]
-    }));
-  };
-
   const handleCustomFieldChange = (field: string, value: string) => {
     setTaskData(prev => ({ ...prev, customFields: { ...prev.customFields, [field]: value } }));
   };
 
   const handleSubmit = async () => {
-    if (!selectedTemplate || taskData.squads.length === 0 || taskData.processes.length === 0) {
+    if (!selectedTemplate || !taskData.responsibleId || taskData.processes.length === 0) {
       toast({
         title: "Dados incompletos",
-        description: "Preencha todos os campos obrigatórios.",
-        variant: "destructive"
+        description: "Preencha todos os campos obrigatórios: template, responsável e processos.",
+        variant: "destructive",
       });
       return;
     }
@@ -140,25 +152,26 @@ const TaskCreator = () => {
     setIsSubmitting(true);
     
     // Simulação de chamada de API
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    await new Promise(resolve => setTimeout(resolve, 1500));
     
-    const totalTasks = taskData.processes.length * selectedSquadObjects.reduce((acc, squad) => acc + squad.members.length, 0);
+    const totalTasks = taskData.processes.length;
     
     setIsSubmitting(false);
     toast({
       title: "Tarefas criadas com sucesso!",
-      description: `${totalTasks} tarefas foram criadas no Legal One.`,
+      description: `${totalTasks} tarefa(s) foram criadas para ${selectedUser?.name}.`,
     });
 
     // Resetar o formulário
     setTaskData({
       template: "",
-      squads: [],
+      responsibleId: null,
       processes: [],
       dueDate: "",
       priority: "medium",
-      customFields: {}
+      customFields: {},
     });
+    setSelectedSquadIds([]); // Reset squad filter
     setShowPreview(false);
   };
 
@@ -170,6 +183,10 @@ const TaskCreator = () => {
       default: return 'bg-gray-100 text-gray-800 border-gray-200';
     }
   };
+
+  const squadOptions = useMemo(() => {
+    return availableSquads.map(s => ({ value: String(s.id), label: s.name }));
+  }, [availableSquads]);
   
   if (error) {
     return (
@@ -191,10 +208,10 @@ const TaskCreator = () => {
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div>
             <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-              Criação de Tarefas
+              Criação de Tarefa Individual
             </h1>
             <p className="text-muted-foreground mt-1">
-              Crie tarefas em lote para múltiplos processos e squads
+              Crie uma ou mais tarefas para um único responsável
             </p>
           </div>
           <div className="flex gap-3">
@@ -268,39 +285,43 @@ const TaskCreator = () => {
             <Card className="glass-card border-0 animate-slide-up" style={{ animationDelay: '100ms' }}>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
-                  <Users className="w-5 h-5 text-primary" />
-                  2. Selecionar Squads
+                  <User className="w-5 h-5 text-primary" />
+                  2. Selecionar Responsável
                 </CardTitle>
                 <CardDescription>
-                  Escolha as equipes que receberão as tarefas
+                  Filtre por squad e escolha o usuário que receberá a tarefa
                 </CardDescription>
               </CardHeader>
-              <CardContent>
-                {isInitialLoading ? (
-                  <div className="space-y-3">
-                    <Skeleton className="h-16 w-full" />
-                    <Skeleton className="h-16 w-full" />
+              <CardContent className="space-y-4">
+                 {isInitialLoading ? (
+                  <div className="space-y-4">
+                    <Skeleton className="h-10 w-full" />
+                    <Skeleton className="h-10 w-full" />
                   </div>
                 ) : (
-                  <div className="space-y-3">
-                    {availableSquads.map(squad => (
-                      <div key={squad.id} className="flex items-center space-x-3 p-3 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors">
-                        <Checkbox
-                          checked={taskData.squads.includes(String(squad.id))}
-                          onCheckedChange={() => handleSquadToggle(String(squad.id))}
-                        />
-                        <div className="flex-1">
-                          <div className="flex items-center justify-between">
-                            <span className="font-medium">{squad.name}</span>
-                            <Badge variant="secondary">{squad.members.length} membros</Badge>
-                          </div>
-                          <p className="text-xs text-muted-foreground mt-1">
-                            {squad.members.map(m => m.name).join(', ')}
-                          </p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                  <>
+                    <div>
+                      <label className="text-sm font-medium mb-2 block">Filtrar por Squad</label>
+                      <MultiSelect
+                        options={squadOptions}
+                        onValueChange={setSelectedSquadIds}
+                        defaultValue={selectedSquadIds}
+                        placeholder="Selecione uma ou mais squads..."
+                        className="bg-background"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium mb-2 block">Responsável</label>
+                      <UserSelector
+                        users={allUsers}
+                        value={taskData.responsibleId}
+                        onChange={(value) => setTaskData(prev => ({...prev, responsibleId: value}))}
+                        filterBySquadIds={selectedSquadIds.map(Number)}
+                        placeholder="Selecione um responsável..."
+                        disabled={isInitialLoading}
+                      />
+                    </div>
+                  </>
                 )}
               </CardContent>
             </Card>
@@ -401,15 +422,12 @@ const TaskCreator = () => {
                     </Badge>
                   </div>
                 )}
-                {taskData.squads.length > 0 && (
+                {selectedUser && (
                   <div>
-                    <h4 className="font-medium mb-2">Squads ({taskData.squads.length})</h4>
-                    <div className="space-y-1">
-                      {selectedSquadObjects.map(squad => (
-                        <div key={squad.id} className="text-sm p-2 bg-muted/30 rounded">
-                          {squad.name} <span className="text-muted-foreground">({squad.members.length} membros)</span>
-                        </div>
-                      ))}
+                    <h4 className="font-medium mb-2">Responsável</h4>
+                    <div className="text-sm p-2 bg-muted/30 rounded text-center">
+                      <User className="inline-flex w-4 h-4 mr-2" />
+                      {selectedUser.name}
                     </div>
                   </div>
                 )}
@@ -440,13 +458,15 @@ const TaskCreator = () => {
                     </div>
                   )}
                 </div>
-                {selectedTemplate && taskData.squads.length > 0 && taskData.processes.length > 0 && (
+                {selectedTemplate && selectedUser && taskData.processes.length > 0 && (
                   <div className="pt-4 border-t border-glass-border">
                     <div className="text-center mb-4">
                       <div className="text-2xl font-bold text-primary">
-                        {taskData.processes.length * selectedSquadObjects.reduce((acc, squad) => acc + squad.members.length, 0)}
+                        {taskData.processes.length}
                       </div>
-                      <div className="text-sm text-muted-foreground">tarefas serão criadas</div>
+                      <div className="text-sm text-muted-foreground">
+                        {taskData.processes.length === 1 ? "tarefa será criada" : "tarefas serão criadas"}
+                      </div>
                     </div>
                     <Button 
                       onClick={handleSubmit}
