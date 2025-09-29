@@ -15,6 +15,7 @@ import UserSelector, { SelectableUser } from '@/components/ui/UserSelector'; // 
 interface Lawsuit {
   id: number;
   identifierNumber: string;
+  responsibleOfficeId?: number; // Adicionado para guardar o escritório do processo
 }
 
 interface TaskType {
@@ -48,6 +49,14 @@ const TaskCreationPage = () => {
   const [selectedResponsibleId, setSelectedResponsibleId] = useState<string | null>(null); // Pode ser null
   const [description, setDescription] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Novos estados para data
+  const [startDateTime, setStartDateTime] = useState(new Date());
+  const [endDateTime, setEndDateTime] = useState(() => {
+    const date = new Date();
+    date.setHours(date.getHours() + 24);
+    return date;
+  });
 
   // Carregar dados usando o novo endpoint
   useEffect(() => {
@@ -94,8 +103,18 @@ const TaskCreationPage = () => {
     setSelectedResponsibleId(null);
   }, [selectedSubTypeId]);
 
+  // Atualiza a data de fim se a de início mudar
+  useEffect(() => {
+    if (startDateTime) {
+      const newEndDateTime = new Date(startDateTime.getTime());
+      newEndDateTime.setHours(newEndDateTime.getHours() + 24);
+      setEndDateTime(newEndDateTime);
+    }
+  }, [startDateTime]);
+
 
   const handleSubmit = async () => {
+    // A validação do Tipo (selectedTaskTypeId) é removida pois o que importa para o payload é o subtipo, que contém o parentId.
     if (!foundLawsuit || !selectedSubTypeId || !selectedResponsibleId) {
       toast({
         title: 'Campos Obrigatórios',
@@ -105,19 +124,56 @@ const TaskCreationPage = () => {
       return;
     }
 
+    if (endDateTime <= startDateTime) {
+      toast({
+        title: 'Data Inválida',
+        description: 'A data de fim deve ser posterior à data de início.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (!foundLawsuit.responsibleOfficeId) {
+      toast({
+        title: 'Erro de Dados',
+        description: 'O ID do escritório responsável não foi encontrado no processo. Não é possível continuar.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     setIsSubmitting(true);
+
+    const selectedSubType = subTypes.find(st => st.id === parseInt(selectedSubTypeId, 10));
+
+    if (!selectedSubType) {
+      toast({ title: 'Erro Interno', description: 'O subtipo de tarefa selecionado não foi encontrado.', variant: 'destructive' });
+      setIsSubmitting(false);
+      return;
+    }
 
     const task_payload = {
       subTypeId: parseInt(selectedSubTypeId, 10),
       description: description || 'Tarefa criada via sistema',
-      startDateTime: new Date().toISOString(),
       priority: 'Normal',
+      typeId: selectedSubType.parentTypeId, // Correção: Usar o parentTypeId do subtipo
+      startDateTime: startDateTime.toISOString(),
+      endDateTime: endDateTime.toISOString(),
+      status: { id: 1 },
+      originOfficeId: 1, // MDR Advocacia
+      responsibleOfficeId: foundLawsuit.responsibleOfficeId,
+      isResponsible: true,
+      isExecuter: true,
+      isRequester: true,
     };
 
+    // O responsável principal é definido no payload da tarefa.
+    // A API de participantes adiciona vínculos. Manter para consistência.
     const participants = [{
       contact_id: parseInt(selectedResponsibleId, 10),
       is_responsible: true,
       is_executer: true,
+      is_requester: true,
     }];
 
     const requestBody = {
@@ -282,6 +338,30 @@ const TaskCreationPage = () => {
                       Mostrando usuários dos squads associados a este subtipo.
                     </p>
                   )}
+                </div>
+
+                {/* Datas de Início e Fim */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="start-datetime">Data e Hora de Início</Label>
+                    <Input
+                      id="start-datetime"
+                      type="datetime-local"
+                      value={startDateTime.toISOString().slice(0, 16)}
+                      onChange={(e) => setStartDateTime(new Date(e.target.value))}
+                      className="bg-input"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="end-datetime">Data e Hora de Fim</Label>
+                    <Input
+                      id="end-datetime"
+                      type="datetime-local"
+                      value={endDateTime.toISOString().slice(0, 16)}
+                      onChange={(e) => setEndDateTime(new Date(e.target.value))}
+                      className="bg-input"
+                    />
+                  </div>
                 </div>
 
                 {/* Descrição */}
