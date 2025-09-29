@@ -167,19 +167,10 @@ const TaskCreationPage = () => {
       isRequester: true,
     };
 
-    // O responsável principal é definido no payload da tarefa.
-    // A API de participantes adiciona vínculos. Manter para consistência.
-    const participants = [{
-      contact_id: parseInt(selectedResponsibleId, 10),
-      is_responsible: true,
-      is_executer: true,
-      is_requester: true,
-    }];
-
     const requestBody = {
       cnj_number: foundLawsuit.identifierNumber,
       task_payload,
-      participants,
+      participants: [], // A definição de papéis agora é feita no payload principal.
     };
 
     try {
