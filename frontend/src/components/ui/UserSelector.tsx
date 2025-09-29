@@ -1,20 +1,24 @@
 // frontend/src/components/ui/UserSelector.tsx
 
-import { useState, useMemo } from 'react';
+// frontend/src/components/ui/UserSelector.tsx
+import React, { useMemo, useState } from 'react';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 import { Button } from '@/components/ui/button';
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-  DialogFooter,
-  DialogClose,
-} from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
-import { User, Users, X } from 'lucide-react';
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
+import { Check, ChevronsUpDown, X } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { Badge } from './badge';
 
 // --- Interfaces ---
 export interface UserSquadInfo {
@@ -31,131 +35,121 @@ export interface SelectableUser {
 
 interface UserSelectorProps {
   users: SelectableUser[];
-  selectedUserId: string | null;
-  onUserSelect: (userId: string | null) => void;
+  // O valor selecionado é o `external_id` do usuário como string, ou null se nada for selecionado
+  value: string | null;
+  // Callback para notificar a mudança de valor
+  onChange: (value: string | null) => void;
   // Permite filtrar os usuários mostrados com base nos IDs dos squads
-  // Se for um array vazio, nenhum filtro de squad é aplicado.
   filterBySquadIds?: number[];
   disabled?: boolean;
+  placeholder?: string;
 }
 
 const UserSelector = ({
   users,
-  selectedUserId,
-  onUserSelect,
+  value,
+  onChange,
   filterBySquadIds = [],
   disabled = false,
+  placeholder = 'Selecione um responsável...',
 }: UserSelectorProps) => {
-  const [isOpen, setIsOpen] = useState(false);
-  const [searchTerm, setSearchTerm] = useState('');
+  const [open, setOpen] = useState(false);
 
+  // Deriva o usuário selecionado a partir do `value` (external_id)
   const selectedUser = useMemo(() => {
-    return users.find(u => String(u.external_id) === selectedUserId) || null;
-  }, [selectedUserId, users]);
+    return users.find(u => String(u.external_id) === value) || null;
+  }, [value, users]);
 
+  // Filtra os usuários com base na busca e nos Squads
   const filteredUsers = useMemo(() => {
-    return users.filter(user => {
-      const matchesSearchTerm = user.name.toLowerCase().includes(searchTerm.toLowerCase());
+    if (filterBySquadIds.length === 0) {
+      return users;
+    }
+    return users.filter(user =>
+      user.squads.some(squad => filterBySquadIds.includes(squad.id))
+    );
+  }, [users, filterBySquadIds]);
 
-      // Se não houver squad IDs para filtrar, retorne apenas a correspondência do termo de busca.
-      if (filterBySquadIds.length === 0) {
-        return matchesSearchTerm;
-      }
-
-      // Verifique se o usuário pertence a pelo menos um dos squads filtrados.
-      const belongsToFilteredSquad = user.squads.some(squad => filterBySquadIds.includes(squad.id));
-
-      return matchesSearchTerm && belongsToFilteredSquad;
-    });
-  }, [users, searchTerm, filterBySquadIds]);
-
-  const handleSelect = (userId: number) => {
-    onUserSelect(String(userId));
-    setIsOpen(false);
-    setSearchTerm('');
+  const handleSelect = (currentValue: string) => {
+    // Se o mesmo valor for selecionado novamente, desmarque-o. Caso contrário, selecione o novo valor.
+    const newValue = currentValue === value ? null : currentValue;
+    onChange(newValue);
+    setOpen(false);
   };
 
   const handleClear = (e: React.MouseEvent) => {
-    e.stopPropagation(); // Impede que o Dialog seja aberto
-    onUserSelect(null);
+    e.stopPropagation(); // Impede que o Popover seja aberto
+    onChange(null);
   };
 
   return (
-    <Dialog open={isOpen} onOpenChange={setIsOpen}>
-      <DialogTrigger asChild>
-        <Button
-          variant="outline"
-          className="w-full justify-between"
-          disabled={disabled}
-        >
-          {selectedUser ? (
-            <div className="flex items-center gap-2">
-              <User className="h-4 w-4" />
-              <span>{selectedUser.name}</span>
-            </div>
-          ) : (
-            <span className="text-muted-foreground">Selecione o responsável...</span>
-          )}
-          {selectedUser && (
-            <div
-              onClick={handleClear}
-              className="p-1 rounded-full hover:bg-muted"
-            >
-              <X className="h-4 w-4 text-muted-foreground" />
-            </div>
-          )}
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-[525px]">
-        <DialogHeader>
-          <DialogTitle>Selecionar Responsável</DialogTitle>
-          <DialogDescription>
-            Busque e selecione um usuário da lista.
-            {filterBySquadIds.length > 0 && " A lista foi filtrada pelos squads associados à tarefa."}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="py-4">
-          <Input
-            placeholder="Buscar usuário por nome..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="mb-4"
-          />
-          <div className="space-y-2 max-h-80 overflow-y-auto">
-            {filteredUsers.length > 0 ? (
-              filteredUsers.map(user => (
-                <div
-                  key={user.id}
-                  className="flex items-center justify-between p-2 rounded-md hover:bg-muted cursor-pointer"
-                  onClick={() => handleSelect(user.external_id)}
-                >
-                  <div>
-                    <p className="font-medium">{user.name}</p>
-                    <div className="flex flex-wrap gap-1 mt-1">
-                      {user.squads.map(squad => (
-                        <Badge key={squad.id} variant="secondary">{squad.name}</Badge>
-                      ))}
-                    </div>
-                  </div>
-                  {String(user.external_id) === selectedUserId && (
-                    <div className="text-primary font-bold">Selecionado</div>
-                  )}
-                </div>
-              ))
+    <div className="relative">
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            variant="outline"
+            role="combobox"
+            aria-expanded={open}
+            className="w-full justify-between"
+            disabled={disabled}
+          >
+            {selectedUser ? (
+              <span className="truncate">{selectedUser.name}</span>
             ) : (
-              <div className="text-center text-muted-foreground py-4">
-                Nenhum usuário encontrado.
-              </div>
+              <span className="text-muted-foreground">{placeholder}</span>
             )}
-          </div>
-        </div>
-        <DialogFooter>
-          <DialogClose asChild>
-            <Button type="button" variant="outline">Fechar</Button>
-          </DialogClose>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        {selectedUser && !disabled && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={handleClear}
+            className="absolute right-10 top-1/2 -translate-y-1/2 h-6 w-6"
+            aria-label="Limpar seleção"
+          >
+            <X className="h-4 w-4 text-muted-foreground" />
+          </Button>
+        )}
+        <PopoverContent className="w-[--radix-popover-trigger-width] p-0">
+          <Command>
+            <CommandInput placeholder="Buscar usuário..." />
+            <CommandList>
+              <CommandEmpty>Nenhum usuário encontrado.</CommandEmpty>
+              <CommandGroup>
+                {filteredUsers.map(user => (
+                  <CommandItem
+                    key={user.external_id}
+                    value={String(user.external_id)}
+                    onSelect={handleSelect}
+                  >
+                    <Check
+                      className={cn(
+                        'mr-2 h-4 w-4',
+                        value === String(user.external_id)
+                          ? 'opacity-100'
+                          : 'opacity-0'
+                      )}
+                    />
+                    <div className="flex flex-col">
+                      <span>{user.name}</span>
+                      <div className="flex flex-wrap gap-1 text-xs">
+                        {user.squads.map(squad => (
+                          <Badge key={squad.id} variant="secondary">
+                            {squad.name}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+    </div>
   );
 };
 
