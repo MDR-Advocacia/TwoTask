@@ -49,7 +49,7 @@ const TaskCreationPage = () => {
   const [selectedResponsibleId, setSelectedResponsibleId] = useState<string | null>(null); // Pode ser null
   const [description, setDescription] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-
+  
   // Novos estados para data
   const [startDateTime, setStartDateTime] = useState(new Date());
   const [endDateTime, setEndDateTime] = useState(() => {
@@ -167,19 +167,10 @@ const TaskCreationPage = () => {
       isRequester: true,
     };
 
-    // O responsável principal é definido no payload da tarefa.
-    // A API de participantes adiciona vínculos. Manter para consistência.
-    const participants = [{
-      contact_id: parseInt(selectedResponsibleId, 10),
-      is_responsible: true,
-      is_executer: true,
-      is_requester: true,
-    }];
-
     const requestBody = {
       cnj_number: foundLawsuit.identifierNumber,
       task_payload,
-      participants,
+      participants: [], // A definição de papéis agora é feita no payload principal.
     };
 
     try {
@@ -363,7 +354,7 @@ const TaskCreationPage = () => {
                     />
                   </div>
                 </div>
-
+                
                 {/* Descrição */}
                 <div className="space-y-2">
                   <Label htmlFor="description">Descrição</Label>

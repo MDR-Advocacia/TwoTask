@@ -172,14 +172,8 @@ def search_lawsuit(
             status_code=404,
             detail=f"Nenhum processo encontrado para o CNJ: {cnj}"
         )
-
-    # Garantir que o retorno para o frontend seja um JSON explícito
-    # contendo todos os dados necessários.
-    return {
-        "id": lawsuit.get("id"),
-        "identifierNumber": lawsuit.get("identifierNumber"),
-        "responsibleOfficeId": lawsuit.get("responsibleOfficeId")
-    }
+    
+    return lawsuit
 
 @router.post("/create-full-process", summary="Criar Tarefa (Processo Completo)", tags=["Tasks"])
 def create_full_task(
