@@ -172,11 +172,6 @@ def search_lawsuit(
             status_code=404,
             detail=f"Nenhum processo encontrado para o CNJ: {cnj}"
         )
-<<<<<<< HEAD
-    
-=======
-
->>>>>>> 28a842112154a3314d52aba49b8a0dd8cf92684e
     return lawsuit
 
 @router.post("/create-full-process", summary="Criar Tarefa (Processo Completo)", tags=["Tasks"])
