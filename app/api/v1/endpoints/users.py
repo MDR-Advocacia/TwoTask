@@ -18,7 +18,7 @@ def get_users_with_squads(db: Session = Depends(get_db)):
     """
     users = (
         db.query(legal_one_models.LegalOneUser)
-        .options(joinedload(legal_one_models.LegalOneUser.members).joinedload(legal_one_models.SquadMember.squad))
+        .options(joinedload(legal_one_models.LegalOneUser.squad_members).joinedload(legal_one_models.SquadMember.squad))
         .filter(legal_one_models.LegalOneUser.is_active == True)
         .order_by(legal_one_models.LegalOneUser.name)
         .all()
