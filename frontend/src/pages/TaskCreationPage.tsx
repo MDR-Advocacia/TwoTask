@@ -167,19 +167,10 @@ const TaskCreationPage = () => {
       isRequester: true,
     };
 
-    // O responsável principal é definido no payload da tarefa.
-    // A API de participantes adiciona vínculos. Manter para consistência.
-    const participants = [{
-      contact_id: parseInt(selectedResponsibleId, 10),
-      is_responsible: true,
-      is_executer: true,
-      is_requester: true,
-    }];
-
     const requestBody = {
       cnj_number: foundLawsuit.identifierNumber,
       task_payload,
-      participants,
+      participants: [], // A definição de papéis agora é feita no payload principal.
     };
 
     try {
@@ -249,6 +240,11 @@ const TaskCreationPage = () => {
   return (
     <Layout>
       <div className="container mx-auto py-10 space-y-8">
+        {/* --- BANNER DE TESTE --- */}
+        <div style={{ backgroundColor: 'yellow', color: 'black', padding: '1rem', textAlign: 'center', fontWeight: 'bold', fontSize: '1.2rem', border: '2px solid red' }}>
+          VERSÃO DE TESTE - Se você está vendo este banner, as alterações foram aplicadas.
+        </div>
+        {/* --- FIM DO BANNER DE TESTE --- */}
         <div className="mb-8">
           <h1 className="text-3xl font-bold">Criação de Tarefas no Legal One</h1>
           <p className="text-muted-foreground">
