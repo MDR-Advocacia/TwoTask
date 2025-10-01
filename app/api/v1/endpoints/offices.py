@@ -12,6 +12,7 @@ router = APIRouter()
 class OfficeResponse(BaseModel):
     id: int
     name: str
+    path: str
     external_id: int
 
     class Config:

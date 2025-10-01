@@ -1,16 +1,24 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+// frontend/src/components/TaskCreator.tsx
+
+import { useState, useEffect, useMemo } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
-import { Plus, Target, User, Calendar, FileText, Send, Trash2, Eye, AlertCircle, RefreshCw } from "lucide-react";
-import { toast } from "sonner"; // Alterado: Importando de sonner
+import { Plus, Target, User, Calendar, FileText, Send, Trash2, Eye, AlertCircle, RefreshCw, Building } from "lucide-react";
+import { toast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import UserSelector, { SelectableUser } from "./ui/UserSelector";
 import { MultiSelect } from "./ui/MultiSelect";
 
 // --- INTERFACES ALINHADAS COM O BACKEND ---
+interface Office {
+  id: number;
+  name: string;
+  path: string;
+}
+
 interface TaskTemplate {
   id: number;
   name: string;
@@ -19,14 +27,21 @@ interface TaskTemplate {
   fields: string[];
 }
 
+interface SquadMember {
+  id: number;
+  name: string;
+  role: string;
+}
+
 interface Squad {
   id: number;
   name: string;
+  members: SquadMember[];
 }
 
 interface LegalOneUser {
-  id: number;
-  external_id: number;
+  id: number; // ID interno do sistema
+  external_id: number; // ID no Legal One
   name: string;
   is_active: boolean;
   squads: { id: number; name: string }[];
@@ -34,6 +49,7 @@ interface LegalOneUser {
 // --- FIM DAS INTERFACES ---
 
 interface TaskRequest {
+  officeId: string; // Adicionado
   template: string;
   responsibleId: string | null;
   processes: string[];
@@ -43,18 +59,16 @@ interface TaskRequest {
 }
 
 const TaskCreator = () => {
-  // --- ESTADOS DE DADOS ---
+  const [availableOffices, setAvailableOffices] = useState<Office[]>([]);
   const [taskTemplates, setTaskTemplates] = useState<TaskTemplate[]>([]);
   const [availableSquads, setAvailableSquads] = useState<Squad[]>([]);
   const [allUsers, setAllUsers] = useState<SelectableUser[]>([]);
-
-  // --- ESTADOS DE UI E FORMULÁRIO ---
+  
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [showPreview, setShowPreview] = useState(true);
 
   const [taskData, setTaskData] = useState<TaskRequest>({
+    officeId: "", // Adicionado
     template: "",
     responsibleId: null,
     processes: [],
@@ -65,29 +79,34 @@ const TaskCreator = () => {
 
   const [selectedSquadIds, setSelectedSquadIds] = useState<string[]>([]);
   const [processInput, setProcessInput] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
 
-  const fetchInitialData = useCallback(async () => {
+  const fetchInitialData = async () => {
     try {
       setIsInitialLoading(true);
       setError(null);
 
-      const [templatesResponse, squadsResponse, usersResponse] = await Promise.all([
+      const [officesResponse, templatesResponse, squadsResponse, usersResponse] = await Promise.all([
+        fetch("/api/v1/offices/"),
         fetch("/api/v1/task_templates/"),
         fetch("/api/v1/squads/"),
         fetch("/api/v1/users/with-squads/"),
       ]);
 
-      if (!templatesResponse.ok || !squadsResponse.ok || !usersResponse.ok) {
+      if (!officesResponse.ok || !templatesResponse.ok || !squadsResponse.ok || !usersResponse.ok) {
         throw new Error("Falha ao buscar dados iniciais do servidor.");
       }
-
+      
+      const offices = await officesResponse.json();
       const templates = await templatesResponse.json();
       const squads = await squadsResponse.json();
       const users: LegalOneUser[] = await usersResponse.json();
 
+      setAvailableOffices(offices);
       setTaskTemplates(templates);
       setAvailableSquads(squads);
-
+      
       const selectableUsers: SelectableUser[] = users.map(user => ({
         id: user.id,
         external_id: user.external_id,
@@ -99,47 +118,24 @@ const TaskCreator = () => {
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Ocorreu um erro desconhecido.";
       setError(errorMessage);
-      toast.error("Erro ao Carregar Dados", {
-        description: "Não foi possível buscar os templates, squads e usuários. Tente recarregar a página.",
+      toast({
+        title: "Erro ao Carregar Dados",
+        description: "Não foi possível buscar os dados essenciais. Tente recarregar a página.",
+        variant: "destructive",
       });
     } finally {
       setIsInitialLoading(false);
     }
-  }, []);
+  };
 
   useEffect(() => {
     fetchInitialData();
-  }, [fetchInitialData]);
-
-  // --- LÓGICA MEMOIZADA ---
-  const selectedTemplate = useMemo(() =>
-    taskTemplates.find(t => t.id === Number(taskData.template)),
-    [taskTemplates, taskData.template]
-  );
-
-  const selectedUser = useMemo(() =>
-    allUsers.find(u => String(u.external_id) === taskData.responsibleId),
-    [allUsers, taskData.responsibleId]
-  );
-
-  const squadOptions = useMemo(() =>
-    availableSquads.map(s => ({ value: String(s.id), label: s.name })),
-    [availableSquads]
-  );
+  }, []);
   
-  const filteredUsers = useMemo(() => {
-    if (selectedSquadIds.length === 0) {
-      return allUsers;
-    }
-    const numericSquadIds = selectedSquadIds.map(Number);
-    return allUsers.filter(user => 
-      user.squads.some(squad => numericSquadIds.includes(squad.id))
-    );
-  }, [allUsers, selectedSquadIds]);
+  const selectedOffice = availableOffices.find(o => o.id === Number(taskData.officeId));
+  const selectedTemplate = taskTemplates.find(t => t.id === Number(taskData.template));
+  const selectedUser = allUsers.find(u => String(u.external_id) === taskData.responsibleId);
 
-  const isFormDisabled = isInitialLoading || isSubmitting;
-
-  // --- HANDLERS DE EVENTOS ---
   const addProcess = () => {
     if (processInput.trim() && !taskData.processes.includes(processInput.trim())) {
       setTaskData(prev => ({ ...prev, processes: [...prev.processes, processInput.trim()] }));
@@ -154,41 +150,40 @@ const TaskCreator = () => {
   const handleCustomFieldChange = (field: string, value: string) => {
     setTaskData(prev => ({ ...prev, customFields: { ...prev.customFields, [field]: value } }));
   };
-  
-  const resetForm = useCallback(() => {
-      setTaskData({
-        template: "",
-        responsibleId: null,
-        processes: [],
-        dueDate: "",
-        priority: "medium",
-        customFields: {},
-      });
-      setSelectedSquadIds([]);
-      setShowPreview(true);
-  }, []);
 
   const handleSubmit = async () => {
-    if (!selectedTemplate || !taskData.responsibleId || taskData.processes.length === 0 || !taskData.dueDate) {
-      toast.error("Dados incompletos", {
-        description: "Preencha todos os campos obrigatórios: template, responsável, data de vencimento e ao menos um processo.",
+    if (!taskData.officeId || !selectedTemplate || !taskData.responsibleId || taskData.processes.length === 0) {
+      toast({
+        title: "Dados incompletos",
+        description: "Preencha todos os campos obrigatórios: escritório, template, responsável e processos.",
+        variant: "destructive",
       });
       return;
     }
 
     setIsSubmitting(true);
     
-    // Simulação de chamada de API
     await new Promise(resolve => setTimeout(resolve, 1500));
     
     const totalTasks = taskData.processes.length;
     
     setIsSubmitting(false);
-    toast.success("Tarefas criadas com sucesso!", {
+    toast({
+      title: "Tarefas criadas com sucesso!",
       description: `${totalTasks} tarefa(s) foram criadas para ${selectedUser?.name}.`,
     });
 
-    resetForm();
+    setTaskData({
+      officeId: "",
+      template: "",
+      responsibleId: null,
+      processes: [],
+      dueDate: "",
+      priority: "medium",
+      customFields: {},
+    });
+    setSelectedSquadIds([]);
+    setShowPreview(false);
   };
 
   const getPriorityColor = (priority: string) => {
@@ -199,9 +194,12 @@ const TaskCreator = () => {
       default: return 'bg-gray-100 text-gray-800 border-gray-200';
     }
   };
+
+  const squadOptions = useMemo(() => {
+    return availableSquads.map(s => ({ value: String(s.id), label: s.name }));
+  }, [availableSquads]);
   
-  // --- RENDERIZAÇÃO ---
-  if (error && !isInitialLoading) {
+  if (error) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-background text-center p-4">
         <AlertCircle className="w-16 h-16 text-destructive mb-4" />
@@ -228,7 +226,7 @@ const TaskCreator = () => {
             </p>
           </div>
           <div className="flex gap-3">
-            <Button variant="outline" onClick={() => setShowPreview(!showPreview)} disabled={isFormDisabled}>
+            <Button variant="outline" onClick={() => setShowPreview(!showPreview)}>
               <Eye className="w-4 h-4 mr-2" />
               {showPreview ? 'Ocultar' : 'Visualizar'} Resumo
             </Button>
@@ -236,14 +234,46 @@ const TaskCreator = () => {
         </div>
       </div>
 
-      <div className="container mx-auto px-6 pb-8">
+      <div className="container mx-auto px-6">
         <div className="grid lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 space-y-6">
+            
+            <Card className="glass-card border-0 animate-fade-in">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Building className="w-5 h-5 text-primary" />
+                  1. Selecionar Escritório
+                </CardTitle>
+                <CardDescription>
+                  Defina a qual unidade a tarefa pertence
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {isInitialLoading ? (
+                  <Skeleton className="h-10 w-full" />
+                ) : (
+                  <Select value={taskData.officeId} onValueChange={(value) => setTaskData(prev => ({ ...prev, officeId: value }))}>
+                    {/* --- CORREÇÃO APLICADA AQUI --- */}
+                    <SelectTrigger className="border-glass-border">
+                      {selectedOffice ? selectedOffice.path : "Selecione um escritório..."}
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableOffices.map(office => (
+                        <SelectItem key={office.id} value={String(office.id)}>
+                          <span className="font-medium">{office.path}</span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </CardContent>
+            </Card>
+
             <Card className="glass-card border-0 animate-fade-in">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Target className="w-5 h-5 text-primary" />
-                  1. Selecionar Template
+                  2. Selecionar Template
                 </CardTitle>
                 <CardDescription>
                   Escolha o tipo de tarefa que será criada
@@ -253,11 +283,7 @@ const TaskCreator = () => {
                 {isInitialLoading ? (
                   <Skeleton className="h-10 w-full" />
                 ) : (
-                  <Select 
-                    value={taskData.template} 
-                    onValueChange={(value) => setTaskData(prev => ({ ...prev, template: value, customFields: {} }))}
-                    disabled={isFormDisabled}
-                  >
+                  <Select value={taskData.template} onValueChange={(value) => setTaskData(prev => ({ ...prev, template: value, customFields: {} }))}>
                     <SelectTrigger className="border-glass-border">
                       <SelectValue placeholder="Selecione um template de tarefa..." />
                     </SelectTrigger>
@@ -290,7 +316,6 @@ const TaskCreator = () => {
                             value={taskData.customFields[field] || ""}
                             onChange={(e) => handleCustomFieldChange(field, e.target.value)}
                             className="border-glass-border"
-                            disabled={isFormDisabled}
                           />
                         </div>
                       ))}
@@ -304,7 +329,7 @@ const TaskCreator = () => {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <User className="w-5 h-5 text-primary" />
-                  2. Selecionar Responsável
+                  3. Selecionar Responsável
                 </CardTitle>
                 <CardDescription>
                   Filtre por squad e escolha o usuário que receberá a tarefa
@@ -326,17 +351,17 @@ const TaskCreator = () => {
                         defaultValue={selectedSquadIds}
                         placeholder="Selecione uma ou mais squads..."
                         className="bg-background"
-                        disabled={isFormDisabled}
                       />
                     </div>
                     <div>
                       <label className="text-sm font-medium mb-2 block">Responsável</label>
                       <UserSelector
-                        users={filteredUsers}
+                        users={allUsers}
                         value={taskData.responsibleId}
                         onChange={(value) => setTaskData(prev => ({...prev, responsibleId: value}))}
+                        filterBySquadIds={selectedSquadIds.map(Number)}
                         placeholder="Selecione um responsável..."
-                        disabled={isFormDisabled}
+                        disabled={isInitialLoading}
                       />
                     </div>
                   </>
@@ -348,7 +373,7 @@ const TaskCreator = () => {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <FileText className="w-5 h-5 text-primary" />
-                  3. Números de Processo
+                  4. Números de Processo
                 </CardTitle>
                 <CardDescription>
                   Adicione os processos para os quais as tarefas serão criadas
@@ -362,9 +387,8 @@ const TaskCreator = () => {
                     onChange={(e) => setProcessInput(e.target.value)}
                     onKeyPress={(e) => e.key === 'Enter' && addProcess()}
                     className="border-glass-border"
-                    disabled={isFormDisabled}
                   />
-                  <Button onClick={addProcess} variant="outline" disabled={isFormDisabled}>
+                  <Button onClick={addProcess} variant="outline">
                     <Plus className="w-4 h-4" />
                   </Button>
                 </div>
@@ -378,7 +402,6 @@ const TaskCreator = () => {
                           variant="ghost"
                           onClick={() => removeProcess(process)}
                           className="h-6 w-6 p-0 hover:bg-destructive hover:text-destructive-foreground"
-                          disabled={isFormDisabled}
                         >
                           <Trash2 className="w-3 h-3" />
                         </Button>
@@ -393,7 +416,7 @@ const TaskCreator = () => {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Calendar className="w-5 h-5 text-primary" />
-                  4. Configurações Adicionais
+                  5. Configurações Adicionais
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -405,16 +428,11 @@ const TaskCreator = () => {
                       value={taskData.dueDate}
                       onChange={(e) => setTaskData(prev => ({ ...prev, dueDate: e.target.value }))}
                       className="border-glass-border"
-                      disabled={isFormDisabled}
                     />
                   </div>
                   <div>
                     <label className="text-sm font-medium mb-2 block">Prioridade</label>
-                    <Select 
-                      value={taskData.priority} 
-                      onValueChange={(value) => setTaskData(prev => ({ ...prev, priority: value }))}
-                      disabled={isFormDisabled}
-                    >
+                    <Select value={taskData.priority} onValueChange={(value) => setTaskData(prev => ({ ...prev, priority: value }))}>
                       <SelectTrigger className="border-glass-border">
                         <SelectValue />
                       </SelectTrigger>
@@ -439,10 +457,18 @@ const TaskCreator = () => {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
+                {selectedOffice && (
+                   <div>
+                     <h4 className="font-medium mb-2">Escritório</h4>
+                     <Badge variant="secondary" className="w-full justify-center py-2 text-center">
+                       {selectedOffice.path}
+                     </Badge>
+                   </div>
+                )}
                 {selectedTemplate && (
                   <div>
                     <h4 className="font-medium mb-2">Template Selecionado</h4>
-                    <Badge variant="secondary" className="w-full justify-center py-2 text-center">
+                    <Badge variant="secondary" className="w-full justify-center py-2">
                       {selectedTemplate.name}
                     </Badge>
                   </div>
@@ -470,7 +496,7 @@ const TaskCreator = () => {
                   </div>
                 )}
                 <div className="space-y-2">
-                  <div className="flex justify-between items-center text-sm">
+                  <div className="flex justify-between text-sm">
                     <span>Prioridade:</span>
                     <Badge className={`${getPriorityColor(taskData.priority)} border text-xs`}>
                       {taskData.priority === 'high' ? 'Alta' : taskData.priority === 'medium' ? 'Média' : 'Baixa'}
@@ -483,7 +509,7 @@ const TaskCreator = () => {
                     </div>
                   )}
                 </div>
-                {selectedTemplate && selectedUser && taskData.processes.length > 0 && taskData.dueDate && (
+                {selectedOffice && selectedTemplate && selectedUser && taskData.processes.length > 0 && (
                   <div className="pt-4 border-t border-glass-border">
                     <div className="text-center mb-4">
                       <div className="text-2xl font-bold text-primary">
@@ -498,7 +524,7 @@ const TaskCreator = () => {
                       disabled={isSubmitting}
                       className="w-full glass-button border-0 text-white"
                     >
-                      <Send className={`w-4 h-4 mr-2 ${isSubmitting ? 'animate-spin' : ''}`} />
+                      <Send className={`w-4 h-4 mr-2 ${isSubmitting ? 'animate-pulse' : ''}`} />
                       {isSubmitting ? 'Criando Tarefas...' : 'Criar Tarefas'}
                     </Button>
                   </div>
