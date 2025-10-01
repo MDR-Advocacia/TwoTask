@@ -1,13 +1,11 @@
-// frontend/src/components/TaskCreator.tsx
-
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
-import { Plus, Target, User, Calendar, FileText, Send, Trash2, Eye, AlertCircle, RefreshCw, Users } from "lucide-react";
-import { toast } from "@/hooks/use-toast";
+import { Plus, Target, User, Calendar, FileText, Send, Trash2, Eye, AlertCircle, RefreshCw } from "lucide-react";
+import { toast } from "sonner"; // Alterado: Importando de sonner
 import { Skeleton } from "@/components/ui/skeleton";
 import UserSelector, { SelectableUser } from "./ui/UserSelector";
 import { MultiSelect } from "./ui/MultiSelect";
@@ -21,21 +19,14 @@ interface TaskTemplate {
   fields: string[];
 }
 
-interface SquadMember {
-  id: number;
-  name: string;
-  role: string;
-}
-
 interface Squad {
   id: number;
   name: string;
-  members: SquadMember[];
 }
 
 interface LegalOneUser {
-  id: number; // ID interno do sistema
-  external_id: number; // ID no Legal One
+  id: number;
+  external_id: number;
   name: string;
   is_active: boolean;
   squads: { id: number; name: string }[];
@@ -44,7 +35,7 @@ interface LegalOneUser {
 
 interface TaskRequest {
   template: string;
-  responsibleId: string | null; // Alterado de squads para responsibleId
+  responsibleId: string | null;
   processes: string[];
   dueDate: string;
   priority: string;
@@ -52,16 +43,20 @@ interface TaskRequest {
 }
 
 const TaskCreator = () => {
+  // --- ESTADOS DE DADOS ---
   const [taskTemplates, setTaskTemplates] = useState<TaskTemplate[]>([]);
   const [availableSquads, setAvailableSquads] = useState<Squad[]>([]);
   const [allUsers, setAllUsers] = useState<SelectableUser[]>([]);
-  
+
+  // --- ESTADOS DE UI E FORMULÁRIO ---
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showPreview, setShowPreview] = useState(true);
 
   const [taskData, setTaskData] = useState<TaskRequest>({
     template: "",
-    responsibleId: null, // Alterado
+    responsibleId: null,
     processes: [],
     dueDate: "",
     priority: "medium",
@@ -70,18 +65,16 @@ const TaskCreator = () => {
 
   const [selectedSquadIds, setSelectedSquadIds] = useState<string[]>([]);
   const [processInput, setProcessInput] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [showPreview, setShowPreview] = useState(false);
 
-  const fetchInitialData = async () => {
+  const fetchInitialData = useCallback(async () => {
     try {
       setIsInitialLoading(true);
       setError(null);
 
       const [templatesResponse, squadsResponse, usersResponse] = await Promise.all([
-        fetch("/api/v1/task_templates"),
-        fetch("/api/v1/squads"),
-        fetch("/api/v1/users/with-squads"), // Endpoint hipotético, ajuste se necessário
+        fetch("/api/v1/task_templates/"),
+        fetch("/api/v1/squads/"),
+        fetch("/api/v1/users/with-squads/"),
       ]);
 
       if (!templatesResponse.ok || !squadsResponse.ok || !usersResponse.ok) {
@@ -94,8 +87,7 @@ const TaskCreator = () => {
 
       setTaskTemplates(templates);
       setAvailableSquads(squads);
-      
-      // Transforma os usuários para o formato esperado pelo UserSelector
+
       const selectableUsers: SelectableUser[] = users.map(user => ({
         id: user.id,
         external_id: user.external_id,
@@ -107,23 +99,47 @@ const TaskCreator = () => {
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Ocorreu um erro desconhecido.";
       setError(errorMessage);
-      toast({
-        title: "Erro ao Carregar Dados",
+      toast.error("Erro ao Carregar Dados", {
         description: "Não foi possível buscar os templates, squads e usuários. Tente recarregar a página.",
-        variant: "destructive",
       });
     } finally {
       setIsInitialLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchInitialData();
-  }, []);
+  }, [fetchInitialData]);
 
-  const selectedTemplate = taskTemplates.find(t => t.id === Number(taskData.template));
-  const selectedUser = allUsers.find(u => String(u.external_id) === taskData.responsibleId);
+  // --- LÓGICA MEMOIZADA ---
+  const selectedTemplate = useMemo(() =>
+    taskTemplates.find(t => t.id === Number(taskData.template)),
+    [taskTemplates, taskData.template]
+  );
 
+  const selectedUser = useMemo(() =>
+    allUsers.find(u => String(u.external_id) === taskData.responsibleId),
+    [allUsers, taskData.responsibleId]
+  );
+
+  const squadOptions = useMemo(() =>
+    availableSquads.map(s => ({ value: String(s.id), label: s.name })),
+    [availableSquads]
+  );
+  
+  const filteredUsers = useMemo(() => {
+    if (selectedSquadIds.length === 0) {
+      return allUsers;
+    }
+    const numericSquadIds = selectedSquadIds.map(Number);
+    return allUsers.filter(user => 
+      user.squads.some(squad => numericSquadIds.includes(squad.id))
+    );
+  }, [allUsers, selectedSquadIds]);
+
+  const isFormDisabled = isInitialLoading || isSubmitting;
+
+  // --- HANDLERS DE EVENTOS ---
   const addProcess = () => {
     if (processInput.trim() && !taskData.processes.includes(processInput.trim())) {
       setTaskData(prev => ({ ...prev, processes: [...prev.processes, processInput.trim()] }));
@@ -138,13 +154,24 @@ const TaskCreator = () => {
   const handleCustomFieldChange = (field: string, value: string) => {
     setTaskData(prev => ({ ...prev, customFields: { ...prev.customFields, [field]: value } }));
   };
+  
+  const resetForm = useCallback(() => {
+      setTaskData({
+        template: "",
+        responsibleId: null,
+        processes: [],
+        dueDate: "",
+        priority: "medium",
+        customFields: {},
+      });
+      setSelectedSquadIds([]);
+      setShowPreview(true);
+  }, []);
 
   const handleSubmit = async () => {
-    if (!selectedTemplate || !taskData.responsibleId || taskData.processes.length === 0) {
-      toast({
-        title: "Dados incompletos",
-        description: "Preencha todos os campos obrigatórios: template, responsável e processos.",
-        variant: "destructive",
+    if (!selectedTemplate || !taskData.responsibleId || taskData.processes.length === 0 || !taskData.dueDate) {
+      toast.error("Dados incompletos", {
+        description: "Preencha todos os campos obrigatórios: template, responsável, data de vencimento e ao menos um processo.",
       });
       return;
     }
@@ -157,22 +184,11 @@ const TaskCreator = () => {
     const totalTasks = taskData.processes.length;
     
     setIsSubmitting(false);
-    toast({
-      title: "Tarefas criadas com sucesso!",
+    toast.success("Tarefas criadas com sucesso!", {
       description: `${totalTasks} tarefa(s) foram criadas para ${selectedUser?.name}.`,
     });
 
-    // Resetar o formulário
-    setTaskData({
-      template: "",
-      responsibleId: null,
-      processes: [],
-      dueDate: "",
-      priority: "medium",
-      customFields: {},
-    });
-    setSelectedSquadIds([]); // Reset squad filter
-    setShowPreview(false);
+    resetForm();
   };
 
   const getPriorityColor = (priority: string) => {
@@ -183,12 +199,9 @@ const TaskCreator = () => {
       default: return 'bg-gray-100 text-gray-800 border-gray-200';
     }
   };
-
-  const squadOptions = useMemo(() => {
-    return availableSquads.map(s => ({ value: String(s.id), label: s.name }));
-  }, [availableSquads]);
   
-  if (error) {
+  // --- RENDERIZAÇÃO ---
+  if (error && !isInitialLoading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-background text-center p-4">
         <AlertCircle className="w-16 h-16 text-destructive mb-4" />
@@ -215,7 +228,7 @@ const TaskCreator = () => {
             </p>
           </div>
           <div className="flex gap-3">
-            <Button variant="outline" onClick={() => setShowPreview(!showPreview)}>
+            <Button variant="outline" onClick={() => setShowPreview(!showPreview)} disabled={isFormDisabled}>
               <Eye className="w-4 h-4 mr-2" />
               {showPreview ? 'Ocultar' : 'Visualizar'} Resumo
             </Button>
@@ -223,7 +236,7 @@ const TaskCreator = () => {
         </div>
       </div>
 
-      <div className="container mx-auto px-6">
+      <div className="container mx-auto px-6 pb-8">
         <div className="grid lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 space-y-6">
             <Card className="glass-card border-0 animate-fade-in">
@@ -240,7 +253,11 @@ const TaskCreator = () => {
                 {isInitialLoading ? (
                   <Skeleton className="h-10 w-full" />
                 ) : (
-                  <Select value={taskData.template} onValueChange={(value) => setTaskData(prev => ({ ...prev, template: value, customFields: {} }))}>
+                  <Select 
+                    value={taskData.template} 
+                    onValueChange={(value) => setTaskData(prev => ({ ...prev, template: value, customFields: {} }))}
+                    disabled={isFormDisabled}
+                  >
                     <SelectTrigger className="border-glass-border">
                       <SelectValue placeholder="Selecione um template de tarefa..." />
                     </SelectTrigger>
@@ -273,6 +290,7 @@ const TaskCreator = () => {
                             value={taskData.customFields[field] || ""}
                             onChange={(e) => handleCustomFieldChange(field, e.target.value)}
                             className="border-glass-border"
+                            disabled={isFormDisabled}
                           />
                         </div>
                       ))}
@@ -308,17 +326,17 @@ const TaskCreator = () => {
                         defaultValue={selectedSquadIds}
                         placeholder="Selecione uma ou mais squads..."
                         className="bg-background"
+                        disabled={isFormDisabled}
                       />
                     </div>
                     <div>
                       <label className="text-sm font-medium mb-2 block">Responsável</label>
                       <UserSelector
-                        users={allUsers}
+                        users={filteredUsers}
                         value={taskData.responsibleId}
                         onChange={(value) => setTaskData(prev => ({...prev, responsibleId: value}))}
-                        filterBySquadIds={selectedSquadIds.map(Number)}
                         placeholder="Selecione um responsável..."
-                        disabled={isInitialLoading}
+                        disabled={isFormDisabled}
                       />
                     </div>
                   </>
@@ -344,8 +362,9 @@ const TaskCreator = () => {
                     onChange={(e) => setProcessInput(e.target.value)}
                     onKeyPress={(e) => e.key === 'Enter' && addProcess()}
                     className="border-glass-border"
+                    disabled={isFormDisabled}
                   />
-                  <Button onClick={addProcess} variant="outline">
+                  <Button onClick={addProcess} variant="outline" disabled={isFormDisabled}>
                     <Plus className="w-4 h-4" />
                   </Button>
                 </div>
@@ -359,6 +378,7 @@ const TaskCreator = () => {
                           variant="ghost"
                           onClick={() => removeProcess(process)}
                           className="h-6 w-6 p-0 hover:bg-destructive hover:text-destructive-foreground"
+                          disabled={isFormDisabled}
                         >
                           <Trash2 className="w-3 h-3" />
                         </Button>
@@ -385,11 +405,16 @@ const TaskCreator = () => {
                       value={taskData.dueDate}
                       onChange={(e) => setTaskData(prev => ({ ...prev, dueDate: e.target.value }))}
                       className="border-glass-border"
+                      disabled={isFormDisabled}
                     />
                   </div>
                   <div>
                     <label className="text-sm font-medium mb-2 block">Prioridade</label>
-                    <Select value={taskData.priority} onValueChange={(value) => setTaskData(prev => ({ ...prev, priority: value }))}>
+                    <Select 
+                      value={taskData.priority} 
+                      onValueChange={(value) => setTaskData(prev => ({ ...prev, priority: value }))}
+                      disabled={isFormDisabled}
+                    >
                       <SelectTrigger className="border-glass-border">
                         <SelectValue />
                       </SelectTrigger>
@@ -417,7 +442,7 @@ const TaskCreator = () => {
                 {selectedTemplate && (
                   <div>
                     <h4 className="font-medium mb-2">Template Selecionado</h4>
-                    <Badge variant="secondary" className="w-full justify-center py-2">
+                    <Badge variant="secondary" className="w-full justify-center py-2 text-center">
                       {selectedTemplate.name}
                     </Badge>
                   </div>
@@ -445,7 +470,7 @@ const TaskCreator = () => {
                   </div>
                 )}
                 <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
+                  <div className="flex justify-between items-center text-sm">
                     <span>Prioridade:</span>
                     <Badge className={`${getPriorityColor(taskData.priority)} border text-xs`}>
                       {taskData.priority === 'high' ? 'Alta' : taskData.priority === 'medium' ? 'Média' : 'Baixa'}
@@ -458,7 +483,7 @@ const TaskCreator = () => {
                     </div>
                   )}
                 </div>
-                {selectedTemplate && selectedUser && taskData.processes.length > 0 && (
+                {selectedTemplate && selectedUser && taskData.processes.length > 0 && taskData.dueDate && (
                   <div className="pt-4 border-t border-glass-border">
                     <div className="text-center mb-4">
                       <div className="text-2xl font-bold text-primary">
@@ -473,7 +498,7 @@ const TaskCreator = () => {
                       disabled={isSubmitting}
                       className="w-full glass-button border-0 text-white"
                     >
-                      <Send className={`w-4 h-4 mr-2 ${isSubmitting ? 'animate-pulse' : ''}`} />
+                      <Send className={`w-4 h-4 mr-2 ${isSubmitting ? 'animate-spin' : ''}`} />
                       {isSubmitting ? 'Criando Tarefas...' : 'Criar Tarefas'}
                     </Button>
                   </div>
