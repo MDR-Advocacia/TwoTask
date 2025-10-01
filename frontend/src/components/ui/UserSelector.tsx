@@ -1,6 +1,4 @@
 // frontend/src/components/ui/UserSelector.tsx
-
-// frontend/src/components/ui/UserSelector.tsx
 import React, { useMemo, useState } from 'react';
 import {
   Popover,
@@ -16,14 +14,18 @@ import {
   CommandItem,
   CommandList,
 } from '@/components/ui/command';
-import { Check, ChevronsUpDown, X } from 'lucide-react';
+import { Check, ChevronsUpDown, X, Building, Users } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { Badge } from './badge';
 
 // --- Interfaces ---
+export interface SectorInfo {
+  id: number;
+  name: string;
+}
 export interface UserSquadInfo {
   id: number;
   name: string;
+  sector: SectorInfo;
 }
 
 export interface SelectableUser {
@@ -35,11 +37,8 @@ export interface SelectableUser {
 
 interface UserSelectorProps {
   users: SelectableUser[];
-  // O valor selecionado é o `external_id` do usuário como string, ou null se nada for selecionado
   value: string | null;
-  // Callback para notificar a mudança de valor
   onChange: (value: string | null) => void;
-  // Permite filtrar os usuários mostrados com base nos IDs dos squads
   filterBySquadIds?: number[];
   disabled?: boolean;
   placeholder?: string;
@@ -55,30 +54,31 @@ const UserSelector = ({
 }: UserSelectorProps) => {
   const [open, setOpen] = useState(false);
 
-  // Deriva o usuário selecionado a partir do `value` (external_id)
   const selectedUser = useMemo(() => {
     return users.find(u => String(u.external_id) === value) || null;
   }, [value, users]);
 
-  // Filtra os usuários com base na busca e nos Squads
-  const filteredUsers = useMemo(() => {
-    if (filterBySquadIds.length === 0) {
-      return users;
-    }
-    return users.filter(user =>
-      user.squads.some(squad => filterBySquadIds.includes(squad.id))
-    );
+  // Filtra e ordena os usuários
+  const filteredAndSortedUsers = useMemo(() => {
+    const squadFiltered = filterBySquadIds.length === 0
+      ? users
+      : users.filter(user =>
+          user.squads.some(squad => filterBySquadIds.includes(squad.id))
+        );
+
+    // Ordena alfabeticamente pelo nome
+    return squadFiltered.sort((a, b) => a.name.localeCompare(b.name));
+
   }, [users, filterBySquadIds]);
 
   const handleSelect = (currentValue: string) => {
-    // Se o mesmo valor for selecionado novamente, desmarque-o. Caso contrário, selecione o novo valor.
     const newValue = currentValue === value ? null : currentValue;
     onChange(newValue);
     setOpen(false);
   };
 
   const handleClear = (e: React.MouseEvent) => {
-    e.stopPropagation(); // Impede que o Popover seja aberto
+    e.stopPropagation();
     onChange(null);
   };
 
@@ -118,11 +118,11 @@ const UserSelector = ({
             <CommandList>
               <CommandEmpty>Nenhum usuário encontrado.</CommandEmpty>
               <CommandGroup>
-                {filteredUsers.map(user => (
+                {filteredAndSortedUsers.map(user => (
                   <CommandItem
                     key={user.external_id}
-                    value={String(user.external_id)}
-                    onSelect={handleSelect}
+                    value={user.name} // Usa o nome para a busca (habilita busca parcial)
+                    onSelect={() => handleSelect(String(user.external_id))}
                   >
                     <Check
                       className={cn(
@@ -132,13 +132,17 @@ const UserSelector = ({
                           : 'opacity-0'
                       )}
                     />
-                    <div className="flex flex-col">
-                      <span>{user.name}</span>
-                      <div className="flex flex-wrap gap-1 text-xs">
+                    <div className="flex flex-col flex-grow">
+                      <span className="font-medium">{user.name}</span>
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground mt-1">
                         {user.squads.map(squad => (
-                          <Badge key={squad.id} variant="secondary">
-                            {squad.name}
-                          </Badge>
+                          <div key={squad.id} className="flex items-center gap-1">
+                            <Building className="h-3 w-3" />
+                            <span>{squad.sector.name}</span>
+                            <span className="text-gray-400">/</span>
+                            <Users className="h-3 w-3" />
+                            <span>{squad.name}</span>
+                          </div>
                         ))}
                       </div>
                     </div>

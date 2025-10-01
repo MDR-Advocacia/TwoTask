@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI # type: ignore
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.v1.endpoints import admin, dashboard, tasks, squads, sectors, users, offices
+from app.api.v1.endpoints import admin, dashboard, tasks, squads, sectors, users, offices, task_templates
 
 app = FastAPI(title="OneTask API", version="1.0.0")
 
@@ -27,6 +27,7 @@ app.include_router(sectors.router, prefix="/api/v1/sectors", tags=["Sectors"])
 app.include_router(tasks.router, prefix="/api/v1/tasks", tags=["Tasks"])
 app.include_router(users.router, prefix="/api/v1/users", tags=["Users"])
 app.include_router(offices.router, prefix="/api/v1", tags=["Offices"])
+app.include_router(task_templates.router, prefix="/api/v1", tags=["Task Templates"])
 
 
 # Endpoint Raiz
