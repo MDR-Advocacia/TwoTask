@@ -439,8 +439,19 @@ const CreateTask = () => {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="origin-office">Escritório de Origem</Label>
-                <Select value={selectedOriginOfficeId} onValueChange={setSelectedOriginOfficeId} disabled={offices.length === 0}><SelectTrigger id="origin-office"><SelectValue placeholder="Selecione o escritório..." /></SelectTrigger><SelectContent>{offices.map(office => (<SelectItem key={office.id} value={String(office.external_id)}>{office.name}</SelectItem>))}</SelectContent></Select>
+                <Label htmlFor="origin-office">Escritório Responsável</Label>
+                <Select value={selectedOriginOfficeId} onValueChange={setSelectedOriginOfficeId} disabled={offices.length === 0}>
+                  <SelectTrigger id="origin-office">
+                    <SelectValue placeholder="Selecione o escritório..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {offices.map(office => (
+                      <SelectItem key={office.id} value={String(office.external_id)}>
+                        {office.path}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="task-status">Status</Label>

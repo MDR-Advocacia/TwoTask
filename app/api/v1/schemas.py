@@ -60,10 +60,17 @@ class Sector(SectorBase):
 
 # --- Schemas para Usuários e Squads ---
 
-class UserSquadInfo(BaseModel):
-    """Schema simples para representar o squad de um usuário."""
+class SectorInfo(BaseModel):
+    """Schema conciso para informações de setor."""
     id: int
     name: str
+    model_config = ConfigDict(from_attributes=True)
+
+class UserSquadInfo(BaseModel):
+    """Schema para representar o squad de um usuário, incluindo o setor."""
+    id: int
+    name: str
+    sector: SectorInfo
     model_config = ConfigDict(from_attributes=True)
 
 
