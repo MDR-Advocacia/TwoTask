@@ -17,26 +17,16 @@ from app.services.task_creation_service import (
 )
 from app.services.legal_one_client import LegalOneApiClient
 from app.models.legal_one import LegalOneTaskType, LegalOneUser
-from app.models import rules as rules_models
+from app.models.rules import Squad, SquadMember
 from pydantic import BaseModel
 from typing import List, Optional
 from sqlalchemy.orm import joinedload
 from sqlalchemy import or_
 
 # --- Pydantic Schemas for the new endpoint ---
-class SectorInfo(BaseModel):
-    id: int
-    name: str
-    class Config:
-        orm_mode = True
-
 class UserSquadInfo(BaseModel):
     id: int
     name: str
-    sector: SectorInfo
-
-    class Config:
-        orm_mode = True
 
 class UserForTaskForm(BaseModel):
     id: int # User ID in our DB
@@ -101,22 +91,16 @@ def get_data_for_task_form(db: Session = Depends(get_db)):
         ) for st in all_sub_types if st.parent_id is not None
     ]
 
-    # 3. Buscar Usuários ativos com seus squads e setores.
+    # 3. Buscar Usuários ativos com seus squads (lógica inalterada).
     users_query = db.query(LegalOneUser).filter(LegalOneUser.is_active == True).options(
-        joinedload(LegalOneUser.squad_members)
-        .joinedload(rules_models.SquadMember.squad)
-        .joinedload(rules_models.Squad.sector)
+        joinedload(LegalOneUser.squad_members).joinedload(SquadMember.squad)
     ).all()
 
     users_for_form = []
     for user in users_query:
         squads = [
-            UserSquadInfo(
-                id=member.squad.id,
-                name=member.squad.name,
-                sector=member.squad.sector
-            )
-            for member in user.squad_members if member.squad and member.squad.is_active and member.squad.sector
+            UserSquadInfo(id=member.squad.id, name=member.squad.name)
+            for member in user.squad_members if member.squad.is_active
         ]
         users_for_form.append(
             UserForTaskForm(

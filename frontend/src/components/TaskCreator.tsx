@@ -21,11 +21,16 @@ interface TaskTemplate {
   fields: string[];
 }
 
-interface Office {
+interface SquadMember {
   id: number;
-  external_id: number;
   name: string;
-  path: string;
+  role: string;
+}
+
+interface Squad {
+  id: number;
+  name: string;
+  members: SquadMember[];
 }
 
 interface LegalOneUser {
@@ -33,13 +38,13 @@ interface LegalOneUser {
   external_id: number; // ID no Legal One
   name: string;
   is_active: boolean;
-  squads: { id: number; name: string; sector: { id: number; name: string } }[];
+  squads: { id: number; name: string }[];
 }
 // --- FIM DAS INTERFACES ---
 
 interface TaskRequest {
   template: string;
-  responsibleId: string | null;
+  responsibleId: string | null; // Alterado de squads para responsibleId
   processes: string[];
   dueDate: string;
   priority: string;
@@ -48,16 +53,15 @@ interface TaskRequest {
 
 const TaskCreator = () => {
   const [taskTemplates, setTaskTemplates] = useState<TaskTemplate[]>([]);
+  const [availableSquads, setAvailableSquads] = useState<Squad[]>([]);
   const [allUsers, setAllUsers] = useState<SelectableUser[]>([]);
-  const [offices, setOffices] = useState<Office[]>([]);
-  const [availableSquads, setAvailableSquads] = useState<any[]>([]); // Ajustado para any para simplicidade
   
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [taskData, setTaskData] = useState<TaskRequest>({
     template: "",
-    responsibleId: null,
+    responsibleId: null, // Alterado
     processes: [],
     dueDate: "",
     priority: "medium",
@@ -74,43 +78,24 @@ const TaskCreator = () => {
       setIsInitialLoading(true);
       setError(null);
 
-      const results = await Promise.allSettled([
+      const [templatesResponse, squadsResponse, usersResponse] = await Promise.all([
         fetch("/api/v1/task_templates"),
-        fetch("/api/v1/users/with-squads"),
-        fetch("/api/v1/offices"),
         fetch("/api/v1/squads"),
+        fetch("/api/v1/users/with-squads"), // Endpoint hipotético, ajuste se necessário
       ]);
 
-      const [templatesResult, usersResult, officesResult, squadsResult] = results;
-
-      const failedRequests = [];
-      if (templatesResult.status === 'rejected' || (templatesResult.status === 'fulfilled' && !templatesResult.value.ok)) {
-        failedRequests.push('Templates');
-      }
-      if (usersResult.status === 'rejected' || (usersResult.status === 'fulfilled' && !usersResult.value.ok)) {
-        failedRequests.push('Usuários');
-      }
-      if (officesResult.status === 'rejected' || (officesResult.status === 'fulfilled' && !officesResult.value.ok)) {
-        failedRequests.push('Escritórios');
-      }
-      if (squadsResult.status === 'rejected' || (squadsResult.status === 'fulfilled' && !squadsResult.value.ok)) {
-        failedRequests.push('Squads');
+      if (!templatesResponse.ok || !squadsResponse.ok || !usersResponse.ok) {
+        throw new Error("Falha ao buscar dados iniciais do servidor.");
       }
 
-      if (failedRequests.length > 0) {
-        throw new Error(`Falha ao buscar: ${failedRequests.join(', ')}`);
-      }
-
-      // Since all promises are fulfilled and ok, we can safely access the values
-      const templates = await (templatesResult.value as Response).json();
-      const users: LegalOneUser[] = await (usersResult.value as Response).json();
-      const officesData = await (officesResult.value as Response).json();
-      const squadsData = await (squadsResult.value as Response).json();
+      const templates = await templatesResponse.json();
+      const squads = await squadsResponse.json();
+      const users: LegalOneUser[] = await usersResponse.json();
 
       setTaskTemplates(templates);
-      setOffices(officesData);
-      setAvailableSquads(squadsData);
+      setAvailableSquads(squads);
       
+      // Transforma os usuários para o formato esperado pelo UserSelector
       const selectableUsers: SelectableUser[] = users.map(user => ({
         id: user.id,
         external_id: user.external_id,
@@ -124,7 +109,7 @@ const TaskCreator = () => {
       setError(errorMessage);
       toast({
         title: "Erro ao Carregar Dados",
-        description: `Detalhe: ${errorMessage}. Tente recarregar a página.`,
+        description: "Não foi possível buscar os templates, squads e usuários. Tente recarregar a página.",
         variant: "destructive",
       });
     } finally {
@@ -150,7 +135,7 @@ const TaskCreator = () => {
     setTaskData(prev => ({ ...prev, processes: prev.processes.filter(p => p !== process) }));
   };
 
-  const handleFieldChange = (field: string, value: string) => {
+  const handleCustomFieldChange = (field: string, value: string) => {
     setTaskData(prev => ({ ...prev, customFields: { ...prev.customFields, [field]: value } }));
   };
 
