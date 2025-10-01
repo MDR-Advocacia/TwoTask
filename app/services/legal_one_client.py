@@ -1,27 +1,24 @@
-# Conteúdo completo e atualizado para: app/services/legal_one_client.py
+# app/services/legal_one_client.py
 
 import requests
 import os
 import logging
 import time
 import threading
+import json # Importar a biblioteca JSON para formatação
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class LegalOneApiClient:
-    """
-    Cliente robusto para interagir com a API Legal One, com cache, retries, 
-    paginação segura e gerenciamento de token de nível de produção (thread-safe).
-    """
     _session = requests.Session()
 
     class _Auth:
         token: Optional[str] = None
         expires_at: datetime = datetime.min
         lock = threading.Lock()
-        LEEWAY = 120  # segundos de folga
+        LEEWAY = 120
 
     class _CacheManager:
         _instance: Optional['_CacheManager'] = None
@@ -61,21 +58,34 @@ class LegalOneApiClient:
         with self._Auth.lock:
             if not force and self._Auth.token and now < self._Auth.expires_at - timedelta(seconds=self._Auth.LEEWAY):
                 return
-
+            
             self.logger.info("Renovando token OAuth (force=%s)...", force)
             auth_url = "https://api.thomsonreuters.com/legalone/oauth?grant_type=client_credentials"
-            resp = self._session.post(
-                auth_url,
-                auth=(self.client_id, self.client_secret),
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            expires_in = int(data.get("expires_in", 1800))
             
-            self._Auth.token = data["access_token"]
-            self._Auth.expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
-            self.logger.info("Novo token obtido. Válido até: %s UTC", self._Auth.expires_at)
+            try:
+                resp = self._session.post(auth_url, auth=(self.client_id, self.client_secret), timeout=30)
+                resp.raise_for_status()
+                data = resp.json()
+                
+                expires_in = int(data.get("expires_in", 1800))
+                self._Auth.token = data["access_token"]
+                self._Auth.expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
+
+                self.logger.info(
+                    "Novo token obtido. Válido até: %s UTC", 
+                    self._Auth.expires_at.strftime('%Y-%m-%d %H:%M:%S')
+                )
+
+            except requests.exceptions.HTTPError as e:
+                self.logger.error("Falha ao renovar token OAuth: %s - %s", e.response.status_code, e.response.text)
+                self._Auth.token = None
+                self._Auth.expires_at = datetime.min
+                raise
+            except Exception as e:
+                self.logger.error("Erro inesperado ao renovar token: %s", e)
+                self._Auth.token = None
+                self._Auth.expires_at = datetime.min
+                raise
 
     def _authenticated_request(self, method: str, url: str, **kwargs) -> requests.Response:
         self._refresh_token_if_needed()
@@ -115,90 +125,29 @@ class LegalOneApiClient:
                 data = r.json()
                 page = data.get("value", data.get("items", []))
                 all_items.extend(page)
-
                 if is_first_page:
                     server_count = data.get("@odata.count", "N/A")
                     self.logger.info(f"Auditoria: Servidor reportou {server_count} itens para o catálogo '{endpoint}'.")
                     is_first_page = False
-
                 next_link = data.get("@odata.nextLink")
                 if next_link:
                     url, current_params = next_link, None
                     continue
-
                 if len(page) < page_size: break
-                
                 offset = self._to_int(current_params.get("$skip", 0)) or 0
                 current_params = (params or {}).copy()
                 current_params["$skip"] = offset + page_size
                 url = base_url
-                
             except requests.exceptions.HTTPError as e:
                 self.logger.error(f"Erro HTTP ao carregar catálogo de '{endpoint}': {e.response.text}")
                 break
-        
         self.logger.info(f"Carregamento do catálogo '{endpoint}' concluído. Total baixado: {len(all_items)}.")
         return all_items
-    
-    def get_all_allocatable_areas(self) -> list[dict]:
-        endpoint = "/areas"
-        params = {"$select": "id,name,path,allocateData", "$orderby": "id", "$top": 30}
-        all_areas = self._paginated_catalog_loader(endpoint, params)
-        return [area for area in all_areas if area.get("allocateData")]
-    
-    def get_all_task_types_and_subtypes(self) -> dict:
-        self.logger.info("Buscando Tipos de Tarefa (passo 1/2)...")
-        task_types = self._paginated_catalog_loader(
-            "/UpdateAppointmentTaskTypes",
-            {"$filter": "isTaskType eq true", "$select": "id,name", "$orderby": "id", "$top": 30}
-        )
-        
-        self.logger.info("Buscando todos os Subtipos (passo 2/2)...")
-        all_subtypes = self._paginated_catalog_loader(
-            "/UpdateAppointmentTaskSubtypes",
-            {"$select": "id,name,parentTypeId", "$orderby": "id", "$top": 30}
-        )
-
-        task_type_ids = {self._to_int(t["id"]) for t in task_types if t.get("id") is not None}
-        relevant_subtypes = [st for st in all_subtypes if self._to_int(st.get("parentTypeId")) in task_type_ids]
-        
-        missing_parents = sorted({
-            self._to_int(st["parentTypeId"]) for st in all_subtypes 
-            if st.get("parentTypeId") and self._to_int(st.get("parentTypeId")) not in task_type_ids
-        })
-        if missing_parents:
-            self.logger.warning(f"{len(missing_parents)} IDs de pais de subtipos não foram encontrados nos tipos de tarefa: {missing_parents[:20]}...")
-
-        self.logger.info(f"Join concluído: {len(task_types)} tipos, {len(relevant_subtypes)} subtipos relevantes.")
-        
-        return {"types": task_types, "subtypes": relevant_subtypes}
-
-    def get_all_users(self) -> list[dict]:
-        """
-        Busca todos os usuários do Legal One.
-        """
-        self.logger.info("Buscando todos os usuários...")
-        endpoint = "/Users"
-        params = {
-            "$select": "id,name,email,isActive",
-            "$orderby": "id",
-            "$top": 30
-        }
-        return self._paginated_catalog_loader(endpoint, params)
 
     def search_lawsuit_by_cnj(self, cnj_number: str) -> Optional[Dict[str, Any]]:
-        """
-        Busca um processo (Lawsuit) pelo seu número CNJ.
-        Retorna o primeiro resultado encontrado ou None.
-        """
         self.logger.info(f"Buscando processo com CNJ: {cnj_number}")
         endpoint = "/Lawsuits"
-        # OData filter requires strings to be in single quotes
-        params = {
-            "$filter": f"identifierNumber eq '{cnj_number}'",
-            "$select": "id,identifierNumber,responsibleOfficeId",
-            "$top": 1
-        }
+        params = {"$filter": f"identifierNumber eq '{cnj_number}'", "$select": "id,identifierNumber,responsibleOfficeId", "$top": 1}
         url = f"{self.base_url}{endpoint}"
         try:
             response = self._request_with_retry("GET", url, params=params)
@@ -220,62 +169,51 @@ class LegalOneApiClient:
 
     def create_task(self, task_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
-        Cria uma nova tarefa no Legal One.
-        Retorna o dicionário da tarefa criada ou None em caso de erro.
+        Cria uma nova tarefa no Legal One, com log de erro aprimorado.
         """
         self.logger.info(f"Criando tarefa com payload: {task_payload}")
         endpoint = "/Tasks"
         url = f"{self.base_url}{endpoint}"
-        
         try:
             response = self._request_with_retry("POST", url, json=task_payload)
             created_task = response.json()
             self.logger.info(f"Tarefa criada com sucesso. ID: {created_task.get('id')}")
             return created_task
         except requests.exceptions.HTTPError as e:
-            self.logger.error(f"Erro HTTP ao criar tarefa: {e.response.text}")
+            self.logger.error(f"Erro HTTP {e.response.status_code} ao criar tarefa.")
+            self.logger.error(f"Resposta da API: {e.response.text}")
+            self.logger.error(f"Payload enviado que causou o erro:\n{json.dumps(task_payload, indent=2)}")
             return None
         except Exception as e:
             self.logger.error(f"Erro inesperado ao criar tarefa: {e}")
             return None
 
-    def link_task_to_lawsuit(self, task_id: int, lawsuit_id: int) -> bool:
+    def link_task_to_lawsuit(self, task_id: int, link_payload: Dict[str, Any]) -> bool:
         """
-        Cria uma relação entre uma tarefa e um processo (Litigation).
+        Cria uma relação entre uma tarefa e outra entidade (ex: Litigation).
         """
-        self.logger.info(f"Vinculando tarefa ID {task_id} ao processo ID {lawsuit_id}")
+        self.logger.info(f"Vinculando tarefa ID {task_id} com payload: {link_payload}")
         endpoint = f"/tasks/{task_id}/relationships"
         url = f"{self.base_url}{endpoint}"
-        payload = {
-            "linkType": "Litigation",
-            "linkId": lawsuit_id
-        }
         
         try:
-            # A resposta pode ser 201 ou 204, sem corpo JSON.
-            self._request_with_retry("POST", url, json=payload)
-            self.logger.info("Vínculo entre tarefa e processo criado com sucesso.")
+            self._request_with_retry("POST", url, json=link_payload)
+            self.logger.info("Vínculo de tarefa criado com sucesso.")
             return True
         except requests.exceptions.HTTPError as e:
-            self.logger.error(f"Erro HTTP ao vincular tarefa {task_id} ao processo {lawsuit_id}: {e.response.text}")
+            self.logger.error(f"Erro HTTP ao vincular tarefa {task_id}: {e.response.text}")
             return False
 
-    def add_participant_to_task(self, task_id: int, contact_id: int, is_responsible: bool = False, is_requester: bool = False, is_executer: bool = False) -> bool:
+    def add_participant_to_task(self, task_id: int, participant_payload: Dict[str, Any]) -> bool:
         """
-        Adiciona um participante a uma tarefa.
+        Adiciona um participante a uma tarefa usando um payload pré-construído.
         """
-        self.logger.info(f"Adicionando participante (contato ID {contact_id}) à tarefa ID {task_id}")
+        self.logger.info(f"Adicionando participante à tarefa ID {task_id} com payload: {participant_payload}")
         endpoint = f"/tasks/{task_id}/participants"
         url = f"{self.base_url}{endpoint}"
-        payload = {
-            "contact": {"id": contact_id},
-            "isResponsible": is_responsible,
-            "isRequester": is_requester,
-            "isExecuter": is_executer
-        }
         
         try:
-            self._request_with_retry("POST", url, json=payload)
+            self._request_with_retry("POST", url, json=participant_payload)
             self.logger.info(f"Participante adicionado com sucesso à tarefa {task_id}.")
             return True
         except requests.exceptions.HTTPError as e:

@@ -20,3 +20,4 @@ python-multipart
 python-dotenv
 requests
 httpx
+python-dateutil

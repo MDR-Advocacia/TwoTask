@@ -1,193 +1,188 @@
-# Conteúdo COMPLETO E CORRIGIDO para: app/services/metadata_sync_service.py
+# app/services/metadata_sync_service.py
 
 import logging
 from sqlalchemy.orm import Session
-from sqlalchemy import select, update
-
-# Correção no import para alinhar com o Alembic
-from app.models.legal_one import LegalOneOffice, LegalOneTaskType, LegalOneUser
 from app.services.legal_one_client import LegalOneApiClient
+from app.models.legal_one import (
+    LegalOneOffice,
+    LegalOneUser,
+    LegalOneTaskType,
+    LegalOneTaskSubType,
+)
+
+logging.basicConfig(level=logging.INFO)
 
 class MetadataSyncService:
-    """
-    Serviço responsável por sincronizar metadados essenciais
-    do Legal One para o banco de dados local.
-    """
-
-    def __init__(self, db_session: Session):
-        self.db = db_session # Usando self.db, conforme seu padrão
-        self.api_client = LegalOneApiClient()
+    def __init__(self, db: Session):
+        self.db = db
+        self.legal_one_client = LegalOneApiClient()
         self.logger = logging.getLogger(__name__)
-        # Helper para conversão segura que já existe no seu client
-        self._to_int = self.api_client._to_int
 
-    async def _sync_offices(self):
-        """Sincroniza escritórios (allocatable areas)."""
-        self.logger.info("Sincronizando escritórios...")
+    def sync_all_metadata(self):
+        """Orquestra a sincronização de todos os metadados essenciais."""
+        self.logger.info("Iniciando sincronização completa de metadados...")
         try:
-            areas_from_api = self.api_client.get_all_allocatable_areas()
-            if not areas_from_api:
-                self.logger.warning("Nenhum escritório encontrado na API.")
+            self.sync_offices()
+            self.sync_users()
+            self.sync_task_types_and_subtypes()
+            self.logger.info("Sincronização completa de metadados concluída com sucesso.")
+        except Exception as e:
+            self.logger.error(f"Erro crítico durante a sincronização de metadados: {e}", exc_info=True)
+            # Em um cenário de produção, poderíamos notificar um sistema de monitoramento aqui.
+
+    def sync_offices(self):
+        """Sincroniza os escritórios do Legal One com o banco de dados local."""
+        self.logger.info("Sincronizando escritórios (Offices)...")
+        try:
+            offices_data = self.legal_one_client.get_all_allocatable_areas()
+            if not offices_data:
+                self.logger.warning("Nenhum escritório alocável encontrado na API do Legal One.")
                 return
 
-            stmt = select(LegalOneOffice)
-            existing_offices_map = {o.external_id: o for o in self.db.execute(stmt).scalars()}
-            api_ids = {self._to_int(area.get('id')) for area in areas_from_api}
-
-            count_add, count_update = 0, 0
-            for area_data in areas_from_api:
-                external_id = self._to_int(area_data.get("id"))
-                if not external_id: continue
-
-                office = existing_offices_map.get(external_id)
-                if office:
-                    if office.name != area_data.get("name") or office.path != area_data.get("path") or not office.is_active:
-                        office.name = area_data.get("name")
-                        office.path = area_data.get("path")
-                        office.is_active = True
-                        count_update += 1
-                else:
-                    new_office = LegalOneOffice(
-                        external_id=external_id,
-                        name=area_data.get("name"),
-                        path=area_data.get("path")
-                    )
-                    self.db.add(new_office)
-                    count_add += 1
-            
-            inactive_ids = set(existing_offices_map.keys()) - api_ids
-            if inactive_ids:
-                stmt = update(LegalOneOffice).where(LegalOneOffice.external_id.in_(inactive_ids)).values(is_active=False)
-                self.db.execute(stmt)
-
-            self.db.commit()
-            self.logger.info(f"Sincronização de escritórios concluída. Adicionados: {count_add}, Atualizados: {count_update + len(inactive_ids)}.")
-        except Exception as e:
-            self.logger.error(f"Falha ao sincronizar escritórios: {e}", exc_info=True)
-            self.db.rollback()
-            raise
-
-    async def _sync_task_types(self):
-        """Sincroniza Tipos e Subtipos de Tarefa em um único modelo hierárquico."""
-        self.logger.info("Sincronizando Tipos e Subtipos de Tarefa...")
-        try:
-            data = self.api_client.get_all_task_types_and_subtypes()
-            types_from_api = data.get("types", [])
-            subtypes_from_api = data.get("subtypes", [])
-
-            stmt = select(LegalOneTaskType)
-            existing_map = {tt.external_id: tt for tt in self.db.execute(stmt).scalars()}
-
-            # Processa os tipos primeiro
-            for type_data in types_from_api:
-                external_id = self._to_int(type_data.get("id"))
-                if not external_id: continue
+            with self.db.begin_nested():
+                existing_offices = {o.external_id: o for o in self.db.query(LegalOneOffice).all()}
                 
-                if external_id not in existing_map:
-                    new_type = LegalOneTaskType(external_id=external_id, name=type_data.get("name"))
-                    self.db.add(new_type)
-                    existing_map[external_id] = new_type
-                else:
-                    existing_map[external_id].name = type_data.get("name")
-                    existing_map[external_id].is_active = True # Reativa se necessário
+                for office_data in offices_data:
+                    external_id = office_data.get('id')
+                    if not external_id:
+                        continue
 
-            self.db.flush() # Garante que os tipos pais existam antes de associar subtipos
+                    office = existing_offices.get(external_id)
+                    if office:
+                        # Atualiza registro existente
+                        office.name = office_data.get('name')
+                        office.path = office_data.get('path')
+                        office.is_active = True 
+                    else:
+                        # Cria novo registro
+                        new_office = LegalOneOffice(
+                            external_id=external_id,
+                            name=office_data.get('name'),
+                            path=office_data.get('path'),
+                            is_active=True
+                        )
+                        self.db.add(new_office)
+                
+                # Desativa escritórios que não vieram na carga
+                active_external_ids = {o['id'] for o in offices_data}
+                for external_id, office in existing_offices.items():
+                    if external_id not in active_external_ids:
+                        office.is_active = False
 
-            # Coleta os IDs externos dos tipos pais para evitar que sejam tratados como subtipos
-            parent_external_ids = {self._to_int(t.get("id")) for t in types_from_api if t.get("id")}
-
-            # Processa os subtipos
-            for subtype_data in subtypes_from_api:
-                external_id = self._to_int(subtype_data.get("id"))
-                parent_id = self._to_int(subtype_data.get("parentTypeId"))
-                if not external_id or not parent_id: continue
-
-                # CORREÇÃO: Ignora a atualização de um tipo pai como se fosse um subtipo
-                if external_id in parent_external_ids:
-                    continue
-
-                parent_obj = existing_map.get(parent_id)
-                if not parent_obj: continue # Pula se o pai não foi encontrado
-
-                if external_id not in existing_map:
-                    new_subtype = LegalOneTaskType(
-                        external_id=external_id,
-                        name=subtype_data.get("name"),
-                        parent_id=parent_obj.id # Associa ao ID interno do pai
-                    )
-                    self.db.add(new_subtype)
-                else:
-                    existing_map[external_id].name = subtype_data.get("name")
-                    existing_map[external_id].parent_id = parent_obj.id
-                    existing_map[external_id].is_active = True
-            
             self.db.commit()
-            self.logger.info("Sincronização de Tipos e Subtipos de Tarefa concluída.")
+            self.logger.info("Sincronização de escritórios concluída.")
         except Exception as e:
-            self.logger.error(f"Falha ao sincronizar tipos de tarefa: {e}", exc_info=True)
             self.db.rollback()
-            raise
+            self.logger.error(f"Erro ao sincronizar escritórios: {e}", exc_info=True)
 
-    async def _sync_users(self):
-        """Busca todos os usuários e atualiza o banco local."""
-        self.logger.info("Iniciando sincronização de Usuários...")
+    def sync_users(self):
+        """Sincroniza os usuários do Legal One com o banco de dados local."""
+        self.logger.info("Sincronizando usuários (Users)...")
         try:
-            api_users = self.api_client.get_all_users()
-            if not api_users:
-                self.logger.warning("Nenhum usuário encontrado na API para sincronizar.")
+            users_data = self.legal_one_client.get_all_users()
+            if not users_data:
+                self.logger.warning("Nenhum usuário encontrado na API do Legal One.")
                 return
 
-            stmt = select(LegalOneUser)
-            existing_users_map = {u.external_id: u for u in self.db.execute(stmt).scalars()}
-            api_ids = {self._to_int(user.get('id')) for user in api_users}
+            with self.db.begin_nested():
+                existing_users = {u.external_id: u for u in self.db.query(LegalOneUser).all()}
 
-            count_add, count_update = 0, 0
-            for user_data in api_users:
-                external_id = self._to_int(user_data.get("id"))
-                if not external_id: continue
+                for user_data in users_data:
+                    external_id = user_data.get('id')
+                    if not external_id:
+                        continue
 
-                existing_user = existing_users_map.get(external_id)
-                if existing_user:
-                    # Atualiza campos que podem mudar
-                    if (existing_user.name != user_data.get("name") or
-                        existing_user.email != user_data.get("email") or
-                        existing_user.is_active != user_data.get("isActive")):
-                        existing_user.name = user_data.get("name")
-                        existing_user.email = user_data.get("email")
-                        existing_user.is_active = user_data.get("isActive")
-                        count_update += 1
-                else:
-                    new_user = LegalOneUser(
-                        external_id=external_id,
-                        name=user_data.get("name"),
-                        email=user_data.get("email"),
-                        is_active=user_data.get("isActive", True)
-                    )
-                    self.db.add(new_user)
-                    count_add += 1
-            
-            inactive_ids = set(existing_users_map.keys()) - api_ids
-            if inactive_ids:
-                stmt = update(LegalOneUser).where(LegalOneUser.external_id.in_(inactive_ids)).values(is_active=False)
-                self.db.execute(stmt)
-                count_update += len(inactive_ids)
+                    user = existing_users.get(external_id)
+                    if user:
+                        user.name = user_data.get('name')
+                        user.email = user_data.get('email')
+                        user.is_active = user_data.get('isActive', False)
+                    else:
+                        new_user = LegalOneUser(
+                            external_id=external_id,
+                            name=user_data.get('name'),
+                            email=user_data.get('email'),
+                            is_active=user_data.get('isActive', False)
+                        )
+                        self.db.add(new_user)
+                
+                active_external_ids = {u['id'] for u in users_data if u.get('isActive')}
+                for external_id, user in existing_users.items():
+                    if external_id not in active_external_ids:
+                        user.is_active = False
 
             self.db.commit()
-            self.logger.info(f"Sincronização de usuários concluída. Adicionados: {count_add}, Atualizados/Inativados: {count_update}.")
-
+            self.logger.info("Sincronização de usuários concluída.")
         except Exception as e:
-            self.logger.error(f"Falha ao sincronizar usuários: {e}", exc_info=True)
-            self.db.rollback() # Corrigido para self.db
-            raise
+            self.db.rollback()
+            self.logger.error(f"Erro ao sincronizar usuários: {e}", exc_info=True)
 
-    async def sync_all_metadata(self):
-        """Orquestra a sincronização de todas as entidades de metadados."""
-        self.logger.info("Iniciando ciclo completo de sincronização de metadados...")
+    def sync_task_types_and_subtypes(self):
+        """
+        Sincroniza tipos e subtipos de tarefas de forma robusta e iterativa.
+        Primeiro limpa as tabelas e depois as repopula.
+        """
+        self.logger.info("Iniciando sincronização de tipos e subtipos de tarefas...")
         try:
-            await self._sync_offices()
-            await self._sync_task_types()
-            await self._sync_users()
-            self.logger.info("Ciclo completo de sincronização de metadados finalizado com sucesso.")
+            with self.db.begin() as transaction: # Inicia a transação principal
+                self.logger.info("Limpando tabelas de subtipos e tipos de tarefas existentes...")
+                self.db.query(LegalOneTaskSubType).delete()
+                self.db.query(LegalOneTaskType).delete()
+                self.logger.info("Tabelas limpas.")
+
+                # Etapa 1: Buscar e salvar todos os tipos de tarefa (pais)
+                self.logger.info("Buscando todos os tipos de tarefa da API...")
+                task_types_data = self.legal_one_client._paginated_catalog_loader(
+                    "/UpdateAppointmentTaskTypes",
+                    {"$filter": "isTaskType eq true", "$select": "id,name"}
+                )
+
+                if not task_types_data:
+                    self.logger.warning("Nenhum tipo de tarefa encontrado na API. Abortando a sincronização de tarefas.")
+                    transaction.rollback()
+                    return
+
+                new_task_types = []
+                for type_data in task_types_data:
+                    new_task_types.append(
+                        LegalOneTaskType(
+                            external_id=type_data['id'],
+                            name=type_data['name'],
+                            is_active=True
+                        )
+                    )
+                self.db.add_all(new_task_types)
+                self.logger.info(f"{len(new_task_types)} tipos de tarefa foram salvos na sessão.")
+
+                # Etapa 2: Iterar sobre cada tipo pai para buscar e salvar seus filhos
+                self.logger.info("Iniciando busca iterativa por subtipos...")
+                all_new_subtypes = []
+                for type_data in task_types_data:
+                    parent_external_id = type_data['id']
+                    self.logger.debug(f"Buscando subtipos para o tipo pai ID: {parent_external_id}")
+                    
+                    subtypes_data = self.legal_one_client._paginated_catalog_loader(
+                        "/UpdateAppointmentTaskSubtypes",
+                        {"$filter": f"parentTypeId eq {parent_external_id}", "$select": "id,name,parentTypeId"}
+                    )
+
+                    for subtype_data in subtypes_data:
+                        all_new_subtypes.append(
+                            LegalOneTaskSubType(
+                                external_id=subtype_data['id'],
+                                name=subtype_data['name'],
+                                parent_type_id=subtype_data['parentTypeId'], # Garante a relação correta
+                                is_active=True
+                            )
+                        )
+                
+                if all_new_subtypes:
+                    self.db.add_all(all_new_subtypes)
+                    self.logger.info(f"Um total de {len(all_new_subtypes)} subtipos foram salvos na sessão.")
+                else:
+                    self.logger.warning("Nenhum subtipo encontrado para nenhum dos tipos de tarefa.")
+
+            self.logger.info("Sincronização de tipos e subtipos de tarefas concluída com sucesso.")
         except Exception as e:
-            self.logger.error(f"O ciclo de sincronização de metadados falhou: {e}", exc_info=True)
-            # A exceção já foi tratada e feito rollback no método específico, aqui apenas registramos o erro geral.
+            self.logger.error(f"Erro ao sincronizar tipos e subtipos de tarefas: {e}", exc_info=True)
+            # A transação já garante o rollback em caso de exceção

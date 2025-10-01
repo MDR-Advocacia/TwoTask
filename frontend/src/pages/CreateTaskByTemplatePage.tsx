@@ -1,4 +1,4 @@
-// frontend/src/components/TaskCreator.tsx
+// frontend/src/pages/CreateTaskByTemplatePage.tsx
 
 import { useState, useEffect, useMemo } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,8 +9,8 @@ import { Input } from "@/components/ui/input";
 import { Plus, Target, User, Calendar, FileText, Send, Trash2, Eye, AlertCircle, RefreshCw, Building } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import UserSelector, { SelectableUser } from "./ui/UserSelector";
-import { MultiSelect } from "./ui/MultiSelect";
+import UserSelector, { SelectableUser } from "@/components/ui/UserSelector";
+import { MultiSelect } from "@/components/ui/MultiSelect";
 
 // --- INTERFACES ALINHADAS COM O BACKEND ---
 interface Office {
@@ -27,21 +27,14 @@ interface TaskTemplate {
   fields: string[];
 }
 
-interface SquadMember {
-  id: number;
-  name: string;
-  role: string;
-}
-
 interface Squad {
   id: number;
   name: string;
-  members: SquadMember[];
 }
 
 interface LegalOneUser {
-  id: number; // ID interno do sistema
-  external_id: number; // ID no Legal One
+  id: number;
+  external_id: number;
   name: string;
   is_active: boolean;
   squads: { id: number; name: string }[];
@@ -49,7 +42,7 @@ interface LegalOneUser {
 // --- FIM DAS INTERFACES ---
 
 interface TaskRequest {
-  officeId: string; // Adicionado
+  officeId: string;
   template: string;
   responsibleId: string | null;
   processes: string[];
@@ -58,7 +51,7 @@ interface TaskRequest {
   customFields: Record<string, string>;
 }
 
-const TaskCreator = () => {
+const CreateTaskByTemplatePage = () => {
   const [availableOffices, setAvailableOffices] = useState<Office[]>([]);
   const [taskTemplates, setTaskTemplates] = useState<TaskTemplate[]>([]);
   const [availableSquads, setAvailableSquads] = useState<Squad[]>([]);
@@ -68,7 +61,7 @@ const TaskCreator = () => {
   const [error, setError] = useState<string | null>(null);
 
   const [taskData, setTaskData] = useState<TaskRequest>({
-    officeId: "", // Adicionado
+    officeId: "",
     template: "",
     responsibleId: null,
     processes: [],
@@ -80,7 +73,7 @@ const TaskCreator = () => {
   const [selectedSquadIds, setSelectedSquadIds] = useState<string[]>([]);
   const [processInput, setProcessInput] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [showPreview, setShowPreview] = useState(false);
+  const [showPreview, setShowPreview] = useState(true);
 
   const fetchInitialData = async () => {
     try {
@@ -183,7 +176,7 @@ const TaskCreator = () => {
       customFields: {},
     });
     setSelectedSquadIds([]);
-    setShowPreview(false);
+    setShowPreview(true);
   };
 
   const getPriorityColor = (priority: string) => {
@@ -215,14 +208,14 @@ const TaskCreator = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-muted/20 to-background">
-      <div className="glass-card rounded-none border-x-0 border-t-0 mb-8 p-6">
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+      <div className="container mx-auto px-6 py-8">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
           <div>
             <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-              Criação de Tarefa Individual
+              Criação de Tarefas em Lote
             </h1>
             <p className="text-muted-foreground mt-1">
-              Crie uma ou mais tarefas para um único responsável
+              Crie uma ou mais tarefas para um único responsável a partir de um template.
             </p>
           </div>
           <div className="flex gap-3">
@@ -232,9 +225,7 @@ const TaskCreator = () => {
             </Button>
           </div>
         </div>
-      </div>
 
-      <div className="container mx-auto px-6">
         <div className="grid lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 space-y-6">
             
@@ -253,7 +244,6 @@ const TaskCreator = () => {
                   <Skeleton className="h-10 w-full" />
                 ) : (
                   <Select value={taskData.officeId} onValueChange={(value) => setTaskData(prev => ({ ...prev, officeId: value }))}>
-                    {/* --- CORREÇÃO APLICADA AQUI --- */}
                     <SelectTrigger className="border-glass-border">
                       {selectedOffice ? selectedOffice.path : "Selecione um escritório..."}
                     </SelectTrigger>
@@ -538,4 +528,4 @@ const TaskCreator = () => {
   );
 };
 
-export default TaskCreator;
+export default CreateTaskByTemplatePage;
