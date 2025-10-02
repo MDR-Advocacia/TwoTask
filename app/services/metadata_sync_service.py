@@ -7,7 +7,7 @@ from app.models.legal_one import (
     LegalOneOffice,
     LegalOneUser,
     LegalOneTaskType,
-    LegalOneTaskSubType,
+    # LegalOneTaskSubType import foi removido daqui para evitar o ciclo
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -28,7 +28,6 @@ class MetadataSyncService:
             self.logger.info("Sincronização completa de metadados concluída com sucesso.")
         except Exception as e:
             self.logger.error(f"Erro crítico durante a sincronização de metadados: {e}", exc_info=True)
-            # Em um cenário de produção, poderíamos notificar um sistema de monitoramento aqui.
 
     def sync_offices(self):
         """Sincroniza os escritórios do Legal One com o banco de dados local."""
@@ -46,15 +45,12 @@ class MetadataSyncService:
                     external_id = office_data.get('id')
                     if not external_id:
                         continue
-
                     office = existing_offices.get(external_id)
                     if office:
-                        # Atualiza registro existente
                         office.name = office_data.get('name')
                         office.path = office_data.get('path')
                         office.is_active = True 
                     else:
-                        # Cria novo registro
                         new_office = LegalOneOffice(
                             external_id=external_id,
                             name=office_data.get('name'),
@@ -63,7 +59,6 @@ class MetadataSyncService:
                         )
                         self.db.add(new_office)
                 
-                # Desativa escritórios que não vieram na carga
                 active_external_ids = {o['id'] for o in offices_data}
                 for external_id, office in existing_offices.items():
                     if external_id not in active_external_ids:
@@ -120,17 +115,18 @@ class MetadataSyncService:
     def sync_task_types_and_subtypes(self):
         """
         Sincroniza tipos e subtipos de tarefas de forma robusta e iterativa.
-        Primeiro limpa as tabelas e depois as repopula.
         """
+        # --- IMPORTAÇÃO MOVIDA PARA CÁ ---
+        from app.models.legal_one import LegalOneTaskSubType
+
         self.logger.info("Iniciando sincronização de tipos e subtipos de tarefas...")
         try:
-            with self.db.begin() as transaction: # Inicia a transação principal
+            with self.db.begin() as transaction:
                 self.logger.info("Limpando tabelas de subtipos e tipos de tarefas existentes...")
                 self.db.query(LegalOneTaskSubType).delete()
                 self.db.query(LegalOneTaskType).delete()
                 self.logger.info("Tabelas limpas.")
 
-                # Etapa 1: Buscar e salvar todos os tipos de tarefa (pais)
                 self.logger.info("Buscando todos os tipos de tarefa da API...")
                 task_types_data = self.legal_one_client._paginated_catalog_loader(
                     "/UpdateAppointmentTaskTypes",
@@ -138,40 +134,31 @@ class MetadataSyncService:
                 )
 
                 if not task_types_data:
-                    self.logger.warning("Nenhum tipo de tarefa encontrado na API. Abortando a sincronização de tarefas.")
+                    self.logger.warning("Nenhum tipo de tarefa encontrado na API. Abortando.")
                     transaction.rollback()
                     return
 
-                new_task_types = []
-                for type_data in task_types_data:
-                    new_task_types.append(
-                        LegalOneTaskType(
-                            external_id=type_data['id'],
-                            name=type_data['name'],
-                            is_active=True
-                        )
-                    )
+                new_task_types = [
+                    LegalOneTaskType(external_id=t['id'], name=t['name'], is_active=True)
+                    for t in task_types_data
+                ]
                 self.db.add_all(new_task_types)
-                self.logger.info(f"{len(new_task_types)} tipos de tarefa foram salvos na sessão.")
+                self.logger.info(f"{len(new_task_types)} tipos de tarefa salvos na sessão.")
 
-                # Etapa 2: Iterar sobre cada tipo pai para buscar e salvar seus filhos
                 self.logger.info("Iniciando busca iterativa por subtipos...")
                 all_new_subtypes = []
                 for type_data in task_types_data:
                     parent_external_id = type_data['id']
-                    self.logger.debug(f"Buscando subtipos para o tipo pai ID: {parent_external_id}")
-                    
                     subtypes_data = self.legal_one_client._paginated_catalog_loader(
                         "/UpdateAppointmentTaskSubtypes",
                         {"$filter": f"parentTypeId eq {parent_external_id}", "$select": "id,name,parentTypeId"}
                     )
-
                     for subtype_data in subtypes_data:
                         all_new_subtypes.append(
                             LegalOneTaskSubType(
                                 external_id=subtype_data['id'],
                                 name=subtype_data['name'],
-                                parent_type_id=subtype_data['parentTypeId'], # Garante a relação correta
+                                parent_type_id=subtype_data['parentTypeId'],
                                 is_active=True
                             )
                         )
@@ -180,9 +167,8 @@ class MetadataSyncService:
                     self.db.add_all(all_new_subtypes)
                     self.logger.info(f"Um total de {len(all_new_subtypes)} subtipos foram salvos na sessão.")
                 else:
-                    self.logger.warning("Nenhum subtipo encontrado para nenhum dos tipos de tarefa.")
+                    self.logger.warning("Nenhum subtipo encontrado.")
 
-            self.logger.info("Sincronização de tipos e subtipos de tarefas concluída com sucesso.")
+            self.logger.info("Sincronização de tipos e subtipos concluída com sucesso.")
         except Exception as e:
-            self.logger.error(f"Erro ao sincronizar tipos e subtipos de tarefas: {e}", exc_info=True)
-            # A transação já garante o rollback em caso de exceção
+            self.logger.error(f"Erro ao sincronizar tipos e subtipos: {e}", exc_info=True)

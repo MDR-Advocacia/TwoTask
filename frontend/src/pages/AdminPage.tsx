@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Loader2, Save, Pencil } from "lucide-react";
+import { Loader2, Save, Pencil, RefreshCw, AlertCircle } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog";
@@ -18,6 +18,7 @@ interface Sector { id: number; name: string; }
 interface Squad { id: number; name: string; }
 interface TaskTypeGroup { parent_id: number; parent_name: string; sub_types: { id: number; name: string; squad_ids: number[]; }[]; }
 
+// --- Componente de Associação (Código completo restaurado) ---
 const AssociateTasks = () => {
     const { toast } = useToast();
     const [taskGroups, setTaskGroups] = useState<TaskTypeGroup[]>([]);
@@ -131,7 +132,7 @@ const AssociateTasks = () => {
     };
 
     if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin" /></div>;
-    if (error) return <Alert variant="destructive"><AlertTitle>Erro</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>;
+    if (error) return <Alert variant="destructive"><AlertCircle className="h-4 w-4 mr-2" /><AlertTitle>Erro</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>;
 
     return (
         <Card>
@@ -186,16 +187,79 @@ const AssociateTasks = () => {
     );
 };
 
+// --- Componente para Sincronização ---
+const SyncManager = () => {
+    const { toast } = useToast();
+    const [isSyncing, setIsSyncing] = useState(false);
+
+    const handleSync = async () => {
+        setIsSyncing(true);
+        toast({
+            title: "Sincronização Iniciada",
+            description: "O processo foi iniciado em segundo plano e pode levar alguns minutos.",
+        });
+
+        try {
+            const response = await fetch('/api/v1/admin/sync-metadata', {
+                method: 'POST',
+            });
+
+            if (response.status !== 202) {
+                const errorData = await response.json();
+                throw new Error(errorData.detail || 'Falha ao disparar a sincronização.');
+            }
+        } catch (error: any) {
+            toast({
+                title: "Erro ao Iniciar Sincronização",
+                description: error.message,
+                variant: "destructive",
+            });
+        } finally {
+            setTimeout(() => {
+                setIsSyncing(false);
+                toast({
+                    title: "Ação Enviada",
+                    description: "Verifique os logs do servidor para acompanhar o progresso da sincronização.",
+                });
+            }, 3000); 
+        }
+    };
+
+    return (
+        <Card>
+            <CardHeader>
+                <CardTitle>Sincronização de Metadados</CardTitle>
+                <CardDescription>
+                    Mantenha os dados do sistema (escritórios, usuários, tipos de tarefas) atualizados com o Legal One.
+                </CardDescription>
+            </CardHeader>
+            <CardContent>
+                <Button onClick={handleSync} disabled={isSyncing}>
+                    {isSyncing ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                        <RefreshCw className="mr-2 h-4 w-4" />
+                    )}
+                    {isSyncing ? "Sincronizando..." : "Iniciar Sincronização Manual"}
+                </Button>
+            </CardContent>
+        </Card>
+    )
+}
+
+// --- Componente Principal da Página (Renderizando ambos) ---
 const AdminPage = () => {
     return (
-        <div className="container mx-auto px-6 py-8">
+        <div className="container mx-auto px-6 py-8 space-y-8">
             <div className="mb-8">
                 <h1 className="text-3xl font-bold">Painel Administrativo</h1>
                 <p className="text-muted-foreground mt-1">
                     Gerencie as configurações e associações do sistema.
                 </p>
             </div>
-            {/* Outros componentes administrativos podem ser adicionados aqui no futuro, em abas ou seções. */}
+            
+            <SyncManager />
+
             <AssociateTasks />
         </div>
     )
