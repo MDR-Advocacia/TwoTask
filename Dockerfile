@@ -7,6 +7,12 @@ FROM python:3.10-slim
 # Define o diretório de trabalho dentro do container
 WORKDIR /app
 
+# Instala as dependências do sistema, incluindo o cliente sqlite3
+# É necessário primeiro atualizar a lista de pacotes do sistema operacional
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copia o arquivo de dependências primeiro para aproveitar o cache do Docker
 COPY requirements.txt .
 

@@ -3,11 +3,11 @@
 import logging
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from datetime import datetime, timezone
 
 from app.services.legal_one_client import LegalOneApiClient
-from app.models.legal_one import LegalOneOffice
+from app.models.legal_one import LegalOneOffice, LegalOneTaskType, LegalOneTaskSubType
 
 # --- Exceções e DTOs (inalterados) ---
 class LawsuitNotFoundError(Exception):
@@ -45,31 +45,47 @@ class TaskCreationService:
 
     def _build_final_payload(self, request: TaskCreationRequest) -> Dict[str, Any]:
         """
-        Constrói o payload final com a estrutura e ORDEM corretas.
+        Constrói o payload final com a estrutura e ORDEM corretas,
+        traduzindo IDs internos para externos.
         """
         source_payload = request.task_payload.copy()
         
-        # --- Construção do Payload Definitivo com ORDEM CONTROLADA ---
-
         payload = {}
 
-        # 1. Ordem: TypeId e SubTypeId
-        payload['typeId'] = source_payload.get('typeId')
-        payload['subTypeId'] = source_payload.get('subTypeId')
+        # 1. Validação e Tradução de TypeId e SubTypeId
+        internal_type_id = source_payload.get('typeId')
+        internal_subtype_id = source_payload.get('subTypeId')
 
-        # 2. Ordem: Campos de texto
+        if not internal_type_id or not internal_subtype_id:
+            raise InvalidDataError("Os campos 'typeId' e 'subTypeId' (IDs internos) são obrigatórios.")
+
+        # Busca o subtipo e seu pai para validar a hierarquia e obter os IDs externos
+        sub_type = self.db.query(LegalOneTaskSubType).options(
+            joinedload(LegalOneTaskSubType.parent_type)
+        ).filter(LegalOneTaskSubType.id == internal_subtype_id).first()
+
+        if not sub_type:
+            raise InvalidDataError(f"Subtipo de tarefa com ID interno {internal_subtype_id} não encontrado.")
+        
+        if sub_type.parent_type.id != internal_type_id:
+            raise InvalidDataError(f"O subtipo {internal_subtype_id} não pertence ao tipo {internal_type_id}.")
+
+        payload['typeId'] = sub_type.parent_type.external_id
+        payload['subTypeId'] = sub_type.external_id
+
+        # 2. Campos de texto
         payload['description'] = source_payload.get('description', 'Tarefa criada via sistema.')
         if len(payload['description']) < 3:
             payload['description'] += " (auto)"
         payload['priority'] = source_payload.get('priority', 'Normal')
 
-        # 3. Ordem: Grupo de Datas
+        # 3. Grupo de Datas
         now_utc = datetime.now(timezone.utc)
         payload['publishDate'] = now_utc.isoformat().replace('+00:00', 'Z')
         payload['startDateTime'] = source_payload.get('startDateTime')
         payload['endDateTime'] = source_payload.get('endDateTime')
 
-        # 4. Ordem: IDs de Referência (Offices)
+        # 4. Validação e Tradução de IDs de Referência (Offices)
         internal_office_id = source_payload.get('originOfficeId')
         office = self.db.query(LegalOneOffice).filter(LegalOneOffice.id == internal_office_id).first()
         if not office:
@@ -77,9 +93,9 @@ class TaskCreationService:
         payload['originOfficeId'] = office.external_id
         payload['responsibleOfficeId'] = source_payload.get('responsibleOfficeId')
 
-        # 5. Ordem: Status e Participantes (Objetos)
+        # 5. Status e Participantes
         if 'status' in source_payload and isinstance(source_payload.get('status'), dict) and 'id' in source_payload.get('status'):
-             payload['status'] = { "id": source_payload['status']['id'] }
+            payload['status'] = { "id": source_payload['status']['id'] }
         else:
             raise InvalidDataError("Payload deve conter um objeto 'status' com uma chave 'id'.")
         

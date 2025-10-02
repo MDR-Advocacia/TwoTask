@@ -1,9 +1,29 @@
-# Agora, este é o novo conteúdo para: app/models/legal_one.py
+# app/models/legal_one.py
 
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey
 from sqlalchemy.orm import relationship
 from app.db.session import Base
 from .associations import squad_task_type_association
+
+class LegalOneTaskSubType(Base):
+    """
+    REPRESENTAÇÃO NO BANCO DE DADOS de um subtipo de tarefa sincronizado do L1.
+    Está sempre associado a um LegalOneTaskType pai.
+    """
+    __tablename__ = 'legal_one_task_subtypes'
+
+    id = Column(Integer, primary_key=True, index=True)
+    external_id = Column(Integer, unique=True, index=True, nullable=False,
+                         comment="ID original da entidade no Legal One")
+    name = Column(String, nullable=False)
+    is_active = Column(Boolean, default=True)
+
+    # Chave estrangeira que aponta para o ID externo do tipo pai.
+    # Isso reflete a estrutura da API do Legal One.
+    parent_type_external_id = Column(Integer, ForeignKey('legal_one_task_types.external_id'), index=True, nullable=False)
+
+    # Relação para acessar o objeto pai a partir do subtipo
+    parent_type = relationship('LegalOneTaskType', back_populates='subtypes')
 
 
 class LegalOneTaskType(Base):
@@ -18,10 +38,9 @@ class LegalOneTaskType(Base):
                          comment="ID original da entidade no Legal One")
     name = Column(String, nullable=False)
     is_active = Column(Boolean, default=True)
-
-    # Este campo armazena o ID do grupo pai, que é mapeado na tabela TaskParentGroup.
-    # A chave estrangeira e a relação foram removidas para refletir a nova arquitetura.
-    parent_id = Column(Integer, index=True)
+    
+    # Relação para acessar todos os subtipos associados a este tipo
+    subtypes = relationship('LegalOneTaskSubType', back_populates='parent_type', cascade="all, delete-orphan")
 
     # Relação muitos-para-muitos com Squad (permanece a mesma)
     squads = relationship(

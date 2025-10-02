@@ -7,7 +7,7 @@ from app.models.legal_one import (
     LegalOneOffice,
     LegalOneUser,
     LegalOneTaskType,
-    # LegalOneTaskSubType import foi removido daqui para evitar o ciclo
+    LegalOneTaskSubType
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -31,16 +31,15 @@ class MetadataSyncService:
 
     def sync_offices(self):
         """Sincroniza os escritórios do Legal One com o banco de dados local."""
+        # (Este método permanece o mesmo - código omitido por brevidade)
         self.logger.info("Sincronizando escritórios (Offices)...")
         try:
             offices_data = self.legal_one_client.get_all_allocatable_areas()
             if not offices_data:
                 self.logger.warning("Nenhum escritório alocável encontrado na API do Legal One.")
                 return
-
             with self.db.begin_nested():
                 existing_offices = {o.external_id: o for o in self.db.query(LegalOneOffice).all()}
-                
                 for office_data in offices_data:
                     external_id = office_data.get('id')
                     if not external_id:
@@ -58,35 +57,32 @@ class MetadataSyncService:
                             is_active=True
                         )
                         self.db.add(new_office)
-                
                 active_external_ids = {o['id'] for o in offices_data}
                 for external_id, office in existing_offices.items():
                     if external_id not in active_external_ids:
                         office.is_active = False
-
             self.db.commit()
             self.logger.info("Sincronização de escritórios concluída.")
         except Exception as e:
             self.db.rollback()
             self.logger.error(f"Erro ao sincronizar escritórios: {e}", exc_info=True)
 
+
     def sync_users(self):
         """Sincroniza os usuários do Legal One com o banco de dados local."""
+        # (Este método permanece o mesmo - código omitido por brevidade)
         self.logger.info("Sincronizando usuários (Users)...")
         try:
             users_data = self.legal_one_client.get_all_users()
             if not users_data:
                 self.logger.warning("Nenhum usuário encontrado na API do Legal One.")
                 return
-
             with self.db.begin_nested():
                 existing_users = {u.external_id: u for u in self.db.query(LegalOneUser).all()}
-
                 for user_data in users_data:
                     external_id = user_data.get('id')
                     if not external_id:
                         continue
-
                     user = existing_users.get(external_id)
                     if user:
                         user.name = user_data.get('name')
@@ -100,75 +96,81 @@ class MetadataSyncService:
                             is_active=user_data.get('isActive', False)
                         )
                         self.db.add(new_user)
-                
                 active_external_ids = {u['id'] for u in users_data if u.get('isActive')}
                 for external_id, user in existing_users.items():
                     if external_id not in active_external_ids:
                         user.is_active = False
-
             self.db.commit()
             self.logger.info("Sincronização de usuários concluída.")
         except Exception as e:
             self.db.rollback()
             self.logger.error(f"Erro ao sincronizar usuários: {e}", exc_info=True)
 
+
     def sync_task_types_and_subtypes(self):
         """
-        Sincroniza tipos e subtipos de tarefas de forma robusta e iterativa.
+        Sincroniza tipos e subtipos de tarefas com uma lógica hierárquica robusta.
         """
-        # --- IMPORTAÇÃO MOVIDA PARA CÁ ---
-        from app.models.legal_one import LegalOneTaskSubType
-
         self.logger.info("Iniciando sincronização de tipos e subtipos de tarefas...")
         try:
+            # 1. Buscar todos os dados brutos da API
+            self.logger.info("Buscando todos os tipos de tarefa (pais)...")
+            parent_types_data = self.legal_one_client._paginated_catalog_loader(
+                "/UpdateAppointmentTaskTypes",
+                {"$filter": "isTaskType eq true", "$select": "id,name"}
+            )
+            self.logger.info(f"Encontrados {len(parent_types_data)} tipos de tarefa pai.")
+
+            self.logger.info("Buscando todos os subtipos de tarefa (filhos)...")
+            all_subtypes_data = self.legal_one_client._paginated_catalog_loader(
+                "/UpdateAppointmentTaskSubtypes",
+                {"$select": "id,name,parentTypeId"}
+            )
+            self.logger.info(f"Encontrados {len(all_subtypes_data)} subtipos de tarefa.")
+
+            # 2. Organizar subtipos em um dicionário para acesso rápido
+            subtypes_map = {}
+            for sub_data in all_subtypes_data:
+                parent_id = sub_data.get('parentTypeId')
+                if parent_id:
+                    if parent_id not in subtypes_map:
+                        subtypes_map[parent_id] = []
+                    subtypes_map[parent_id].append(sub_data)
+
+            # 3. Construir os objetos e a hierarquia em uma única transação
             with self.db.begin() as transaction:
-                self.logger.info("Limpando tabelas de subtipos e tipos de tarefas existentes...")
+                self.logger.info("Limpando tabelas antigas...")
                 self.db.query(LegalOneTaskSubType).delete()
                 self.db.query(LegalOneTaskType).delete()
-                self.logger.info("Tabelas limpas.")
 
-                self.logger.info("Buscando todos os tipos de tarefa da API...")
-                task_types_data = self.legal_one_client._paginated_catalog_loader(
-                    "/UpdateAppointmentTaskTypes",
-                    {"$filter": "isTaskType eq true", "$select": "id,name"}
-                )
-
-                if not task_types_data:
-                    self.logger.warning("Nenhum tipo de tarefa encontrado na API. Abortando.")
-                    transaction.rollback()
-                    return
-
-                new_task_types = [
-                    LegalOneTaskType(external_id=t['id'], name=t['name'], is_active=True)
-                    for t in task_types_data
-                ]
-                self.db.add_all(new_task_types)
-                self.logger.info(f"{len(new_task_types)} tipos de tarefa salvos na sessão.")
-
-                self.logger.info("Iniciando busca iterativa por subtipos...")
-                all_new_subtypes = []
-                for type_data in task_types_data:
-                    parent_external_id = type_data['id']
-                    subtypes_data = self.legal_one_client._paginated_catalog_loader(
-                        "/UpdateAppointmentTaskSubtypes",
-                        {"$filter": f"parentTypeId eq {parent_external_id}", "$select": "id,name,parentTypeId"}
+                parent_objects = []
+                for parent_data in parent_types_data:
+                    # Cria o objeto pai (LegalOneTaskType)
+                    parent_obj = LegalOneTaskType(
+                        external_id=parent_data['id'],
+                        name=parent_data['name'],
+                        is_active=True
                     )
-                    for subtype_data in subtypes_data:
-                        all_new_subtypes.append(
-                            LegalOneTaskSubType(
-                                external_id=subtype_data['id'],
-                                name=subtype_data['name'],
-                                parent_type_id=subtype_data['parentTypeId'],
-                                is_active=True
-                            )
+                    
+                    # Busca os filhos correspondentes no dicionário
+                    child_data_list = subtypes_map.get(parent_data['id'], [])
+                    
+                    # Cria os objetos filhos e os anexa ao pai
+                    for child_data in child_data_list:
+                        child_obj = LegalOneTaskSubType(
+                            external_id=child_data['id'],
+                            name=child_data['name'],
+                            parent_type_external_id=child_data['parentTypeId'],
+                            is_active=True
                         )
-                
-                if all_new_subtypes:
-                    self.db.add_all(all_new_subtypes)
-                    self.logger.info(f"Um total de {len(all_new_subtypes)} subtipos foram salvos na sessão.")
-                else:
-                    self.logger.warning("Nenhum subtipo encontrado.")
+                        parent_obj.subtypes.append(child_obj)
+                    
+                    parent_objects.append(parent_obj)
+
+                self.logger.info(f"Adicionando {len(parent_objects)} tipos de tarefa pai com seus subtipos à sessão.")
+                self.db.add_all(parent_objects)
 
             self.logger.info("Sincronização de tipos e subtipos concluída com sucesso.")
         except Exception as e:
             self.logger.error(f"Erro ao sincronizar tipos e subtipos: {e}", exc_info=True)
+            # O 'with self.db.begin()' garante o rollback em caso de erro.
