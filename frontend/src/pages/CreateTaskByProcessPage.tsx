@@ -60,7 +60,7 @@ const CreateTaskByProcessPage = () => {
   const [description, setDescription] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const [selectedStatusId, setSelectedStatusId] = useState<string>('1'); // Padrão "Pendente"
+  const [selectedStatusId, setSelectedStatusId] = useState<string>('0'); // Padrão "Pendente"
   const [selectedOriginOfficeId, setSelectedOriginOfficeId] = useState<string>('');
   const [isResponsible, setIsResponsible] = useState(true);
   const [isExecuter, setIsExecuter] = useState(true);

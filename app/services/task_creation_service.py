@@ -11,12 +11,7 @@ from app.models.legal_one import LegalOneOffice, LegalOneTaskType, LegalOneTaskS
 
 # --- Dicionário de Mapeamento de Status ---
 # Mapeia o ID interno (usado no nosso sistema/frontend) para o ID externo (esperado pelo Legal One)
-STATUS_MAP = {
-    1: 0,  # Nosso "Pendente" -> L1 "Pendente"
-    2: 1,  # Nosso "Cumprido" -> L1 "Cumprido"
-    3: 2,  # Nosso "Não cumprido" -> L1 "Não cumprido"
-    4: 3,  # Nosso "Cancelado" -> L1 "Cancelado"
-}
+
 DEFAULT_STATUS_ID = 0 # ID externo para "Pendente"
 
 # --- Exceções e DTOs (inalterados) ---
@@ -105,20 +100,11 @@ class TaskCreationService:
         # --- SEÇÃO DE STATUS ATUALIZADA ---
         # 5. Status e Participantes
         internal_status_id = source_payload.get('status', {}).get('id')
-        
-        if internal_status_id is not None:
-            # Traduz o ID interno para o ID externo do Legal One
-            external_status_id = STATUS_MAP.get(internal_status_id)
-            if external_status_id is None:
-                raise InvalidDataError(f"O ID de status interno '{internal_status_id}' é inválido.")
-            payload['status'] = { "id": external_status_id }
-        else:
-            # Se nenhum status for enviado, usa o padrão "Pendente"
-            payload['status'] = { "id": DEFAULT_STATUS_ID }
-        
+        status_id_to_send = internal_status_id if internal_status_id is not None else DEFAULT_STATUS_ID
+        payload['status'] = { "id": status_id_to_send }
+
         if not request.participants:
             raise InvalidDataError("A requisição deve conter pelo menos um participante.")
-        
         payload['participants'] = [
             {
                 "contact": {"id": p.contact_id},

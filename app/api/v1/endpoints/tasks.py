@@ -79,7 +79,6 @@ def get_data_for_task_form(db: Session = Depends(get_db)):
     users = db.query(LegalOneUser).filter(LegalOneUser.is_active == True).options(
         joinedload(LegalOneUser.squad_members).joinedload(SquadMember.squad)
     ).all()
-    
     users_for_form = [
         UserForTaskForm(
             id=user.id,
@@ -88,9 +87,8 @@ def get_data_for_task_form(db: Session = Depends(get_db)):
             squads=[{"id": member.squad.id, "name": member.squad.name} for member in user.squad_members]
         ) for user in users
     ]
-    
     task_statuses = [
-        {"id": 1, "name": "Pendente"}, {"id": 2, "name": "Cumprido"}, {"id": 3, "name": "Não cumprido"}, {"id": 4, "name": "Cancelado"}
+        {"id": 0, "name": "Pendente"}, {"id": 1, "name": "Cumprido"}, {"id": 2, "name": "Não cumprido"}, {"id": 3, "name": "Cancelado"}
     ]
 
     return TaskCreationDataResponse(
