@@ -9,6 +9,16 @@ from datetime import datetime, timezone
 from app.services.legal_one_client import LegalOneApiClient
 from app.models.legal_one import LegalOneOffice, LegalOneTaskType, LegalOneTaskSubType
 
+# --- Dicionário de Mapeamento de Status ---
+# Mapeia o ID interno (usado no nosso sistema/frontend) para o ID externo (esperado pelo Legal One)
+STATUS_MAP = {
+    1: 0,  # Nosso "Pendente" -> L1 "Pendente"
+    2: 1,  # Nosso "Cumprido" -> L1 "Cumprido"
+    3: 2,  # Nosso "Não cumprido" -> L1 "Não cumprido"
+    4: 3,  # Nosso "Cancelado" -> L1 "Cancelado"
+}
+DEFAULT_STATUS_ID = 0 # ID externo para "Pendente"
+
 # --- Exceções e DTOs (inalterados) ---
 class LawsuitNotFoundError(Exception):
     def __init__(self, cnj: str):
@@ -59,7 +69,6 @@ class TaskCreationService:
         if not internal_type_id or not internal_subtype_id:
             raise InvalidDataError("Os campos 'typeId' e 'subTypeId' (IDs internos) são obrigatórios.")
 
-        # Busca o subtipo e seu pai para validar a hierarquia e obter os IDs externos
         sub_type = self.db.query(LegalOneTaskSubType).options(
             joinedload(LegalOneTaskSubType.parent_type)
         ).filter(LegalOneTaskSubType.id == internal_subtype_id).first()
@@ -93,11 +102,19 @@ class TaskCreationService:
         payload['originOfficeId'] = office.external_id
         payload['responsibleOfficeId'] = source_payload.get('responsibleOfficeId')
 
+        # --- SEÇÃO DE STATUS ATUALIZADA ---
         # 5. Status e Participantes
-        if 'status' in source_payload and isinstance(source_payload.get('status'), dict) and 'id' in source_payload.get('status'):
-            payload['status'] = { "id": source_payload['status']['id'] }
+        internal_status_id = source_payload.get('status', {}).get('id')
+        
+        if internal_status_id is not None:
+            # Traduz o ID interno para o ID externo do Legal One
+            external_status_id = STATUS_MAP.get(internal_status_id)
+            if external_status_id is None:
+                raise InvalidDataError(f"O ID de status interno '{internal_status_id}' é inválido.")
+            payload['status'] = { "id": external_status_id }
         else:
-            raise InvalidDataError("Payload deve conter um objeto 'status' com uma chave 'id'.")
+            # Se nenhum status for enviado, usa o padrão "Pendente"
+            payload['status'] = { "id": DEFAULT_STATUS_ID }
         
         if not request.participants:
             raise InvalidDataError("A requisição deve conter pelo menos um participante.")

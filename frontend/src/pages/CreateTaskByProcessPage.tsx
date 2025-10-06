@@ -13,7 +13,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from "@/components/ui/checkbox";
 import UserSelector, { SelectableUser } from '@/components/ui/UserSelector';
 
-// --- Tipos de Dados (ALTERAÇÃO 1 de 4) ---
+// --- Tipos de Dados ---
 interface Lawsuit {
   id: number;
   identifierNumber: string;
@@ -25,7 +25,6 @@ interface Office {
   path: string;
   external_id: number;
 }
-// Tipos de dados atualizados para refletir a resposta hierárquica da API
 interface SubType {
     id: number;
     name: string;
@@ -35,6 +34,11 @@ interface HierarchicalTaskType {
     name: string;
     sub_types: SubType[];
 }
+// --- ADIÇÃO: Interface para o status ---
+interface TaskStatus {
+    id: number;
+    name: string;
+}
 
 const CreateTaskByProcessPage = () => {
   const { toast } = useToast();
@@ -43,12 +47,11 @@ const CreateTaskByProcessPage = () => {
   const [foundLawsuit, setFoundLawsuit] = useState<Lawsuit | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
 
-  // O estado 'taskTypes' agora espera o novo formato hierárquico
   const [taskTypes, setTaskTypes] = useState<HierarchicalTaskType[]>([]);
-  // O estado 'subTypes' global foi removido pois não é mais necessário
-  // const [subTypes, setSubTypes] = useState<TaskSubType[]>([]);
   const [users, setUsers] = useState<SelectableUser[]>([]);
   const [offices, setOffices] = useState<Office[]>([]);
+  // --- ADIÇÃO: Estado para os status ---
+  const [taskStatuses, setTaskStatuses] = useState<TaskStatus[]>([]);
   const [isFormLoading, setIsFormLoading] = useState(true);
 
   const [selectedTaskTypeId, setSelectedTaskTypeId] = useState<string>('');
@@ -57,7 +60,7 @@ const CreateTaskByProcessPage = () => {
   const [description, setDescription] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const [selectedStatusId, setSelectedStatusId] = useState<string>('1');
+  const [selectedStatusId, setSelectedStatusId] = useState<string>('1'); // Padrão "Pendente"
   const [selectedOriginOfficeId, setSelectedOriginOfficeId] = useState<string>('');
   const [isResponsible, setIsResponsible] = useState(true);
   const [isExecuter, setIsExecuter] = useState(true);
@@ -84,12 +87,11 @@ const CreateTaskByProcessPage = () => {
         const taskData = await taskDataResponse.json();
         const officesData = await officesResponse.json();
         
-        // --- ALTERAÇÃO 2 de 4: Ajuste na população dos estados ---
-        setTaskTypes(taskData.task_types); // Recebe a lista hierárquica completa
-        // A linha abaixo foi removida pois 'sub_types' não existe mais no topo da resposta
-        // setSubTypes(taskData.sub_types);
+        setTaskTypes(taskData.task_types);
         setUsers(taskData.users);
         setOffices(officesData);
+        // --- ADIÇÃO: Populando o estado dos status ---
+        setTaskStatuses(taskData.task_statuses);
       } catch (error: any) {
         toast({ title: 'Erro ao Carregar Dados', description: error.message, variant: 'destructive' });
       } finally {
@@ -104,33 +106,17 @@ const CreateTaskByProcessPage = () => {
     [offices, selectedOriginOfficeId]
   );
 
-  // --- ALTERAÇÃO 3 de 4: Lógica de filtragem de subtipos corrigida ---
   const filteredSubTypes = useMemo(() => {
     if (!selectedTaskTypeId) return [];
-    // Encontra o tipo pai selecionado no estado 'taskTypes'
     const parentType = taskTypes.find(t => t.id === parseInt(selectedTaskTypeId, 10));
-    // Retorna a lista de 'sub_types' que já veio aninhada dentro do objeto pai
     return parentType ? parentType.sub_types : [];
   }, [selectedTaskTypeId, taskTypes]);
 
-  // Lógica original preservada
   const squadIdsForFilter = useMemo(() => {
-    // ATENÇÃO: A lógica original dependia de 'squad_ids' no subtipo.
-    // Como essa informação agora está no tipo pai, este filtro pode não funcionar como esperado.
-    // Preservando a lógica para evitar quebras, mas precisa de revisão funcional.
     if (!selectedSubTypeId) return [];
-    
-    let squadIds: number[] = [];
-    // Acha o tipo pai que contém o subtipo selecionado
-    const parentType = taskTypes.find(t => t.sub_types.some(st => st.id === parseInt(selectedSubTypeId, 10)));
-    
-    // Se encontrarmos o tipo pai, precisaríamos obter os squad_ids dele.
-    // A API atual em admin.py não retorna os squad_ids por tipo.
-    // Por enquanto, isso retornará um array vazio para não quebrar o UserSelector.
-    // TODO: Ajustar o backend em admin.py para retornar os squad_ids por tipo de tarefa.
-
-    return squadIds;
-  }, [selectedSubTypeId, taskTypes]);
+    // TODO: Reavaliar a lógica de filtro de usuários por squad se necessário.
+    return [];
+  }, [selectedSubTypeId]);
 
   useEffect(() => {
     setSelectedSubTypeId('');
@@ -150,6 +136,7 @@ const CreateTaskByProcessPage = () => {
   }, [startDateTime]);
 
   const handleSubmit = async () => {
+    // ... (lógica do handleSubmit 100% preservada) ...
     if (!foundLawsuit || !selectedTaskTypeId || !selectedSubTypeId || !selectedResponsibleId || !selectedOriginOfficeId) {
         toast({ title: 'Campos Obrigatórios', description: 'Tipo, subtipo, responsável e escritório de origem são obrigatórios.', variant: 'destructive' });
         return;
@@ -163,13 +150,11 @@ const CreateTaskByProcessPage = () => {
         return;
     }
     setIsSubmitting(true);
-
-    // --- ALTERAÇÃO 4 de 4: Simplificação na obtenção do typeId ---
+    
     const task_payload = {
       subTypeId: parseInt(selectedSubTypeId, 10),
       description: description || 'Tarefa criada via sistema',
       priority: 'Normal',
-      // Usa diretamente o ID do tipo pai que já está no estado
       typeId: parseInt(selectedTaskTypeId, 10),
       startDateTime: startDateTime.toISOString(),
       endDateTime: endDateTime.toISOString(),
@@ -223,6 +208,7 @@ const CreateTaskByProcessPage = () => {
   };
 
   const handleSearch = async () => {
+    // ... (lógica do handleSearch 100% preservada) ...
     if (!cnj.trim()) {
       toast({ title: 'CNJ Inválido', description: 'Por favor, insira um número de CNJ.', variant: 'destructive' });
       return;
@@ -306,9 +292,21 @@ const CreateTaskByProcessPage = () => {
                     </SelectContent>
                   </Select>
                 </div>
+                {/* --- MUDANÇA FINAL: Select de Status agora é dinâmico --- */}
                 <div className="space-y-2">
                   <Label htmlFor="task-status">Status</Label>
-                  <Select value={selectedStatusId} onValueChange={setSelectedStatusId}><SelectTrigger id="task-status"><SelectValue placeholder="Selecione o status..." /></SelectTrigger><SelectContent><SelectItem value="1">Aberta</SelectItem><SelectItem value="2">Em Andamento</SelectItem><SelectItem value="3">Pendente</SelectItem><SelectItem value="4">Concluída</SelectItem><SelectItem value="5">Cancelada</SelectItem></SelectContent></Select>
+                  <Select value={selectedStatusId} onValueChange={setSelectedStatusId}>
+                    <SelectTrigger id="task-status">
+                      <SelectValue placeholder="Selecione o status..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {taskStatuses.map(status => (
+                        <SelectItem key={status.id} value={String(status.id)}>
+                          {status.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
               <div className="space-y-2 pt-2">

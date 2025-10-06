@@ -90,7 +90,7 @@ def get_data_for_task_form(db: Session = Depends(get_db)):
     ]
     
     task_statuses = [
-        {"id": 1, "name": "Não iniciada"}, {"id": 2, "name": "Em andamento"}, {"id": 3, "name": "Concluída"},
+        {"id": 1, "name": "Pendente"}, {"id": 2, "name": "Cumprido"}, {"id": 3, "name": "Não cumprido"}, {"id": 4, "name": "Cancelado"}
     ]
 
     return TaskCreationDataResponse(
