@@ -1,13 +1,13 @@
 # file: app/api/v1/endpoints/tasks.py
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, joinedload
 from pydantic import BaseModel
 from typing import List, Dict, Any
 
-from app.core.dependencies import get_db, get_orchestration_service
-from app.api.v1.schemas import TaskTriggerPayload
+from app.core.dependencies import get_db, get_orchestration_service, get_batch_task_creation_service
+from app.api.v1.schemas import TaskTriggerPayload, BatchTaskCreationRequest
 from app.services.orchestration_service import OrchestrationService, ProcessNotFoundError, MissingResponsibleUserError
 from app.services.task_creation_service import (
     TaskCreationService,
@@ -20,6 +20,7 @@ from app.services.task_creation_service import (
 from app.services.legal_one_client import LegalOneApiClient
 from app.models.legal_one import LegalOneOffice, LegalOneUser, LegalOneTaskType, LegalOneTaskSubType
 from app.models.rules import Squad, SquadMember
+from app.services.batch_task_creation_service import BatchTaskCreationService
 
 router = APIRouter()
 
@@ -144,3 +145,21 @@ def create_full_task(
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno inesperado: {str(e)}")
+    
+
+@router.post("/batch-create", status_code=202, summary="Criar Tarefas em Lote a partir de uma Fonte Externa")
+async def create_batch_tasks(
+    request: BatchTaskCreationRequest,
+    background_tasks: BackgroundTasks,
+    service: BatchTaskCreationService = Depends(get_batch_task_creation_service)
+):
+    """
+    Recebe um lote de números de processo de uma fonte externa e inicia a criação
+    de tarefas em segundo plano.
+
+    - **fonte**: Identificador da aplicação de origem (ex: "Onesid").
+    - **process_numbers**: Lista de CNJs para os quais as tarefas serão criadas.
+    - **responsible_external_id**: ID externo do usuário do Legal One que será o responsável.
+    """
+    background_tasks.add_task(service.process_batch_request, request)
+    return {"status": "recebido", "message": "A solicitação de criação de tarefas em lote foi recebida e está sendo processada em segundo plano."}

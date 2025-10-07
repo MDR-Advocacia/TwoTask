@@ -6,6 +6,7 @@ from app.db.session import SessionLocal
 from app.services.legal_one_client import LegalOneApiClient
 from app.services.task_creation_service import TaskCreationService
 from app.services.orchestration_service import OrchestrationService
+from app.services.batch_task_creation_service import BatchTaskCreationService
 
 # Função de dependência para obter a sessão do banco de dados
 def get_db():
@@ -34,3 +35,13 @@ def get_orchestration_service(
         api_client=api_client,
         task_service=task_service
     )
+
+
+def get_batch_task_creation_service(
+    db: Session = Depends(get_db),
+    api_client: LegalOneApiClient = Depends(get_api_client)
+) -> BatchTaskCreationService:
+    """
+    Dependência para injetar o novo serviço de criação em lote.
+    """
+    return BatchTaskCreationService(db=db, client=api_client)

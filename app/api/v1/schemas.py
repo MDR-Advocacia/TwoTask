@@ -1,6 +1,6 @@
 # app/api/v1/schemas.py
 
-from pydantic import BaseModel, ConfigDict, computed_field
+from pydantic import BaseModel, ConfigDict, computed_field, Field
 from typing import List, Optional, Dict, Any
 
 # --- Schemas para a API Externa (Legal One) ---
@@ -150,3 +150,13 @@ class TaskTemplate(BaseModel):
     estimated_time: Optional[str]
     fields: List[str]
     model_config = ConfigDict(from_attributes=True)
+
+
+class BatchTaskCreationRequest(BaseModel):
+    """
+    Schema para a requisição de criação de tarefas em lote a partir de fontes externas.
+    """
+    fonte: str = Field(..., description="Identificador da aplicação de origem, ex: 'Onesid'")
+    process_numbers: List[str]
+    responsible_external_id: int = Field(..., description="ID EXTERNO do usuário responsável no Legal One")
+
