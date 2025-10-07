@@ -1,7 +1,8 @@
 # app/services/batch_strategies/onesid_strategy.py
 import asyncio
 import logging
-from datetime import date, timedelta, datetime, timezone
+from datetime import date, timedelta, datetime, timezone, time
+from zoneinfo import ZoneInfo
 from .base_strategy import BaseStrategy
 from app.api.v1.schemas import BatchTaskCreationRequest
 from app.models.legal_one import LegalOneTaskSubType
@@ -29,11 +30,14 @@ class OnesidStrategy(BaseStrategy):
         failed_items = []
         
         # Define o prazo e o formata para o padrão ISO com timezone (UTC)
+        local_tz = ZoneInfo("America/Sao_Paulo")
         deadline_date = self._get_next_business_day()
-        deadline_datetime = datetime.combine(deadline_date, datetime.min.time())
-        end_datetime_iso = deadline_datetime.isoformat() + "Z"
+        naive_deadline = datetime.combine(deadline_date, time(23, 59, 59))
+        aware_deadline = naive_deadline.replace(tzinfo=local_tz)
+        utc_deadline = aware_deadline.astimezone(timezone.utc)
+        end_datetime_iso = utc_deadline.isoformat().replace('+00:00', 'Z')
         start_datetime_iso = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-
+        
         # Valida se o tipo/subtipo de tarefa existem no nosso BD
         sub_type = self.db.query(LegalOneTaskSubType).filter(LegalOneTaskSubType.external_id == TASK_SUBTYPE_EXTERNAL_ID).first()
         if not sub_type or sub_type.parent_type.external_id != TASK_TYPE_EXTERNAL_ID:
