@@ -48,10 +48,10 @@ const Dashboard = () => {
   };
 
   const stats = [
-    { title: "Squads Ativos", value: "12", icon: Users },
-    { title: "Tarefas Criadas (Mês)", value: "1,247", icon: Target },
-    { title: "Taxa de Sucesso", value: "98.5%", icon: BarChart3 },
-    { title: "Tempo Médio", value: "2.3s", icon: Activity },
+    { title: "Squads Ativos", value: "", icon: Users },
+    { title: "Tarefas Criadas (Mês)", value: "", icon: Target },
+    { title: "Taxa de Sucesso", value: "", icon: BarChart3 },
+    { title: "Tempo Médio", value: "", icon: Activity },
   ];
 
   return (
