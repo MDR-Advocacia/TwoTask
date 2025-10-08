@@ -1,8 +1,9 @@
 # app/api/v1/schemas.py
 
-from pydantic import BaseModel, ConfigDict, computed_field, Field
+from pydantic import BaseModel, ConfigDict, computed_field, Field, field_validator
 from typing import List, Optional, Dict, Any
 from datetime import datetime
+from app.core.utils import format_cnj
 
 # --- Schemas para a API Externa (Legal One) ---
 
@@ -157,6 +158,15 @@ class ProcessoResponsavel(BaseModel):
     numero_processo: str
     id_responsavel: int
     observacao: Optional[str] = None
+
+    @field_validator("numero_processo")
+    @classmethod
+    def format_process_number_to_cnj(cls, v: str) -> str:
+        """
+        Garante que o número do processo esteja sempre no formato CNJ.
+        """
+        return format_cnj(v)
+
 
 class BatchTaskCreationRequest(BaseModel):
     fonte: str
