@@ -63,7 +63,7 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
                   className="w-15 h-12 square object-cover"
                 />
                 <span className="font-bold text-xl bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-                  OneTask
+                  TwoTask
                 </span>
               </Link>
 

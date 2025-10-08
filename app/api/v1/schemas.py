@@ -2,6 +2,7 @@
 
 from pydantic import BaseModel, ConfigDict, computed_field, Field
 from typing import List, Optional, Dict, Any
+from datetime import datetime
 
 # --- Schemas para a API Externa (Legal One) ---
 
@@ -160,3 +161,26 @@ class ProcessoResponsavel(BaseModel):
 class BatchTaskCreationRequest(BaseModel):
     fonte: str
     processos: List[ProcessoResponsavel]
+
+# --- Schemas para o Dashboard de Lotes ---
+
+class BatchExecutionItemResponse(BaseModel):
+    id: int
+    process_number: str
+    status: str
+    created_task_id: Optional[int] = None
+    error_message: Optional[str] = None
+    
+    model_config = ConfigDict(from_attributes=True)
+
+class BatchExecutionResponse(BaseModel):
+    id: int
+    source: str
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    total_items: int
+    success_count: int
+    failure_count: int
+    items: List[BatchExecutionItemResponse] = []
+    
+    model_config = ConfigDict(from_attributes=True)
