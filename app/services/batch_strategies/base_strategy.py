@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from sqlalchemy.orm import Session
 from app.services.legal_one_client import LegalOneApiClient
 from app.api.v1.schemas import BatchTaskCreationRequest
+from app.models.batch_execution import BatchExecution
 
 class BaseStrategy(ABC):
     """
@@ -14,7 +15,7 @@ class BaseStrategy(ABC):
         self.client = client
 
     @abstractmethod
-    async def process_batch(self, request: BatchTaskCreationRequest) -> dict:
+    async def process_batch(self, request: BatchTaskCreationRequest, execution_log: BatchExecution) -> dict:
         """
         Executa o processamento do lote. Deve retornar um dicionário com o resumo.
         """
