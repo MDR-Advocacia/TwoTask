@@ -152,11 +152,11 @@ class TaskTemplate(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class BatchTaskCreationRequest(BaseModel):
-    """
-    Schema para a requisição de criação de tarefas em lote a partir de fontes externas.
-    """
-    fonte: str = Field(..., description="Identificador da aplicação de origem, ex: 'Onesid'")
-    process_numbers: List[str]
-    responsible_external_id: int = Field(..., description="ID EXTERNO do usuário responsável no Legal One")
+class ProcessoResponsavel(BaseModel):
+    numero_processo: str
+    id_responsavel: int
+    observacao: Optional[str] = None
 
+class BatchTaskCreationRequest(BaseModel):
+    fonte: str
+    processos: List[ProcessoResponsavel]

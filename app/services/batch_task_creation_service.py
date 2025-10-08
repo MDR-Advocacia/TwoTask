@@ -16,23 +16,23 @@ class BatchTaskCreationService:
         self.client = client
         self._strategies: dict[str, type[BaseStrategy]] = {
             "Onesid": OnesidStrategy
-            # Adicione novas fontes e suas classes de estratégia aqui
         }
 
     async def process_batch_request(self, request: BatchTaskCreationRequest):
         """
         Ponto de entrada do serviço. Identifica a fonte e executa a estratégia.
         """
-        logging.info(f"Recebida requisição de lote da fonte: '{request.fonte}' com {len(request.process_numbers)} processos.")
+        # --- LINHA CORRIGIDA ---
+        logging.info(f"Recebida requisição de lote da fonte: '{request.fonte}' com {len(request.processos)} processos.")
+        # ---------------------
+        
         strategy_class = self._strategies.get(request.fonte)
 
         if not strategy_class:
             logging.error(f"Nenhuma estratégia encontrada para a fonte: '{request.fonte}'")
-            # Aqui poderíamos notificar ou registrar o erro de forma mais robusta
             return
 
         strategy_instance = strategy_class(self.db, self.client)
         result = await strategy_instance.process_batch(request)
 
         logging.info(f"Processamento do lote da fonte '{request.fonte}' concluído. Resultado: {result}")
-        # Aqui poderíamos enviar um email ou notificação com o resultado.

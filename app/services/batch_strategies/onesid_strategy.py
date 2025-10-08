@@ -28,8 +28,8 @@ class OnesidStrategy(BaseStrategy):
         """ Processa o lote de CNJs vindo do Onsid. """
         success_count = 0
         failed_items = []
-        
-        # Define o prazo e o formata para o padrão ISO com timezone (UTC)
+
+        # Lógica de data robusta com fuso horário explícito
         local_tz = ZoneInfo("America/Sao_Paulo")
         deadline_date = self._get_next_business_day()
         naive_deadline = datetime.combine(deadline_date, time(23, 59, 59))
@@ -37,19 +37,23 @@ class OnesidStrategy(BaseStrategy):
         utc_deadline = aware_deadline.astimezone(timezone.utc)
         end_datetime_iso = utc_deadline.isoformat().replace('+00:00', 'Z')
         start_datetime_iso = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-        
+
         # Valida se o tipo/subtipo de tarefa existem no nosso BD
         sub_type = self.db.query(LegalOneTaskSubType).filter(LegalOneTaskSubType.external_id == TASK_SUBTYPE_EXTERNAL_ID).first()
         if not sub_type or sub_type.parent_type.external_id != TASK_TYPE_EXTERNAL_ID:
             raise ValueError(f"Tipo/Subtipo de tarefa ({TASK_TYPE_EXTERNAL_ID}/{TASK_SUBTYPE_EXTERNAL_ID}) não configurado corretamente no banco de dados.")
 
-        for cnj in request.process_numbers:
+        for item in request.processos:
+            cnj = item.numero_processo
+            id_responsavel = item.id_responsavel
+            observacao = item.observacao
+
             try:
                 # PASSO 1: ENRIQUECIMENTO - Buscar dados do processo
                 lawsuit = self.client.search_lawsuit_by_cnj(cnj)
                 if not lawsuit or not lawsuit.get('id'):
                     raise Exception("Processo não encontrado no Legal One.")
-                
+
                 lawsuit_id = lawsuit['id']
                 responsible_office_id = lawsuit.get('responsibleOfficeId')
 
@@ -66,23 +70,28 @@ class OnesidStrategy(BaseStrategy):
                     "typeId": TASK_TYPE_EXTERNAL_ID,
                     "subTypeId": TASK_SUBTYPE_EXTERNAL_ID,
                     "responsibleOfficeId": responsible_office_id,
-                    "originOfficeId": responsible_office_id, # <-- CORREÇÃO 1: Adicionado
+                    "originOfficeId": responsible_office_id,
                     "participants": [
                         {
-                            "contact": {"id": request.responsible_external_id},
+                            "contact": {"id": id_responsavel},
                             "isResponsible": True,
                             "isExecuter": True,
-                            "isRequester": True # <-- CORREÇÃO 2: Adicionado
+                            "isRequester": True
                         }
                     ]
                 }
+
+                # Adiciona o campo de observação ao payload apenas se ele foi enviado
+                if observacao:
+                    task_payload['notes'] = observacao
+
                 # PASSO 3: CRIAÇÃO E VÍNCULO
                 created_task = self.client.create_task(task_payload)
                 if not created_task or not created_task.get('id'):
                     raise Exception("Falha na criação da tarefa na API do Legal One (resposta inválida).")
-                
+
                 task_id = created_task['id']
-                
+
                 link_success = self.client.link_task_to_lawsuit(task_id, {"linkType": "Litigation", "linkId": lawsuit_id})
                 if not link_success:
                      # Mesmo que o vínculo falhe, a tarefa foi criada. Consideramos um sucesso parcial.
@@ -90,7 +99,7 @@ class OnesidStrategy(BaseStrategy):
 
                 success_count += 1
                 logging.info(f"Tarefa para CNJ {cnj} processada com sucesso. Task ID: {task_id}")
-                await asyncio.sleep(0.1) 
+                await asyncio.sleep(0.1)
 
             except Exception as e:
                 logging.error(f"Falha ao processar CNJ {cnj}: {str(e)}")
