@@ -1,36 +1,42 @@
-// frontend/src/App.tsx
+// frontend/src/App.tsx (versão final, refatorada)
 
 import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
-import Layout from './components/Layout';
+
+// Componentes de Rota e Layout
+import ProtectedRoute from './components/ProtectedRoute'; // Importamos nossa rota protegida
+
+// Páginas
 import AdminPage from './pages/AdminPage';
 import NotFound from './pages/NotFound';
-import Dashboard from './components/Dashboard'; // Importando o Dashboard diretamente
+import Dashboard from './components/Dashboard';
 import CreateTaskByTemplatePage from './pages/CreateTaskByTemplatePage';
 import CreateTaskByProcessPage from './pages/CreateTaskByProcessPage';
 import LoginPage from './pages/LoginPage';
 
+// Contexto de Autenticação
+import { AuthProvider } from './contexts/AuthContext';
+
 function App() {
   return (
-    <Router>
-      <Layout>
+    <AuthProvider>
+      <Router>
         <Routes>
-          {/* Rotas antigas atualizadas */}
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/admin" element={<AdminPage />} />
-          
-          {/* Novas rotas para as páginas de criação de tarefas */}
-          <Route path="/tasks/template-batch" element={<CreateTaskByTemplatePage />} />
-          <Route path="/tasks/by-process" element={<CreateTaskByProcessPage />} />
+          {/* Rota Pública: Login */}
+          <Route path="/login" element={<LoginPage />} />
+
+          {/* Rotas Protegidas */}
+          <Route element={<ProtectedRoute />}>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/admin" element={<AdminPage />} />
+            <Route path="/tasks/template-batch" element={<CreateTaskByTemplatePage />} />
+            <Route path="/tasks/by-process" element={<CreateTaskByProcessPage />} />
+          </Route>
 
           {/* Rota para página não encontrada */}
           <Route path="*" element={<NotFound />} />
-
-          {/* --- NOVA ROTA DE LOGIN --- */}
-          <Route path="/login" element={<LoginPage />} />
-
         </Routes>
-      </Layout>
-    </Router>
+      </Router>
+    </AuthProvider>
   );
 }
 
