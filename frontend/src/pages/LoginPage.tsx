@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom'; // Para redirecionar o usuário
-import { useAuth } from '@/contexts/AuthContext'; // Nosso hook de autenticação
+import { useAuth } from '@/hooks/useAuth'
 import { Button } from "@/components/ui/button";
 import {
   Card,

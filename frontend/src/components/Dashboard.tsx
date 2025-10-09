@@ -55,7 +55,7 @@ const Dashboard = () => {
   ];
 
   return (
-    <div className="container mx-auto px-6 py-8 space-y-8">
+    <div className="container mx-auto px-2 py-3 space-y-6">
       {/* Header e Stats permanecem iguais */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
         <div>
