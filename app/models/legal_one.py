@@ -79,3 +79,11 @@ class LegalOneUser(Base):
 
     # Relação para acessar as associações de squad
     squad_members = relationship('SquadMember', back_populates='user')
+     
+    # --- CAMPO ADICIONADO ---
+    hashed_password = Column(String, nullable=True) # Permite nulo inicialmente
+    
+    is_active = Column(Boolean, default=True, nullable=False)
+
+    # Relação para acessar as associações de squad
+    squad_members = relationship('SquadMember', back_populates='user')
