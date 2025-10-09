@@ -5,10 +5,20 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List
 
 from app.core.dependencies import get_db
+from app.core import auth
 from app.models import legal_one as legal_one_models
 from app.api.v1 import schemas
 
 router = APIRouter()
+
+
+@router.get("/me", response_model=schemas.LegalOneUser)
+def read_users_me(current_user: legal_one_models.LegalOneUser = Depends(auth.get_current_user)):
+    """
+    Endpoint protegido que retorna os dados do usuário autenticado.
+    """
+    return current_user
+
 
 @router.get("/with-squads", response_model=List[schemas.UserWithSquads])
 def get_users_with_squads(db: Session = Depends(get_db)):

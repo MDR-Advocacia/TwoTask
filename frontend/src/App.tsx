@@ -5,10 +5,9 @@ import Layout from './components/Layout';
 import AdminPage from './pages/AdminPage';
 import NotFound from './pages/NotFound';
 import Dashboard from './components/Dashboard'; // Importando o Dashboard diretamente
-
-// Importando as novas páginas que criamos
 import CreateTaskByTemplatePage from './pages/CreateTaskByTemplatePage';
 import CreateTaskByProcessPage from './pages/CreateTaskByProcessPage';
+import LoginPage from './pages/LoginPage';
 
 function App() {
   return (
@@ -25,6 +24,10 @@ function App() {
 
           {/* Rota para página não encontrada */}
           <Route path="*" element={<NotFound />} />
+
+          {/* --- NOVA ROTA DE LOGIN --- */}
+          <Route path="/login" element={<LoginPage />} />
+
         </Routes>
       </Layout>
     </Router>

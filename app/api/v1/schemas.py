@@ -194,3 +194,12 @@ class BatchExecutionResponse(BaseModel):
     items: List[BatchExecutionItemResponse] = []
     
     model_config = ConfigDict(from_attributes=True)
+
+# --- ADIÇÃO: Schemas para Autenticação ---
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenData(BaseModel):
+    username: Optional[str] = None
