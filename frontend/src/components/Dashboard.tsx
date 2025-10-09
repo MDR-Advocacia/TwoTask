@@ -1,4 +1,5 @@
 // frontend/src/components/Dashboard.tsx
+
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -9,17 +10,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 
-// Importando nossos tipos e a função da API
+// Tipos corretos, que correspondem à sua API
 import { BatchExecution } from "@/types/api";
 import { fetchBatchExecutions } from "@/services/api";
 
 const Dashboard = () => {
-  // Estados para controlar os dados, carregamento e erros
   const [executions, setExecutions] = useState<BatchExecution[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Função para buscar os dados
   const loadData = async () => {
     setIsLoading(true);
     setError(null);
@@ -33,30 +32,31 @@ const Dashboard = () => {
     }
   };
 
-  // useEffect para buscar os dados quando o componente é montado
   useEffect(() => {
     loadData();
   }, []);
 
-  // Função para formatar datas de forma mais legível
+  // --- FUNÇÃO DE FORMATAÇÃO DE DATA CORRIGIDA ---
   const formatDateTime = (isoString: string | null) => {
     if (!isoString) return "N/A";
-    return new Date(isoString).toLocaleString("pt-BR", {
-      dateStyle: "short",
-      timeStyle: "medium",
-    });
+    const date = new Date(isoString);
+    // Usando a API Intl para garantir a conversão para o fuso horário local do navegador
+    return new Intl.DateTimeFormat('pt-BR', {
+        dateStyle: 'short',
+        timeStyle: 'medium',
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    }).format(date);
   };
 
   const stats = [
-    { title: "Squads Ativos", value: "", icon: Users },
-    { title: "Tarefas Criadas (Mês)", value: "", icon: Target },
-    { title: "Taxa de Sucesso", value: "", icon: BarChart3 },
-    { title: "Tempo Médio", value: "", icon: Activity },
+    { title: "Squads Ativos", value: "...", icon: Users },
+    { title: "Tarefas Criadas (Mês)", value: "...", icon: Target },
+    { title: "Taxa de Sucesso", value: "...", icon: BarChart3 },
+    { title: "Tempo Médio", value: "...", icon: Activity },
   ];
 
   return (
-    <div className="container mx-auto px-2 py-3 space-y-6">
-      {/* Header e Stats permanecem iguais */}
+    <div className="container mx-auto px-6 py-8 space-y-8">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
         <div>
           <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
@@ -83,7 +83,6 @@ const Dashboard = () => {
         ))}
       </div>
 
-      {/* Card de Atividades Recentes - AGORA DINÂMICO */}
       <Card className="glass-card border-0 animate-fade-in">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -119,6 +118,7 @@ const Dashboard = () => {
                   <AccordionTrigger>
                     <div className="flex flex-1 items-center justify-between pr-4 text-sm">
                       <Badge variant="outline">{exec.source}</Badge>
+                      {/* --- APLICAÇÃO DA FORMATAÇÃO DE DATA CORRETA --- */}
                       <span>{formatDateTime(exec.start_time)}</span>
                       <div className="flex gap-4">
                         <Badge variant="secondary">Total: {exec.total_items}</Badge>
