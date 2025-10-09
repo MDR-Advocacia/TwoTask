@@ -6,6 +6,7 @@ from app.services.legal_one_client import LegalOneApiClient
 from app.api.v1.schemas import BatchTaskCreationRequest
 from app.services.batch_strategies.base_strategy import BaseStrategy
 from app.services.batch_strategies.onesid_strategy import OnesidStrategy
+from app.services.batch_strategies.spreadsheet_strategy import SpreadsheetStrategy
 from app.models.batch_execution import BatchExecution
 
 class BatchTaskCreationService:
@@ -17,8 +18,55 @@ class BatchTaskCreationService:
         self.db = db
         self.client = client
         self._strategies: dict[str, type[BaseStrategy]] = {
-            "Onesid": OnesidStrategy
+            "Onesid": OnesidStrategy,
+            "Planilha": SpreadsheetStrategy
         }
+
+
+    async def process_spreadsheet_request(self, file_content: bytes):
+        """
+        Orquestra o processamento de um arquivo de planilha em segundo plano.
+        """
+        logging.info("Iniciando processamento de lote via planilha.")
+        
+        # Cria um log inicial. O total de itens será atualizado pela estratégia.
+        execution_log = BatchExecution(
+            source="Planilha",
+            total_items=0 # Será atualizado após a leitura da planilha
+        )
+        self.db.add(execution_log)
+        self.db.commit()
+        self.db.refresh(execution_log)
+
+        try:
+            # Converte o conteúdo em bytes para um objeto que a estratégia possa usar
+            # e constrói um payload semelhante ao que a outra estratégia recebe.
+            spreadsheet_request = BatchTaskCreationRequest(
+                fonte="Planilha",
+                processos=[], # Será preenchido pela estratégia
+                # Passamos o conteúdo do arquivo via um campo extra no Pydantic model.
+                # Para isso, precisaremos ajustar o schema. Por enquanto, vamos passar diretamente.
+                file_content=file_content
+            )
+
+            strategy_instance = SpreadsheetStrategy(self.db, self.client)
+            result = await strategy_instance.process_batch(spreadsheet_request, execution_log)
+            
+            # Atualiza o log com os totais finais
+            execution_log.success_count = result.get("sucesso", 0)
+            execution_log.failure_count = result.get("falhas", 0)
+            logging.info(f"Processamento da planilha concluído. Resultado: {result}")
+
+        except Exception as e:
+            logging.error(f"Erro catastrófico ao processar a planilha: {e}", exc_info=True)
+            if execution_log:
+                execution_log.failure_count = execution_log.total_items - (execution_log.success_count or 0)
+        
+        finally:
+            if execution_log:
+                execution_log.end_time = datetime.now(timezone.utc)
+                self.db.commit()
+    
 
     async def process_batch_request(self, request: BatchTaskCreationRequest):
         """

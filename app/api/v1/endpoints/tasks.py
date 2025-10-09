@@ -1,6 +1,6 @@
 # file: app/api/v1/endpoints/tasks.py
 
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, UploadFile, File
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, joinedload
 from pydantic import BaseModel
@@ -163,3 +163,27 @@ async def create_batch_tasks(
     """
     background_tasks.add_task(service.process_batch_request, request)
     return {"status": "recebido", "message": "A solicitação de criação de tarefas em lote foi recebida e está sendo processada em segundo plano."}
+
+@router.post("/batch-create-from-spreadsheet", status_code=202, summary="Criar Tarefas em Lote a partir de uma Planilha")
+async def create_batch_tasks_from_spreadsheet(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    service: BatchTaskCreationService = Depends(get_batch_task_creation_service)
+):
+    """
+    Recebe um arquivo de planilha (.xlsx) e inicia a criação de tarefas
+    em segundo plano com base em seu conteúdo.
+
+    O arquivo deve ser enviado como 'multipart/form-data'.
+    """
+    # Validação do tipo de arquivo
+    if not file.filename or not file.filename.endswith('.xlsx'):
+        raise HTTPException(status_code=400, detail="Formato de arquivo inválido. Por favor, envie um arquivo .xlsx.")
+
+    # Lê o conteúdo do arquivo em memória
+    file_content = await file.read()
+
+    # Adiciona a tarefa de processamento em segundo plano
+    background_tasks.add_task(service.process_spreadsheet_request, file_content)
+    
+    return {"status": "recebido", "message": "A planilha foi recebida e está sendo processada em segundo plano."}

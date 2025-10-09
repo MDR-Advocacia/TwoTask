@@ -171,7 +171,9 @@ class ProcessoResponsavel(BaseModel):
 class BatchTaskCreationRequest(BaseModel):
     fonte: str
     processos: List[ProcessoResponsavel]
-
+    file_content: Optional[bytes] = None # <-- ADICIONAR ESTA LINHA
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
 # --- Schemas para o Dashboard de Lotes ---
 
 class BatchExecutionItemResponse(BaseModel):

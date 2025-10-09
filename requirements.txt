@@ -1,3 +1,5 @@
+# Conteúdo para: requirements.txt
+
 # Core do FastAPI
 fastapi
 uvicorn[standard]
@@ -22,3 +24,6 @@ python-dotenv
 requests
 httpx
 python-dateutil
+
+# Biblioteca para leitura e manipulação de arquivos Excel (.xlsx)
+openpyxl

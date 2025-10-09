@@ -3,7 +3,19 @@
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Users, Target, BarChart3, Activity, AlertCircle, CheckCircle2, XCircle, RefreshCw } from "lucide-react";
+// --- 1. ADICIONAR NOVOS ÍCONES ---
+import { 
+    Users, 
+    Target, 
+    BarChart3, 
+    Activity, 
+    AlertCircle, 
+    CheckCircle2, 
+    XCircle, 
+    RefreshCw,
+    FileUp, 
+    BrainCircuit 
+} from "lucide-react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -13,6 +25,20 @@ import { Button } from "@/components/ui/button";
 // Tipos corretos, que correspondem à sua API
 import { BatchExecution } from "@/types/api";
 import { fetchBatchExecutions } from "@/services/api";
+
+// --- 2. NOVO COMPONENTE VISUAL PARA A FONTE ---
+const SourceBadge = ({ source }: { source: string }) => {
+    // Determina o ícone com base no nome da fonte, ignorando maiúsculas/minúsculas
+    const isSpreadsheet = source.toLowerCase() === 'planilha';
+    const Icon = isSpreadsheet ? FileUp : BrainCircuit;
+    
+    return (
+      <div className="flex items-center gap-2 font-medium text-sm px-2.5 py-0.5 rounded-full border bg-background">
+        <Icon className="h-4 w-4 text-muted-foreground" />
+        <span>{source}</span>
+      </div>
+    );
+};
 
 const Dashboard = () => {
   const [executions, setExecutions] = useState<BatchExecution[]>([]);
@@ -36,11 +62,9 @@ const Dashboard = () => {
     loadData();
   }, []);
 
-  // --- FUNÇÃO DE FORMATAÇÃO DE DATA CORRIGIDA ---
   const formatDateTime = (isoString: string | null) => {
     if (!isoString) return "N/A";
     const date = new Date(isoString);
-    // Usando a API Intl para garantir a conversão para o fuso horário local do navegador
     return new Intl.DateTimeFormat('pt-BR', {
         dateStyle: 'short',
         timeStyle: 'medium',
@@ -90,7 +114,7 @@ const Dashboard = () => {
             Histórico de Execuções em Lote
           </CardTitle>
           <CardDescription>
-            Acompanhe as últimas criações de tarefas via API.
+            Acompanhe as últimas criações de tarefas via API ou Planilha.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -109,7 +133,7 @@ const Dashboard = () => {
           ) : executions.length === 0 ? (
             <div className="text-center py-8 text-muted-foreground">
               <p>Nenhuma execução em lote encontrada.</p>
-              <p className="text-sm">Envie uma requisição para a API para começar.</p>
+              <p className="text-sm">Envie uma requisição para a API ou uma planilha para começar.</p>
             </div>
           ) : (
             <Accordion type="single" collapsible className="w-full">
@@ -117,10 +141,12 @@ const Dashboard = () => {
                 <AccordionItem value={`item-${exec.id}`} key={exec.id}>
                   <AccordionTrigger>
                     <div className="flex flex-1 items-center justify-between pr-4 text-sm">
-                      <Badge variant="outline">{exec.source}</Badge>
-                      {/* --- APLICAÇÃO DA FORMATAÇÃO DE DATA CORRETA --- */}
+                      {/* --- 3. SUBSTITUIÇÃO DO BADGE ANTIGO PELO NOVO COMPONENTE --- */}
+                      <SourceBadge source={exec.source} />
+                      
                       <span>{formatDateTime(exec.start_time)}</span>
-                      <div className="flex gap-4">
+                      
+                      <div className="hidden md:flex gap-4">
                         <Badge variant="secondary">Total: {exec.total_items}</Badge>
                         <Badge className="bg-green-100 text-green-800">Sucessos: {exec.success_count}</Badge>
                         <Badge variant={exec.failure_count > 0 ? "destructive" : "outline"}>
