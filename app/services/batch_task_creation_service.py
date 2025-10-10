@@ -7,6 +7,7 @@ from app.api.v1.schemas import BatchTaskCreationRequest
 from app.services.batch_strategies.base_strategy import BaseStrategy
 from app.services.batch_strategies.onesid_strategy import OnesidStrategy
 from app.services.batch_strategies.spreadsheet_strategy import SpreadsheetStrategy
+from app.services.batch_strategies.onerequest_strategy import OnerequestStrategy
 from app.models.batch_execution import BatchExecution
 
 class BatchTaskCreationService:
@@ -20,6 +21,7 @@ class BatchTaskCreationService:
         self._strategies: dict[str, type[BaseStrategy]] = {
             "Onesid": OnesidStrategy,
             "Planilha": SpreadsheetStrategy
+            "Onerequest": OnerequestStrategy
         }
 
 

@@ -158,6 +158,8 @@ class ProcessoResponsavel(BaseModel):
     numero_processo: str
     id_responsavel: int
     observacao: Optional[str] = None
+    data_agendamento: Optional[str] = None
+    setor: Optional[str] = None
 
     @field_validator("numero_processo")
     @classmethod
