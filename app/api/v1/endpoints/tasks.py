@@ -5,7 +5,6 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, joinedload
 from pydantic import BaseModel
 from typing import List, Dict, Any
-
 from app.core.dependencies import get_db, get_orchestration_service, get_batch_task_creation_service
 from app.api.v1.schemas import TaskTriggerPayload, BatchTaskCreationRequest
 from app.services.orchestration_service import OrchestrationService, ProcessNotFoundError, MissingResponsibleUserError
@@ -21,18 +20,19 @@ from app.services.legal_one_client import LegalOneApiClient
 from app.models.legal_one import LegalOneOffice, LegalOneUser, LegalOneTaskType, LegalOneTaskSubType
 from app.models.rules import Squad, SquadMember
 from app.services.batch_task_creation_service import BatchTaskCreationService
-
 router = APIRouter()
 
-# --- Schemas Pydantic (ajustados para a nova estrutura de dados) ---
+
 class SubTypeSchema(BaseModel):
     id: int
     name: str
+
 
 class HierarchicalTaskTypeSchema(BaseModel):
     id: int
     name: str
     sub_types: List[SubTypeSchema]
+
 
 class UserForTaskForm(BaseModel):
     id: int
@@ -40,10 +40,12 @@ class UserForTaskForm(BaseModel):
     name: str
     squads: List[Dict[str, Any]]
 
+
 class OfficeForTaskForm(BaseModel):
     id: int
     external_id: int
     name: str
+    
     
 class TaskCreationDataResponse(BaseModel):
     task_types: List[HierarchicalTaskTypeSchema]

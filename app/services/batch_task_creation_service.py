@@ -20,7 +20,7 @@ class BatchTaskCreationService:
         self.client = client
         self._strategies: dict[str, type[BaseStrategy]] = {
             "Onesid": OnesidStrategy,
-            "Planilha": SpreadsheetStrategy
+            "Planilha": SpreadsheetStrategy,
             "Onerequest": OnerequestStrategy
         }
 

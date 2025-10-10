@@ -1,5 +1,4 @@
-# Conteúdo CORRIGIDO para: docker-compose.yml
-
+# docker-compose.yml (VERSÃO CORRIGIDA E OTIMIZADA)
 services:
   api:
     build:
@@ -7,7 +6,11 @@ services:
       dockerfile: Dockerfile
     command: python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
     volumes:
-      - .:/app
+      # Mapeamento específico para o código da aplicação Python
+      - ./app:/app/app
+      - ./alembic:/app/alembic
+      - ./main.py:/app/main.py
+      # Volume persistente para o banco de dados
       - ./data:/app/data
     ports:
       - "8000:8000"
@@ -21,9 +24,11 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile.frontend
-    command: npm run dev -- --host 0.0.0.0
     ports:
-      - "5173:8080"
+      # Mapeamento direto, agora que a porta interna foi padronizada
+      - "5173:5173"
     volumes:
+      # Mapeia o código-fonte do frontend para o container...
       - ./frontend:/app
+      # ... mas isola a node_modules para usar a que foi instalada DENTRO do container.
       - /app/node_modules
