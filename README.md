@@ -1,89 +1,115 @@
+# TwoTask - Orquestrador de Tarefas para Legal One
 
------
+**TwoTask** é uma aplicação SaaS que visa centralizar o serviço de orquestração de agendamentos automáticos via API para o CRM LegalOne. O sistema reduz o trabalho manual de agendamentos e permite, a partir de diversas fontes de dados, promover agilidade no processo de agendamento, seja individualmente ou em lote.
 
-# OneTask - Serviço de Integração Legal One
+---
 
-**Versão:** 1.2.0
-**Status:** Em Desenvolvimento Ativo
-**Estimativa de Horas Trabalhadas:** 12 horas
+## 📋 Índice
 
-## 1\. Descrição do Projeto
+- [Principais Funcionalidades](#-principais-funcionalidades)
+- [🛠️ Stack de Tecnologias](#-stack-de-tecnologias)
+- [🚀 Como Começar](#-como-começar)
+  - [Pré-requisitos](#pré-requisitos)
+  - [Instalação e Execução](#instalação-e-execução)
+- [⚙️ Variáveis de Ambiente](#️-variáveis-de-ambiente)
+- [📁 Estrutura do Projeto](#-estrutura-do-projeto)
+- [🔌 Documentação da API](#-documentação-da-api)
+  - [Autenticação](#autenticação)
+  - [Endpoint Principal de Lote](#endpoint-principal-de-lote)
 
-O **OneTask** é um serviço de integração e automação projetado para otimizar a criação e o gerenciamento de tarefas no **Thomson Reuters Legal One**.
+---
 
-A aplicação funciona como uma ponte inteligente entre eventos externos (como novas publicações) e o Legal One, aplicando regras de negócio internas para atribuir tarefas às equipes (SQUADS) corretas. Além da automação, o projeto inclui um painel de controle web para visualização de dados e interação manual.
+## ✨ Principais Funcionalidades
 
-## 2\. Funcionalidades Implementadas
+* **Painel de Administração:** Gerenciamento centralizado de Setores, Squads e Usuários, permitindo a configuração de equipes e suas permissões.
+* **Agendamento em Lote via API:** Endpoints robustos para integrações externas (fontes `Onesid` e `Onerequest`) para criação de tarefas em massa de forma programática.
+* **Agendamento em Lote por Planilha:** Interface de usuário intuitiva para upload de arquivos `.xlsx`, facilitando agendamentos em grande escala para usuários não técnicos.
+* **Dashboard de Acompanhamento:** Visualização em tempo real do status de todas as execuções de lote, com detalhes de sucesso e falha para cada item processado.
+* **Sistema de Autenticação:** Acesso seguro à plataforma com tokens JWT, garantindo que apenas usuários autorizados acessem a interface e os endpoints.
+* **Arquitetura Baseada em Estratégias:** O backend é construído com o Padrão de Projeto Strategy, permitindo que novas fontes de criação de tarefas (como `Onesid`, `Planilha`, `Onerequest`) sejam adicionadas de forma limpa e modular, sem impactar a lógica existente.
 
-  * **API de Automação:** Endpoint principal (`/api/v1/trigger/task`) que recebe um gatilho (ex: número de processo) e orquestra todo o fluxo de criação de tarefas.
-  * **Integração com API de SQUADS:** Conecta-se a uma API interna (Supabase) para buscar a estrutura de SQUADS da empresa, mantendo os dados em cache para otimizar a performance.
-  * **Lógica de Negócio para Atribuição:** O `OrchestrationService` analisa os dados do processo no Legal One (como o "Responsável Principal") para identificar a SQUAD correspondente e atribuir a tarefa a um membro, de acordo com as regras de negócio.
-  * **Painel de Controle Web (`/dashboard`):**
-      * **Visualização de SQUADS:** Exibe em tempo real a composição de todas as equipes, líderes e membros.
-      * **Criação Manual de Tarefas:** Permite que um usuário insira um ou mais números de processo em um formulário para disparar o fluxo de criação de tarefas manualmente.
+---
 
-## 3\. Como Configurar e Rodar o Projeto
+## 🛠️ Stack de Tecnologias
+
+O projeto é uma aplicação full-stack moderna, containerizada com Docker.
+
+### **Backend**
+
+* **Linguagem:** Python 3.10
+* **Framework:** FastAPI
+* **Banco de Dados:** PostgreSQL
+* **ORM:** SQLAlchemy com Alembic para migrações
+* **Validação de Dados:** Pydantic
+* **Autenticação:** JWT (JSON Web Tokens)
+* **Servidor:** Uvicorn
+
+### **Frontend**
+
+* **Framework:** React 18
+* **Linguagem:** TypeScript
+* **Build Tool:** Vite
+* **Estilização:** Tailwind CSS
+* **Componentes UI:** shadcn/ui
+* **Roteamento:** React Router
+
+---
+
+## 🚀 Como Começar
+
+Siga os passos abaixo para configurar e executar o projeto em seu ambiente local.
 
 ### Pré-requisitos
 
-  * Python 3.10+
-  * Pip (gerenciador de pacotes Python)
-  * Acesso às credenciais da API do Legal One e da API de SQUADS.
+* [Docker](https://www.docker.com/get-started)
+* [Docker Compose](https://docs.docker.com/compose/install/)
 
-### Passos para Instalação
+### Instalação e Execução
 
 1.  **Clone o repositório:**
-
     ```bash
-    git clone <url-do-seu-repositorio>
+    git clone <URL_DO_SEU_REPOSITORIO>
     cd onetask
     ```
 
-2.  **Crie e ative um ambiente virtual (Recomendado):**
+2.  **Configure as Variáveis de Ambiente:**
+    Crie um arquivo `.env` na raiz do projeto, copiando o exemplo de `.env.example` (que você deve criar). Preencha com as credenciais necessárias. Veja a seção [Variáveis de Ambiente](#️-variáveis-de-ambiente) para mais detalhes.
+
+3.  **Suba os containers com Docker Compose:**
+    O comando a seguir irá construir as imagens do backend e do frontend, e iniciar todos os serviços (API, UI e Banco de Dados).
 
     ```bash
-    python -m venv venv
-    # Windows
-    .\venv\Scripts\activate
-    # macOS/Linux
-    source venv/bin/activate
+    docker-compose up --build
     ```
 
-3.  **Instale as dependências:**
+4.  **Acesse a aplicação:**
+    * **Frontend:** Abra seu navegador e acesse `http://localhost:8080`
+    * **Backend (Documentação da API):** Acesse `http://localhost:8000/docs`
+
+5.  **(Opcional) Crie o primeiro usuário administrador:**
+    Se for a primeira vez executando o projeto, pode ser necessário criar um usuário inicial para acessar o sistema. Execute o script `create_user.py` dentro do container da API.
 
     ```bash
-    pip install -r requirements.txt
+    docker-compose exec api python create_user.py "Nome do Admin" "admin@email.com" "senha_forte" --is_admin
     ```
+---
 
-4.  **Configure as Variáveis de Ambiente:**
-    Crie um arquivo chamado `.env` na raiz do projeto (no mesmo nível do `main.py`) e preencha com as suas credenciais. Use o exemplo abaixo como base:
+## ⚙️ Variáveis de Ambiente
 
-    ```env
-    # Credenciais da API do Thomson Reuters Legal One
-    LEGAL_ONE_BASE_URL="https://api.legalone.thomsonreuters.com/v1"
-    LEGAL_ONE_CLIENT_ID="SEU_CLIENT_ID_AQUI"
-    LEGAL_ONE_CLIENT_SECRET="SEU_CLIENT_SECRET_AQUI"
+Crie um arquivo `.env` na raiz do projeto com as seguintes variáveis:
 
-    # URL e Chave da API de Squads (Supabase)
-    SQUADS_API_URL="URL_DA_SUA_API_DE_SQUADS"
-    SUPABASE_ANON_KEY="SUA_CHAVE_ANON_DO_SUPABASE_AQUI"
-    ```
+```env
+# Configuração do Banco de Dados
+DATABASE_URL=postgresql://user:password@db:5432/dbname
 
-### Como Executar
+# Configurações da API Legal One
+LEGAL_ONE_API_URL=[https://api.legalone.com.br](https://api.legalone.com.br)
+LEGAL_ONE_CLIENT_ID=seu_client_id
+LEGAL_ONE_CLIENT_SECRET=seu_client_secret
+LEGAL_ONE_USERNAME=seu_usuario
+LEGAL_ONE_PASSWORD=sua_senha
 
-1.  Com o ambiente virtual ativado e o arquivo `.env` configurado, inicie o servidor com o Uvicorn:
-
-    ```bash
-    uvicorn main:app --reload
-    ```
-
-2.  A aplicação estará disponível em `http://127.0.0.1:8000`.
-
-3.  Acesse o painel de controle em `http://127.0.0.1:8000/dashboard`.
-
-## 4\. Endpoints Principais
-
-  * **`GET /dashboard`**: Renderiza o painel de controle web.
-  * **`POST /api/v1/trigger/task`**: Endpoint principal para iniciar a criação de uma tarefa.
-  * **`GET /api/v1/squads`**: Fornece os dados das squads para o frontend do painel.
-  * **`POST /api/v1/admin/refresh-squads`**: Força a atualização do cache de squads a partir da API externa.
+# Configurações de Autenticação JWT
+SECRET_KEY=sua_chave_secreta_muito_longa_e_segura
+ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=60
