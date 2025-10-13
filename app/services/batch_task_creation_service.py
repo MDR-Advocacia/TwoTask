@@ -1,6 +1,7 @@
 # app/services/batch_task_creation_service.py
 import logging
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 from app.services.legal_one_client import LegalOneApiClient
 from app.api.v1.schemas import BatchTaskCreationRequest
@@ -68,7 +69,17 @@ class BatchTaskCreationService:
             if execution_log:
                 execution_log.end_time = datetime.now(timezone.utc)
                 self.db.commit()
-    
+    # helper para timezone de Brasília
+
+    def _get_brasilia_tz(self):
+        try:
+            return ZoneInfo("America/Sao_Paulo")
+        except Exception:
+            # fallback seguro para UTC caso o ZoneInfo não esteja disponível
+            return timezone.utc
+
+    def _now_brasilia(self):
+        return datetime.now(self._get_brasilia_tz())    
 
     async def process_batch_request(self, request: BatchTaskCreationRequest):
         """
