@@ -8,8 +8,7 @@ app = FastAPI(title="OneTask API", version="1.0.0")
 
 # Configuração do CORS
 origins = [
-    "http://localhost:5173",
-    "http://localhost:8080",   # Adicionando a porta do vite.config.ts
+    "*"   # Adicionando a porta do vite.config.ts
 ]
 
 app.add_middleware(

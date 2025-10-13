@@ -3,11 +3,11 @@ import { BatchExecution } from "@/types/api"; // Importando nossa nova interface
 
 // A variável VITE_API_BASE_URL deve ser configurada no seu ambiente, 
 // mas usamos um fallback para o desenvolvimento local.
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+//const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 export async function fetchBatchExecutions(): Promise<BatchExecution[]> {
   try {
-    const response = await fetch(`${API_BASE_URL}/api/v1/dashboard/batch-executions`);
+    const response = await fetch(`/api/v1/dashboard/batch-executions`);
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
