@@ -3,7 +3,6 @@
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-// --- 1. ADICIONAR NOVOS ÍCONES ---
 import { 
     Users, 
     Target, 
@@ -14,21 +13,21 @@ import {
     XCircle, 
     RefreshCw,
     FileUp, 
-    BrainCircuit 
+    BrainCircuit,
+    History // Novo ícone
 } from "lucide-react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/hooks/use-toast";
 
-// Tipos corretos, que correspondem à sua API
+// Tipos e API
 import { BatchExecution } from "@/types/api";
-import { fetchBatchExecutions } from "@/services/api";
+import { fetchBatchExecutions, retryBatchExecution } from "@/services/api"; // Importar nova função
 
-// --- 2. NOVO COMPONENTE VISUAL PARA A FONTE ---
 const SourceBadge = ({ source }: { source: string }) => {
-    // Determina o ícone com base no nome da fonte, ignorando maiúsculas/minúsculas
     const isSpreadsheet = source.toLowerCase() === 'planilha';
     const Icon = isSpreadsheet ? FileUp : BrainCircuit;
     
@@ -44,6 +43,8 @@ const Dashboard = () => {
   const [executions, setExecutions] = useState<BatchExecution[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isRetrying, setIsRetrying] = useState<Record<number, boolean>>({});
+  const { toast } = useToast();
 
   const loadData = async () => {
     setIsLoading(true);
@@ -62,16 +63,39 @@ const Dashboard = () => {
     loadData();
   }, []);
 
+  // --- NOVA FUNÇÃO PARA LIDAR COM O RETRY ---
+  const handleRetry = async (executionId: number) => {
+    setIsRetrying(prev => ({ ...prev, [executionId]: true }));
+    try {
+      await retryBatchExecution(executionId);
+      toast({
+        title: "Reprocessamento Iniciado",
+        description: `Um novo lote foi criado para processar as falhas do lote #${executionId}.`,
+      });
+      // Aguarda um pouco e atualiza a lista para o novo lote aparecer
+      setTimeout(loadData, 2000);
+    } catch (err) {
+      toast({
+        title: "Erro ao Reprocessar",
+        description: err instanceof Error ? err.message : "Tente novamente.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsRetrying(prev => ({ ...prev, [executionId]: false }));
+    }
+  };
+
+
   const formatDateTime = (isoString: string | null) => {
     if (!isoString) return "N/A";
     const date = new Date(isoString);
     return new Intl.DateTimeFormat('pt-BR', {
         dateStyle: 'short',
         timeStyle: 'medium',
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     }).format(date);
   };
 
+  // ... (stats e return inicial inalterados) ...
   const stats = [
     { title: "Squads Ativos", value: "...", icon: Users },
     { title: "Tarefas Criadas (Mês)", value: "...", icon: Target },
@@ -141,7 +165,6 @@ const Dashboard = () => {
                 <AccordionItem value={`item-${exec.id}`} key={exec.id}>
                   <AccordionTrigger>
                     <div className="flex flex-1 items-center justify-between pr-4 text-sm">
-                      {/* --- 3. SUBSTITUIÇÃO DO BADGE ANTIGO PELO NOVO COMPONENTE --- */}
                       <SourceBadge source={exec.source} />
                       
                       <span>{formatDateTime(exec.start_time)}</span>
@@ -156,6 +179,24 @@ const Dashboard = () => {
                     </div>
                   </AccordionTrigger>
                   <AccordionContent>
+                    {/* --- ADICIONADO BOTÃO DE RETRY --- */}
+                    {exec.failure_count > 0 && (
+                        <div className="px-4 py-2 border-b">
+                            <Button 
+                                size="sm" 
+                                variant="outline"
+                                onClick={() => handleRetry(exec.id)}
+                                disabled={isRetrying[exec.id]}
+                            >
+                                {isRetrying[exec.id] ? (
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                ) : (
+                                    <History className="mr-2 h-4 w-4" />
+                                )}
+                                Reprocessar {exec.failure_count} Falha(s)
+                            </Button>
+                        </div>
+                    )}
                     <div className="p-2 bg-muted/30 rounded-md">
                       <Table>
                         <TableHeader>

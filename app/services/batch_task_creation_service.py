@@ -110,3 +110,54 @@ class BatchTaskCreationService:
             # PASSO 4: Garante que o tempo de finalização e o resultado sejam salvos no BD
             execution_log.end_time = datetime.now(timezone.utc)
             self.db.commit()
+
+    # --- NOVO MÉTODO DE RETRY ---
+    async def retry_failed_items(self, original_execution_id: int):
+        """
+        Busca os itens falhos de uma execução anterior e dispara um novo
+        processamento em lote apenas com eles.
+        """
+        logging.info(f"Iniciando retentativa para os itens falhos do lote ID: {original_execution_id}")
+        
+        # Usamos joinedload para buscar os itens junto com a execução original
+        original_execution = self.db.query(BatchExecution).options(
+            joinedload(BatchExecution.items)
+        ).filter(BatchExecution.id == original_execution_id).first()
+
+        if not original_execution:
+            logging.error(f"Tentativa de reprocessar um lote inexistente (ID: {original_execution_id}).")
+            return
+
+        failed_items = [item for item in original_execution.items if item.status == "FALHA"]
+
+        if not failed_items:
+            logging.warning(f"Nenhum item com falha encontrado para o lote ID: {original_execution_id}. Nenhuma ação necessária.")
+            return
+
+        # Monta um novo objeto de requisição com base nos itens que falharam
+        # A lógica para extrair dados (id_responsavel, etc.) pode precisar de ajuste
+        # dependendo de como esses dados são armazenados ou se precisam ser buscados novamente.
+        # Por simplicidade, vamos assumir que o CNJ é suficiente por agora.
+        retry_processos = [
+            ProcessoResponsavel(
+                numero_processo=item.process_number,
+                # NOTA: id_responsavel e outros campos não estão no log.
+                # Para estratégias que dependem disso (Onesid, Planilha),
+                # seria necessário armazenar mais contexto no BatchExecutionItem.
+                # Por agora, vamos focar no fluxo.
+                id_responsavel=0, # Placeholder
+                observacao=f"Retentativa do item ID {item.id} da execução {original_execution_id}"
+            ) for item in failed_items
+        ]
+
+        retry_request = BatchTaskCreationRequest(
+            fonte=original_execution.source,
+            processos=retry_processos,
+            # Se a fonte for planilha, precisaríamos do conteúdo do arquivo original.
+            # Esta é uma limitação da abordagem simples.
+            file_content=original_execution.file_content if hasattr(original_execution, 'file_content') else None
+        )
+
+        logging.info(f"Disparando um novo lote para {len(retry_processos)} itens que falharam.")
+        # Reutiliza o método de processamento de lote existente
+        await self.process_batch_request(retry_request)

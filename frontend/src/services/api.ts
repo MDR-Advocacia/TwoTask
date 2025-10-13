@@ -19,3 +19,20 @@ export async function fetchBatchExecutions(): Promise<BatchExecution[]> {
     throw error;
   }
 }
+
+// --- NOVA FUNÇÃO PARA RETRY ---
+export async function retryBatchExecution(executionId: number): Promise<{ message: string }> {
+  try {
+    const response = await fetch(`/api/v1/admin/batch-executions/${executionId}/retry`, {
+      method: 'POST',
+    });
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+    }
+    return response.json();
+  } catch (error) {
+    console.error(`Falha ao tentar reprocessar o lote ${executionId}:`, error);
+    throw error;
+  }
+}

@@ -6,19 +6,18 @@ from sqlalchemy.orm import Session, joinedload
 from pydantic import BaseModel
 from typing import List
 
-from app.core.dependencies import get_db
+from app.core.dependencies import get_db, get_batch_task_creation_service # Adicionado get_batch_task_creation_service
 from app.services.metadata_sync_service import MetadataSyncService
+from app.services.batch_task_creation_service import BatchTaskCreationService # Adicionado
 from app.models.legal_one import LegalOneTaskType, LegalOneTaskSubType
 from app.models.rules import Squad
-# A importação de TaskParentGroup foi removida por ser obsoleta
+
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-# --- Schemas Pydantic para clareza da resposta ---
-# (Estes devem corresponder ou ser movidos para o seu arquivo de schemas)
-
+# --- Schemas Pydantic (sem alteração) ---
 class TaskSubTypeSchema(BaseModel):
     id: int
     name: str
@@ -31,8 +30,8 @@ class TaskTypeGroupSchema(BaseModel):
 
 class TaskTypeAssociationPayload(BaseModel):
     squad_ids: List[int]
-    # O nome foi mantido, mas agora estes são os IDs dos Tipos de Tarefa (pais)
     task_type_ids: List[int]
+
 
 # --- Endpoints ---
 
@@ -54,10 +53,7 @@ async def sync_metadata(
 def get_task_types_grouped(db: Session = Depends(get_db)):
     """
     Retorna uma lista de tipos de tarefa, com seus subtipos aninhados e squads associados.
-    A lógica foi refatorada para usar a nova estrutura de dados hierárquica.
     """
-    # Usamos joinedload para buscar os tipos, seus subtipos e os squads associados
-    # em consultas otimizadas, evitando o problema N+1.
     task_types = db.query(LegalOneTaskType).options(
         joinedload(LegalOneTaskType.subtypes),
         joinedload(LegalOneTaskType.squads)
@@ -71,7 +67,7 @@ def get_task_types_grouped(db: Session = Depends(get_db)):
             TaskSubTypeSchema(
                 id=sub_type.id,
                 name=sub_type.name,
-                squad_ids=squad_ids  # Os squads são do tipo pai
+                squad_ids=squad_ids
             ) for sub_type in sorted(task_type.subtypes, key=lambda x: x.name)
         ]
         
@@ -90,7 +86,6 @@ def get_task_types_grouped(db: Session = Depends(get_db)):
 def associate_task_types(payload: TaskTypeAssociationPayload, db: Session = Depends(get_db)):
     """
     Associa uma lista de Tipos de Tarefa (pais) a uma lista de squads.
-    A lógica foi atualizada para refletir o novo modelo, onde a associação é feita no tipo pai.
     """
     squads = db.query(Squad).filter(Squad.id.in_(payload.squad_ids)).all()
     if len(squads) != len(set(payload.squad_ids)):
@@ -101,17 +96,27 @@ def associate_task_types(payload: TaskTypeAssociationPayload, db: Session = Depe
         raise HTTPException(status_code=404, detail="Um ou mais tipos de tarefa não foram encontrados.")
 
     for task_type in task_types:
-        # A associação agora é direta: define a lista de squads para cada tipo de tarefa.
         task_type.squads = squads
             
     db.commit()
     return {"message": "Associação de tipos de tarefa atualizada com sucesso."}
 
-# O endpoint abaixo foi comentado pois a tabela `task_parent_groups` foi removida
-# na nova arquitetura. O nome do grupo agora é o próprio nome do `LegalOneTaskType`,
-# que é sincronizado diretamente do Legal One e não deve ser editado manualmente.
-
-# @router.put("/task-parent-groups/{group_id}", summary="Renomear um Grupo de Tarefas Pai", tags=["Admin"])
-# def rename_parent_task_group(group_id: int, payload: ParentGroupNameUpdate, db: Session = Depends(get_db)):
-#     # ... implementação antiga ...
-#     pass
+# --- NOVO ENDPOINT DE RETRY ---
+@router.post(
+    "/batch-executions/{execution_id}/retry",
+    status_code=202,
+    summary="Reprocessar Itens Falhos de um Lote",
+    tags=["Admin"]
+)
+async def retry_failed_batch_items(
+    execution_id: int,
+    background_tasks: BackgroundTasks,
+    service: BatchTaskCreationService = Depends(get_batch_task_creation_service)
+):
+    """
+    Inicia um novo processamento em lote contendo apenas os itens que falharam
+    em uma execução anterior.
+    """
+    logger.info(f"Recebida solicitação para reprocessar falhas do lote ID: {execution_id}")
+    background_tasks.add_task(service.retry_failed_items, execution_id)
+    return {"message": f"Reprocessamento para o lote {execution_id} iniciado em segundo plano."}
