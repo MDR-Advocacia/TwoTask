@@ -1,5 +1,9 @@
 # file: app/api/v1/endpoints/tasks.py
 
+
+from openpyxl import load_workbook
+from io import BytesIO
+from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, UploadFile, File
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, joinedload
@@ -20,8 +24,18 @@ from app.services.legal_one_client import LegalOneApiClient
 from app.models.legal_one import LegalOneOffice, LegalOneUser, LegalOneTaskType, LegalOneTaskSubType
 from app.models.rules import Squad, SquadMember
 from app.services.batch_task_creation_service import BatchTaskCreationService
+from app.api.v1.schemas import BatchInteractiveCreationRequest, TaskCreationDataResponse
+
 router = APIRouter()
 
+class SpreadsheetRow(BaseModel):
+    row_id: int
+    data: Dict[str, Any]
+
+class SpreadsheetAnalysisResponse(BaseModel):
+    filename: str
+    headers: List[str]
+    rows: List[SpreadsheetRow]
 
 class SubTypeSchema(BaseModel):
     id: int
@@ -189,3 +203,57 @@ async def create_batch_tasks_from_spreadsheet(
     background_tasks.add_task(service.process_spreadsheet_request, file_content)
     
     return {"status": "recebido", "message": "A planilha foi recebida e está sendo processada em segundo plano."}
+
+@router.post(
+    "/analyze-spreadsheet",
+    response_model=SpreadsheetAnalysisResponse,
+    summary="Analisar Planilha para Criação de Tarefas Interativas"
+)
+async def analyze_spreadsheet(file: UploadFile = File(...)):
+    """
+    Recebe um arquivo .xlsx, extrai seu conteúdo (cabeçalhos e linhas)
+    e o retorna como JSON para ser usado em uma interface de formulário interativo.
+    """
+    if not file.filename.endswith('.xlsx'):
+        raise HTTPException(status_code=400, detail="Formato de arquivo inválido. Por favor, envie um arquivo .xlsx.")
+
+    try:
+        content = await file.read()
+        workbook = load_workbook(filename=BytesIO(content))
+        sheet = workbook.active
+
+        headers = [cell.value for cell in sheet[1]]
+        
+        rows_data = []
+        for index, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+            # Ignora linhas completamente vazias
+            if not any(row):
+                continue
+            rows_data.append(SpreadsheetRow(row_id=index, data=dict(zip(headers, row))))
+
+        return SpreadsheetAnalysisResponse(
+            filename=file.filename,
+            headers=headers,
+            rows=rows_data
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Não foi possível processar a planilha: {e}")
+
+
+@router.post(
+    "/batch-create-interactive",
+    status_code=202,
+    summary="Criar Tarefas em Lote a partir da Interface Interativa"
+)
+async def create_batch_tasks_interactive(
+    request: BatchInteractiveCreationRequest, # <- Isto agora funciona!
+    background_tasks: BackgroundTasks,
+    service: BatchTaskCreationService = Depends(get_batch_task_creation_service)
+):
+    """
+    Recebe uma lista de tarefas pré-validadas pela interface interativa
+    e inicia o processo de criação em segundo plano.
+    """
+    background_tasks.add_task(service.process_interactive_batch_request, request)
+    
+    return {"status": "recebido", "message": "A solicitação foi recebida e as tarefas estão sendo agendadas em segundo plano."}

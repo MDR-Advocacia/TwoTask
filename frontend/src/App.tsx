@@ -13,6 +13,7 @@ import CreateTaskByTemplatePage from './pages/CreateTaskByTemplatePage';
 import CreateTaskByProcessPage from './pages/CreateTaskByProcessPage';
 import LoginPage from './pages/LoginPage';
 import CreateTaskFromSpreadsheetPage from './pages/CreateTaskFromSpreadsheetPage';
+import SpreadsheetAnalysisPage from './pages/SpreadsheetAnalysisPage'; 
 
 // Contexto de Autenticação
 import { AuthProvider } from './contexts/AuthContext';
@@ -32,6 +33,7 @@ function App() {
             <Route path="/tasks/template-batch" element={<CreateTaskByTemplatePage />} />
             <Route path="/tasks/by-process" element={<CreateTaskByProcessPage />} />
             <Route path="/tasks/spreadsheet-batch" element={<CreateTaskFromSpreadsheetPage />} />
+            <Route path="/tasks/spreadsheet-analysis" element={<SpreadsheetAnalysisPage />} />
           </Route>
 
           {/* Rota para página não encontrada */}

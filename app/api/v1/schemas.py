@@ -207,3 +207,40 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     username: Optional[str] = None
+
+# Schemas para o endpoint de dados de criação de tarefa
+class SubTypeSchema(BaseModel):
+    id: int
+    name: str
+
+class HierarchicalTaskTypeSchema(BaseModel):
+    id: int
+    name: str
+    sub_types: List[SubTypeSchema] = []
+
+class UserSchema(BaseModel):
+    id: int
+    name: str
+    external_id: int
+
+class TaskStatusSchema(BaseModel):
+    id: int
+    name: str
+
+class TaskCreationDataResponse(BaseModel):
+    task_types: List[HierarchicalTaskTypeSchema]
+    users: List[UserSchema]
+    task_statuses: List[TaskStatusSchema]
+
+# Schemas para o endpoint de criação interativa
+class InteractiveTaskPayload(BaseModel):
+    cnj_number: str
+    task_type_id: int
+    sub_type_id: int
+    responsible_external_id: int
+    description: str
+    due_date: str # Esperamos o formato "YYYY-MM-DD"
+
+class BatchInteractiveCreationRequest(BaseModel):
+    tasks: List[InteractiveTaskPayload]
+    source_filename: str

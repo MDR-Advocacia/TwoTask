@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 from app.services.legal_one_client import LegalOneApiClient
 from app.api.v1.schemas import BatchTaskCreationRequest
+from app.api.v1.schemas import BatchInteractiveCreationRequest
 from app.services.batch_strategies.base_strategy import BaseStrategy
 from app.services.batch_strategies.onesid_strategy import OnesidStrategy
 from app.services.batch_strategies.spreadsheet_strategy import SpreadsheetStrategy
@@ -70,6 +71,88 @@ class BatchTaskCreationService:
                 execution_log.end_time = datetime.now(timezone.utc)
                 self.db.commit()
     # helper para timezone de Brasília
+
+    async def process_interactive_batch_request(self, request: BatchInteractiveCreationRequest):
+        """
+        Processa um lote de tarefas vindas do formulário interativo.
+        """
+        source_name = f"Planilha Interativa ({request.source_filename})"
+        logging.info(f"Iniciando processamento de lote da fonte: '{source_name}' com {len(request.tasks)} tarefas.")
+        
+        execution_log = BatchExecution(
+            source=source_name,
+            total_items=len(request.tasks)
+        )
+        self.db.add(execution_log)
+        self.db.commit()
+        self.db.refresh(execution_log)
+        
+        success_count = 0
+        failed_items = []
+        
+        start_datetime_iso = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+        for task_data in request.tasks:
+            log_item = BatchExecutionItem(process_number=task_data.cnj_number, execution_id=execution_log.id)
+            
+            try:
+                # Busca o processo no Legal One
+                lawsuit = self.client.search_lawsuit_by_cnj(task_data.cnj_number)
+                if not lawsuit or not lawsuit.get('id'):
+                    raise Exception("Processo não encontrado no Legal One.")
+                
+                lawsuit_id = lawsuit['id']
+                responsible_office_id = lawsuit.get('responsibleOfficeId')
+                if not responsible_office_id:
+                    raise Exception("Processo não possui Escritório Responsável definido.")
+
+                # Converte a data para o formato UTC ISO 8601
+                local_tz = ZoneInfo("America/Sao_Paulo")
+                due_date_obj = datetime.strptime(task_data.due_date, "%Y-%m-%d")
+                aware_deadline = datetime.combine(due_date_obj.date(), time(23, 59, 59)).replace(tzinfo=local_tz)
+                end_datetime_iso = aware_deadline.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+                # Monta o payload da tarefa
+                task_payload = {
+                    "description": task_data.description,
+                    "priority": "Normal",
+                    "startDateTime": start_datetime_iso,
+                    "endDateTime": end_datetime_iso,
+                    "status": { "id": 0 }, # 0 = Pendente
+                    "typeId": task_data.task_type_id,
+                    "subTypeId": task_data.sub_type_id,
+                    "responsibleOfficeId": responsible_office_id,
+                    "originOfficeId": responsible_office_id, # Assumindo que a origem é a mesma, pode ser ajustado
+                    "participants": [{"contact": {"id": task_data.responsible_external_id}, "isResponsible": True, "isExecuter": True, "isRequester": True}]
+                }
+
+                # Cria e vincula a tarefa
+                created_task = self.client.create_task(task_payload)
+                if not created_task or not created_task.get('id'):
+                    raise Exception("Falha na criação da tarefa (resposta inválida da API).")
+                
+                task_id = created_task['id']
+                self.client.link_task_to_lawsuit(task_id, {"linkType": "Litigation", "linkId": lawsuit_id})
+
+                log_item.status = "SUCESSO"
+                log_item.created_task_id = task_id
+                success_count += 1
+                
+            except Exception as e:
+                error_msg = str(e)
+                log_item.status = "FALHA"
+                log_item.error_message = error_msg
+                failed_items.append({"cnj": task_data.cnj_number, "motivo": error_msg})
+            
+            finally:
+                self.db.add(log_item)
+        
+        execution_log.success_count = success_count
+        execution_log.failure_count = len(failed_items)
+        execution_log.end_time = datetime.now(timezone.utc)
+        self.db.commit()
+        logging.info(f"Processamento do lote interativo concluído. Sucessos: {success_count}, Falhas: {len(failed_items)}")
+
 
     def _get_brasilia_tz(self):
         try:

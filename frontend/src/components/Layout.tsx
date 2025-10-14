@@ -1,4 +1,4 @@
-// Conteúdo para: frontend/src/components/Layout.tsx
+// frontend/src/components/Layout.tsx
 
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import {
@@ -9,12 +9,13 @@ import {
   LogOut,
   FilePlus2,
   FileSearch2,
-  FileUp // --- 1. Importar o novo ícone ---
+  FileUp,
+  Sheet as SheetIcon, // <-- CORREÇÃO APLICADA AQUI
 } from "lucide-react";
 
-// ... (outras importações)
 import { useAuth } from "@/hooks/useAuth";
 import { PropsWithChildren } from "react";
+// Esta importação está correta e permanece a mesma
 import { Sheet, SheetContent, SheetTrigger } from "./ui/sheet";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuItem } from "./ui/dropdown-menu";
 import { Button } from "./ui/button";
@@ -25,14 +26,13 @@ const navLinks = [
   { to: "/", icon: Home, label: "Dashboard" },
   { to: "/tasks/template-batch", icon: FilePlus2, label: "Tarefas em Lote (IA)" },
   { to: "/tasks/by-process", icon: FileSearch2, label: "Tarefa por Processo" },
-  // --- ADIÇÃO ---
-  // 2. Adicionar o novo link ao array
-  { to: "/tasks/spreadsheet-batch", icon: FileUp, label: "Tarefas por Planilha" },
+  { to: "/tasks/spreadsheet-batch", icon: FileUp, label: "Tarefas por Planilha (Em lote)" },
+  // --- CORREÇÃO APLICADA AQUI ---
+  { to: "/tasks/spreadsheet-analysis", icon: SheetIcon, label: "Análise de Planilha (Interativo)" },
   { to: "/admin", icon: Users, label: "Administração" },
 ];
 
 export default function Layout({ children }: PropsWithChildren) {
-  // ... (o restante do componente Layout permanece exatamente o mesmo) ...
   const { user, logout } = useAuth();
   const navigate = useNavigate();
 
