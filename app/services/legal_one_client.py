@@ -142,6 +142,8 @@ class LegalOneApiClient:
 
     def search_lawsuit_by_cnj(self, cnj_number: str) -> Optional[Dict[str, Any]]:
         self.logger.info(f"Buscando processo com CNJ: {cnj_number}")
+        
+        # Tentativa 1: Buscar como Lawsuit (principal)
         endpoint = "/Lawsuits"
         params = {"$filter": f"identifierNumber eq '{cnj_number}'", "$select": "id,identifierNumber,responsibleOfficeId", "$top": 1}
         url = f"{self.base_url}{endpoint}"
@@ -150,11 +152,28 @@ class LegalOneApiClient:
             data = response.json()
             results = data.get("value", [])
             if results:
+                self.logger.info(f"Processo encontrado como 'Lawsuit' principal.")
                 return results[0]
-            return None
         except requests.exceptions.HTTPError as e:
-            self.logger.error(f"Erro HTTP ao buscar processo por CNJ: {e.response.text}")
-            return None
+            self.logger.error(f"Erro HTTP ao buscar processo por CNJ como Lawsuit: {e.response.text}")
+            # Não retorna, permite que o fallback seja executado
+            
+        # Tentativa 2: Fallback para buscar como Litigations (incidentes/recursos)
+        self.logger.info(f"Processo não encontrado como 'Lawsuit'. Tentando busca em 'Litigations' (incidentes/recursos)...")
+        endpoint_fallback = "/Litigations"
+        url_fallback = f"{self.base_url}{endpoint_fallback}"
+        try:
+            response_fallback = self._request_with_retry("GET", url_fallback, params=params)
+            data_fallback = response_fallback.json()
+            results_fallback = data_fallback.get("value", [])
+            if results_fallback:
+                self.logger.info(f"Processo encontrado como 'Litigation'.")
+                return results_fallback[0]
+        except requests.exceptions.HTTPError as e:
+            self.logger.error(f"Erro HTTP ao buscar processo por CNJ como Litigation: {e.response.text}")
+
+        self.logger.warning(f"Nenhum processo encontrado para o CNJ {cnj_number} em nenhuma das tentativas.")
+        return None
 
     def create_task(self, task_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         self.logger.info(f"Criando tarefa com payload: {task_payload}")
