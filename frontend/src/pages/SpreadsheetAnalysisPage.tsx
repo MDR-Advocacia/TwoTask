@@ -5,14 +5,16 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { Upload, File, AlertCircle, Loader2, ListTodo, Send, CheckCircle2 } from "lucide-react";
+import { Upload, File, AlertCircle, Loader2, Send, CheckCircle2, Archive, PlusCircle, XCircle, Briefcase } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from '@/components/ui/textarea';
 import UserSelector, { SelectableUser } from '@/components/ui/UserSelector';
+import { Separator } from '@/components/ui/separator';
+import { cn } from '@/lib/utils'; // Importar a função 'cn'
 
-// --- Interfaces para os dados ---
+// --- Interfaces ---
 interface SpreadsheetRow {
   row_id: number;
   data: Record<string, any>;
@@ -24,19 +26,19 @@ interface AnalysisResponse {
   rows: SpreadsheetRow[];
 }
 
-// Interfaces para os dados do formulário
 interface SubType { id: number; name: string; }
 interface HierarchicalTaskType { id: number; name: string; sub_types: SubType[]; }
 
-// --- Interface para o estado de cada tarefa ---
 interface TaskFormData {
+  taskId: string;
   rowId: number;
   selectedTaskTypeId: string;
   selectedSubTypeId: string;
   selectedResponsibleId: string | null;
   description: string;
   dueDate: string;
-  status: 'pending' | 'completed';
+  dueTime: string;
+  status: 'pending' | 'completed' | 'dismissed';
 }
 
 const SpreadsheetAnalysisPage = () => {
@@ -50,7 +52,7 @@ const SpreadsheetAnalysisPage = () => {
     const [isFormLoading, setIsFormLoading] = useState(true);
     const [taskTypes, setTaskTypes] = useState<HierarchicalTaskType[]>([]);
     const [users, setUsers] = useState<SelectableUser[]>([]);
-    const [tasksData, setTasksData] = useState<Record<number, TaskFormData>>({});
+    const [tasksData, setTasksData] = useState<Record<number, TaskFormData[]>>({});
 
     useEffect(() => {
         const fetchFormData = async () => {
@@ -70,17 +72,19 @@ const SpreadsheetAnalysisPage = () => {
     }, [toast]);
 
     const initializeTasksData = (rows: SpreadsheetRow[]) => {
-        const initialData: Record<number, TaskFormData> = {};
+        const initialData: Record<number, TaskFormData[]> = {};
         rows.forEach(row => {
-            initialData[row.row_id] = {
+            initialData[row.row_id] = [{
+                taskId: `task-${Date.now()}`,
                 rowId: row.row_id,
                 selectedTaskTypeId: '',
                 selectedSubTypeId: '',
                 selectedResponsibleId: null,
-                description: row.data['TEXTO_PUBLICACAO'] || '',
+                description: '',
                 dueDate: '',
+                dueTime: '',
                 status: 'pending',
-            };
+            }];
         });
         setTasksData(initialData);
     };
@@ -141,47 +145,82 @@ const SpreadsheetAnalysisPage = () => {
         }
     };
 
-    const handleTaskDataChange = (rowId: number, field: keyof TaskFormData, value: any) => {
+    const handleTaskDataChange = (rowId: number, taskId: string, field: keyof Omit<TaskFormData, 'taskId' | 'rowId'>, value: any) => {
+        setTasksData(prev => {
+            const newTasks = prev[rowId].map(task => 
+                task.taskId === taskId ? { ...task, [field]: value } : task
+            );
+            return { ...prev, [rowId]: newTasks };
+        });
+    };
+
+    const markAsCompleted = (rowId: number, taskId: string) => {
+        handleTaskDataChange(rowId, taskId, 'status', 'completed');
+        toast({ title: "Tarefa Marcada", description: "Esta tarefa foi marcada para agendamento." });
+    }
+    
+    const markAsDismissed = (rowId: number) => {
         setTasksData(prev => ({
             ...prev,
-            [rowId]: {
+            [rowId]: prev[rowId].map(task => ({ ...task, status: 'dismissed' }))
+        }));
+        toast({ title: "Publicação Dispensada", description: "Esta publicação não gerará tarefas." });
+    }
+
+    const handleAddTask = (rowId: number) => {
+        setTasksData(prev => {
+            const newTasks = [
                 ...prev[rowId],
-                [field]: value,
-            }
+                {
+                    taskId: `task-${Date.now()}-${prev[rowId].length}`,
+                    rowId: rowId,
+                    selectedTaskTypeId: '',
+                    selectedSubTypeId: '',
+                    selectedResponsibleId: null,
+                    description: '',
+                    dueDate: '',
+                    dueTime: '',
+                    status: 'pending',
+                }
+            ];
+            return { ...prev, [rowId]: newTasks };
+        });
+    };
+
+    const handleRemoveTask = (rowId: number, taskId: string) => {
+        setTasksData(prev => ({
+            ...prev,
+            [rowId]: prev[rowId].filter(task => task.taskId !== taskId)
         }));
     };
 
-    const markAsCompleted = (rowId: number) => {
-        handleTaskDataChange(rowId, 'status', 'completed');
-        toast({
-            title: "Publicação Concluída",
-            description: "A tarefa para esta publicação foi marcada e será enviada.",
-        });
-    }
-
     const handleSubmit = async () => {
         setIsSubmitting(true);
-
-        const completedTasks = Object.values(tasksData)
+        const allTasks = Object.values(tasksData).flat();
+        const completedTasks = allTasks
             .filter(task => task.status === 'completed')
             .map(task => {
                 const originalRow = analysisResult?.rows.find(r => r.row_id === task.rowId);
                 const user = users.find(u => u.id === Number(task.selectedResponsibleId));
-
+                const publicationText = originalRow?.data['Andamentos / Descrição'] || '';
+                const finalDescription = task.description 
+                    ? `${publicationText}\n\n--- COMPLEMENTO ---\n${task.description}` 
+                    : publicationText;
                 return {
-                    cnj_number: originalRow?.data['NUMERO_PROCESSO'] || '',
+                    cnj_number: originalRow?.data['Nº do processo'] || '',
                     task_type_id: parseInt(task.selectedTaskTypeId, 10),
                     sub_type_id: parseInt(task.selectedSubTypeId, 10),
                     responsible_external_id: user?.external_id, 
-                    description: task.description,
+                    description: finalDescription,
                     due_date: task.dueDate,
+                    due_time: task.dueTime || null,
                 };
             });
         
         if (completedTasks.some(t => !t.cnj_number || !t.responsible_external_id)) {
             toast({
                 title: "Erro de Validação",
-                description: "Uma ou mais tarefas concluídas não possuem um número de processo ou responsável válido. Verifique os dados da planilha.",
+                description: "Uma ou mais tarefas concluídas não possuem um número de processo ou responsável válido.",
                 variant: "destructive",
             });
             setIsSubmitting(false);
@@ -228,67 +267,47 @@ const SpreadsheetAnalysisPage = () => {
     if (!analysisResult) {
         return (
             <div className="container mx-auto px-6 py-8">
-              <div className="mb-8">
-                <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-                  Agendamento Interativo por Planilha
-                </h1>
-                <p className="text-muted-foreground mt-1">
-                  Faça o upload de um arquivo .xlsx para iniciar a análise e o agendamento de tarefas.
-                </p>
-              </div>
-              
-              <Card className="max-w-2xl mx-auto glass-card border-0 animate-fade-in">
-                <CardHeader>
-                  <CardTitle>1. Upload da Planilha</CardTitle>
-                  <CardDescription>
-                    Selecione o arquivo .xlsx contendo as publicações a serem analisadas.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-6">
-                  <div className="grid w-full items-center gap-1.5">
-                    <Label htmlFor="spreadsheet-file">Arquivo Excel</Label>
-                    <div className="flex items-center gap-3">
-                      <Input
-                        id="spreadsheet-file"
-                        type="file"
-                        accept=".xlsx"
-                        onChange={handleFileChange}
-                        className="file:text-primary file:font-medium"
-                      />
-                    </div>
-                  </div>
-        
-                  {selectedFile && (
-                    <div className="flex items-center p-3 rounded-md bg-muted/50">
-                      <File className="w-5 h-5 mr-3 text-primary" />
-                      <span className="text-sm font-medium">{selectedFile.name}</span>
-                    </div>
-                  )}
-        
-                  {error && (
-                    <Alert variant="destructive">
-                      <AlertCircle className="h-4 w-4" />
-                      <AlertTitle>Erro</AlertTitle>
-                      <AlertDescription>{error}</AlertDescription>
-                    </Alert>
-                  )}
-        
-                  <Button 
-                    onClick={handleAnalyze} 
-                    disabled={!selectedFile || isAnalyzing}
-                    className="w-full glass-button text-white"
-                  >
-                    {isAnalyzing ? (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    ) : (
-                      <Upload className="mr-2 h-4 w-4" />
-                    )}
-                    {isAnalyzing ? 'Analisando...' : 'Analisar Planilha'}
-                  </Button>
-                </CardContent>
-              </Card>
+                <div className="mb-8">
+                    <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
+                        Agendamento Interativo por Planilha
+                    </h1>
+                    <p className="text-muted-foreground mt-1">
+                        Faça o upload de um arquivo .xlsx para iniciar a análise e o agendamento de tarefas.
+                    </p>
+                </div>
+                <Card className="max-w-2xl mx-auto glass-card border-0 animate-fade-in">
+                    <CardHeader>
+                        <CardTitle>1. Upload da Planilha</CardTitle>
+                        <CardDescription>Selecione o arquivo .xlsx contendo as publicações a serem analisadas.</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-6">
+                        <div className="grid w-full items-center gap-1.5">
+                            <Label htmlFor="spreadsheet-file">Arquivo Excel</Label>
+                            <div className="flex items-center gap-3">
+                                <Input id="spreadsheet-file" type="file" accept=".xlsx" onChange={handleFileChange} className="file:text-primary file:font-medium"/>
+                            </div>
+                        </div>
+                        {selectedFile && (
+                            <div className="flex items-center p-3 rounded-md bg-muted/50">
+                                <File className="w-5 h-5 mr-3 text-primary" />
+                                <span className="text-sm font-medium">{selectedFile.name}</span>
+                            </div>
+                        )}
+                        {error && (
+                            <Alert variant="destructive">
+                                <AlertCircle className="h-4 w-4" />
+                                <AlertTitle>Erro</AlertTitle>
+                                <AlertDescription>{error}</AlertDescription>
+                            </Alert>
+                        )}
+                        <Button onClick={handleAnalyze} disabled={!selectedFile || isAnalyzing} className="w-full glass-button text-white">
+                            {isAnalyzing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+                            {isAnalyzing ? 'Analisando...' : 'Analisar Planilha'}
+                        </Button>
+                    </CardContent>
+                </Card>
             </div>
-          );
+        );
     }
 
     return (
@@ -303,75 +322,129 @@ const SpreadsheetAnalysisPage = () => {
                 <Button 
                     size="lg" 
                     onClick={handleSubmit}
-                    disabled={Object.values(tasksData).filter(t => t.status === 'completed').length === 0 || isSubmitting}
+                    disabled={Object.values(tasksData).flat().filter(t => t.status === 'completed').length === 0 || isSubmitting}
                 >
-                    {isSubmitting ? (
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    ) : (
-                        <Send className="w-4 h-4 mr-2" />
-                    )}
-                    {isSubmitting ? 'Agendando...' : `Agendar Tarefas Concluídas (${Object.values(tasksData).filter(t => t.status === 'completed').length})`}
+                    {isSubmitting ? ( <Loader2 className="w-4 h-4 mr-2 animate-spin" /> ) : ( <Send className="w-4 h-4 mr-2" /> )}
+                    {isSubmitting ? 'Agendando...' : `Agendar Tarefas Concluídas (${Object.values(tasksData).flat().filter(t => t.status === 'completed').length})`}
                 </Button>
             </div>
-
             <Accordion type="multiple" className="w-full space-y-4">
                 {analysisResult.rows.map((row) => {
-                    const task = tasksData[row.row_id];
-                    if (!task) return null;
-
-                    const isCompleted = task.status === 'completed';
-                    const parentType = taskTypes.find(t => t.id === parseInt(task.selectedTaskTypeId, 10));
-                    const subTypes = parentType ? parentType.sub_types : [];
-
+                    const tasks = tasksData[row.row_id] || [];
+                    const firstTask = tasks[0];
+                    if (!firstTask) return null;
+                    const isDismissed = firstTask.status === 'dismissed';
+                    const completedCount = tasks.filter(t => t.status === 'completed').length;
                     return (
-                        <AccordionItem value={`item-${row.row_id}`} key={row.row_id} className={`border rounded-lg ${isCompleted ? 'bg-green-50 border-green-200' : 'bg-card'}`}>
+                        <AccordionItem 
+                            value={`item-${row.row_id}`} 
+                            key={row.row_id} 
+                            className={`border rounded-lg transition-all ${completedCount > 0 ? 'bg-green-50 border-green-200' : isDismissed ? 'bg-gray-100 border-gray-200 opacity-80' : 'bg-card'}`}
+                        >
                             <AccordionTrigger className="px-6 text-left hover:no-underline">
-                                <div className="flex items-center gap-4">
-                                    {isCompleted ? <CheckCircle2 className="h-5 w-5 text-green-600" /> : <ListTodo className="h-5 w-5 text-primary" />}
-                                    <span className="font-mono text-sm">Linha #{row.row_id}</span>
-                                    <span className="truncate max-w-md text-muted-foreground font-normal">
-                                        {row.data['TEXTO_PUBLICACAO'] || 'Sem texto de publicação'}
+                                <div className="flex items-center gap-4 w-full">
+                                    {/* --- CORREÇÃO: Ícones substituídos pelo sinalizador de cor --- */}
+                                    <div className={cn(
+                                        "h-3 w-3 rounded-full flex-shrink-0",
+                                        completedCount > 0 ? "bg-green-500" :
+                                        isDismissed ? "bg-gray-600" :
+                                        "bg-blue-500"
+                                    )} />
+                                    <span className="font-semibold text-sm flex-shrink-0">{row.data['Nº do processo'] || `Linha #${row.row_id}`}</span>
+                                    <span className="truncate max-w-lg text-muted-foreground font-normal text-left">
+                                        {row.data['Andamentos / Descrição'] || 'Sem texto de publicação'}
                                     </span>
                                 </div>
                             </AccordionTrigger>
                             <AccordionContent className="p-6 pt-0">
-                                <div className="space-y-6">
-                                    <div>
-                                        <h4 className="font-medium mb-2">Texto da Publicação</h4>
-                                        <p className="text-sm text-muted-foreground p-3 bg-muted/50 rounded-md max-h-40 overflow-y-auto">
-                                            {row.data['TEXTO_PUBLICACAO'] || 'N/A'}
-                                        </p>
+                                {isDismissed ? (
+                                    <div className="text-center text-gray-500 py-4">
+                                        <Archive className="mx-auto h-8 w-8 mb-2" />
+                                        <p>Esta publicação foi marcada como concluída e não necessita de agendamento.</p>
                                     </div>
-
-                                    <div className="grid md:grid-cols-2 gap-4">
-                                        <div className="space-y-2">
-                                            <Label>Tipo de Tarefa</Label>
-                                            <Select value={task.selectedTaskTypeId} onValueChange={(v) => handleTaskDataChange(row.row_id, 'selectedTaskTypeId', v)}><SelectTrigger><SelectValue placeholder="Selecione..." /></SelectTrigger><SelectContent>{taskTypes.map(t => <SelectItem key={t.id} value={String(t.id)}>{t.name}</SelectItem>)}</SelectContent></Select>
+                                ) : (
+                                    <div className="space-y-6">
+                                        <div className="space-y-4 pt-2">
+                                            {row.data['Escritório responsável'] && (
+                                                <div>
+                                                    <Label className="text-xs text-muted-foreground">Escritório Responsável</Label>
+                                                    <div className="flex items-center gap-2 text-sm font-semibold text-primary">
+                                                        <Briefcase className="h-4 w-4" />
+                                                        <span>{row.data['Escritório responsável']}</span>
+                                                    </div>
+                                                </div>
+                                            )}
+                                            <div>
+                                                <Label className="text-xs text-muted-foreground">Texto da Publicação</Label>
+                                                <p className="text-sm text-foreground p-3 bg-muted/50 rounded-md max-h-60 overflow-y-auto border">
+                                                    {row.data['Andamentos / Descrição'] || 'N/A'}
+                                                </p>
+                                            </div>
                                         </div>
-                                        <div className="space-y-2">
-                                            <Label>Subtipo de Tarefa</Label>
-                                            <Select value={task.selectedSubTypeId} onValueChange={(v) => handleTaskDataChange(row.row_id, 'selectedSubTypeId', v)} disabled={!task.selectedTaskTypeId}><SelectTrigger><SelectValue placeholder="Selecione..." /></SelectTrigger><SelectContent>{subTypes.map(st => <SelectItem key={st.id} value={String(st.id)}>{st.name}</SelectItem>)}</SelectContent></Select>
+                                        {tasks.map((task, index) => {
+                                            const isCompleted = task.status === 'completed';
+                                            const parentType = taskTypes.find(t => t.id === parseInt(task.selectedTaskTypeId, 10));
+                                            const subTypes = parentType ? parentType.sub_types : [];
+                                            return (
+                                                <div key={task.taskId} className={`p-4 border rounded-lg relative ${isCompleted ? 'bg-green-50/50' : 'bg-background/20'}`}>
+                                                    {tasks.length > 1 && (
+                                                        <Button variant="ghost" size="icon" className="absolute top-2 right-2 h-6 w-6" onClick={() => handleRemoveTask(row.row_id, task.taskId)}>
+                                                            <XCircle className="h-4 w-4 text-destructive" />
+                                                        </Button>
+                                                    )}
+                                                    <h5 className="text-sm font-semibold mb-4 text-primary">Tarefa #{index + 1}</h5>
+                                                    <div className="space-y-4">
+                                                        <div className="grid md:grid-cols-2 gap-4">
+                                                            <div className="space-y-2">
+                                                                <Label>Tipo de Tarefa</Label>
+                                                                <Select value={task.selectedTaskTypeId} onValueChange={(v) => handleTaskDataChange(row.row_id, task.taskId, 'selectedTaskTypeId', v)}><SelectTrigger><SelectValue placeholder="Selecione..." /></SelectTrigger><SelectContent>{taskTypes.map(t => <SelectItem key={t.id} value={String(t.id)}>{t.name}</SelectItem>)}</SelectContent></Select>
+                                                            </div>
+                                                            <div className="space-y-2">
+                                                                <Label>Subtipo de Tarefa</Label>
+                                                                <Select value={task.selectedSubTypeId} onValueChange={(v) => handleTaskDataChange(row.row_id, task.taskId, 'selectedSubTypeId', v)} disabled={!task.selectedTaskTypeId}><SelectTrigger><SelectValue placeholder="Selecione..." /></SelectTrigger><SelectContent>{subTypes.map(st => <SelectItem key={st.id} value={String(st.id)}>{st.name}</SelectItem>)}</SelectContent></Select>
+                                                            </div>
+                                                        </div>
+                                                        <div className="space-y-2">
+                                                            <Label>Responsável</Label>
+                                                            <UserSelector users={users} value={task.selectedResponsibleId} onChange={(v) => handleTaskDataChange(row.row_id, task.taskId, 'selectedResponsibleId', v)} disabled={users.length === 0} />
+                                                        </div>
+                                                         <div className="space-y-2">
+                                                            <Label>Descrição / Complemento</Label>
+                                                            <Textarea placeholder="Adicione observações se necessário..." value={task.description} onChange={(e) => handleTaskDataChange(row.row_id, task.taskId, 'description', e.target.value)} />
+                                                        </div>
+                                                        <div className="grid grid-cols-2 gap-4">
+                                                            <div className="space-y-2">
+                                                                <Label>Data de Vencimento</Label>
+                                                                <Input type="date" value={task.dueDate} onChange={(e) => handleTaskDataChange(row.row_id, task.taskId, 'dueDate', e.target.value)}/>
+                                                            </div>
+                                                            <div className="space-y-2">
+                                                                <Label>Horário (Opcional)</Label>
+                                                                <Input type="time" value={task.dueTime} onChange={(e) => handleTaskDataChange(row.row_id, task.taskId, 'dueTime', e.target.value)}/>
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex justify-end pt-2">
+                                                            <Button size="sm" onClick={() => markAsCompleted(row.row_id, task.taskId)} disabled={isCompleted || !task.selectedSubTypeId || !task.selectedResponsibleId || !task.dueDate}>
+                                                                <CheckCircle2 className="w-4 h-4 mr-2"/>
+                                                                {isCompleted ? 'Tarefa Marcada' : 'Marcar Tarefa'}
+                                                            </Button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )
+                                        })}
+                                        <Separator />
+                                        <div className="flex justify-between items-center">
+                                            <Button variant="outline" onClick={() => handleAddTask(row.row_id)}>
+                                                <PlusCircle className="w-4 h-4 mr-2" />
+                                                Adicionar Outra Tarefa
+                                            </Button>
+                                            <Button variant="ghost" onClick={() => markAsDismissed(row.row_id)}>
+                                                <Archive className="w-4 h-4 mr-2"/>
+                                                Dispensar Publicação
+                                            </Button>
                                         </div>
                                     </div>
-                                    <div className="space-y-2">
-                                        <Label>Responsável</Label>
-                                        <UserSelector users={users} value={task.selectedResponsibleId} onChange={(v) => handleTaskDataChange(row.row_id, 'selectedResponsibleId', v)} disabled={users.length === 0} />
-                                    </div>
-                                     <div className="space-y-2">
-                                        <Label>Descrição / Complemento</Label>
-                                        <Textarea placeholder="Adicione observações se necessário..." value={task.description} onChange={(e) => handleTaskDataChange(row.row_id, 'description', e.target.value)} />
-                                    </div>
-                                    <div className="space-y-2">
-                                         <Label>Data de Vencimento</Label>
-                                         <Input type="date" value={task.dueDate} onChange={(e) => handleTaskDataChange(row.row_id, 'dueDate', e.target.value)}/>
-                                    </div>
-                                    <div className="flex justify-end">
-                                        <Button onClick={() => markAsCompleted(row.row_id)} disabled={!task.selectedSubTypeId || !task.selectedResponsibleId || !task.dueDate}>
-                                            <CheckCircle2 className="w-4 h-4 mr-2"/>
-                                            Concluir e Marcar para Agendamento
-                                        </Button>
-                                    </div>
-                                </div>
+                                )}
                             </AccordionContent>
                         </AccordionItem>
                     )
