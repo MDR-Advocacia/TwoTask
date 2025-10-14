@@ -25,6 +25,9 @@ from app.models.legal_one import LegalOneOffice, LegalOneUser, LegalOneTaskType,
 from app.models.rules import Squad, SquadMember
 from app.services.batch_task_creation_service import BatchTaskCreationService
 from app.api.v1.schemas import BatchInteractiveCreationRequest, TaskCreationDataResponse
+from app.core.dependencies import get_task_rule_service 
+from app.services.task_rule_service import TaskRuleService
+from app.api.v1.schemas import ValidatePublicationTasksRequest 
 
 router = APIRouter()
 
@@ -257,3 +260,34 @@ async def create_batch_tasks_interactive(
     background_tasks.add_task(service.process_interactive_batch_request, request)
     
     return {"status": "recebido", "message": "A solicitação foi recebida e as tarefas estão sendo agendadas em segundo plano."}
+
+@router.post(
+    "/validate-publication-tasks",
+    summary="Valida as regras de negócio para um conjunto de tarefas de uma publicação"
+)
+async def validate_publication_tasks(
+    request: ValidatePublicationTasksRequest,
+    rule_service: TaskRuleService = Depends(get_task_rule_service)
+):
+    """
+    Recebe um conjunto de tarefas propostas para uma única publicação
+    e verifica se elas atendem a todas as regras de co-ocorrência cadastradas.
+    """
+    try:
+        # Pydantic já converteu o JSON para nossos objetos.
+        # Agora, convertemos nossos objetos para dicionários, como o serviço espera.
+        tasks_as_dicts = [task.model_dump(by_alias=True) for task in request.tasks]
+        
+        rule_service.validate_co_requisites(tasks_as_dicts)
+        
+        # Se nenhuma exceção foi levantada, as regras foram cumpridas.
+        return {"status": "success", "message": "As regras de negócio foram atendidas."}
+    
+    except ValueError as e:
+        # Se o serviço levantou um ValueError, significa que uma regra foi violada.
+        # Retornamos um erro 422, que indica uma entidade não processável devido a erro de semântica.
+        raise HTTPException(status_code=422, detail=str(e))
+    
+    except Exception as e:
+        # Captura qualquer outro erro inesperado durante o processo.
+        raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado durante a validação: {e}")

@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from '@/components/ui/textarea';
 import UserSelector, { SelectableUser } from '@/components/ui/UserSelector';
 import { Separator } from '@/components/ui/separator';
-import { cn } from '@/lib/utils'; // Importar a função 'cn'
+import { cn } from '@/lib/utils';
 
 // --- Interfaces ---
 interface SpreadsheetRow {
@@ -154,10 +154,46 @@ const SpreadsheetAnalysisPage = () => {
         });
     };
 
-    const markAsCompleted = (rowId: number, taskId: string) => {
-        handleTaskDataChange(rowId, taskId, 'status', 'completed');
-        toast({ title: "Tarefa Marcada", description: "Esta tarefa foi marcada para agendamento." });
-    }
+    const handleConfirmPublication = async (rowId: number) => {
+        const tasksToValidate = tasksData[rowId];
+
+        const validationPayload = {
+            tasks: tasksToValidate.map(task => ({
+                selectedSubTypeId: task.selectedSubTypeId,
+            })),
+        };
+
+        try {
+            const response = await fetch('/api/v1/tasks/validate-publication-tasks', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(validationPayload),
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.detail || "Ocorreu um erro de validação desconhecido.");
+            }
+
+            setTasksData(prev => ({
+                ...prev,
+                [rowId]: prev[rowId].map(task => ({ ...task, status: 'completed' }))
+            }));
+            toast({ 
+                title: "Publicação Confirmada", 
+                description: "As regras de negócio foram atendidas e as tarefas foram marcadas para agendamento.",
+                className: "bg-green-100 border-green-300",
+            });
+
+        } catch (err) {
+            const errorMessage = err instanceof Error ? err.message : "Erro inesperado.";
+            toast({
+                title: "Validação Falhou",
+                description: errorMessage,
+                variant: "destructive",
+            });
+        }
+    };
     
     const markAsDismissed = (rowId: number) => {
         setTasksData(prev => ({
@@ -267,47 +303,63 @@ const SpreadsheetAnalysisPage = () => {
     if (!analysisResult) {
         return (
             <div className="container mx-auto px-6 py-8">
-                <div className="mb-8">
-                    <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-                        Agendamento Interativo por Planilha
-                    </h1>
-                    <p className="text-muted-foreground mt-1">
-                        Faça o upload de um arquivo .xlsx para iniciar a análise e o agendamento de tarefas.
-                    </p>
-                </div>
-                <Card className="max-w-2xl mx-auto glass-card border-0 animate-fade-in">
-                    <CardHeader>
-                        <CardTitle>1. Upload da Planilha</CardTitle>
-                        <CardDescription>Selecione o arquivo .xlsx contendo as publicações a serem analisadas.</CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-6">
-                        <div className="grid w-full items-center gap-1.5">
-                            <Label htmlFor="spreadsheet-file">Arquivo Excel</Label>
-                            <div className="flex items-center gap-3">
-                                <Input id="spreadsheet-file" type="file" accept=".xlsx" onChange={handleFileChange} className="file:text-primary file:font-medium"/>
-                            </div>
-                        </div>
-                        {selectedFile && (
-                            <div className="flex items-center p-3 rounded-md bg-muted/50">
-                                <File className="w-5 h-5 mr-3 text-primary" />
-                                <span className="text-sm font-medium">{selectedFile.name}</span>
-                            </div>
-                        )}
-                        {error && (
-                            <Alert variant="destructive">
-                                <AlertCircle className="h-4 w-4" />
-                                <AlertTitle>Erro</AlertTitle>
-                                <AlertDescription>{error}</AlertDescription>
-                            </Alert>
-                        )}
-                        <Button onClick={handleAnalyze} disabled={!selectedFile || isAnalyzing} className="w-full glass-button text-white">
-                            {isAnalyzing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
-                            {isAnalyzing ? 'Analisando...' : 'Analisar Planilha'}
-                        </Button>
-                    </CardContent>
-                </Card>
+              <div className="mb-8">
+                <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
+                  Agendamento Interativo por Planilha
+                </h1>
+                <p className="text-muted-foreground mt-1">
+                  Faça o upload de um arquivo .xlsx para iniciar a análise e o agendamento de tarefas.
+                </p>
+              </div>
+              <Card className="max-w-2xl mx-auto glass-card border-0 animate-fade-in">
+                <CardHeader>
+                  <CardTitle>1. Upload da Planilha</CardTitle>
+                  <CardDescription>
+                    Selecione o arquivo .xlsx contendo as publicações a serem analisadas.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  <div className="grid w-full items-center gap-1.5">
+                    <Label htmlFor="spreadsheet-file">Arquivo Excel</Label>
+                    <div className="flex items-center gap-3">
+                      <Input
+                        id="spreadsheet-file"
+                        type="file"
+                        accept=".xlsx"
+                        onChange={handleFileChange}
+                        className="file:text-primary file:font-medium"
+                      />
+                    </div>
+                  </div>
+                  {selectedFile && (
+                    <div className="flex items-center p-3 rounded-md bg-muted/50">
+                      <File className="w-5 h-5 mr-3 text-primary" />
+                      <span className="text-sm font-medium">{selectedFile.name}</span>
+                    </div>
+                  )}
+                  {error && (
+                    <Alert variant="destructive">
+                      <AlertCircle className="h-4 w-4" />
+                      <AlertTitle>Erro</AlertTitle>
+                      <AlertDescription>{error}</AlertDescription>
+                    </Alert>
+                  )}
+                  <Button 
+                    onClick={handleAnalyze} 
+                    disabled={!selectedFile || isAnalyzing}
+                    className="w-full glass-button text-white"
+                  >
+                    {isAnalyzing ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Upload className="mr-2 h-4 w-4" />
+                    )}
+                    {isAnalyzing ? 'Analisando...' : 'Analisar Planilha'}
+                  </Button>
+                </CardContent>
+              </Card>
             </div>
-        );
+          );
     }
 
     return (
@@ -334,24 +386,25 @@ const SpreadsheetAnalysisPage = () => {
                     const firstTask = tasks[0];
                     if (!firstTask) return null;
                     const isDismissed = firstTask.status === 'dismissed';
-                    const completedCount = tasks.filter(t => t.status === 'completed').length;
+                    const areAllTasksCompleted = tasks.length > 0 && tasks.every(t => t.status === 'completed');
+                    const isAnyTaskFilled = tasks.some(t => t.selectedSubTypeId && t.selectedResponsibleId && t.dueDate);
+
                     return (
                         <AccordionItem 
                             value={`item-${row.row_id}`} 
                             key={row.row_id} 
-                            className={`border rounded-lg transition-all ${completedCount > 0 ? 'bg-green-50 border-green-200' : isDismissed ? 'bg-gray-100 border-gray-200 opacity-80' : 'bg-card'}`}
+                            className={`border rounded-lg transition-all ${areAllTasksCompleted ? 'bg-green-50 border-green-200' : isDismissed ? 'bg-gray-100 border-gray-200 opacity-80' : 'bg-card'}`}
                         >
                             <AccordionTrigger className="px-6 text-left hover:no-underline">
-                                <div className="flex items-center gap-4 w-full">
-                                    {/* --- CORREÇÃO: Ícones substituídos pelo sinalizador de cor --- */}
+                                <div className="flex items-center gap-4">
                                     <div className={cn(
                                         "h-3 w-3 rounded-full flex-shrink-0",
-                                        completedCount > 0 ? "bg-green-500" :
+                                        areAllTasksCompleted ? "bg-green-500" :
                                         isDismissed ? "bg-gray-600" :
                                         "bg-blue-500"
                                     )} />
-                                    <span className="font-semibold text-sm flex-shrink-0">{row.data['Nº do processo'] || `Linha #${row.row_id}`}</span>
-                                    <span className="truncate max-w-lg text-muted-foreground font-normal text-left">
+                                    <span className="font-semibold text-sm">{row.data['Nº do processo'] || `Linha #${row.row_id}`}</span>
+                                    <span className="truncate max-w-lg text-muted-foreground font-normal">
                                         {row.data['Andamentos / Descrição'] || 'Sem texto de publicação'}
                                     </span>
                                 </div>
@@ -381,6 +434,7 @@ const SpreadsheetAnalysisPage = () => {
                                                 </p>
                                             </div>
                                         </div>
+
                                         {tasks.map((task, index) => {
                                             const isCompleted = task.status === 'completed';
                                             const parentType = taskTypes.find(t => t.id === parseInt(task.selectedTaskTypeId, 10));
@@ -422,26 +476,30 @@ const SpreadsheetAnalysisPage = () => {
                                                                 <Input type="time" value={task.dueTime} onChange={(e) => handleTaskDataChange(row.row_id, task.taskId, 'dueTime', e.target.value)}/>
                                                             </div>
                                                         </div>
-                                                        <div className="flex justify-end pt-2">
-                                                            <Button size="sm" onClick={() => markAsCompleted(row.row_id, task.taskId)} disabled={isCompleted || !task.selectedSubTypeId || !task.selectedResponsibleId || !task.dueDate}>
-                                                                <CheckCircle2 className="w-4 h-4 mr-2"/>
-                                                                {isCompleted ? 'Tarefa Marcada' : 'Marcar Tarefa'}
-                                                            </Button>
-                                                        </div>
                                                     </div>
                                                 </div>
                                             )
                                         })}
                                         <Separator />
-                                        <div className="flex justify-between items-center">
+                                        <div className="flex justify-between items-center pt-4">
                                             <Button variant="outline" onClick={() => handleAddTask(row.row_id)}>
                                                 <PlusCircle className="w-4 h-4 mr-2" />
-                                                Adicionar Outra Tarefa
+                                                Adicionar Tarefa
                                             </Button>
-                                            <Button variant="ghost" onClick={() => markAsDismissed(row.row_id)}>
-                                                <Archive className="w-4 h-4 mr-2"/>
-                                                Dispensar Publicação
-                                            </Button>
+                                            <div className="flex items-center gap-2">
+                                                <Button variant="ghost" size="sm" onClick={() => markAsDismissed(row.row_id)}>
+                                                    <Archive className="w-4 h-4 mr-2"/>
+                                                    Dispensar
+                                                </Button>
+                                                <Button 
+                                                    onClick={() => handleConfirmPublication(row.row_id)} 
+                                                    disabled={!isAnyTaskFilled || areAllTasksCompleted}
+                                                    className="bg-primary text-primary-foreground"
+                                                >
+                                                    <CheckCircle2 className="w-4 h-4 mr-2"/>
+                                                    {areAllTasksCompleted ? 'Confirmado' : 'Confirmar e Marcar'}
+                                                </Button>
+                                            </div>
                                         </div>
                                     </div>
                                 )}

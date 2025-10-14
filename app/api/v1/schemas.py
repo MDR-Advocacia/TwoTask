@@ -244,3 +244,17 @@ class InteractiveTaskPayload(BaseModel):
 class BatchInteractiveCreationRequest(BaseModel):
     tasks: List[InteractiveTaskPayload]
     source_filename: str
+
+class TaskForRuleValidation(BaseModel):
+    """
+    Representa uma única tarefa simplificada, contendo apenas
+    a informação necessária para a validação de regras.
+    """
+    selected_subtype_id: str = Field(..., alias='selectedSubTypeId') # Recebe o camelCase do frontend
+
+class ValidatePublicationTasksRequest(BaseModel):
+    """
+    O payload que o frontend enviará, contendo a lista de
+    tarefas de uma única publicação para serem validadas.
+    """
+    tasks: List[TaskForRuleValidation]
