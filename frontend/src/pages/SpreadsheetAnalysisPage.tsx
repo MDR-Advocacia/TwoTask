@@ -76,12 +76,15 @@ const SpreadsheetAnalysisPage = () => {
     const initializeTasksData = (rows: SpreadsheetRow[]) => {
         const initialData: Record<number, TaskFormData[]> = {};
         rows.forEach(row => {
+            const responsibleName = row.data['D']?.toString().trim();
+            const responsibleUser = responsibleName ? users.find(u => u.name.trim().toLowerCase() === responsibleName.toLowerCase()) : undefined;
+
             initialData[row.row_id] = [{
                 taskId: `task-${Date.now()}`,
                 rowId: row.row_id,
                 selectedTaskTypeId: '',
                 selectedSubTypeId: '',
-                selectedResponsibleId: null,
+                selectedResponsibleId: responsibleUser ? String(responsibleUser.external_id) : null,
                 description: '',
                 dueDate: '',
                 dueTime: '',
@@ -358,7 +361,7 @@ const SpreadsheetAnalysisPage = () => {
                         )}
                         <Button 
                             onClick={handleAnalyze} 
-                            disabled={!selectedFile || isAnalyzing}
+                            disabled={!selectedFile || isAnalyzing || isFormLoading}
                             className="w-full glass-button text-white"
                         >
                             {isAnalyzing ? (
