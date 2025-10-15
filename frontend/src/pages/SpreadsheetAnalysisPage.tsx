@@ -1,3 +1,5 @@
+// frontend/src/pages/SpreadsheetAnalysisPage.tsx
+
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -5,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { Upload, File, AlertCircle, Loader2, Send, CheckCircle2, Archive, PlusCircle, XCircle, Briefcase } from "lucide-react";
+import { Upload, File, AlertCircle, Loader2, Send, CheckCircle2, Archive, PlusCircle, XCircle, Briefcase, Undo2 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -16,29 +18,29 @@ import { cn } from '@/lib/utils';
 
 // --- Interfaces ---
 interface SpreadsheetRow {
-  row_id: number;
-  data: Record<string, any>;
+    row_id: number;
+    data: Record<string, any>;
 }
 
 interface AnalysisResponse {
-  filename: string;
-  headers: string[];
-  rows: SpreadsheetRow[];
+    filename: string;
+    headers: string[];
+    rows: SpreadsheetRow[];
 }
 
 interface SubType { id: number; name: string; }
 interface HierarchicalTaskType { id: number; name: string; sub_types: SubType[]; }
 
 interface TaskFormData {
-  taskId: string;
-  rowId: number;
-  selectedTaskTypeId: string;
-  selectedSubTypeId: string;
-  selectedResponsibleId: string | null;
-  description: string;
-  dueDate: string;
-  dueTime: string;
-  status: 'pending' | 'completed' | 'dismissed';
+    taskId: string;
+    rowId: number;
+    selectedTaskTypeId: string;
+    selectedSubTypeId: string;
+    selectedResponsibleId: string | null;
+    description: string;
+    dueDate: string;
+    dueTime: string;
+    status: 'pending' | 'completed' | 'dismissed';
 }
 
 const SpreadsheetAnalysisPage = () => {
@@ -56,17 +58,17 @@ const SpreadsheetAnalysisPage = () => {
 
     useEffect(() => {
         const fetchFormData = async () => {
-          try {
-            const taskDataResponse = await fetch('/api/v1/tasks/task-creation-data');
-            if (!taskDataResponse.ok) throw new Error('Falha ao carregar os dados do formulário.');
-            const data = await taskDataResponse.json();
-            setTaskTypes(data.task_types);
-            setUsers(data.users);
-          } catch (error: any) {
-            toast({ title: 'Erro ao Carregar Dados', description: error.message, variant: 'destructive' });
-          } finally {
-            setIsFormLoading(false);
-          }
+            try {
+                const taskDataResponse = await fetch('/api/v1/tasks/task-creation-data');
+                if (!taskDataResponse.ok) throw new Error('Falha ao carregar os dados do formulário.');
+                const data = await taskDataResponse.json();
+                setTaskTypes(data.task_types);
+                setUsers(data.users);
+            } catch (error: any) {
+                toast({ title: 'Erro ao Carregar Dados', description: error.message, variant: 'destructive' });
+            } finally {
+                setIsFormLoading(false);
+            }
         };
         fetchFormData();
     }, [toast]);
@@ -92,21 +94,21 @@ const SpreadsheetAnalysisPage = () => {
     const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
         if (file) {
-          if (file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") {
-            setSelectedFile(file);
-            setError(null);
-            setAnalysisResult(null);
-          } else {
-            setError("Formato de arquivo inválido. Por favor, selecione um arquivo .xlsx.");
-            setSelectedFile(null);
-          }
+            if (file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") {
+                setSelectedFile(file);
+                setError(null);
+                setAnalysisResult(null);
+            } else {
+                setError("Formato de arquivo inválido. Por favor, selecione um arquivo .xlsx.");
+                setSelectedFile(null);
+            }
         }
     };
     
     const handleAnalyze = async () => {
         if (!selectedFile) {
-          setError("Nenhum arquivo selecionado.");
-          return;
+            setError("Nenhum arquivo selecionado.");
+            return;
         }
         setIsAnalyzing(true);
         setError(null);
@@ -115,23 +117,23 @@ const SpreadsheetAnalysisPage = () => {
         formData.append('file', selectedFile);
     
         try {
-          const response = await fetch('/api/v1/tasks/analyze-spreadsheet', {
-            method: 'POST',
-            body: formData,
-          });
+            const response = await fetch('/api/v1/tasks/analyze-spreadsheet', {
+                method: 'POST',
+                body: formData,
+            });
     
-          if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.detail || 'Ocorreu uma falha ao analisar o arquivo.');
-          }
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.detail || 'Ocorreu uma falha ao analisar o arquivo.');
+            }
     
-          const data: AnalysisResponse = await response.json();
-          setAnalysisResult(data);
-          initializeTasksData(data.rows);
-          toast({
-            title: "Análise Concluída!",
-            description: `${data.rows.length} publicações prontas para agendamento.`,
-          });
+            const data: AnalysisResponse = await response.json();
+            setAnalysisResult(data);
+            initializeTasksData(data.rows);
+            toast({
+                title: "Análise Concluída!",
+                description: `${data.rows.length} publicações prontas para agendamento.`,
+            });
         } catch (err) {
             const errorMessage = err instanceof Error ? err.message : "Erro desconhecido.";
             setError(errorMessage);
@@ -141,7 +143,7 @@ const SpreadsheetAnalysisPage = () => {
                 variant: "destructive",
             });
         } finally {
-          setIsAnalyzing(false);
+            setIsAnalyzing(false);
         }
     };
 
@@ -153,28 +155,27 @@ const SpreadsheetAnalysisPage = () => {
             return { ...prev, [rowId]: newTasks };
         });
     };
-
+    
     const handleConfirmPublication = async (rowId: number) => {
         const tasksToValidate = tasksData[rowId];
-
         const validationPayload = {
             tasks: tasksToValidate.map(task => ({
                 selectedSubTypeId: task.selectedSubTypeId,
             })),
         };
-
+    
         try {
             const response = await fetch('/api/v1/tasks/validate-publication-tasks', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(validationPayload),
             });
-
+    
             if (!response.ok) {
                 const errorData = await response.json();
                 throw new Error(errorData.detail || "Ocorreu um erro de validação desconhecido.");
             }
-
+    
             setTasksData(prev => ({
                 ...prev,
                 [rowId]: prev[rowId].map(task => ({ ...task, status: 'completed' }))
@@ -184,7 +185,7 @@ const SpreadsheetAnalysisPage = () => {
                 description: "As regras de negócio foram atendidas e as tarefas foram marcadas para agendamento.",
                 className: "bg-green-100 border-green-300",
             });
-
+    
         } catch (err) {
             const errorMessage = err instanceof Error ? err.message : "Erro inesperado.";
             toast({
@@ -194,7 +195,7 @@ const SpreadsheetAnalysisPage = () => {
             });
         }
     };
-    
+
     const markAsDismissed = (rowId: number) => {
         setTasksData(prev => ({
             ...prev,
@@ -202,6 +203,17 @@ const SpreadsheetAnalysisPage = () => {
         }));
         toast({ title: "Publicação Dispensada", description: "Esta publicação não gerará tarefas." });
     }
+
+    const handleUndoAction = (rowId: number) => {
+        setTasksData(prev => ({
+            ...prev,
+            [rowId]: prev[rowId].map(task => ({ ...task, status: 'pending' }))
+        }));
+        toast({
+            title: "Ação desfeita",
+            description: "A publicação voltou ao estado pendente.",
+        });
+    };
 
     const handleAddTask = (rowId: number) => {
         setTasksData(prev => {
@@ -289,7 +301,7 @@ const SpreadsheetAnalysisPage = () => {
             setTimeout(() => navigate('/'), 1500);
 
         } catch (err) {
-            const errorMessage = err instanceof Error ? err.message : "Erro desconhecido.";
+            const errorMessage = err instanceof Error ? err.message : "Erro inesperado.";
             toast({
                 title: "Erro no Envio",
                 description: errorMessage,
@@ -298,68 +310,68 @@ const SpreadsheetAnalysisPage = () => {
         } finally {
             setIsSubmitting(false);
         }
-    };
+    }
 
     if (!analysisResult) {
         return (
             <div className="container mx-auto px-6 py-8">
-              <div className="mb-8">
-                <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-                  Agendamento Interativo por Planilha
-                </h1>
-                <p className="text-muted-foreground mt-1">
-                  Faça o upload de um arquivo .xlsx para iniciar a análise e o agendamento de tarefas.
-                </p>
-              </div>
-              <Card className="max-w-2xl mx-auto glass-card border-0 animate-fade-in">
-                <CardHeader>
-                  <CardTitle>1. Upload da Planilha</CardTitle>
-                  <CardDescription>
-                    Selecione o arquivo .xlsx contendo as publicações a serem analisadas.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-6">
-                  <div className="grid w-full items-center gap-1.5">
-                    <Label htmlFor="spreadsheet-file">Arquivo Excel</Label>
-                    <div className="flex items-center gap-3">
-                      <Input
-                        id="spreadsheet-file"
-                        type="file"
-                        accept=".xlsx"
-                        onChange={handleFileChange}
-                        className="file:text-primary file:font-medium"
-                      />
-                    </div>
-                  </div>
-                  {selectedFile && (
-                    <div className="flex items-center p-3 rounded-md bg-muted/50">
-                      <File className="w-5 h-5 mr-3 text-primary" />
-                      <span className="text-sm font-medium">{selectedFile.name}</span>
-                    </div>
-                  )}
-                  {error && (
-                    <Alert variant="destructive">
-                      <AlertCircle className="h-4 w-4" />
-                      <AlertTitle>Erro</AlertTitle>
-                      <AlertDescription>{error}</AlertDescription>
-                    </Alert>
-                  )}
-                  <Button 
-                    onClick={handleAnalyze} 
-                    disabled={!selectedFile || isAnalyzing}
-                    className="w-full glass-button text-white"
-                  >
-                    {isAnalyzing ? (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    ) : (
-                      <Upload className="mr-2 h-4 w-4" />
-                    )}
-                    {isAnalyzing ? 'Analisando...' : 'Analisar Planilha'}
-                  </Button>
-                </CardContent>
-              </Card>
+                <div className="mb-8">
+                    <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
+                        Agendamento Interativo por Planilha
+                    </h1>
+                    <p className="text-muted-foreground mt-1">
+                        Faça o upload de um arquivo .xlsx para iniciar a análise e o agendamento de tarefas.
+                    </p>
+                </div>
+                <Card className="max-w-2xl mx-auto glass-card border-0 animate-fade-in">
+                    <CardHeader>
+                        <CardTitle>1. Upload da Planilha</CardTitle>
+                        <CardDescription>
+                            Selecione o arquivo .xlsx contendo as publicações a serem analisadas.
+                        </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-6">
+                        <div className="grid w-full items-center gap-1.5">
+                            <Label htmlFor="spreadsheet-file">Arquivo Excel</Label>
+                            <div className="flex items-center gap-3">
+                                <Input
+                                    id="spreadsheet-file"
+                                    type="file"
+                                    accept=".xlsx"
+                                    onChange={handleFileChange}
+                                    className="file:text-primary file:font-medium"
+                                />
+                            </div>
+                        </div>
+                        {selectedFile && (
+                            <div className="flex items-center p-3 rounded-md bg-muted/50">
+                                <File className="w-5 h-5 mr-3 text-primary" />
+                                <span className="text-sm font-medium">{selectedFile.name}</span>
+                            </div>
+                        )}
+                        {error && (
+                            <Alert variant="destructive">
+                                <AlertCircle className="h-4 w-4" />
+                                <AlertTitle>Erro</AlertTitle>
+                                <AlertDescription>{error}</AlertDescription>
+                            </Alert>
+                        )}
+                        <Button 
+                            onClick={handleAnalyze} 
+                            disabled={!selectedFile || isAnalyzing}
+                            className="w-full glass-button text-white"
+                        >
+                            {isAnalyzing ? (
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            ) : (
+                                <Upload className="mr-2 h-4 w-4" />
+                            )}
+                            {isAnalyzing ? 'Analisando...' : 'Analisar Planilha'}
+                        </Button>
+                    </CardContent>
+                </Card>
             </div>
-          );
+        );
     }
 
     return (
@@ -385,37 +397,55 @@ const SpreadsheetAnalysisPage = () => {
                     const tasks = tasksData[row.row_id] || [];
                     const firstTask = tasks[0];
                     if (!firstTask) return null;
+
                     const isDismissed = firstTask.status === 'dismissed';
-                    const areAllTasksCompleted = tasks.length > 0 && tasks.every(t => t.status === 'completed');
+                    const isCompleted = firstTask.status === 'completed';
                     const isAnyTaskFilled = tasks.some(t => t.selectedSubTypeId && t.selectedResponsibleId && t.dueDate);
 
                     return (
                         <AccordionItem 
                             value={`item-${row.row_id}`} 
                             key={row.row_id} 
-                            className={`border rounded-lg transition-all ${areAllTasksCompleted ? 'bg-green-50 border-green-200' : isDismissed ? 'bg-gray-100 border-gray-200 opacity-80' : 'bg-card'}`}
+                            className={`border rounded-lg transition-all ${isCompleted ? 'bg-green-50 border-green-200' : isDismissed ? 'bg-gray-100 border-gray-200 opacity-80' : 'bg-card'}`}
                         >
                             <AccordionTrigger className="px-6 text-left hover:no-underline">
-                                <div className="flex items-center gap-4">
-                                    <div className={cn(
-                                        "h-3 w-3 rounded-full flex-shrink-0",
-                                        areAllTasksCompleted ? "bg-green-500" :
-                                        isDismissed ? "bg-gray-600" :
-                                        "bg-blue-500"
-                                    )} />
+                                <div className="flex items-center gap-4 w-full">
+                                    <div className={cn("h-3 w-3 rounded-full flex-shrink-0", isCompleted ? "bg-green-500" : isDismissed ? "bg-gray-600" : "bg-blue-500")} />
                                     <span className="font-semibold text-sm">{row.data['Nº do processo'] || `Linha #${row.row_id}`}</span>
-                                    <span className="truncate max-w-lg text-muted-foreground font-normal">
+                                    <span className="truncate max-w-lg text-muted-foreground font-normal flex-1 text-left">
                                         {row.data['Andamentos / Descrição'] || 'Sem texto de publicação'}
                                     </span>
                                 </div>
                             </AccordionTrigger>
                             <AccordionContent className="p-6 pt-0">
-                                {isDismissed ? (
-                                    <div className="text-center text-gray-500 py-4">
-                                        <Archive className="mx-auto h-8 w-8 mb-2" />
-                                        <p>Esta publicação foi marcada como concluída e não necessita de agendamento.</p>
+                                {isCompleted || isDismissed ? (
+                                    // --- BLOCO PÓS-AÇÃO (NOVA LÓGICA) ---
+                                    <div className="flex flex-col items-center justify-center text-center py-4">
+                                        {isCompleted ? (
+                                            <>
+                                                <CheckCircle2 className="mx-auto h-8 w-8 mb-2 text-green-600" />
+                                                <p className="font-semibold text-green-700">Publicação Confirmada</p>
+                                                <p className='text-sm text-green-600'>As tarefas estão prontas para o agendamento final.</p>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <Archive className="mx-auto h-8 w-8 mb-2 text-gray-600" />
+                                                <p className="font-semibold text-gray-700">Publicação Dispensada</p>
+                                                <p className='text-sm text-gray-600'>Esta publicação não irá gerar tarefas.</p>
+                                            </>
+                                        )}
+                                        <Button 
+                                            variant="outline" 
+                                            size="sm" 
+                                            className="mt-4" 
+                                            onClick={() => handleUndoAction(row.row_id)}
+                                        >
+                                            <Undo2 className="w-4 h-4 mr-2" />
+                                            Desfazer
+                                        </Button>
                                     </div>
                                 ) : (
+                                    // --- BLOCO PRÉ-AÇÃO (LÓGICA EXISTENTE) ---
                                     <div className="space-y-6">
                                         <div className="space-y-4 pt-2">
                                             {row.data['Escritório responsável'] && (
@@ -436,11 +466,10 @@ const SpreadsheetAnalysisPage = () => {
                                         </div>
 
                                         {tasks.map((task, index) => {
-                                            const isCompleted = task.status === 'completed';
                                             const parentType = taskTypes.find(t => t.id === parseInt(task.selectedTaskTypeId, 10));
                                             const subTypes = parentType ? parentType.sub_types : [];
                                             return (
-                                                <div key={task.taskId} className={`p-4 border rounded-lg relative ${isCompleted ? 'bg-green-50/50' : 'bg-background/20'}`}>
+                                                <div key={task.taskId} className={`p-4 border rounded-lg relative bg-background/20`}>
                                                     {tasks.length > 1 && (
                                                         <Button variant="ghost" size="icon" className="absolute top-2 right-2 h-6 w-6" onClick={() => handleRemoveTask(row.row_id, task.taskId)}>
                                                             <XCircle className="h-4 w-4 text-destructive" />
@@ -493,11 +522,11 @@ const SpreadsheetAnalysisPage = () => {
                                                 </Button>
                                                 <Button 
                                                     onClick={() => handleConfirmPublication(row.row_id)} 
-                                                    disabled={!isAnyTaskFilled || areAllTasksCompleted}
+                                                    disabled={!isAnyTaskFilled}
                                                     className="bg-primary text-primary-foreground"
                                                 >
                                                     <CheckCircle2 className="w-4 h-4 mr-2"/>
-                                                    {areAllTasksCompleted ? 'Confirmado' : 'Confirmar e Marcar'}
+                                                    Confirmar e Marcar
                                                 </Button>
                                             </div>
                                         </div>
