@@ -31,6 +31,7 @@ from app.api.v1.schemas import ValidatePublicationTasksRequest
 
 router = APIRouter()
 
+# --- CORREÇÃO 1: Adicionando a Config para Pydantic V2 ---
 class SpreadsheetRow(BaseModel):
     row_id: int
     data: Dict[str, Any]
@@ -43,25 +44,30 @@ class SpreadsheetAnalysisResponse(BaseModel):
 class SubTypeSchema(BaseModel):
     id: int
     name: str
-
+    class Config:
+        from_attributes = True
 
 class HierarchicalTaskTypeSchema(BaseModel):
     id: int
     name: str
     sub_types: List[SubTypeSchema]
-
+    class Config:
+        from_attributes = True
 
 class UserForTaskForm(BaseModel):
     id: int
     external_id: int
     name: str
     squads: List[Dict[str, Any]]
-
+    class Config:
+        from_attributes = True
 
 class OfficeForTaskForm(BaseModel):
     id: int
     external_id: int
     name: str
+    class Config:
+        from_attributes = True
     
     
 class TaskCreationDataResponse(BaseModel):
@@ -96,9 +102,7 @@ def get_data_for_task_form(db: Session = Depends(get_db)):
 
     # 3. Buscar os outros dados (lógica original preservada)
     offices = db.query(LegalOneOffice).filter(LegalOneOffice.is_active == True).order_by(LegalOneOffice.name).all()
-    users = db.query(LegalOneUser).filter(LegalOneUser.is_active == True).options(
-        joinedload(LegalOneUser.squad_members).joinedload(SquadMember.squad)
-    ).all()
+    users = db.query(LegalOneUser)
     users_for_form = [
         UserForTaskForm(
             id=user.id,
@@ -207,6 +211,7 @@ async def create_batch_tasks_from_spreadsheet(
     
     return {"status": "recebido", "message": "A planilha foi recebida e está sendo processada em segundo plano."}
 
+# --- CORREÇÃO 2: Limpeza dos cabeçalhos e dados da planilha ---
 @router.post(
     "/analyze-spreadsheet",
     response_model=SpreadsheetAnalysisResponse,
@@ -225,14 +230,20 @@ async def analyze_spreadsheet(file: UploadFile = File(...)):
         workbook = load_workbook(filename=BytesIO(content))
         sheet = workbook.active
 
-        headers = [cell.value for cell in sheet[1]]
+        # 1. Lê os cabeçalhos da primeira linha.
+        raw_headers = [cell.value for cell in sheet[1]]
+        
+        # 2. Limpa e normaliza os cabeçalhos para garantir a correspondência no frontend.
+        headers = [str(h).strip() if h is not None else '' for h in raw_headers]
         
         rows_data = []
         for index, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
-            # Ignora linhas completamente vazias
             if not any(row):
                 continue
-            rows_data.append(SpreadsheetRow(row_id=index, data=dict(zip(headers, row))))
+            
+            # Garante que valores nulos na planilha se tornem strings vazias.
+            cleaned_row = ["" if val is None else val for val in row]
+            rows_data.append(SpreadsheetRow(row_id=index, data=dict(zip(headers, cleaned_row))))
 
         return SpreadsheetAnalysisResponse(
             filename=file.filename,
@@ -241,7 +252,6 @@ async def analyze_spreadsheet(file: UploadFile = File(...)):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Não foi possível processar a planilha: {e}")
-
 
 @router.post(
     "/batch-create-interactive",

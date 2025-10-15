@@ -71,9 +71,11 @@ const UserSelector = ({
   }, [users, filterBySquadIds]);
 
   const handleSelect = (currentValue: string) => {
-    // Se o mesmo valor for selecionado novamente, desmarque-o. Caso contrário, selecione o novo valor.
-    const newValue = currentValue === value ? null : currentValue;
-    onChange(newValue);
+    const selected = users.find(u => u.name.toLowerCase() === currentValue.toLowerCase());
+    if (selected) {
+      const newValue = String(selected.external_id) === value ? null : String(selected.external_id);
+      onChange(newValue);
+    }
     setOpen(false);
   };
 
@@ -121,7 +123,7 @@ const UserSelector = ({
                 {filteredUsers.map(user => (
                   <CommandItem
                     key={user.external_id}
-                    value={String(user.external_id)}
+                    value={user.name}
                     onSelect={handleSelect}
                   >
                     <Check
