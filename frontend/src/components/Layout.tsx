@@ -24,7 +24,6 @@ import { Button } from "./ui/button";
 // Centralizamos os links de navegação em um array para facilitar a manutenção
 const navLinks = [
   { to: "/", icon: Home, label: "Dashboard" },
-  { to: "/tasks/template-batch", icon: FilePlus2, label: "Tarefas em Lote (IA)" },
   { to: "/tasks/by-process", icon: FileSearch2, label: "Tarefa por Processo" },
   { to: "/tasks/spreadsheet-batch", icon: FileUp, label: "Tarefas por Planilha (Em lote)" },
   // --- CORREÇÃO APLICADA AQUI ---

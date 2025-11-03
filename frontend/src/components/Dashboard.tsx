@@ -1,5 +1,3 @@
-// frontend/src/components/Dashboard.tsx
-
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -14,7 +12,8 @@ import {
     RefreshCw,
     FileUp, 
     BrainCircuit,
-    History // Novo ícone
+    History,
+    Webhook // <--- 1. ADICIONADO ÍCONE 'Webhook'
 } from "lucide-react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
@@ -25,17 +24,41 @@ import { useToast } from "@/hooks/use-toast";
 
 // Tipos e API
 import { BatchExecution } from "@/types/api";
-import { fetchBatchExecutions, retryBatchExecution } from "@/services/api"; // Importar nova função
+import { fetchBatchExecutions, retryBatchExecution } from "@/services/api"; 
+
+// --- 2. CRIAÇÃO DOS MAPAS DE CONFIGURAÇÃO ---
+// (Este código é NOVO e deve ser colocado após os imports)
+
+// Mapeamento de nomes de exibição
+const sourceDisplayNames: { [key: string]: string } = {
+    'planilha': 'Planilha',
+    'onesid': 'Onesid', // Agora "onesid" também terá um nome formatado
+    'onerequest': 'Onerequest'
+};
+
+// Mapeamento de ícones
+const sourceIcons: { [key: string]: React.ElementType } = {
+    'planilha': FileUp,
+    'onesid': BrainCircuit,
+    'onerequest': Webhook,
+    'default': History // Ícone padrão caso a fonte não seja mapeada
+};
+
+// --- 3. SUBSTITUIÇÃO DO COMPONENTE SourceBadge ---
+// (Substitua o componente SourceBadge existente por este)
 
 const SourceBadge = ({ source }: { source: string }) => {
-    const isSpreadsheet = source.toLowerCase() === 'planilha';
-    const Icon = isSpreadsheet ? FileUp : BrainCircuit;
+    const lowerSource = source.toLowerCase();
+    
+    // Busca o nome e o ícone nos mapas
+    const displayName = sourceDisplayNames[lowerSource] || source; // Fallback para a string original
+    const Icon = sourceIcons[lowerSource] || sourceIcons['default']; // Fallback para o ícone padrão
     
     return (
-      <div className="flex items-center gap-2 font-medium text-sm px-2.5 py-0.5 rounded-full border bg-background">
-        <Icon className="h-4 w-4 text-muted-foreground" />
-        <span>{source}</span>
-      </div>
+      <Badge variant="outline" className="flex items-center gap-2">
+        <Icon className="h-4 w-4" />
+        <span>{displayName}</span>
+      </Badge>
     );
 };
 
