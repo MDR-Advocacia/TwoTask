@@ -160,6 +160,17 @@ class ProcessoResponsavel(BaseModel):
     observacao: Optional[str] = None
     data_agendamento: Optional[str] = None
     setor: Optional[str] = None
+    id: Optional[int] = None
+    numero_solicitacao: Optional[str] = None
+    titulo: Optional[str] = None
+    npj_direcionador: Optional[str] = None
+    prazo: Optional[str] = None  # <--- CORREÇÃO PRINCIPAL
+    texto_dmi: Optional[str] = None
+    polo: Optional[str] = None
+    recebido_em: Optional[str] = None
+    anotacao: Optional[str] = None
+    status: Optional[str] = None
+    status_sistema: Optional[str] = None
 
     @field_validator("numero_processo")
     @classmethod
@@ -167,7 +178,11 @@ class ProcessoResponsavel(BaseModel):
         """
         Garante que o número do processo esteja sempre no formato CNJ.
         """
-        return format_cnj(v)
+        if v: # Adiciona verificação para não falhar em None
+            return format_cnj(v)
+        return v
+    
+    model_config = ConfigDict(extra="allow")
 
 
 class BatchTaskCreationRequest(BaseModel):
