@@ -14,7 +14,7 @@ class BatchExecution(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     source = Column(String, nullable=False, index=True)
-    start_time = Column(DateTime(timezone=True), server_default=func.now())
+    start_time = Column(DateTime(timezone=True), nullable=False)
     end_time = Column(DateTime(timezone=True), nullable=True)
     
     total_items = Column(Integer, nullable=False)
