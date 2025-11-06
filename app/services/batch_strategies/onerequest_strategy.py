@@ -17,7 +17,7 @@ from .base_strategy import BaseStrategy
 # para o seu ambiente Legal One.
 SECTOR_TASK_MAPPING = {
     "BB Réu": (15, 967),
-    "BB Autor": (18, 969),
+    "BB Autor": (28, 969),
     "BB Recurso": (19, 968),
     "BB Execução e Encerramento": (20, 1058)
     # Adicione outros mapeamentos
