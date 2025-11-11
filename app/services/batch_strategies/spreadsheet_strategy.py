@@ -94,7 +94,7 @@ class SpreadsheetStrategy(BaseStrategy):
         self.db.commit()
 
         logging.info("Pré-carregando dados de usuários, escritórios e tipos de tarefa para o cache.")
-        users_cache = {user.name.strip().lower(): user for user in self.db.query(LegalOneUser).filter(LegalOneUser.is_active == True).all()}
+        users_cache = {user.name.strip().lower(): user for user in self.db.query(LegalOneUser).all()}
         offices_cache = {office.path.strip().lower(): office for office in self.db.query(LegalOneOffice).filter(LegalOneOffice.is_active == True).all()}
         subtypes_cache = {sub.name.strip().lower(): sub for sub in self.db.query(LegalOneTaskSubType).options(joinedload(LegalOneTaskSubType.parent_type)).filter(LegalOneTaskSubType.is_active == True).all()}
         
@@ -121,7 +121,7 @@ class SpreadsheetStrategy(BaseStrategy):
                 if not office: raise ValueError(f"Escritório com o caminho '{office_name}' não foi encontrado.")
 
                 user = users_cache.get(user_name.lower() if user_name else None)
-                if not user: raise ValueError(f"Usuário executante '{user_name}' não encontrado ou inativo.")
+                if not user: raise ValueError(f"Usuário executante '{user_name}' não foi encontrado no banco de dados.")
                 
                 sub_type = subtypes_cache.get(subtype_name.lower() if subtype_name else None)
                 if not sub_type: raise ValueError(f"Subtipo de tarefa '{subtype_name}' não encontrado ou inativo.")
