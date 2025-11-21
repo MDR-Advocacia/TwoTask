@@ -1,7 +1,7 @@
 # app/api/v1/schemas.py
 
 from pydantic import BaseModel, ConfigDict, computed_field, Field, field_validator
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Generic, TypeVar
 from datetime import datetime
 from app.core.utils import format_cnj
 
@@ -273,3 +273,17 @@ class ValidatePublicationTasksRequest(BaseModel):
     tarefas de uma única publicação para serem validadas.
     """
     tasks: List[TaskForRuleValidation]
+
+T = TypeVar('T')
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    """
+    Schema genérico para uma resposta paginada.
+    """
+    total_items: int
+    total_pages: int
+    page: int
+    items_per_page: int
+    items: List[T]
+
+    model_config = ConfigDict(from_attributes=True)

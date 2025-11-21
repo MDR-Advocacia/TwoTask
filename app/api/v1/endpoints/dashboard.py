@@ -3,6 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 from typing import List
+import math
 
 from app.core.dependencies import get_db
 # Importar os modelos existentes
@@ -62,7 +63,7 @@ def get_squads(db: Session = Depends(get_db)):
 )
 def get_batch_executions(
     db: Session = Depends(get_db),
-    limit: int = 20
+    limit: int = 200
 ):
     """
     Retorna uma lista das últimas N execuções de lote processadas pela API,

@@ -18,7 +18,7 @@ from app.services.mail_service import send_failure_report  # <--- Importação d
 # para o seu ambiente Legal One.
 SECTOR_TASK_MAPPING = {
     "BB Réu": (15, 967),
-    "BB Autor": (18, 969),
+    "BB Autor": (28, 969),
     "BB Recurso": (19, 968),
     "BB Execução e Encerramento": (20, 1058)
     # Adicione outros mapeamentos
@@ -42,7 +42,7 @@ class OnerequestStrategy(BaseStrategy):
         try:
             local_deadline_date = datetime.strptime(date_str, "%d/%m/%Y")
             local_tz = ZoneInfo("America/Sao_Paulo")
-            aware_deadline = datetime.combine(local_deadline_date.date(), time(23, 59, 59)).replace(tzinfo=local_tz)
+            aware_deadline = datetime.combine(local_deadline_date.date(), time(16, 59, 59)).replace(tzinfo=local_tz)
             utc_deadline = aware_deadline.astimezone(timezone.utc)
             return utc_deadline.isoformat().replace('+00:00', 'Z')
         except (ValueError, TypeError) as e:

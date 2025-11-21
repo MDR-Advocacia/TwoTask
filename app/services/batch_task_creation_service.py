@@ -1,11 +1,12 @@
 # app/services/batch_task_creation_service.py
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time
 from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 from app.services.legal_one_client import LegalOneApiClient
 from app.api.v1.schemas import BatchTaskCreationRequest
 from app.api.v1.schemas import BatchInteractiveCreationRequest
+from app.api.v1.schemas import ProcessoResponsavel
 from app.services.batch_strategies.base_strategy import BaseStrategy
 from app.services.batch_strategies.onesid_strategy import OnesidStrategy
 from app.services.batch_strategies.spreadsheet_strategy import SpreadsheetStrategy
@@ -26,17 +27,18 @@ class BatchTaskCreationService:
             "OneRequest": OnerequestStrategy
         }
 
-
     async def process_spreadsheet_request(self, file_content: bytes):
         """
         Orquestra o processamento de um arquivo de planilha em segundo plano.
         """
         logging.info("Iniciando processamento de lote via planilha.")
+        now_utc = datetime.now(timezone.utc)
         
         # Cria um log inicial. O total de itens será atualizado pela estratégia.
         execution_log = BatchExecution(
             source="Planilha",
-            total_items=0 # Será atualizado após a leitura da planilha
+            total_items=0, # Será atualizado após a leitura da planilha
+            start_time=now_utc
         )
         self.db.add(execution_log)
         self.db.commit()
@@ -78,10 +80,12 @@ class BatchTaskCreationService:
         """
         source_name = f"Planilha Interativa ({request.source_filename})"
         logging.info(f"Iniciando processamento de lote da fonte: '{source_name}' com {len(request.tasks)} tarefas.")
+        now_utc = datetime.now(timezone.utc)
         
         execution_log = BatchExecution(
             source=source_name,
-            total_items=len(request.tasks)
+            total_items=len(request.tasks),
+            start_time=now_utc
         )
         self.db.add(execution_log)
         self.db.commit()
@@ -169,11 +173,13 @@ class BatchTaskCreationService:
         Ponto de entrada do serviço. Identifica a fonte, cria o log e executa a estratégia.
         """
         logging.info(f"Recebida requisição de lote da fonte: '{request.fonte}' com {len(request.processos)} processos.")
+        now_utc = datetime.now(timezone.utc)
         
         # PASSO 1: Cria o registro principal da execução do lote no BD
         execution_log = BatchExecution(
             source=request.fonte,
-            total_items=len(request.processos)
+            total_items=len(request.processos),
+            start_time=now_utc
         )
         self.db.add(execution_log)
         self.db.commit()
