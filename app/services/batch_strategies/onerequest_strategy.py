@@ -41,7 +41,7 @@ class OnerequestStrategy(BaseStrategy):
         try:
             local_deadline_date = datetime.strptime(date_str, "%d/%m/%Y")
             local_tz = ZoneInfo("America/Sao_Paulo")
-            aware_deadline = datetime.combine(local_deadline_date.date(), time(23, 59, 59)).replace(tzinfo=local_tz)
+            aware_deadline = datetime.combine(local_deadline_date.date(), time(16, 59, 59)).replace(tzinfo=local_tz)
             utc_deadline = aware_deadline.astimezone(timezone.utc)
             return utc_deadline.isoformat().replace('+00:00', 'Z')
         except (ValueError, TypeError) as e:
