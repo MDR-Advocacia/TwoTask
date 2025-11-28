@@ -140,7 +140,7 @@ class SpreadsheetStrategy(BaseStrategy):
                 formatted_date = self._format_date_for_description(deadline_for_desc)
                 
                 task_payload = {
-                    "description": f"{sub_type.name} - {formatted_date}", "priority": "Normal",
+                    "description": f"{sub_type.name} - {formatted_date} - {cnj}" - , "priority": "Normal",
                     # 3. Usamos o mesmo valor para 'startDateTime' e 'endDateTime'
                     "startDateTime": end_datetime_iso, 
                     "endDateTime": end_datetime_iso,

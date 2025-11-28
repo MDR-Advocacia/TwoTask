@@ -3,6 +3,7 @@ import logging
 from datetime import datetime, timezone, time
 from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
+from sqlalchemy.orm import joinedload
 from app.services.legal_one_client import LegalOneApiClient
 from app.api.v1.schemas import BatchTaskCreationRequest
 from app.api.v1.schemas import BatchInteractiveCreationRequest
@@ -11,7 +12,10 @@ from app.services.batch_strategies.base_strategy import BaseStrategy
 from app.services.batch_strategies.onesid_strategy import OnesidStrategy
 from app.services.batch_strategies.spreadsheet_strategy import SpreadsheetStrategy
 from app.services.batch_strategies.onerequest_strategy import OnerequestStrategy
-from app.models.batch_execution import BatchExecution
+from app.models.batch_execution import BatchExecution, BatchExecutionItem
+from app.services.notification_service import send_failure_alert_email
+
+ALERT_RECIPIENTS = ["jonilsonvilela@mdradvocacia.com", "neto@mdradvocacia.com", "jesebel.batista@mdradvocacia.com"]
 
 class BatchTaskCreationService:
     """
