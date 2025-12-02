@@ -33,7 +33,7 @@ class OnesidStrategy(BaseStrategy):
         # Lógica de data robusta com fuso horário explícito
         local_tz = ZoneInfo("America/Sao_Paulo")
         deadline_date = self._get_next_business_day()
-        naive_deadline = datetime.combine(deadline_date, time(23, 59, 59))
+        naive_deadline = datetime.combine(deadline_date, time(16, 59, 59))
         aware_deadline = naive_deadline.replace(tzinfo=local_tz)
         utc_deadline = aware_deadline.astimezone(timezone.utc)
         end_datetime_iso = utc_deadline.isoformat().replace('+00:00', 'Z')

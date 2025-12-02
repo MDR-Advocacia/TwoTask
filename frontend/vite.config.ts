@@ -18,7 +18,8 @@ export default defineConfig(({ mode }) => ({
         target: 'http://api:8000',
         changeOrigin: true,
       },
-    }
+    },
+    allowedHosts: ['twotask.mdr.local']
   },
   appType: 'spa',
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
