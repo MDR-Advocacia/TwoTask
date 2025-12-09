@@ -86,17 +86,37 @@ class LegalOneApiClient:
         return r
 
     def _request_with_retry(self, method: str, url: str, **kwargs) -> requests.Response:
+
+        retry_exceptions = (
+            requests.exceptions.Timeout,
+            requests.exceptions.ConnectionError,
+            requests.exceptions.ChunkedEncodingError
+        )
+
+        last_exception = None
+
         for i in range(5):
-            r = self._authenticated_request(method, url, **kwargs)
-            if r.status_code in (429, 500, 502, 503, 504):
+            try:
+                r = self._authenticated_request(method, url, **kwargs)
+                if r.status_code in (429, 500, 502, 503, 504):
+                    wait = 2 ** i
+                    self.logger.warning(f"Status {r.status_code} recebido. Nova tentativa em {wait}s.")
+                    time.sleep(wait)
+                    continue
+                r.raise_for_status()
+                return r
+            except retry_exceptions as e:
+                last_exception = e
                 wait = 2 ** i
-                self.logger.warning(f"Status {r.status_code} recebido. Nova tentativa em {wait}s.")
+                self.logger.warning(f"Erro de conexão ({type(e).__name__}): {e}. Nova tentativa em {wait}s.")
                 time.sleep(wait)
                 continue
-            r.raise_for_status()
-            return r
-        r.raise_for_status()
-        return r
+            
+        if last_exception:
+            self.logger.error(f"Esgotadas tentativas após erro de conexão: {last_exception}")
+            raise last_exception    
+        
+        raise requests.exceptions.RequestException("Máximo de tentativas excedido sem sucesso.")
 
     def _paginated_catalog_loader(self, endpoint: str, params: Optional[dict] = None) -> List[Dict[str, Any]]:
         all_items = []
@@ -137,7 +157,7 @@ class LegalOneApiClient:
     def get_all_users(self) -> list[dict]:
         self.logger.info("Buscando todos os usuários...")
         endpoint = "/Users"
-        params = {"$select": "id,name,email,isActive", "$orderby": "id", "$top": 30}
+        params = {"$select": "id,name,email,isActive", "$orderby": "id"}
         return self._paginated_catalog_loader(endpoint, params)
 
     def search_lawsuit_by_cnj(self, cnj_number: str) -> Optional[Dict[str, Any]]:
