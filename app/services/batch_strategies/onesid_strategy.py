@@ -17,13 +17,13 @@ class OnesidStrategy(BaseStrategy):
     """
     Estratégia específica para criar tarefas originadas do sistema Onsid.
     """
-    def _get_next_business_day(self) -> date:
-        """ Calcula o próximo dia útil. """
-        today = date.today()
-        next_day = today + timedelta(days=1)
-        while next_day.weekday() >= 5: # 5 = Sábado, 6 = Domingo
-            next_day += timedelta(days=1)
-        return next_day
+#    def _get_next_business_day(self) -> date:
+#       """ Calcula o próximo dia útil. """
+#        today = date.today()
+#        next_day = today + timedelta(days=1)
+#        while next_day.weekday() >= 5: # 5 = Sábado, 6 = Domingo
+#        next_day += timedelta(days=1)
+#    return next_day
 
     async def process_batch(self, request: BatchTaskCreationRequest, execution_log: BatchExecution) -> dict:
         """ Processa o lote de CNJs vindo do Onsid, registrando cada item no log. """
@@ -32,8 +32,8 @@ class OnesidStrategy(BaseStrategy):
         
         # Lógica de data robusta com fuso horário explícito
         local_tz = ZoneInfo("America/Sao_Paulo")
-        deadline_date = self._get_next_business_day()
-        naive_deadline = datetime.combine(deadline_date, time(16, 59, 59))
+        deadline_date = date.today()
+        naive_deadline = datetime.combine(deadline_date, time(20, 59, 59))
         aware_deadline = naive_deadline.replace(tzinfo=local_tz)
         utc_deadline = aware_deadline.astimezone(timezone.utc)
         end_datetime_iso = utc_deadline.isoformat().replace('+00:00', 'Z')
