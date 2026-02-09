@@ -24,8 +24,6 @@ class SpreadsheetStrategy(BaseStrategy):
     def _parse_and_format_date_to_utc(self, date_value: any, time_value: any = None) -> str:
         """
         Função genérica para converter datas (datetime ou string) para o formato ISO 8601 UTC.
-        Aceita um horário opcional no formato 'hh:mm'.
-        Se o horário não for fornecido, a data é definida para o final do dia (23:59:59).
         """
         if not date_value:
             raise ValueError("Valor de data não pode ser nulo.")
@@ -61,7 +59,6 @@ class SpreadsheetStrategy(BaseStrategy):
             raise ValueError(f"Data inválida: '{date_value}'")
 
     def _format_date_for_description(self, date_value: any) -> str:
-        # (Esta função permanece inalterada)
         if not date_value: return ""
         try:
             if isinstance(date_value, datetime): return date_value.strftime("%d/%m/%Y")
@@ -84,49 +81,72 @@ class SpreadsheetStrategy(BaseStrategy):
         except Exception as e:
             raise ValueError(f"Não foi possível ler o arquivo Excel: {e}")
 
-        COLUMN_MAP = {
-            'ESCRITORIO': 0, 'CNJ': 1, 'PUBLISH_DATE': 8, 'SUBTIPO': 13, 
-            'EXECUTANTE': 14, 'PRAZO': 15, 'DATA_TAREFA': 16, 'HORARIO': 17
+        # --- MAPEAMENTO DINÂMICO DE COLUNAS ---
+        header_row = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True))
+        header_map = {str(cell).strip().upper(): i for i, cell in enumerate(header_row) if cell is not None}
+
+        indices = {
+            'ESCRITORIO': header_map.get('ESCRITORIO'),
+            'CNJ': header_map.get('CNJ'),
+            'PUBLISH_DATE': header_map.get('PUBLISH_DATE'),
+            'SUBTIPO': header_map.get('SUBTIPO'),
+            'EXECUTANTE': header_map.get('EXECUTANTE'),
+            'PRAZO': header_map.get('PRAZO'),
+            'DATA_TAREFA': header_map.get('DATA_TAREFA'),
+            'HORARIO': header_map.get('HORARIO'),
+            'OBSERVACAO': header_map.get('OBSERVACAO'),
+            'DESCRICAO': header_map.get('DESCRICAO') # Nova coluna para complemento da descrição
         }
+
+        mandatory_fields = ['ESCRITORIO', 'CNJ', 'PUBLISH_DATE', 'SUBTIPO', 'EXECUTANTE', 'DATA_TAREFA']
+        missing_cols = [col for col in mandatory_fields if indices[col] is None]
+        
+        if missing_cols:
+            raise ValueError(f"Colunas obrigatórias ausentes na planilha: {', '.join(missing_cols)}")
         
         rows = list(sheet.iter_rows(min_row=2, values_only=True))
         execution_log.total_items = len(rows)
         self.db.commit()
 
-        logging.info("Pré-carregando dados de usuários, escritórios e tipos de tarefa para o cache.")
+        logging.info("Pré-carregando dados para o cache.")
         users_cache = {user.name.strip().lower(): user for user in self.db.query(LegalOneUser).filter(LegalOneUser.is_active == True).all()}
         offices_cache = {office.path.strip().lower(): office for office in self.db.query(LegalOneOffice).filter(LegalOneOffice.is_active == True).all()}
         subtypes_cache = {sub.name.strip().lower(): sub for sub in self.db.query(LegalOneTaskSubType).options(joinedload(LegalOneTaskSubType.parent_type)).filter(LegalOneTaskSubType.is_active == True).all()}
         
-        # --- INÍCIO DA MUDANÇA ---
-        # 1. A variável 'start_datetime_iso' foi removida daqui, pois agora será definida por tarefa.
-
         for row in rows:
-            office_name = str(row[COLUMN_MAP['ESCRITORIO']]).strip() if len(row) > COLUMN_MAP['ESCRITORIO'] and row[COLUMN_MAP['ESCRITORIO']] else None
-            cnj = str(row[COLUMN_MAP['CNJ']]).strip() if len(row) > COLUMN_MAP['CNJ'] and row[COLUMN_MAP['CNJ']] else None
-            publish_date_val = row[COLUMN_MAP['PUBLISH_DATE']] if len(row) > COLUMN_MAP['PUBLISH_DATE'] and row[COLUMN_MAP['PUBLISH_DATE']] else None
-            subtype_name = str(row[COLUMN_MAP['SUBTIPO']]).strip() if len(row) > COLUMN_MAP['SUBTIPO'] and row[COLUMN_MAP['SUBTIPO']] else None
-            user_name = str(row[COLUMN_MAP['EXECUTANTE']]).strip() if len(row) > COLUMN_MAP['EXECUTANTE'] and row[COLUMN_MAP['EXECUTANTE']] else None
-            task_date = row[COLUMN_MAP['DATA_TAREFA']] if len(row) > COLUMN_MAP['DATA_TAREFA'] and row[COLUMN_MAP['DATA_TAREFA']] else None
-            deadline_for_desc = row[COLUMN_MAP['PRAZO']] if len(row) > COLUMN_MAP['PRAZO'] and row[COLUMN_MAP['PRAZO']] else None
-            schedule_time = row[COLUMN_MAP['HORARIO']] if len(row) > COLUMN_MAP['HORARIO'] and row[COLUMN_MAP['HORARIO']] else None
+            def get_val(key):
+                idx = indices.get(key)
+                if idx is not None and idx < len(row) and row[idx] is not None:
+                    return str(row[idx]).strip()
+                return None
+
+            office_name = get_val('ESCRITORIO')
+            cnj = get_val('CNJ')
+            publish_date_val = row[indices['PUBLISH_DATE']] if indices['PUBLISH_DATE'] is not None and indices['PUBLISH_DATE'] < len(row) else None
+            subtype_name = get_val('SUBTIPO')
+            user_name = get_val('EXECUTANTE')
+            task_date = row[indices['DATA_TAREFA']] if indices['DATA_TAREFA'] is not None and indices['DATA_TAREFA'] < len(row) else None
+            
+            deadline_for_desc = row[indices['PRAZO']] if indices['PRAZO'] is not None and indices['PRAZO'] < len(row) else None
+            schedule_time = row[indices['HORARIO']] if indices['HORARIO'] is not None and indices['HORARIO'] < len(row) else None
+            observation_val = get_val('OBSERVACAO')
+            extra_description = get_val('DESCRICAO') # Capturando o texto opcional
 
             log_item = BatchExecutionItem(process_number=cnj or "N/A", execution_id=execution_log.id)
 
             try:
                 if not all([cnj, user_name, subtype_name, office_name, task_date, publish_date_val]):
-                    raise ValueError("Dados essenciais faltando na linha (Escritório, CNJ, Data Publicação, Subtipo, Executante ou Data da Tarefa).")
+                    raise ValueError("Dados essenciais faltando na linha.")
 
                 office = offices_cache.get(office_name.lower() if office_name else None)
-                if not office: raise ValueError(f"Escritório com o caminho '{office_name}' não foi encontrado.")
+                if not office: raise ValueError(f"Escritório '{office_name}' não encontrado.")
 
                 user = users_cache.get(user_name.lower() if user_name else None)
-                if not user: raise ValueError(f"Usuário executante '{user_name}' não encontrado ou inativo.")
+                if not user: raise ValueError(f"Usuário '{user_name}' não encontrado.")
                 
                 sub_type = subtypes_cache.get(subtype_name.lower() if subtype_name else None)
-                if not sub_type: raise ValueError(f"Subtipo de tarefa '{subtype_name}' não encontrado ou inativo.")
+                if not sub_type: raise ValueError(f"Subtipo '{subtype_name}' não encontrado.")
 
-                # 2. Calculamos a data/hora final da tarefa
                 end_datetime_iso = self._parse_and_format_date_to_utc(task_date, schedule_time)
                 publish_date_iso = self._parse_and_format_date_to_utc(publish_date_val)
 
@@ -135,18 +155,29 @@ class SpreadsheetStrategy(BaseStrategy):
                 
                 lawsuit_id = lawsuit['id']
                 responsible_office_id = lawsuit.get('responsibleOfficeId')
-                if not responsible_office_id: raise Exception("Processo não possui Escritório Responsável.")
+                if not responsible_office_id: raise Exception("Processo sem Escritório Responsável.")
                 
                 formatted_date = self._format_date_for_description(deadline_for_desc)
                 
+                # --- MONTAGEM DA DESCRIÇÃO DINÂMICA ---
+                base_description = f"{sub_type.name} - {formatted_date}"
+                if extra_description:
+                    final_description = f"{base_description} - {extra_description}"
+                else:
+                    final_description = base_description
+                # ---------------------------------------
+                
                 task_payload = {
-                    "description": f"{sub_type.name} - {formatted_date}", "priority": "Normal",
-                    # 3. Usamos o mesmo valor para 'startDateTime' e 'endDateTime'
+                    "description": final_description, 
+                    "priority": "Normal",
                     "startDateTime": end_datetime_iso, 
                     "endDateTime": end_datetime_iso,
                     "publishDate": publish_date_iso,
-                    "status": { "id": DEFAULT_TASK_STATUS_ID }, "typeId": sub_type.parent_type.external_id,
-                    "subTypeId": sub_type.external_id, "responsibleOfficeId": responsible_office_id,
+                    "notes": observation_val,
+                    "status": { "id": DEFAULT_TASK_STATUS_ID }, 
+                    "typeId": sub_type.parent_type.external_id,
+                    "subTypeId": sub_type.external_id, 
+                    "responsibleOfficeId": responsible_office_id,
                     "originOfficeId": office.external_id,
                     "participants": [{"contact": {"id": user.external_id}, "isResponsible": True, "isExecuter": True, "isRequester": True}]
                 }
@@ -171,6 +202,8 @@ class SpreadsheetStrategy(BaseStrategy):
             
             finally:
                 execution_log.items.append(log_item)
+                self.db.add(log_item)
+                self.db.commit()
                 await asyncio.sleep(0.1)
 
         return {"sucesso": success_count, "falhas": len(failed_items), "detalhes_falhas": failed_items}

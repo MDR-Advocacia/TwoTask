@@ -1,6 +1,5 @@
 # file: app/api/v1/endpoints/tasks.py
 
-
 from openpyxl import load_workbook
 from io import BytesIO
 from typing import List, Dict, Any
@@ -9,6 +8,8 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, joinedload
 from pydantic import BaseModel
 from typing import List, Dict, Any
+from datetime import datetime, timezone # <--- ALTERAÇÃO 1: Import de data
+
 from app.core.dependencies import get_db, get_orchestration_service, get_batch_task_creation_service
 from app.api.v1.schemas import TaskTriggerPayload, BatchTaskCreationRequest
 from app.services.orchestration_service import OrchestrationService, ProcessNotFoundError, MissingResponsibleUserError
@@ -28,6 +29,7 @@ from app.api.v1.schemas import BatchInteractiveCreationRequest, TaskCreationData
 from app.core.dependencies import get_task_rule_service 
 from app.services.task_rule_service import TaskRuleService
 from app.api.v1.schemas import ValidatePublicationTasksRequest 
+from app.models.batch_execution import BatchExecution, BatchExecutionItem # <--- ALTERAÇÃO 2: Import dos Models
 
 router = APIRouter()
 
@@ -187,17 +189,17 @@ async def create_batch_tasks(
     background_tasks.add_task(service.process_batch_request, request)
     return {"status": "recebido", "message": "A solicitação de criação de tarefas em lote foi recebida e está sendo processada em segundo plano."}
 
+# --- ALTERAÇÃO 3: Endpoint Modificado para Iniciar e Retornar ID ---
 @router.post("/batch-create-from-spreadsheet", status_code=202, summary="Criar Tarefas em Lote a partir de uma Planilha")
 async def create_batch_tasks_from_spreadsheet(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    service: BatchTaskCreationService = Depends(get_batch_task_creation_service)
+    service: BatchTaskCreationService = Depends(get_batch_task_creation_service),
+    db: Session = Depends(get_db) # Injeção do DB adicionada
 ):
     """
-    Recebe um arquivo de planilha (.xlsx) e inicia a criação de tarefas
-    em segundo plano com base em seu conteúdo.
-
-    O arquivo deve ser enviado como 'multipart/form-data'.
+    Recebe um arquivo de planilha (.xlsx), cria o registro de execução e
+    inicia o processamento em segundo plano.
     """
     # Validação do tipo de arquivo
     if not file.filename or not file.filename.endswith('.xlsx'):
@@ -206,10 +208,25 @@ async def create_batch_tasks_from_spreadsheet(
     # Lê o conteúdo do arquivo em memória
     file_content = await file.read()
 
-    # Adiciona a tarefa de processamento em segundo plano
-    background_tasks.add_task(service.process_spreadsheet_request, file_content)
+    # 1. Cria o registro de execução AGORA (Síncrono)
+    execution_log = BatchExecution(
+        source="Planilha",
+        total_items=0, # A estratégia atualizará isso ao ler o arquivo
+        start_time=datetime.now(timezone.utc)
+    )
+    db.add(execution_log)
+    db.commit()
+    db.refresh(execution_log)
+
+    # 2. Passa o ID para o background service
+    background_tasks.add_task(service.process_spreadsheet_request, file_content, execution_log.id)
     
-    return {"status": "recebido", "message": "A planilha foi recebida e está sendo processada em segundo plano."}
+    # 3. Retorna o ID para o frontend monitorar
+    return {
+        "status": "recebido", 
+        "message": "Processamento iniciado em segundo plano.",
+        "batch_id": execution_log.id
+    }
 
 # --- CORREÇÃO 2: Limpeza dos cabeçalhos e dados da planilha ---
 @router.post(
@@ -301,3 +318,41 @@ async def validate_publication_tasks(
     except Exception as e:
         # Captura qualquer outro erro inesperado durante o processo.
         raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado durante a validação: {e}")
+
+# --- ALTERAÇÃO 4: Novo Endpoint de Status ---
+@router.get("/batch/status/{batch_id}", summary="Verificar progresso de um lote")
+def get_batch_status(batch_id: int, db: Session = Depends(get_db)):
+    """
+    Retorna o status atual, contagem de itens processados e porcentagem de conclusão.
+    """
+    execution = db.query(BatchExecution).filter(BatchExecution.id == batch_id).first()
+    
+    if not execution:
+        raise HTTPException(status_code=404, detail="Lote não encontrado")
+
+    # Conta itens já processados (com Sucesso ou Falha)
+    processed_count = db.query(BatchExecutionItem).filter(
+        BatchExecutionItem.execution_id == batch_id,
+        BatchExecutionItem.status.in_([ "SUCESSO", "FALHA" ])
+    ).count()
+
+    total = execution.total_items or 0
+    percentage = 0
+    
+    if total > 0:
+        percentage = int((processed_count / total) * 100)
+    
+    # Se já terminou (tem end_time), força 100% para evitar inconsistências visuais
+    status_str = "PROCESSANDO"
+    if execution.end_time:
+        status_str = "CONCLUIDO"
+        percentage = 100
+        processed_count = total
+
+    return {
+        "id": execution.id,
+        "status": status_str,
+        "total_items": total,
+        "processed_items": processed_count,
+        "percentage": percentage
+    }

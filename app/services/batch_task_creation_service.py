@@ -2,7 +2,7 @@
 import logging
 from datetime import datetime, timezone, time
 from zoneinfo import ZoneInfo
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload # Adicionado joinedload
 from app.services.legal_one_client import LegalOneApiClient
 from app.api.v1.schemas import BatchTaskCreationRequest
 from app.api.v1.schemas import BatchInteractiveCreationRequest
@@ -11,7 +11,7 @@ from app.services.batch_strategies.base_strategy import BaseStrategy
 from app.services.batch_strategies.onesid_strategy import OnesidStrategy
 from app.services.batch_strategies.spreadsheet_strategy import SpreadsheetStrategy
 from app.services.batch_strategies.onerequest_strategy import OnerequestStrategy
-from app.models.batch_execution import BatchExecution
+from app.models.batch_execution import BatchExecution, BatchExecutionItem # Adicionado BatchExecutionItem
 
 class BatchTaskCreationService:
     """
@@ -27,35 +27,32 @@ class BatchTaskCreationService:
             "OneRequest": OnerequestStrategy
         }
 
-    async def process_spreadsheet_request(self, file_content: bytes):
+    # --- MÉTODO ALTERADO PARA RECEBER O ID ---
+    async def process_spreadsheet_request(self, file_content: bytes, execution_id: int):
         """
         Orquestra o processamento de um arquivo de planilha em segundo plano.
+        Recebe o ID da execução já criada pelo Controller.
         """
-        logging.info("Iniciando processamento de lote via planilha.")
-        now_utc = datetime.now(timezone.utc)
+        logging.info(f"Iniciando processamento de lote via planilha. ID Execução: {execution_id}")
         
-        # Cria um log inicial. O total de itens será atualizado pela estratégia.
-        execution_log = BatchExecution(
-            source="Planilha",
-            total_items=0, # Será atualizado após a leitura da planilha
-            start_time=now_utc
-        )
-        self.db.add(execution_log)
-        self.db.commit()
-        self.db.refresh(execution_log)
+        # 1. Busca o log que já foi criado (e retornado ao front) pelo Controller
+        execution_log = self.db.query(BatchExecution).filter(BatchExecution.id == execution_id).first()
+        
+        if not execution_log:
+            logging.error(f"Log de execução {execution_id} não encontrado. Abortando.")
+            return
 
         try:
             # Converte o conteúdo em bytes para um objeto que a estratégia possa usar
-            # e constrói um payload semelhante ao que a outra estratégia recebe.
             spreadsheet_request = BatchTaskCreationRequest(
                 fonte="Planilha",
-                processos=[], # Será preenchido pela estratégia
-                # Passamos o conteúdo do arquivo via um campo extra no Pydantic model.
-                # Para isso, precisaremos ajustar o schema. Por enquanto, vamos passar diretamente.
+                processos=[], 
                 file_content=file_content
             )
 
             strategy_instance = SpreadsheetStrategy(self.db, self.client)
+            
+            # Executa a estratégia (que agora salva o progresso no banco a cada item)
             result = await strategy_instance.process_batch(spreadsheet_request, execution_log)
             
             # Atualiza o log com os totais finais
@@ -66,12 +63,16 @@ class BatchTaskCreationService:
         except Exception as e:
             logging.error(f"Erro catastrófico ao processar a planilha: {e}", exc_info=True)
             if execution_log:
-                execution_log.failure_count = execution_log.total_items - (execution_log.success_count or 0)
+                # Tenta estimar falhas se possível
+                total = execution_log.total_items or 0
+                sucesso = execution_log.success_count or 0
+                execution_log.failure_count = max(0, total - sucesso)
         
         finally:
             if execution_log:
                 execution_log.end_time = datetime.now(timezone.utc)
                 self.db.commit()
+
     # helper para timezone de Brasília
 
     async def process_interactive_batch_request(self, request: BatchInteractiveCreationRequest):
