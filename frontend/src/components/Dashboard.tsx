@@ -14,29 +14,28 @@ import {
     BrainCircuit,
     History,
     Webhook,
-    Loader2 // <--- 1. ÍCONE ADICIONADO (estava faltando no seu original)
+    Loader2,
+    Filter // Icone novo para o filtro
 } from "lucide-react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-// --- 2. IMPORTAR COMPONENTES DE PAGINAÇÃO ---
 import {
   Pagination,
   PaginationContent,
   PaginationItem,
-  PaginationLink,
   PaginationNext,
   PaginationPrevious,
 } from "@/components/ui/pagination";
 import { useToast } from "@/hooks/use-toast";
 
 // Tipos e API
-import { BatchExecution } from "@/types/api"; // Mantido o tipo original
+import { BatchExecution, BatchExecutionItem } from "@/types/api"; 
 import { fetchBatchExecutions, retryBatchExecution } from "@/services/api"; 
 
-// --- Mapas de Configuração (Inalterado) ---
+// --- Mapas de Configuração ---
 const sourceDisplayNames: { [key: string]: string } = {
     'planilha': 'Planilha',
     'onesid': 'Onesid', 
@@ -50,7 +49,6 @@ const sourceIcons: { [key: string]: React.ElementType } = {
     'default': History
 };
 
-// --- Componente SourceBadge (Inalterado) ---
 const SourceBadge = ({ source }: { source: string }) => {
     const lowerSource = source.toLowerCase();
     const displayName = sourceDisplayNames[lowerSource] || source;
@@ -64,27 +62,40 @@ const SourceBadge = ({ source }: { source: string }) => {
     );
 };
 
+// --- FUNÇÃO AUXILIAR PARA AGRUPAR ERROS ---
+const groupFailures = (items: BatchExecutionItem[]) => {
+    const failures = items.filter(item => item.status === "FALHA");
+    
+    return failures.reduce((acc, item) => {
+        // Normaliza a mensagem para agrupar erros idênticos
+        const errorMsg = item.error_message || "Erro desconhecido";
+        if (!acc[errorMsg]) {
+            acc[errorMsg] = [];
+        }
+        acc[errorMsg].push(item.id);
+        return acc;
+    }, {} as Record<string, number[]>);
+};
+
 const Dashboard = () => {
-  // --- 3. ESTADO PARA GUARDAR TODAS AS EXECUÇÕES ---
   const [allExecutions, setAllExecutions] = useState<BatchExecution[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isRetrying, setIsRetrying] = useState<Record<number, boolean>>({});
   
-  // --- 4. ESTADOS DE PAGINAÇÃO (CLIENT-SIDE) ---
+  // Paginação
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 10; // Defina quantos itens por página
+  const itemsPerPage = 10;
 
   const { toast } = useToast();
 
-  // --- 5. loadData (BUSCA TUDO) ---
   const loadData = async () => {
     setIsLoading(true);
     setError(null);
     try {
       const data = await fetchBatchExecutions();
-      setAllExecutions(data); // Armazena a lista completa
-      setCurrentPage(1); // Reseta para a página 1
+      setAllExecutions(data);
+      setCurrentPage(1);
     } catch (err) {
       setError("Não foi possível carregar o histórico de execuções. A API pode estar offline.");
       setAllExecutions([]);
@@ -93,39 +104,38 @@ const Dashboard = () => {
     }
   };
 
-  // --- 6. useEffect (CARREGA DADOS 1 VEZ) ---
   useEffect(() => {
     loadData();
-  }, []); // Dependência vazia, carrega só no mount
+  }, []); 
 
-  // --- 7. LÓGICA DE PAGINAÇÃO (CLIENT-SIDE) ---
-  
-  // Calcula o total de páginas com base na lista completa
   const totalPages = Math.ceil(allExecutions.length / itemsPerPage);
-
-  // "Fatia" a lista completa para obter apenas os itens da página atual
   const paginatedExecutions = allExecutions.slice(
     (currentPage - 1) * itemsPerPage,
     currentPage * itemsPerPage
   );
 
-  // Função para mudar de página (apenas altera o estado)
   const handlePageChange = (page: number) => {
     if (page >= 1 && page <= totalPages) {
       setCurrentPage(page);
     }
   };
 
-  // --- Função handleRetry (Ajustada para recarregar tudo) ---
-  const handleRetry = async (executionId: number) => {
+  // --- Lógica de Retry Atualizada (Suporta itemIds) ---
+  const handleRetry = async (executionId: number, itemIds: number[] | null = null) => {
     setIsRetrying(prev => ({ ...prev, [executionId]: true }));
     try {
-      await retryBatchExecution(executionId);
+      // Chama o serviço passando a lista de IDs (se houver)
+      // NOTA: Você precisará atualizar o arquivo services/api.ts para aceitar esse segundo argumento
+      await retryBatchExecution(executionId, itemIds); 
+      
+      const msg = itemIds 
+        ? `Reprocessamento iniciado para ${itemIds.length} itens.` 
+        : `Reprocessamento total iniciado.`;
+
       toast({
         title: "Reprocessamento Iniciado",
-        description: `Um novo lote foi criado para processar as falhas do lote #${executionId}.`,
+        description: msg,
       });
-      // Aguarda um pouco e atualiza a lista inteira (o novo lote deve aparecer)
       setTimeout(loadData, 2000); 
     } catch (err) {
       toast({
@@ -138,36 +148,27 @@ const Dashboard = () => {
     }
   };
 
-
   const formatDateTime = (isoString: string | null) => {
     if (!isoString) return "N/A";
-    
     let parsableString = isoString;
-
     const hasTimezone = isoString.endsWith('Z') || isoString.includes('+') || isoString.substring(10).includes('-');
-
-    if (!hasTimezone) {
-      parsableString = isoString + 'Z';
-    }
-    const date = new Date(parsableString);
-
+    if (!hasTimezone) parsableString = isoString + 'Z';
+    
     return new Intl.DateTimeFormat('pt-BR', {
         dateStyle: 'short',
         timeStyle: 'medium',
-        timeZone: 'America/Sao_Paulo' // Força a exibição no fuso de Brasília
-    }).format(date);
+        timeZone: 'America/Sao_Paulo'
+    }).format(new Date(parsableString));
   };
 
   const stats = [
-    { title: "Squads Ativos", value: "...", icon: Users },
-    { title: "Tarefas Criadas (Mês)", value: "...", icon: Target },
-    { title: "Taxa de Sucesso", value: "...", icon: BarChart3 },
-    { title: "Tempo Médio", value: "...", icon: Activity },
+    { title: "Execuções", value: allExecutions.length, icon: Activity },
+    { title: "Total Itens", value: allExecutions.reduce((acc, curr) => acc + (curr.total_items || 0), 0), icon: Target },
+    // Adicione mais stats reais conforme necessário
   ];
 
   return (
     <div className="container mx-auto px-6 py-8 space-y-8">
-      {/* --- Header e Stats Cards (Inalterados) --- */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
         <div>
           <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
@@ -180,6 +181,7 @@ const Dashboard = () => {
         </Button>
       </div>
 
+      {/* Stats Cards simplificados para exemplo */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         {stats.map((stat, index) => (
           <Card key={index} className="glass-card border-0">
@@ -193,7 +195,6 @@ const Dashboard = () => {
           </Card>
         ))}
       </div>
-      {/* --- Fim do Header e Stats Cards --- */}
 
       <Card className="glass-card border-0 animate-fade-in">
         <CardHeader>
@@ -218,23 +219,23 @@ const Dashboard = () => {
               <AlertTitle>Erro ao Carregar</AlertTitle>
               <AlertDescription>{error}</AlertDescription>
             </Alert>
-          // --- 8. USAR allExecutions PARA VERIFICAR SE ESTÁ VAZIO ---
           ) : allExecutions.length === 0 ? ( 
             <div className="text-center py-8 text-muted-foreground">
               <p>Nenhuma execução em lote encontrada.</p>
-              <p className="text-sm">Envie uma requisição para a API ou uma planilha para começar.</p>
             </div>
           ) : (
-            // --- 9. USAR FRAGMENT <> PARA AGRUPAR LISTA E PAGINAÇÃO ---
             <>
-              {/* --- 10. MAPEAR SOBRE paginatedExecutions --- */}
               <Accordion type="single" collapsible className="w-full">
-                {paginatedExecutions.map((exec) => ( 
+                {paginatedExecutions.map((exec) => {
+                  // Agrupa erros para esta execução
+                  const groupedErrors = groupFailures(exec.items || []);
+                  const hasErrors = Object.keys(groupedErrors).length > 0;
+
+                  return (
                   <AccordionItem value={`item-${exec.id}`} key={exec.id}>
                     <AccordionTrigger>
                       <div className="flex flex-1 items-center justify-between pr-4 text-sm">
                         <SourceBadge source={exec.source} />
-                        
                         <span>{formatDateTime(exec.start_time)}</span>
                         
                         <div className="hidden md:flex gap-4">
@@ -247,32 +248,59 @@ const Dashboard = () => {
                       </div>
                     </AccordionTrigger>
                     <AccordionContent>
-                      {/* --- Bloco de Retry (Inalterado, mas agora com Loader2 funcionando) --- */}
-                      {exec.failure_count > 0 && (
-                        <div className="px-4 py-2 border-b">
-                          <Button 
-                              size="sm" 
-                              variant="outline"
-                              onClick={() => handleRetry(exec.id)}
-                              disabled={isRetrying[exec.id]}
-                          >
-                            {isRetrying[exec.id] ? (
-                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            ) : (
-                                <History className="mr-2 h-4 w-4" />
-                            )}
-                            Reprocessar {exec.failure_count} Falha(s)
-                          </Button>
+                      
+                      {/* --- PAINEL DE SMART RETRY --- */}
+                      {hasErrors && (
+                        <div className="mx-1 my-4 p-4 border border-red-200 bg-red-50/50 rounded-md">
+                          <div className="flex items-center gap-2 mb-3 text-red-800">
+                            <Filter className="w-4 h-4" />
+                            <h4 className="font-semibold text-sm">Análise de Falhas (Smart Retry)</h4>
+                          </div>
+                          
+                          <div className="space-y-2">
+                            {Object.entries(groupedErrors).map(([errorMsg, ids]) => (
+                              <div key={errorMsg} className="flex flex-col sm:flex-row sm:items-center justify-between bg-white p-3 rounded border border-red-100 shadow-sm gap-3">
+                                <div className="flex items-start gap-3">
+                                  <Badge variant="destructive" className="mt-0.5">{ids.length}</Badge>
+                                  <span className="text-sm text-gray-700 font-medium break-all">{errorMsg}</span>
+                                </div>
+                                
+                                <Button 
+                                  size="sm" 
+                                  variant="outline"
+                                  className="shrink-0 border-red-200 hover:bg-red-50 text-red-700 h-8"
+                                  onClick={() => handleRetry(exec.id, ids)}
+                                  disabled={isRetrying[exec.id]}
+                                >
+                                  {isRetrying[exec.id] ? <Loader2 className="w-3 h-3 animate-spin mr-2" /> : <RefreshCw className="w-3 h-3 mr-2" />}
+                                  Reprocessar Grupo
+                                </Button>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="mt-4 pt-3 border-t border-red-200 flex justify-end">
+                             <Button 
+                                variant="ghost" 
+                                size="sm"
+                                className="text-muted-foreground hover:text-foreground text-xs"
+                                onClick={() => handleRetry(exec.id, null)} // Null = Tudo
+                                disabled={isRetrying[exec.id]}
+                             >
+                               Ou reprocessar todos os {exec.failure_count} itens com falha
+                             </Button>
+                          </div>
                         </div>
                       )}
-                      {/* --- Tabela de Itens (Inalterada) --- */}
-                      <div className="p-2 bg-muted/30 rounded-md">
+
+                      {/* --- Tabela de Itens --- */}
+                      <div className="p-2 bg-muted/30 rounded-md mt-4">
                         <Table>
                           <TableHeader>
                             <TableRow>
                               <TableHead className="w-[100px]">Status</TableHead>
-                              <TableHead>Número do Processo</TableHead>
-                              <TableHead>ID da Tarefa Criada</TableHead>
+                              <TableHead>CNJ</TableHead>
+                              <TableHead>Task ID</TableHead>
                               <TableHead>Detalhe do Erro</TableHead>
                             </TableRow>
                           </TableHeader>
@@ -282,13 +310,17 @@ const Dashboard = () => {
                                 <TableCell>
                                   {item.status === "SUCESSO" ? (
                                     <CheckCircle2 className="h-5 w-5 text-green-500" />
+                                  ) : item.status === "REPROCESSANDO" ? (
+                                    <Loader2 className="h-5 w-5 text-blue-500 animate-spin" />
                                   ) : (
                                     <XCircle className="h-5 w-5 text-destructive" />
                                   )}
                                 </TableCell>
-                                <TableCell className="font-mono">{item.process_number}</TableCell>
+                                <TableCell className="font-mono text-xs">{item.process_number}</TableCell>
                                 <TableCell>{item.created_task_id || "---"}</TableCell>
-                                <TableCell className="text-xs text-destructive">{item.error_message || "---"}</TableCell>
+                                <TableCell className="text-xs text-destructive max-w-[300px] truncate" title={item.error_message || ""}>
+                                    {item.error_message || "---"}
+                                </TableCell>
                               </TableRow>
                             ))}
                           </TableBody>
@@ -296,10 +328,10 @@ const Dashboard = () => {
                       </div>
                     </AccordionContent>
                   </AccordionItem>
-                ))}
+                )})}
               </Accordion>
 
-              {/* --- 11. ADICIONAR O COMPONENTE DE PAGINAÇÃO --- */}
+              {/* Paginação */}
               {totalPages > 1 && (
                 <Pagination className="mt-8">
                   <PaginationContent>
@@ -310,18 +342,14 @@ const Dashboard = () => {
                           e.preventDefault();
                           handlePageChange(currentPage - 1);
                         }}
-                        // Desabilita o botão se estiver na primeira página
-                        className={currentPage === 1 ? "pointer-events-none text-muted-foreground" : ""}
+                        className={currentPage === 1 ? "pointer-events-none opacity-50" : ""}
                       />
                     </PaginationItem>
-
-                    {/* Mostra a contagem de páginas. É mais simples e robusto que gerar N links */}
                     <PaginationItem>
                       <span className="px-4 py-2 text-sm font-medium">
                           Página {currentPage} de {totalPages}
                       </span>
                     </PaginationItem>
-
                     <PaginationItem>
                       <PaginationNext
                         href="#"
@@ -329,8 +357,7 @@ const Dashboard = () => {
                           e.preventDefault();
                           handlePageChange(currentPage + 1);
                         }}
-                        // Desabilita o botão se estiver na última página
-                        className={currentPage === totalPages ? "pointer-events-none text-muted-foreground" : ""}
+                        className={currentPage === totalPages ? "pointer-events-none opacity-50" : ""}
                       />
                     </PaginationItem>
                   </PaginationContent>

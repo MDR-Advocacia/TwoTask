@@ -2,13 +2,12 @@
 
 from openpyxl import load_workbook
 from io import BytesIO
-from typing import List, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, UploadFile, File
+from typing import List, Dict, Any, Optional # <--- ADICIONADO Optional
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, UploadFile, File, Body # <--- ADICIONADO Body
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, joinedload
 from pydantic import BaseModel
-from typing import List, Dict, Any
-from datetime import datetime, timezone # <--- ALTERAÇÃO 1: Import de data
+from datetime import datetime, timezone
 
 from app.core.dependencies import get_db, get_orchestration_service, get_batch_task_creation_service
 from app.api.v1.schemas import TaskTriggerPayload, BatchTaskCreationRequest
@@ -29,11 +28,15 @@ from app.api.v1.schemas import BatchInteractiveCreationRequest, TaskCreationData
 from app.core.dependencies import get_task_rule_service 
 from app.services.task_rule_service import TaskRuleService
 from app.api.v1.schemas import ValidatePublicationTasksRequest 
-from app.models.batch_execution import BatchExecution, BatchExecutionItem # <--- ALTERAÇÃO 2: Import dos Models
+from app.models.batch_execution import BatchExecution, BatchExecutionItem
 
 router = APIRouter()
 
-# --- CORREÇÃO 1: Adicionando a Config para Pydantic V2 ---
+# --- NOVO SCHEMA PARA O RETRY INTELIGENTE ---
+class RetryRequest(BaseModel):
+    item_ids: Optional[List[int]] = None 
+
+# --- SCHEMAS EXISTENTES ---
 class SpreadsheetRow(BaseModel):
     row_id: int
     data: Dict[str, Any]
@@ -71,7 +74,6 @@ class OfficeForTaskForm(BaseModel):
     class Config:
         from_attributes = True
     
-    
 class TaskCreationDataResponse(BaseModel):
     task_types: List[HierarchicalTaskTypeSchema]
     offices: List[OfficeForTaskForm]
@@ -79,18 +81,17 @@ class TaskCreationDataResponse(BaseModel):
     task_statuses: List[Dict[str, Any]]
 
 
-# --- ENDPOINT CORRIGIDO (SEM FILTRO DE USUÁRIO) ---
+# --- ENDPOINTS ---
+
 @router.get("/task-creation-data", response_model=TaskCreationDataResponse, summary="Obter dados para o formulário de criação de tarefas")
 def get_data_for_task_form(db: Session = Depends(get_db)):
     """
     Fornece todos os dados necessários para popular os seletores no formulário de criação de tarefas.
     """
-    # 1. Buscar TODOS os Tipos de Tarefa (pais) e seus subtipos.
     task_types_query = db.query(LegalOneTaskType).options(
         joinedload(LegalOneTaskType.subtypes)
     ).order_by(LegalOneTaskType.name).all()
 
-    # 2. Formatar a resposta hierárquica
     formatted_task_types = [
         HierarchicalTaskTypeSchema(
             id=parent.id,
@@ -102,7 +103,6 @@ def get_data_for_task_form(db: Session = Depends(get_db)):
         ) for parent in task_types_query
     ]
 
-    # 3. Buscar os outros dados (lógica original preservada)
     offices = db.query(LegalOneOffice).filter(LegalOneOffice.is_active == True).order_by(LegalOneOffice.name).all()
     users = db.query(LegalOneUser)
     users_for_form = [
@@ -123,8 +123,6 @@ def get_data_for_task_form(db: Session = Depends(get_db)):
         users=users_for_form,
         task_statuses=task_statuses
     )
-
-# --- ENDPOINTS ORIGINAIS 100% PRESERVADOS ---
 
 @router.post("/trigger/task", tags=["Tasks"])
 def trigger_task_creation(
@@ -179,56 +177,45 @@ async def create_batch_tasks(
     service: BatchTaskCreationService = Depends(get_batch_task_creation_service)
 ):
     """
-    Recebe um lote de números de processo de uma fonte externa e inicia a criação
-    de tarefas em segundo plano.
-
-    - **fonte**: Identificador da aplicação de origem (ex: "Onesid").
-    - **process_numbers**: Lista de CNJs para os quais as tarefas serão criadas.
-    - **responsible_external_id**: ID externo do usuário do Legal One que será o responsável.
+    Recebe um lote de números de processo de uma fonte externa e inicia a criação.
     """
     background_tasks.add_task(service.process_batch_request, request)
     return {"status": "recebido", "message": "A solicitação de criação de tarefas em lote foi recebida e está sendo processada em segundo plano."}
 
-# --- ALTERAÇÃO 3: Endpoint Modificado para Iniciar e Retornar ID ---
+
 @router.post("/batch-create-from-spreadsheet", status_code=202, summary="Criar Tarefas em Lote a partir de uma Planilha")
 async def create_batch_tasks_from_spreadsheet(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     service: BatchTaskCreationService = Depends(get_batch_task_creation_service),
-    db: Session = Depends(get_db) # Injeção do DB adicionada
+    db: Session = Depends(get_db) 
 ):
     """
-    Recebe um arquivo de planilha (.xlsx), cria o registro de execução e
-    inicia o processamento em segundo plano.
+    Recebe um arquivo de planilha (.xlsx), cria o registro de execução e inicia o processamento.
     """
-    # Validação do tipo de arquivo
     if not file.filename or not file.filename.endswith('.xlsx'):
         raise HTTPException(status_code=400, detail="Formato de arquivo inválido. Por favor, envie um arquivo .xlsx.")
 
-    # Lê o conteúdo do arquivo em memória
     file_content = await file.read()
 
-    # 1. Cria o registro de execução AGORA (Síncrono)
     execution_log = BatchExecution(
         source="Planilha",
-        total_items=0, # A estratégia atualizará isso ao ler o arquivo
+        total_items=0, 
         start_time=datetime.now(timezone.utc)
     )
     db.add(execution_log)
     db.commit()
     db.refresh(execution_log)
 
-    # 2. Passa o ID para o background service
     background_tasks.add_task(service.process_spreadsheet_request, file_content, execution_log.id)
     
-    # 3. Retorna o ID para o frontend monitorar
     return {
         "status": "recebido", 
         "message": "Processamento iniciado em segundo plano.",
         "batch_id": execution_log.id
     }
 
-# --- CORREÇÃO 2: Limpeza dos cabeçalhos e dados da planilha ---
+
 @router.post(
     "/analyze-spreadsheet",
     response_model=SpreadsheetAnalysisResponse,
@@ -236,8 +223,7 @@ async def create_batch_tasks_from_spreadsheet(
 )
 async def analyze_spreadsheet(file: UploadFile = File(...)):
     """
-    Recebe um arquivo .xlsx, extrai seu conteúdo (cabeçalhos e linhas)
-    e o retorna como JSON para ser usado em uma interface de formulário interativo.
+    Recebe um arquivo .xlsx, extrai seu conteúdo (cabeçalhos e linhas) e o retorna como JSON.
     """
     if not file.filename.endswith('.xlsx'):
         raise HTTPException(status_code=400, detail="Formato de arquivo inválido. Por favor, envie um arquivo .xlsx.")
@@ -247,10 +233,7 @@ async def analyze_spreadsheet(file: UploadFile = File(...)):
         workbook = load_workbook(filename=BytesIO(content))
         sheet = workbook.active
 
-        # 1. Lê os cabeçalhos da primeira linha.
         raw_headers = [cell.value for cell in sheet[1]]
-        
-        # 2. Limpa e normaliza os cabeçalhos para garantir a correspondência no frontend.
         headers = [str(h).strip() if h is not None else '' for h in raw_headers]
         
         rows_data = []
@@ -258,7 +241,6 @@ async def analyze_spreadsheet(file: UploadFile = File(...)):
             if not any(row):
                 continue
             
-            # Garante que valores nulos na planilha se tornem strings vazias.
             cleaned_row = ["" if val is None else val for val in row]
             rows_data.append(SpreadsheetRow(row_id=index, data=dict(zip(headers, cleaned_row))))
 
@@ -276,14 +258,10 @@ async def analyze_spreadsheet(file: UploadFile = File(...)):
     summary="Criar Tarefas em Lote a partir da Interface Interativa"
 )
 async def create_batch_tasks_interactive(
-    request: BatchInteractiveCreationRequest, # <- Isto agora funciona!
+    request: BatchInteractiveCreationRequest, 
     background_tasks: BackgroundTasks,
     service: BatchTaskCreationService = Depends(get_batch_task_creation_service)
 ):
-    """
-    Recebe uma lista de tarefas pré-validadas pela interface interativa
-    e inicia o processo de criação em segundo plano.
-    """
     background_tasks.add_task(service.process_interactive_batch_request, request)
     
     return {"status": "recebido", "message": "A solicitação foi recebida e as tarefas estão sendo agendadas em segundo plano."}
@@ -296,31 +274,17 @@ async def validate_publication_tasks(
     request: ValidatePublicationTasksRequest,
     rule_service: TaskRuleService = Depends(get_task_rule_service)
 ):
-    """
-    Recebe um conjunto de tarefas propostas para uma única publicação
-    e verifica se elas atendem a todas as regras de co-ocorrência cadastradas.
-    """
     try:
-        # Pydantic já converteu o JSON para nossos objetos.
-        # Agora, convertemos nossos objetos para dicionários, como o serviço espera.
         tasks_as_dicts = [task.model_dump(by_alias=True) for task in request.tasks]
-        
         rule_service.validate_co_requisites(tasks_as_dicts)
-        
-        # Se nenhuma exceção foi levantada, as regras foram cumpridas.
         return {"status": "success", "message": "As regras de negócio foram atendidas."}
     
     except ValueError as e:
-        # Se o serviço levantou um ValueError, significa que uma regra foi violada.
-        # Retornamos um erro 422, que indica uma entidade não processável devido a erro de semântica.
         raise HTTPException(status_code=422, detail=str(e))
-    
     except Exception as e:
-        # Captura qualquer outro erro inesperado durante o processo.
         raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado durante a validação: {e}")
 
-# --- ALTERAÇÃO 4: Novo Endpoint de Status ---
-@router.get("/batch/status/{batch_id}", summary="Verificar progresso de um lote")
+@router.get("/batch/status/{batch_id}", summary="Verificar progresso de um lote (Resumo)")
 def get_batch_status(batch_id: int, db: Session = Depends(get_db)):
     """
     Retorna o status atual, contagem de itens processados e porcentagem de conclusão.
@@ -330,7 +294,6 @@ def get_batch_status(batch_id: int, db: Session = Depends(get_db)):
     if not execution:
         raise HTTPException(status_code=404, detail="Lote não encontrado")
 
-    # Conta itens já processados (com Sucesso ou Falha)
     processed_count = db.query(BatchExecutionItem).filter(
         BatchExecutionItem.execution_id == batch_id,
         BatchExecutionItem.status.in_([ "SUCESSO", "FALHA" ])
@@ -342,7 +305,6 @@ def get_batch_status(batch_id: int, db: Session = Depends(get_db)):
     if total > 0:
         percentage = int((processed_count / total) * 100)
     
-    # Se já terminou (tem end_time), força 100% para evitar inconsistências visuais
     status_str = "PROCESSANDO"
     if execution.end_time:
         status_str = "CONCLUIDO"
@@ -356,3 +318,48 @@ def get_batch_status(batch_id: int, db: Session = Depends(get_db)):
         "processed_items": processed_count,
         "percentage": percentage
     }
+
+# --- NOVAS ROTAS PARA O RETRY INTELIGENTE ---
+
+@router.get("/executions/{execution_id}", summary="Obter detalhes completos da execução")
+async def get_execution_details(
+    execution_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Retorna o status da execução e a LISTA de itens (sucessos e falhas).
+    Essencial para o frontend montar o agrupamento de erros.
+    """
+    execution = db.query(BatchExecution).options(
+        joinedload(BatchExecution.items)
+    ).filter(BatchExecution.id == execution_id).first()
+    
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execução não encontrada")
+    
+    return execution
+
+@router.post("/executions/{execution_id}/retry", summary="Reprocessar itens falhos")
+async def retry_execution(
+    execution_id: int,
+    retry_data: Optional[RetryRequest] = Body(None), # Aceita filtro opcional de IDs
+    db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = BackgroundTasks()
+):
+    """
+    Reprocessa itens falhos de um lote.
+    - Se enviar JSON {"item_ids": [1, 2]}: Reprocessa só esses itens.
+    - Se enviar vazio: Reprocessa TODOS os itens com falha.
+    """
+    client = LegalOneApiClient()
+    service = BatchTaskCreationService(db, client)
+    
+    target_ids = retry_data.item_ids if retry_data else None
+
+    background_tasks.add_task(
+        service.retry_failed_items, 
+        original_execution_id=execution_id,
+        target_item_ids=target_ids
+    )
+    
+    return {"message": "Reprocessamento iniciado em segundo plano."}

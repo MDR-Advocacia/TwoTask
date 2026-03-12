@@ -14,8 +14,9 @@ pydantic
 pydantic-settings
 
 # Segurança e Autenticação
-passlib
-bcrypt==3.2.0
+# FIX: Bcrypt travado na 3.2.2 para compatibilidade com Passlib 1.7.4
+bcrypt==3.2.2
+passlib[bcrypt]
 python-jose[cryptography]
 
 # Comunicação e Utilitários

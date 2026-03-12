@@ -5,20 +5,20 @@ import asyncio
 from io import BytesIO
 from openpyxl import load_workbook
 from datetime import datetime, timezone, time
-
 from zoneinfo import ZoneInfo
+from sqlalchemy.orm import joinedload
 
 from .base_strategy import BaseStrategy
 from app.api.v1.schemas import BatchTaskCreationRequest
 from app.models.batch_execution import BatchExecution, BatchExecutionItem
 from app.models.legal_one import LegalOneTaskSubType, LegalOneUser, LegalOneOffice
-from sqlalchemy.orm import joinedload
 
 DEFAULT_TASK_STATUS_ID = 0  # 0 = Pendente no Legal One
 
 class SpreadsheetStrategy(BaseStrategy):
     """
     Estratégia para criar tarefas em lote a partir de um arquivo de planilha (Excel).
+    Refatorada para persistir dados de entrada (JSON) e permitir reprocessamento granular.
     """
 
     def _parse_and_format_date_to_utc(self, date_value: any, time_value: any = None) -> str:
@@ -55,7 +55,6 @@ class SpreadsheetStrategy(BaseStrategy):
             return utc_datetime.isoformat().replace('+00:00', 'Z')
             
         except (ValueError, TypeError) as e:
-            logging.error(f"Formato de data inválido: '{date_value}'. Erro: {e}")
             raise ValueError(f"Data inválida: '{date_value}'")
 
     def _format_date_for_description(self, date_value: any) -> str:
@@ -71,7 +70,16 @@ class SpreadsheetStrategy(BaseStrategy):
         except ValueError:
             return str(date_value).split(' ')[0]
 
+    async def _load_caches(self):
+        """Helper para carregar caches do banco uma única vez"""
+        return {
+            'users': {u.name.strip().lower(): u for u in self.db.query(LegalOneUser).filter(LegalOneUser.is_active == True).all()},
+            'offices': {o.path.strip().lower(): o for o in self.db.query(LegalOneOffice).filter(LegalOneOffice.is_active == True).all()},
+            'subtypes': {s.name.strip().lower(): s for s in self.db.query(LegalOneTaskSubType).options(joinedload(LegalOneTaskSubType.parent_type)).filter(LegalOneTaskSubType.is_active == True).all()}
+        }
+
     async def process_batch(self, request: BatchTaskCreationRequest, execution_log: BatchExecution) -> dict:
+        """Lê o arquivo, converte linhas em JSON, persiste e chama o processador individual."""
         success_count = 0
         failed_items = []
         
@@ -95,7 +103,7 @@ class SpreadsheetStrategy(BaseStrategy):
             'DATA_TAREFA': header_map.get('DATA_TAREFA'),
             'HORARIO': header_map.get('HORARIO'),
             'OBSERVACAO': header_map.get('OBSERVACAO'),
-            'DESCRICAO': header_map.get('DESCRICAO') # Nova coluna para complemento da descrição
+            'DESCRICAO': header_map.get('DESCRICAO')
         }
 
         mandatory_fields = ['ESCRITORIO', 'CNJ', 'PUBLISH_DATE', 'SUBTIPO', 'EXECUTANTE', 'DATA_TAREFA']
@@ -108,102 +116,121 @@ class SpreadsheetStrategy(BaseStrategy):
         execution_log.total_items = len(rows)
         self.db.commit()
 
-        logging.info("Pré-carregando dados para o cache.")
-        users_cache = {user.name.strip().lower(): user for user in self.db.query(LegalOneUser).filter(LegalOneUser.is_active == True).all()}
-        offices_cache = {office.path.strip().lower(): office for office in self.db.query(LegalOneOffice).filter(LegalOneOffice.is_active == True).all()}
-        subtypes_cache = {sub.name.strip().lower(): sub for sub in self.db.query(LegalOneTaskSubType).options(joinedload(LegalOneTaskSubType.parent_type)).filter(LegalOneTaskSubType.is_active == True).all()}
+        logging.info(f"Iniciando processamento de {len(rows)} linhas. Carregando caches...")
+        caches = await self._load_caches()
         
         for row in rows:
-            def get_val(key):
-                idx = indices.get(key)
-                if idx is not None and idx < len(row) and row[idx] is not None:
-                    return str(row[idx]).strip()
-                return None
-
-            office_name = get_val('ESCRITORIO')
-            cnj = get_val('CNJ')
-            publish_date_val = row[indices['PUBLISH_DATE']] if indices['PUBLISH_DATE'] is not None and indices['PUBLISH_DATE'] < len(row) else None
-            subtype_name = get_val('SUBTIPO')
-            user_name = get_val('EXECUTANTE')
-            task_date = row[indices['DATA_TAREFA']] if indices['DATA_TAREFA'] is not None and indices['DATA_TAREFA'] < len(row) else None
-            
-            deadline_for_desc = row[indices['PRAZO']] if indices['PRAZO'] is not None and indices['PRAZO'] < len(row) else None
-            schedule_time = row[indices['HORARIO']] if indices['HORARIO'] is not None and indices['HORARIO'] < len(row) else None
-            observation_val = get_val('OBSERVACAO')
-            extra_description = get_val('DESCRICAO') # Capturando o texto opcional
-
-            log_item = BatchExecutionItem(process_number=cnj or "N/A", execution_id=execution_log.id)
-
-            try:
-                if not all([cnj, user_name, subtype_name, office_name, task_date, publish_date_val]):
-                    raise ValueError("Dados essenciais faltando na linha.")
-
-                office = offices_cache.get(office_name.lower() if office_name else None)
-                if not office: raise ValueError(f"Escritório '{office_name}' não encontrado.")
-
-                user = users_cache.get(user_name.lower() if user_name else None)
-                if not user: raise ValueError(f"Usuário '{user_name}' não encontrado.")
-                
-                sub_type = subtypes_cache.get(subtype_name.lower() if subtype_name else None)
-                if not sub_type: raise ValueError(f"Subtipo '{subtype_name}' não encontrado.")
-
-                end_datetime_iso = self._parse_and_format_date_to_utc(task_date, schedule_time)
-                publish_date_iso = self._parse_and_format_date_to_utc(publish_date_val)
-
-                lawsuit = self.client.search_lawsuit_by_cnj(cnj)
-                if not lawsuit or not lawsuit.get('id'): raise Exception("Processo não encontrado no Legal One.")
-                
-                lawsuit_id = lawsuit['id']
-                responsible_office_id = lawsuit.get('responsibleOfficeId')
-                if not responsible_office_id: raise Exception("Processo sem Escritório Responsável.")
-                
-                formatted_date = self._format_date_for_description(deadline_for_desc)
-                
-                # --- MONTAGEM DA DESCRIÇÃO DINÂMICA ---
-                base_description = f"{sub_type.name} - {formatted_date}"
-                if extra_description:
-                    final_description = f"{base_description} - {extra_description}"
+            # 1. Extrair dados para um dicionário limpo (JSON serializável)
+            row_data = {}
+            for key, idx in indices.items():
+                val = row[idx] if idx is not None and idx < len(row) else None
+                # Converter datas/objetos para string para salvar no JSON do banco
+                if val is not None:
+                    row_data[key] = str(val).strip()
                 else:
-                    final_description = base_description
-                # ---------------------------------------
-                
-                task_payload = {
-                    "description": final_description, 
-                    "priority": "Normal",
-                    "startDateTime": end_datetime_iso, 
-                    "endDateTime": end_datetime_iso,
-                    "publishDate": publish_date_iso,
-                    "notes": observation_val,
-                    "status": { "id": DEFAULT_TASK_STATUS_ID }, 
-                    "typeId": sub_type.parent_type.external_id,
-                    "subTypeId": sub_type.external_id, 
-                    "responsibleOfficeId": responsible_office_id,
-                    "originOfficeId": office.external_id,
-                    "participants": [{"contact": {"id": user.external_id}, "isResponsible": True, "isExecuter": True, "isRequester": True}]
-                }
-                
-                created_task = self.client.create_task(task_payload)
-                if not created_task or not created_task.get('id'):
-                    raise Exception("Falha na criação da tarefa (resposta inválida da API).")
-                
-                task_id = created_task['id']
-                self.client.link_task_to_lawsuit(task_id, {"linkType": "Litigation", "linkId": lawsuit_id})
+                    row_data[key] = None
 
-                log_item.status = "SUCESSO"
-                log_item.created_task_id = task_id
-                success_count += 1
-                
-            except Exception as e:
-                error_msg = str(e)
-                log_item.status = "FALHA"
-                log_item.error_message = error_msg
-                failed_items.append({"cnj": cnj or "N/A", "motivo": error_msg})
-                logging.error(f"Falha ao processar CNJ {cnj}: {error_msg}")
+            cnj = row_data.get('CNJ')
             
-            finally:
-                execution_log.items.append(log_item)
-                self.db.add(log_item)
-                self.db.commit()
-                await asyncio.sleep(0.1)
+            # 2. Cria o item no banco JÁ COM O JSON (input_data)
+            log_item = BatchExecutionItem(
+                process_number=cnj or "N/A", 
+                execution_id=execution_log.id,
+                input_data=row_data, # <--- PERSISTÊNCIA DOS DADOS ORIGINAIS
+                status="PENDENTE"
+            )
+            self.db.add(log_item)
+            self.db.commit() # Commit aqui garante que temos o ID do item e os dados salvos
+
+            # 3. Processa o item usando os dados do dicionário (não da planilha direta)
+            success = await self.process_single_item(log_item, row_data, caches)
+            
+            if success:
+                success_count += 1
+            else:
+                failed_items.append({"cnj": cnj, "motivo": log_item.error_message})
+
+            # Pequeno yield para não bloquear o event loop
+            await asyncio.sleep(0.01)
 
         return {"sucesso": success_count, "falhas": len(failed_items), "detalhes_falhas": failed_items}
+
+    async def process_single_item(self, log_item: BatchExecutionItem, data: dict, caches: dict) -> bool:
+        """
+        Lógica isolada de processamento de um único item baseado em um dicionário de dados.
+        Retorna True se sucesso, False se falha. Atualiza o log_item diretamente.
+        """
+        try:
+            # Validações básicas
+            required = ['CNJ', 'EXECUTANTE', 'SUBTIPO', 'ESCRITORIO', 'DATA_TAREFA', 'PUBLISH_DATE']
+            # Verifica se campos obrigatórios têm valor (truthy)
+            missing = [k for k in required if not data.get(k)]
+            if missing:
+                raise ValueError(f"Dados essenciais faltando no JSON: {', '.join(missing)}")
+
+            # Lookups nos caches
+            office_name = data.get('ESCRITORIO')
+            office = caches['offices'].get(office_name.lower() if office_name else None)
+            if not office: raise ValueError(f"Escritório '{office_name}' não encontrado.")
+
+            user_name = data.get('EXECUTANTE')
+            user = caches['users'].get(user_name.lower() if user_name else None)
+            if not user: raise ValueError(f"Usuário '{user_name}' não encontrado.")
+            
+            subtype_name = data.get('SUBTIPO')
+            sub_type = caches['subtypes'].get(subtype_name.lower() if subtype_name else None)
+            if not sub_type: raise ValueError(f"Subtipo '{subtype_name}' não encontrado.")
+
+            # Formatação de datas
+            end_datetime_iso = self._parse_and_format_date_to_utc(data.get('DATA_TAREFA'), data.get('HORARIO'))
+            publish_date_iso = self._parse_and_format_date_to_utc(data.get('PUBLISH_DATE'))
+
+            # Chamadas API Legal One
+            cnj = data.get('CNJ')
+            lawsuit = self.client.search_lawsuit_by_cnj(cnj)
+            if not lawsuit or not lawsuit.get('id'): raise Exception("Processo não encontrado no Legal One.")
+            
+            lawsuit_id = lawsuit['id']
+            responsible_office_id = lawsuit.get('responsibleOfficeId')
+            if not responsible_office_id: raise Exception("Processo sem Escritório Responsável.")
+            
+            # Montagem Descrição
+            formatted_deadline = self._format_date_for_description(data.get('PRAZO'))
+            base_description = f"{sub_type.name} - {formatted_deadline}"
+            extra = data.get('DESCRICAO')
+            final_description = f"{base_description} - {extra}" if extra else base_description
+            
+            # Payload
+            task_payload = {
+                "description": final_description, 
+                "priority": "Normal",
+                "startDateTime": end_datetime_iso, 
+                "endDateTime": end_datetime_iso,
+                "publishDate": publish_date_iso,
+                "notes": data.get('OBSERVACAO'),
+                "status": { "id": DEFAULT_TASK_STATUS_ID }, 
+                "typeId": sub_type.parent_type.external_id,
+                "subTypeId": sub_type.external_id, 
+                "responsibleOfficeId": responsible_office_id,
+                "originOfficeId": office.external_id,
+                "participants": [{"contact": {"id": user.external_id}, "isResponsible": True, "isExecuter": True, "isRequester": True}]
+            }
+            
+            created_task = self.client.create_task(task_payload)
+            if not created_task or not created_task.get('id'):
+                raise Exception("API retornou sucesso mas sem ID da tarefa.")
+            
+            task_id = created_task['id']
+            self.client.link_task_to_lawsuit(task_id, {"linkType": "Litigation", "linkId": lawsuit_id})
+
+            log_item.status = "SUCESSO"
+            log_item.created_task_id = task_id
+            log_item.error_message = None # Limpa erro anterior se houver
+            self.db.commit()
+            return True
+
+        except Exception as e:
+            log_item.status = "FALHA"
+            log_item.error_message = str(e)
+            self.db.commit()
+            return False

@@ -1,6 +1,6 @@
 # app/models/batch_execution.py
 
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.session import Base
@@ -35,9 +35,12 @@ class BatchExecutionItem(Base):
     execution_id = Column(Integer, ForeignKey("lotes_execucao.id"), nullable=False)
     
     process_number = Column(String, nullable=False, index=True)
-    status = Column(String, nullable=False)  # "SUCESSO" ou "FALHA"
+    status = Column(String, nullable=False)  # "SUCESSO", "FALHA", "PENDENTE", "REPROCESSANDO"
     created_task_id = Column(Integer, nullable=True)
     error_message = Column(String, nullable=True)
+    
+    # NOVO CAMPO: Armazena os dados originais da linha (JSON) para permitir retry sem o arquivo
+    input_data = Column(JSON, nullable=True)
     
     # Relacionamento de volta para o registro principal da execução
     execution = relationship("BatchExecution", back_populates="items")

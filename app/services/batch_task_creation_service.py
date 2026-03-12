@@ -1,17 +1,16 @@
 # app/services/batch_task_creation_service.py
+
 import logging
 from datetime import datetime, timezone, time
 from zoneinfo import ZoneInfo
-from sqlalchemy.orm import Session, joinedload # Adicionado joinedload
+from sqlalchemy.orm import Session, joinedload
 from app.services.legal_one_client import LegalOneApiClient
-from app.api.v1.schemas import BatchTaskCreationRequest
-from app.api.v1.schemas import BatchInteractiveCreationRequest
-from app.api.v1.schemas import ProcessoResponsavel
+from app.api.v1.schemas import BatchTaskCreationRequest, BatchInteractiveCreationRequest
 from app.services.batch_strategies.base_strategy import BaseStrategy
 from app.services.batch_strategies.onesid_strategy import OnesidStrategy
 from app.services.batch_strategies.spreadsheet_strategy import SpreadsheetStrategy
 from app.services.batch_strategies.onerequest_strategy import OnerequestStrategy
-from app.models.batch_execution import BatchExecution, BatchExecutionItem # Adicionado BatchExecutionItem
+from app.models.batch_execution import BatchExecution, BatchExecutionItem
 
 class BatchTaskCreationService:
     """
@@ -27,7 +26,6 @@ class BatchTaskCreationService:
             "OneRequest": OnerequestStrategy
         }
 
-    # --- MÉTODO ALTERADO PARA RECEBER O ID ---
     async def process_spreadsheet_request(self, file_content: bytes, execution_id: int):
         """
         Orquestra o processamento de um arquivo de planilha em segundo plano.
@@ -74,6 +72,14 @@ class BatchTaskCreationService:
                 self.db.commit()
 
     # helper para timezone de Brasília
+    def _get_brasilia_tz(self):
+        try:
+            return ZoneInfo("America/Sao_Paulo")
+        except Exception:
+            return timezone.utc
+
+    def _now_brasilia(self):
+        return datetime.now(self._get_brasilia_tz())  
 
     async def process_interactive_batch_request(self, request: BatchInteractiveCreationRequest):
         """
@@ -98,7 +104,17 @@ class BatchTaskCreationService:
         start_datetime_iso = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
         for task_data in request.tasks:
-            log_item = BatchExecutionItem(process_number=task_data.cnj_number, execution_id=execution_log.id)
+            # AJUSTE 1: Salvamos input_data aqui também para permitir RETRY em tarefas interativas
+            try:
+                payload_json = task_data.model_dump()
+            except AttributeError:
+                payload_json = task_data.dict()
+
+            log_item = BatchExecutionItem(
+                process_number=task_data.cnj_number, 
+                execution_id=execution_log.id,
+                input_data=payload_json  # <--- Salva os dados para retry futuro
+            )
             
             try:
                 # Busca o processo no Legal One
@@ -127,7 +143,7 @@ class BatchTaskCreationService:
                     "typeId": task_data.task_type_id,
                     "subTypeId": task_data.sub_type_id,
                     "responsibleOfficeId": responsible_office_id,
-                    "originOfficeId": responsible_office_id, # Assumindo que a origem é a mesma, pode ser ajustado
+                    "originOfficeId": responsible_office_id, 
                     "participants": [{"contact": {"id": task_data.responsible_external_id}, "isResponsible": True, "isExecuter": True, "isRequester": True}]
                 }
 
@@ -158,20 +174,9 @@ class BatchTaskCreationService:
         self.db.commit()
         logging.info(f"Processamento do lote interativo concluído. Sucessos: {success_count}, Falhas: {len(failed_items)}")
 
-
-    def _get_brasilia_tz(self):
-        try:
-            return ZoneInfo("America/Sao_Paulo")
-        except Exception:
-            # fallback seguro para UTC caso o ZoneInfo não esteja disponível
-            return timezone.utc
-
-    def _now_brasilia(self):
-        return datetime.now(self._get_brasilia_tz())    
-
     async def process_batch_request(self, request: BatchTaskCreationRequest):
         """
-        Ponto de entrada do serviço. Identifica a fonte, cria o log e executa a estratégia.
+        Ponto de entrada genérico (usado por outras fontes ou retries legados).
         """
         logging.info(f"Recebida requisição de lote da fonte: '{request.fonte}' com {len(request.processos)} processos.")
         now_utc = datetime.now(timezone.utc)
@@ -194,71 +199,100 @@ class BatchTaskCreationService:
 
             strategy_instance = strategy_class(self.db, self.client)
             
-            # PASSO 2: Executa a estratégia, passando o objeto de log para ser preenchido
+            # PASSO 2: Executa a estratégia
             result = await strategy_instance.process_batch(request, execution_log)
 
-            # PASSO 3: Atualiza o log principal com os totais retornados pela estratégia
+            # PASSO 3: Atualiza o log principal
             execution_log.success_count = result.get("sucesso", 0)
             execution_log.failure_count = result.get("falhas", 0)
             logging.info(f"Processamento do lote da fonte '{request.fonte}' concluído. Resultado: {result}")
 
         except Exception as e:
             logging.error(f"Erro catastrófico ao processar o lote: {e}", exc_info=True)
-            # Em caso de erro grave, preenche o restante como falha
             execution_log.failure_count = execution_log.total_items - execution_log.success_count
         
         finally:
-            # PASSO 4: Garante que o tempo de finalização e o resultado sejam salvos no BD
             execution_log.end_time = datetime.now(timezone.utc)
             self.db.commit()
 
-    # --- NOVO MÉTODO DE RETRY ---
-    async def retry_failed_items(self, original_execution_id: int):
+    # --- MÉTODO DE RETRY TURBINADO (SMART RETRY) ---
+    async def retry_failed_items(self, original_execution_id: int, target_item_ids: list[int] = None):
         """
-        Busca os itens falhos de uma execução anterior e dispara um novo
-        processamento em lote apenas com eles.
+        Reprocessa itens falhos.
+        - Se target_item_ids for fornecido: Reprocessa APENAS esses itens.
+        - Se for None: Reprocessa TODOS os itens com falha.
         """
-        logging.info(f"Iniciando retentativa para os itens falhos do lote ID: {original_execution_id}")
+        logging.info(f"Iniciando retentativa INTELIGENTE para lote ID: {original_execution_id}")
         
-        # Usamos joinedload para buscar os itens junto com a execução original
+        # Busca execução original e seus itens
         original_execution = self.db.query(BatchExecution).options(
             joinedload(BatchExecution.items)
         ).filter(BatchExecution.id == original_execution_id).first()
 
         if not original_execution:
-            logging.error(f"Tentativa de reprocessar um lote inexistente (ID: {original_execution_id}).")
+            logging.error(f"Lote {original_execution_id} não encontrado.")
             return
 
-        failed_items = [item for item in original_execution.items if item.status == "FALHA"]
+        # --- LÓGICA DE FILTRAGEM ---
+        failed_items = []
+        for item in original_execution.items:
+            # 1. Tem que estar com status FALHA
+            if item.status != "FALHA":
+                continue
+            
+            # 2. Tem que ter input_data salvo
+            if item.input_data is None:
+                continue
 
+            # 3. SE o usuário mandou uma lista de IDs, o item tem que estar nela
+            if target_item_ids and item.id not in target_item_ids:
+                continue
+            
+            failed_items.append(item)
+        
         if not failed_items:
-            logging.warning(f"Nenhum item com falha encontrado para o lote ID: {original_execution_id}. Nenhuma ação necessária.")
+            logging.warning(f"Nenhum item elegível para retry encontrado no lote {original_execution_id}.")
             return
 
-        # Monta um novo objeto de requisição com base nos itens que falharam
-        # A lógica para extrair dados (id_responsavel, etc.) pode precisar de ajuste
-        # dependendo de como esses dados são armazenados ou se precisam ser buscados novamente.
-        # Por simplicidade, vamos assumir que o CNJ é suficiente por agora.
-        retry_processos = [
-            ProcessoResponsavel(
-                numero_processo=item.process_number,
-                # NOTA: id_responsavel e outros campos não estão no log.
-                # Para estratégias que dependem disso (Onesid, Planilha),
-                # seria necessário armazenar mais contexto no BatchExecutionItem.
-                # Por agora, vamos focar no fluxo.
-                id_responsavel=0, # Placeholder
-                observacao=f"Retentativa do item ID {item.id} da execução {original_execution_id}"
-            ) for item in failed_items
-        ]
+        logging.info(f"Reprocessando {len(failed_items)} itens selecionados...")
 
-        retry_request = BatchTaskCreationRequest(
-            fonte=original_execution.source,
-            processos=retry_processos,
-            # Se a fonte for planilha, precisaríamos do conteúdo do arquivo original.
-            # Esta é uma limitação da abordagem simples.
-            file_content=original_execution.file_content if hasattr(original_execution, 'file_content') else None
-        )
+        # Instancia a estratégia. 
+        # NOTA: Para interativos, não temos uma "Strategy Class" dedicada ainda, usamos a SpreadsheetStrategy 
+        # ou criamos uma InteractiveStrategy se necessário. 
+        # Por enquanto, fallback para SpreadsheetStrategy que sabe lidar com dicionários genéricos.
+        strategy_class = self._strategies.get(original_execution.source) or SpreadsheetStrategy
+        strategy_instance = strategy_class(self.db, self.client)
 
-        logging.info(f"Disparando um novo lote para {len(retry_processos)} itens que falharam.")
-        # Reutiliza o método de processamento de lote existente
-        await self.process_batch_request(retry_request)
+        # Carrega caches se necessário
+        caches = {}
+        if hasattr(strategy_instance, '_load_caches'):
+            caches = await strategy_instance._load_caches()
+
+        retry_success_count = 0
+        
+        for item in failed_items:
+            # Atualiza status visual para reprocessando
+            item.status = "REPROCESSANDO"
+            item.error_message = None
+            self.db.commit()
+
+            # Chama o método isolado da estratégia
+            # Passamos o input_data que estava salvo no banco
+            if hasattr(strategy_instance, 'process_single_item'):
+                result = await strategy_instance.process_single_item(item, item.input_data, caches)
+                if result:
+                    retry_success_count += 1
+            else:
+                logging.error(f"Estratégia {original_execution.source} não suporta retry individual.")
+                item.status = "FALHA"
+                item.error_message = "Estratégia não implementa process_single_item."
+                self.db.commit()
+        
+        # Atualiza contadores globais
+        total_success = sum(1 for item in original_execution.items if item.status == "SUCESSO")
+        original_execution.success_count = total_success
+        original_execution.failure_count = original_execution.total_items - total_success
+        original_execution.end_time = datetime.now(timezone.utc)
+        self.db.commit()
+        
+        logging.info(f"Reprocessamento seletivo concluído.")

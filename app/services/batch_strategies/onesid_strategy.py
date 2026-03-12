@@ -1,124 +1,155 @@
-# app/services/batch_strategies/onesid_strategy.py
-import asyncio
 import logging
-from datetime import date, timedelta, datetime, timezone, time
+import asyncio
+from datetime import datetime, timezone, time
 from zoneinfo import ZoneInfo
-from .base_strategy import BaseStrategy
 from app.api.v1.schemas import BatchTaskCreationRequest
-from app.models.legal_one import LegalOneTaskSubType
 from app.models.batch_execution import BatchExecution, BatchExecutionItem
+from .base_strategy import BaseStrategy
+from app.services.mail_service import send_failure_report
 
-# Configurações específicas da estratégia "Onesid"
-TASK_SUBTYPE_EXTERNAL_ID = 1132
-TASK_TYPE_EXTERNAL_ID = 26
-DEFAULT_TASK_STATUS_ID = 0  # 0 = Pendente no Legal One
+# --- CONSTANTES PADRÃO DO ONESID ---
+# Ajuste estes IDs se necessário para bater com seu ambiente Legal One
+ONESID_DEFAULT_TYPE_ID = 15
+ONESID_DEFAULT_SUBTYPE_ID = 967 
+DEFAULT_TASK_STATUS_ID = 0 
 
 class OnesidStrategy(BaseStrategy):
     """
-    Estratégia específica para criar tarefas originadas do sistema Onsid.
+    Estratégia para criar tarefas a partir do Onesid.
+    Refatorada para suportar retry resiliente salvando o payload original.
     """
-    def _get_next_business_day(self) -> date:
-        """ Calcula o próximo dia útil. """
-        today = date.today()
-        next_day = today + timedelta(days=1)
-        while next_day.weekday() >= 5: # 5 = Sábado, 6 = Domingo
-            next_day += timedelta(days=1)
-        return next_day
+
+    def _parse_onesid_date(self, date_str: str) -> str:
+        """
+        Converte datas do formato DD/MM/YYYY para ISO 8601 UTC (Final do dia em Brasília).
+        """
+        try:
+            local_date = datetime.strptime(date_str, "%d/%m/%Y")
+            local_tz = ZoneInfo("America/Sao_Paulo")
+            # Define para 23:59:59 horário de Brasília
+            aware_date = datetime.combine(local_date.date(), time(23, 59, 59)).replace(tzinfo=local_tz)
+            return aware_date.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
+        except (ValueError, TypeError):
+            raise ValueError(f"Data inválida (esperado DD/MM/YYYY): {date_str}")
 
     async def process_batch(self, request: BatchTaskCreationRequest, execution_log: BatchExecution) -> dict:
-        """ Processa o lote de CNJs vindo do Onsid, registrando cada item no log. """
+        """
+        Recebe o lote, salva os dados crus no banco e dispara o processamento item a item.
+        """
+        logging.info(f"Processando lote 'Onesid' com {len(request.processos)} itens.")
         success_count = 0
         failed_items = []
         
-        # Lógica de data robusta com fuso horário explícito
-        local_tz = ZoneInfo("America/Sao_Paulo")
-        deadline_date = self._get_next_business_day()
-        naive_deadline = datetime.combine(deadline_date, time(16, 59, 59))
-        aware_deadline = naive_deadline.replace(tzinfo=local_tz)
-        utc_deadline = aware_deadline.astimezone(timezone.utc)
-        end_datetime_iso = utc_deadline.isoformat().replace('+00:00', 'Z')
-        start_datetime_iso = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-        
-        # Valida se o tipo/subtipo de tarefa existem no nosso BD
-        sub_type = self.db.query(LegalOneTaskSubType).filter(LegalOneTaskSubType.external_id == TASK_SUBTYPE_EXTERNAL_ID).first()
-        if not sub_type or sub_type.parent_type.external_id != TASK_TYPE_EXTERNAL_ID:
-            raise ValueError(f"Tipo/Subtipo de tarefa ({TASK_TYPE_EXTERNAL_ID}/{TASK_SUBTYPE_EXTERNAL_ID}) não configurado corretamente no banco de dados.")
-
-        for item in request.processos:
-            cnj = item.numero_processo
-            id_responsavel = item.id_responsavel
-            observacao = item.observacao
-            
-            # Cria o item de log para este CNJ
-            log_item = BatchExecutionItem(process_number=cnj, execution_id=execution_log.id)
-
+        for item_model in request.processos:
+            # 1. Converter para dicionário
             try:
-                # PASSO 1: ENRIQUECIMENTO - Buscar dados do processo
-                lawsuit = self.client.search_lawsuit_by_cnj(cnj)
-                if not lawsuit or not lawsuit.get('id'):
-                    raise Exception("Processo não encontrado no Legal One.")
-                
-                lawsuit_id = lawsuit['id']
-                responsible_office_id = lawsuit.get('responsibleOfficeId')
+                item_payload = item_model.model_dump(exclude_unset=True)
+            except AttributeError:
+                item_payload = item_model.dict(exclude_unset=True)
 
-                if not responsible_office_id:
-                    raise Exception("Processo encontrado não possui um Escritório Responsável definido.")
+            cnj = item_payload.get("numero_processo", "N/A")
 
-                # PASSO 2: MONTAGEM DO PAYLOAD
-                task_payload = {
-                    "description": f"Tarefa automática: Subsídio Atendido via Onsid para o processo {cnj}",
-                    "priority": "Normal",
-                    "startDateTime": start_datetime_iso,
-                    "endDateTime": end_datetime_iso,
-                    "status": { "id": DEFAULT_TASK_STATUS_ID },
-                    "typeId": TASK_TYPE_EXTERNAL_ID,
-                    "subTypeId": TASK_SUBTYPE_EXTERNAL_ID,
-                    "responsibleOfficeId": responsible_office_id,
-                    "originOfficeId": responsible_office_id,
-                    "participants": [
-                        {
-                            "contact": {"id": id_responsavel},
-                            "isResponsible": True,
-                            "isExecuter": True,
-                            "isRequester": True
-                        }
-                    ]
-                }
+            # 2. Criar e Persistir o Item com 'input_data' (FUNDAMENTAL PARA O RETRY)
+            log_item = BatchExecutionItem(
+                process_number=cnj, 
+                execution_id=execution_log.id,
+                input_data=item_payload,  # <--- Salva os dados originais aqui
+                status="PENDENTE"
+            )
+            self.db.add(log_item)
+            self.db.commit()
 
-                # Adiciona o campo de observação ao payload apenas se ele foi enviado
-                if observacao:
-                    task_payload['notes'] = observacao
-
-                # PASSO 3: CRIAÇÃO E VÍNCULO
-                created_task = self.client.create_task(task_payload)
-                if not created_task or not created_task.get('id'):
-                    raise Exception("Falha na criação da tarefa na API do Legal One (resposta inválida).")
-                
-                task_id = created_task['id']
-                
-                link_success = self.client.link_task_to_lawsuit(task_id, {"linkType": "Litigation", "linkId": lawsuit_id})
-                if not link_success:
-                    logging.warning(f"Tarefa ID {task_id} criada, mas falha ao vincular ao processo ID {lawsuit_id}.")
-
-                # Log de sucesso
-                log_item.status = "SUCESSO"
-                log_item.created_task_id = task_id
-                
-                success_count += 1
-                logging.info(f"Tarefa para CNJ {cnj} processada com sucesso. Task ID: {task_id}")
-                
-            except Exception as e:
-                error_msg = str(e)
-                # Log de falha
-                log_item.status = "FALHA"
-                log_item.error_message = error_msg
-                
-                logging.error(f"Falha ao processar CNJ {cnj}: {error_msg}")
-                failed_items.append({"cnj": cnj, "motivo": error_msg})
+            # 3. Processar item isolado
+            success = await self.process_single_item(log_item, item_payload)
             
-            finally:
-                # Adiciona o item (sucesso ou falha) à lista de itens da execução
-                execution_log.items.append(log_item)
-                await asyncio.sleep(0.1)
+            if success:
+                success_count += 1
+            else:
+                failed_items.append({"cnj": cnj, "motivo": log_item.error_message})
+            
+            await asyncio.sleep(0.05)
+
+        # Envio de email em caso de falhas
+        if failed_items:
+            try:
+                await asyncio.to_thread(send_failure_report, failed_items, "Onesid")
+            except Exception as e:
+                logging.error(f"Erro ao enviar relatório de falhas Onesid: {e}")
 
         return {"sucesso": success_count, "falhas": len(failed_items), "detalhes_falhas": failed_items}
+
+    async def process_single_item(self, log_item: BatchExecutionItem, item_payload: dict, caches: dict = None) -> bool:
+        """
+        Lógica isolada para processar um único item do Onesid.
+        Chamado pelo process_batch (fluxo normal) e pelo retry_failed_items (fluxo de erro).
+        """
+        try:
+            # --- 1. Extração e Validação ---
+            cnj = item_payload.get("numero_processo")
+            prazo = item_payload.get("prazo") 
+            descricao = item_payload.get("descricao", "")
+            id_responsavel_onesid = item_payload.get("id_responsavel") # Opcional
+
+            if not cnj or not prazo:
+                raise ValueError("Campos obrigatórios 'numero_processo' e 'prazo' estão faltando.")
+
+            # --- 2. Preparação de Dados ---
+            deadline_iso = self._parse_onesid_date(prazo)
+            publish_date = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+            # --- 3. Busca no Legal One ---
+            lawsuit = self.client.search_lawsuit_by_cnj(cnj)
+            if not lawsuit or not lawsuit.get('id'):
+                raise Exception(f"Processo {cnj} não encontrado no Legal One.")
+            
+            lawsuit_id = lawsuit['id']
+            office_id = lawsuit.get('responsibleOfficeId')
+            if not office_id:
+                raise Exception("Processo sem escritório responsável (responsibleOfficeId).")
+
+            # --- 4. Montagem do Payload ---
+            task_payload = {
+                "description": f"ONESID: {descricao}",
+                "priority": "Normal",
+                "startDateTime": deadline_iso,
+                "endDateTime": deadline_iso,
+                "publishDate": publish_date,
+                "status": { "id": DEFAULT_TASK_STATUS_ID },
+                "typeId": ONESID_DEFAULT_TYPE_ID,
+                "subTypeId": ONESID_DEFAULT_SUBTYPE_ID,
+                "responsibleOfficeId": office_id,
+                "originOfficeId": office_id,
+                "participants": []
+            }
+
+            # Adiciona responsável se vier no payload
+            if id_responsavel_onesid:
+                task_payload["participants"].append({
+                    "contact": {"id": id_responsavel_onesid},
+                    "isResponsible": True,
+                    "isExecuter": True,
+                    "isRequester": True
+                })
+
+            # --- 5. Criação da Tarefa ---
+            created_task = self.client.create_task(task_payload)
+            if not created_task or not created_task.get('id'):
+                raise Exception("API retornou sucesso mas sem ID da tarefa.")
+
+            # --- 6. Vínculo com Processo ---
+            self.client.link_task_to_lawsuit(created_task['id'], {"linkType": "Litigation", "linkId": lawsuit_id})
+
+            # --- 7. Sucesso ---
+            log_item.status = "SUCESSO"
+            log_item.created_task_id = created_task['id']
+            log_item.error_message = None
+            self.db.commit()
+            return True
+
+        except Exception as e:
+            # --- 8. Falha ---
+            log_item.status = "FALHA"
+            log_item.error_message = str(e)
+            self.db.commit()
+            logging.error(f"Falha item Onesid (CNJ: {item_payload.get('numero_processo')}): {e}")
+            return False
