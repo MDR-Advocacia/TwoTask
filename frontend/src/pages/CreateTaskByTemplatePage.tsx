@@ -11,6 +11,7 @@ import { toast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import UserSelector, { SelectableUser } from "@/components/ui/UserSelector";
 import { MultiSelect } from "@/components/ui/MultiSelect";
+import { apiFetch } from "@/lib/api-client";
 
 // --- INTERFACES ALINHADAS COM O BACKEND ---
 interface Office {
@@ -81,10 +82,10 @@ const CreateTaskByTemplatePage = () => {
       setError(null);
 
       const [officesResponse, templatesResponse, squadsResponse, usersResponse] = await Promise.all([
-        fetch("/api/v1/offices/"),
-        fetch("/api/v1/task_templates/"),
-        fetch("/api/v1/squads/"),
-        fetch("/api/v1/users/with-squads/"),
+        apiFetch("/api/v1/offices/"),
+        apiFetch("/api/v1/dashboard/task_templates"),
+        apiFetch("/api/v1/squads/"),
+        apiFetch("/api/v1/users/with-squads/"),
       ]);
 
       if (!officesResponse.ok || !templatesResponse.ok || !squadsResponse.ok || !usersResponse.ok) {

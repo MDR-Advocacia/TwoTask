@@ -40,6 +40,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { PlusCircle, Edit, Trash2, Star, Users } from "lucide-react";
+import { apiFetch } from "@/lib/api-client";
 
 // --- Interfaces Alinhadas com a Nova API ---
 interface LegalOneUser {
@@ -101,9 +102,9 @@ const SquadManager = () => {
     setIsLoading(true);
     try {
       const [squadsRes, sectorsRes, usersRes] = await Promise.all([
-        fetch("/api/v1/squads"),
-        fetch("/api/v1/sectors"),
-        fetch("/api/v1/squads/legal-one-users"),
+        apiFetch("/api/v1/squads"),
+        apiFetch("/api/v1/sectors"),
+        apiFetch("/api/v1/squads/legal-one-users"),
       ]);
       if (!squadsRes.ok || !sectorsRes.ok || !usersRes.ok) {
         throw new Error("Falha ao carregar dados essenciais.");
@@ -176,7 +177,7 @@ const SquadManager = () => {
     const method = isEditing ? "PUT" : "POST";
 
     try {
-      const response = await fetch(url, {
+      const response = await apiFetch(url, {
         method,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(currentSquad),
@@ -207,7 +208,7 @@ const SquadManager = () => {
     if (!confirm("Tem certeza que deseja desativar este squad?")) return;
 
     try {
-        const response = await fetch(`/api/v1/squads/${squadId}`, { method: 'DELETE' });
+        const response = await apiFetch(`/api/v1/squads/${squadId}`, { method: 'DELETE' });
         if (!response.ok) throw new Error("Falha ao desativar o squad.");
         toast({ title: "Squad Desativado!" });
         fetchData();

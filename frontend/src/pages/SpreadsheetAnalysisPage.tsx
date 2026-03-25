@@ -15,6 +15,7 @@ import { Textarea } from '@/components/ui/textarea';
 import UserSelector, { SelectableUser } from '@/components/ui/UserSelector';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
+import { apiFetch } from '@/lib/api-client';
 
 // --- Interfaces ---
 interface SpreadsheetRow {
@@ -59,7 +60,7 @@ const SpreadsheetAnalysisPage = () => {
     useEffect(() => {
         const fetchFormData = async () => {
             try {
-                const taskDataResponse = await fetch('/api/v1/tasks/task-creation-data');
+                const taskDataResponse = await apiFetch('/api/v1/tasks/task-creation-data');
                 if (!taskDataResponse.ok) throw new Error('Falha ao carregar os dados do formulário.');
                 const data = await taskDataResponse.json();
                 setTaskTypes(data.task_types);
@@ -84,7 +85,7 @@ const SpreadsheetAnalysisPage = () => {
                 rowId: row.row_id,
                 selectedTaskTypeId: '',
                 selectedSubTypeId: '',
-                selectedResponsibleId: responsibleUser ? String(responsibleUser.external_id) : null,
+                selectedResponsibleId: responsibleUser ? String(responsibleUser.id) : null,
                 description: '',
                 dueDate: '',
                 dueTime: '',
@@ -97,7 +98,10 @@ const SpreadsheetAnalysisPage = () => {
     const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
         if (file) {
-            if (file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") {
+            const isSpreadsheet =
+                file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+                file.name.toLowerCase().endsWith(".xlsx");
+            if (isSpreadsheet) {
                 setSelectedFile(file);
                 setError(null);
                 setAnalysisResult(null);
@@ -120,7 +124,7 @@ const SpreadsheetAnalysisPage = () => {
         formData.append('file', selectedFile);
     
         try {
-            const response = await fetch('/api/v1/tasks/analyze-spreadsheet', {
+            const response = await apiFetch('/api/v1/tasks/analyze-spreadsheet', {
                 method: 'POST',
                 body: formData,
             });
@@ -168,7 +172,7 @@ const SpreadsheetAnalysisPage = () => {
         };
     
         try {
-            const response = await fetch('/api/v1/tasks/validate-publication-tasks', {
+            const response = await apiFetch('/api/v1/tasks/validate-publication-tasks', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(validationPayload),
@@ -284,7 +288,7 @@ const SpreadsheetAnalysisPage = () => {
         };
 
         try {
-            const response = await fetch('/api/v1/tasks/batch-create-interactive', {
+            const response = await apiFetch('/api/v1/tasks/batch-create-interactive', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)

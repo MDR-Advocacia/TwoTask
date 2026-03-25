@@ -199,12 +199,16 @@ class BatchExecutionItemResponse(BaseModel):
     status: str
     created_task_id: Optional[int] = None
     error_message: Optional[str] = None
+    fingerprint: Optional[str] = None
     
     model_config = ConfigDict(from_attributes=True)
 
 class BatchExecutionResponse(BaseModel):
     id: int
     source: str
+    source_filename: Optional[str] = None
+    requested_by_email: Optional[str] = None
+    status: str
     start_time: datetime
     end_time: Optional[datetime] = None
     total_items: int
@@ -254,7 +258,8 @@ class InteractiveTaskPayload(BaseModel):
     sub_type_id: int
     responsible_external_id: int
     description: str
-    due_date: str # Esperamos o formato "YYYY-MM-DD"
+    due_date: str
+    due_time: Optional[str] = None
 
 class BatchInteractiveCreationRequest(BaseModel):
     tasks: List[InteractiveTaskPayload]

@@ -1,298 +1,640 @@
-# app/services/batch_task_creation_service.py
-
+import asyncio
 import logging
-from datetime import datetime, timezone, time
+from datetime import datetime, time, timedelta, timezone
+from typing import Any
 from zoneinfo import ZoneInfo
+
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session, joinedload
-from app.services.legal_one_client import LegalOneApiClient
-from app.api.v1.schemas import BatchTaskCreationRequest, BatchInteractiveCreationRequest
+
+from app.api.v1.schemas import BatchInteractiveCreationRequest, BatchTaskCreationRequest
+from app.core.config import settings
+from app.models.batch_execution import (
+    BATCH_PROCESSOR_GENERIC,
+    BATCH_PROCESSOR_SPREADSHEET_INTERACTIVE,
+    BATCH_PROCESSOR_SPREADSHEET_UPLOAD,
+    BATCH_STATUS_CANCELLED,
+    BATCH_STATUS_COMPLETED,
+    BATCH_STATUS_COMPLETED_WITH_ERRORS,
+    BATCH_STATUS_PAUSED,
+    BATCH_STATUS_PENDING,
+    BATCH_STATUS_PROCESSING,
+    FINAL_BATCH_STATUSES,
+    QUEUEABLE_BATCH_PROCESSORS,
+    BatchExecution,
+    BatchExecutionItem,
+)
+from app.models.legal_one import LegalOneTaskSubType
 from app.services.batch_strategies.base_strategy import BaseStrategy
+from app.services.batch_strategies.onerequest_strategy import OnerequestStrategy
 from app.services.batch_strategies.onesid_strategy import OnesidStrategy
 from app.services.batch_strategies.spreadsheet_strategy import SpreadsheetStrategy
-from app.services.batch_strategies.onerequest_strategy import OnerequestStrategy
-from app.models.batch_execution import BatchExecution, BatchExecutionItem
+from app.services.batch_utils import build_task_fingerprint, load_successful_fingerprints
+from app.services.legal_one_client import LegalOneApiClient
+
 
 class BatchTaskCreationService:
-    """
-    Orquestrador que seleciona a estratégia correta com base na 'fonte'
-    para processar a criação de tarefas em lote.
-    """
-    def __init__(self, db: Session, client: LegalOneApiClient):
+    def __init__(self, db: Session, client: LegalOneApiClient | None):
         self.db = db
         self.client = client
         self._strategies: dict[str, type[BaseStrategy]] = {
             "Onesid": OnesidStrategy,
             "Planilha": SpreadsheetStrategy,
-            "OneRequest": OnerequestStrategy
+            "OneRequest": OnerequestStrategy,
         }
+        self._lease_duration = timedelta(seconds=max(settings.batch_worker_lease_seconds, 30))
 
-    async def process_spreadsheet_request(self, file_content: bytes, execution_id: int):
-        """
-        Orquestra o processamento de um arquivo de planilha em segundo plano.
-        Recebe o ID da execução já criada pelo Controller.
-        """
-        logging.info(f"Iniciando processamento de lote via planilha. ID Execução: {execution_id}")
-        
-        # 1. Busca o log que já foi criado (e retornado ao front) pelo Controller
-        execution_log = self.db.query(BatchExecution).filter(BatchExecution.id == execution_id).first()
-        
+    @staticmethod
+    def _utcnow() -> datetime:
+        return datetime.now(timezone.utc)
+
+    def _clear_execution_claim(self, execution_log: BatchExecution) -> None:
+        execution_log.worker_id = None
+        execution_log.heartbeat_at = None
+        execution_log.lease_expires_at = None
+
+    def _refresh_execution_counts(self, execution_id: int) -> tuple[int, int]:
+        success_count = (
+            self.db.query(BatchExecutionItem)
+            .filter(
+                BatchExecutionItem.execution_id == execution_id,
+                BatchExecutionItem.status == "SUCESSO",
+            )
+            .count()
+        )
+        failure_count = (
+            self.db.query(BatchExecutionItem)
+            .filter(
+                BatchExecutionItem.execution_id == execution_id,
+                BatchExecutionItem.status == "FALHA",
+            )
+            .count()
+        )
+        execution = self.db.query(BatchExecution).filter(BatchExecution.id == execution_id).first()
+        if execution:
+            execution.success_count = success_count
+            execution.failure_count = failure_count
+            self.db.commit()
+        return success_count, failure_count
+
+    def _finalize_execution(self, execution_log: BatchExecution, *, cancelled: bool = False) -> None:
+        success_count, failure_count = self._refresh_execution_counts(execution_log.id)
+        execution_log = self.db.query(BatchExecution).filter(BatchExecution.id == execution_log.id).first()
         if not execution_log:
-            logging.error(f"Log de execução {execution_id} não encontrado. Abortando.")
             return
 
-        try:
-            # Converte o conteúdo em bytes para um objeto que a estratégia possa usar
-            spreadsheet_request = BatchTaskCreationRequest(
-                fonte="Planilha",
-                processos=[], 
-                file_content=file_content
-            )
+        execution_log.end_time = self._utcnow()
+        self._clear_execution_claim(execution_log)
+        execution_log.success_count = success_count
+        execution_log.failure_count = failure_count
 
-            strategy_instance = SpreadsheetStrategy(self.db, self.client)
-            
-            # Executa a estratégia (que agora salva o progresso no banco a cada item)
-            result = await strategy_instance.process_batch(spreadsheet_request, execution_log)
-            
-            # Atualiza o log com os totais finais
-            execution_log.success_count = result.get("sucesso", 0)
-            execution_log.failure_count = result.get("falhas", 0)
-            logging.info(f"Processamento da planilha concluído. Resultado: {result}")
+        if cancelled or execution_log.status == BATCH_STATUS_CANCELLED:
+            execution_log.status = BATCH_STATUS_CANCELLED
+        elif failure_count > 0:
+            execution_log.status = BATCH_STATUS_COMPLETED_WITH_ERRORS
+        else:
+            execution_log.status = BATCH_STATUS_COMPLETED
+        self.db.commit()
 
-        except Exception as e:
-            logging.error(f"Erro catastrófico ao processar a planilha: {e}", exc_info=True)
-            if execution_log:
-                # Tenta estimar falhas se possível
-                total = execution_log.total_items or 0
-                sucesso = execution_log.success_count or 0
-                execution_log.failure_count = max(0, total - sucesso)
-        
-        finally:
-            if execution_log:
-                execution_log.end_time = datetime.now(timezone.utc)
-                self.db.commit()
+    def _get_execution_status(self, execution_id: int) -> str:
+        execution = (
+            self.db.query(BatchExecution)
+            .filter(BatchExecution.id == execution_id)
+            .first()
+        )
+        if not execution:
+            return BATCH_STATUS_CANCELLED
+        return execution.status
 
-    # helper para timezone de Brasília
-    def _get_brasilia_tz(self):
-        try:
-            return ZoneInfo("America/Sao_Paulo")
-        except Exception:
-            return timezone.utc
+    async def _wait_for_execution_signal(self, execution_id: int) -> str:
+        while True:
+            status = self._get_execution_status(execution_id)
+            if status == BATCH_STATUS_PAUSED:
+                await asyncio.sleep(1)
+                continue
+            return status
 
-    def _now_brasilia(self):
-        return datetime.now(self._get_brasilia_tz())  
+    @staticmethod
+    def _build_interactive_deadline_iso(due_date: str, due_time: str | None) -> str:
+        local_tz = ZoneInfo("America/Sao_Paulo")
+        due_date_obj = datetime.strptime(due_date, "%Y-%m-%d").date()
+        parsed_time = datetime.strptime(due_time, "%H:%M").time() if due_time else time(23, 59, 59)
+        aware_deadline = datetime.combine(due_date_obj, parsed_time).replace(tzinfo=local_tz)
+        return aware_deadline.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
-    async def process_interactive_batch_request(self, request: BatchInteractiveCreationRequest):
-        """
-        Processa um lote de tarefas vindas do formulário interativo.
-        """
-        source_name = f"Planilha Interativa ({request.source_filename})"
-        logging.info(f"Iniciando processamento de lote da fonte: '{source_name}' com {len(request.tasks)} tarefas.")
-        now_utc = datetime.now(timezone.utc)
-        
+    def _resolve_interactive_subtype(self, local_subtype_id: int) -> LegalOneTaskSubType:
+        subtype = (
+            self.db.query(LegalOneTaskSubType)
+            .options(joinedload(LegalOneTaskSubType.parent_type))
+            .filter(LegalOneTaskSubType.id == local_subtype_id)
+            .first()
+        )
+        if not subtype or not subtype.parent_type:
+            raise ValueError("Subtipo de tarefa nao encontrado na base local.")
+        return subtype
+
+    @staticmethod
+    def _normalize_cnj_number(cnj_number: Any) -> str:
+        if cnj_number is None:
+            return ""
+        return str(cnj_number).strip()
+
+    def _preload_lawsuits_by_cnj(self, cnj_numbers: list[Any]) -> tuple[dict[str, dict[str, Any]], set[str]]:
+        normalized_numbers = []
+        seen_numbers = set()
+        for cnj_number in cnj_numbers:
+            normalized = self._normalize_cnj_number(cnj_number)
+            if not normalized or normalized in seen_numbers:
+                continue
+            normalized_numbers.append(normalized)
+            seen_numbers.add(normalized)
+
+        if not normalized_numbers or self.client is None:
+            return {}, set(normalized_numbers)
+
+        lawsuit_lookup = self.client.search_lawsuits_by_cnj_numbers(normalized_numbers)
+        return lawsuit_lookup, set(normalized_numbers)
+
+    def create_spreadsheet_execution(
+        self,
+        *,
+        file_content: bytes,
+        source_filename: str | None,
+        requested_by_email: str | None = None,
+    ) -> BatchExecution:
+        strategy = SpreadsheetStrategy(self.db, self.client)
+        extracted = strategy.extract_rows_for_queue(file_content)
+        rows = extracted["rows"]
+
         execution_log = BatchExecution(
-            source=source_name,
-            total_items=len(request.tasks),
-            start_time=now_utc
+            source="Planilha",
+            processor_type=BATCH_PROCESSOR_SPREADSHEET_UPLOAD,
+            source_filename=source_filename,
+            requested_by_email=requested_by_email,
+            status=BATCH_STATUS_PENDING,
+            total_items=len(rows),
+            start_time=self._utcnow(),
         )
         self.db.add(execution_log)
         self.db.commit()
         self.db.refresh(execution_log)
-        
-        success_count = 0
-        failed_items = []
-        
-        start_datetime_iso = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+        for row_data in rows:
+            self.db.add(
+                BatchExecutionItem(
+                    execution_id=execution_log.id,
+                    process_number=row_data.get("CNJ") or "N/A",
+                    input_data=row_data,
+                    status="PENDENTE",
+                )
+            )
+        self.db.commit()
+        return execution_log
+
+    def create_interactive_execution(
+        self,
+        request: BatchInteractiveCreationRequest,
+        requested_by_email: str | None = None,
+    ) -> BatchExecution:
+        execution_log = BatchExecution(
+            source=f"Planilha Interativa ({request.source_filename})",
+            processor_type=BATCH_PROCESSOR_SPREADSHEET_INTERACTIVE,
+            source_filename=request.source_filename,
+            requested_by_email=requested_by_email,
+            status=BATCH_STATUS_PENDING,
+            total_items=len(request.tasks),
+            start_time=self._utcnow(),
+        )
+        self.db.add(execution_log)
+        self.db.commit()
+        self.db.refresh(execution_log)
 
         for task_data in request.tasks:
-            # AJUSTE 1: Salvamos input_data aqui também para permitir RETRY em tarefas interativas
-            try:
-                payload_json = task_data.model_dump()
-            except AttributeError:
-                payload_json = task_data.dict()
-
-            log_item = BatchExecutionItem(
-                process_number=task_data.cnj_number, 
-                execution_id=execution_log.id,
-                input_data=payload_json  # <--- Salva os dados para retry futuro
+            self.db.add(
+                BatchExecutionItem(
+                    execution_id=execution_log.id,
+                    process_number=task_data.cnj_number,
+                    input_data=task_data.model_dump(),
+                    status="PENDENTE",
+                )
             )
-            
-            try:
-                # Busca o processo no Legal One
-                lawsuit = self.client.search_lawsuit_by_cnj(task_data.cnj_number)
-                if not lawsuit or not lawsuit.get('id'):
-                    raise Exception("Processo não encontrado no Legal One.")
-                
-                lawsuit_id = lawsuit['id']
-                responsible_office_id = lawsuit.get('responsibleOfficeId')
-                if not responsible_office_id:
-                    raise Exception("Processo não possui Escritório Responsável definido.")
-
-                # Converte a data para o formato UTC ISO 8601
-                local_tz = ZoneInfo("America/Sao_Paulo")
-                due_date_obj = datetime.strptime(task_data.due_date, "%Y-%m-%d")
-                aware_deadline = datetime.combine(due_date_obj.date(), time(23, 59, 59)).replace(tzinfo=local_tz)
-                end_datetime_iso = aware_deadline.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
-
-                # Monta o payload da tarefa
-                task_payload = {
-                    "description": task_data.description,
-                    "priority": "Normal",
-                    "startDateTime": start_datetime_iso,
-                    "endDateTime": end_datetime_iso,
-                    "status": { "id": 0 }, # 0 = Pendente
-                    "typeId": task_data.task_type_id,
-                    "subTypeId": task_data.sub_type_id,
-                    "responsibleOfficeId": responsible_office_id,
-                    "originOfficeId": responsible_office_id, 
-                    "participants": [{"contact": {"id": task_data.responsible_external_id}, "isResponsible": True, "isExecuter": True, "isRequester": True}]
-                }
-
-                # Cria e vincula a tarefa
-                created_task = self.client.create_task(task_payload)
-                if not created_task or not created_task.get('id'):
-                    raise Exception("Falha na criação da tarefa (resposta inválida da API).")
-                
-                task_id = created_task['id']
-                self.client.link_task_to_lawsuit(task_id, {"linkType": "Litigation", "linkId": lawsuit_id})
-
-                log_item.status = "SUCESSO"
-                log_item.created_task_id = task_id
-                success_count += 1
-                
-            except Exception as e:
-                error_msg = str(e)
-                log_item.status = "FALHA"
-                log_item.error_message = error_msg
-                failed_items.append({"cnj": task_data.cnj_number, "motivo": error_msg})
-            
-            finally:
-                self.db.add(log_item)
-        
-        execution_log.success_count = success_count
-        execution_log.failure_count = len(failed_items)
-        execution_log.end_time = datetime.now(timezone.utc)
         self.db.commit()
-        logging.info(f"Processamento do lote interativo concluído. Sucessos: {success_count}, Falhas: {len(failed_items)}")
+        return execution_log
+
+    def _claimable_execution_filter(self, now_utc: datetime):
+        return or_(
+            BatchExecution.status == BATCH_STATUS_PENDING,
+            and_(
+                BatchExecution.status == BATCH_STATUS_PROCESSING,
+                or_(
+                    BatchExecution.lease_expires_at.is_(None),
+                    BatchExecution.lease_expires_at < now_utc,
+                ),
+            ),
+        )
+
+    def claim_next_execution(self, worker_id: str) -> int | None:
+        now_utc = self._utcnow()
+        candidate_rows = (
+            self.db.query(BatchExecution.id)
+            .filter(
+                BatchExecution.processor_type.in_(QUEUEABLE_BATCH_PROCESSORS),
+                self._claimable_execution_filter(now_utc),
+            )
+            .order_by(BatchExecution.start_time.asc(), BatchExecution.id.asc())
+            .limit(10)
+            .all()
+        )
+
+        for candidate in candidate_rows:
+            updated = (
+                self.db.query(BatchExecution)
+                .filter(
+                    BatchExecution.id == candidate.id,
+                    self._claimable_execution_filter(now_utc),
+                )
+                .update(
+                    {
+                        BatchExecution.status: BATCH_STATUS_PROCESSING,
+                        BatchExecution.worker_id: worker_id,
+                        BatchExecution.heartbeat_at: now_utc,
+                        BatchExecution.lease_expires_at: now_utc + self._lease_duration,
+                        BatchExecution.end_time: None,
+                    },
+                    synchronize_session=False,
+                )
+            )
+            if updated:
+                self.db.commit()
+                return candidate.id
+            self.db.rollback()
+
+        return None
+
+    def heartbeat_execution(self, execution_id: int, worker_id: str) -> bool:
+        now_utc = self._utcnow()
+        updated = (
+            self.db.query(BatchExecution)
+            .filter(
+                BatchExecution.id == execution_id,
+                BatchExecution.worker_id == worker_id,
+                BatchExecution.status == BATCH_STATUS_PROCESSING,
+            )
+            .update(
+                {
+                    BatchExecution.heartbeat_at: now_utc,
+                    BatchExecution.lease_expires_at: now_utc + self._lease_duration,
+                },
+                synchronize_session=False,
+            )
+        )
+        if not updated:
+            self.db.rollback()
+            return False
+        self.db.commit()
+        return True
+
+    def _get_control_signal(self, execution_id: int, worker_id: str) -> str:
+        execution = (
+            self.db.query(BatchExecution)
+            .filter(BatchExecution.id == execution_id)
+            .first()
+        )
+        if not execution:
+            return "MISSING"
+        if execution.status == BATCH_STATUS_PAUSED:
+            return BATCH_STATUS_PAUSED
+        if execution.status == BATCH_STATUS_CANCELLED:
+            return BATCH_STATUS_CANCELLED
+        if execution.worker_id != worker_id:
+            return "LOST"
+        return execution.status
+
+    async def _process_interactive_item(
+        self,
+        log_item: BatchExecutionItem,
+        *,
+        known_fingerprints: set[str],
+        lawsuit_lookup: dict[str, dict[str, Any]] | None = None,
+        prefetched_cnj_numbers: set[str] | None = None,
+    ) -> bool:
+        try:
+            payload = log_item.input_data or {}
+            subtype = self._resolve_interactive_subtype(int(payload["sub_type_id"]))
+            end_datetime_iso = self._build_interactive_deadline_iso(
+                payload["due_date"],
+                payload.get("due_time"),
+            )
+            fingerprint = build_task_fingerprint(
+                process_number=payload["cnj_number"],
+                subtype_identifier=subtype.external_id,
+                responsible_identifier=payload["responsible_external_id"],
+                due_datetime_iso=end_datetime_iso,
+                origin_identifier=subtype.parent_type.external_id,
+            )
+            log_item.fingerprint = fingerprint
+
+            if fingerprint in known_fingerprints:
+                raise ValueError("Tarefa duplicada detectada: ja existe um agendamento igual processado com sucesso.")
+
+            cnj_number = self._normalize_cnj_number(payload.get("cnj_number"))
+            lawsuit = (lawsuit_lookup or {}).get(cnj_number)
+            if lawsuit is None and (prefetched_cnj_numbers is None or cnj_number not in prefetched_cnj_numbers):
+                lawsuit = self.client.search_lawsuit_by_cnj(cnj_number)
+            if not lawsuit or not lawsuit.get("id"):
+                raise Exception("Processo nao encontrado no Legal One.")
+
+            lawsuit_id = lawsuit["id"]
+            responsible_office_id = lawsuit.get("responsibleOfficeId")
+            if not responsible_office_id:
+                raise Exception("Processo nao possui escritorio responsavel definido.")
+
+            start_datetime_iso = self._utcnow().isoformat().replace("+00:00", "Z")
+            task_payload = {
+                "description": payload["description"],
+                "priority": "Normal",
+                "startDateTime": start_datetime_iso,
+                "endDateTime": end_datetime_iso,
+                "status": {"id": 0},
+                "typeId": subtype.parent_type.external_id,
+                "subTypeId": subtype.external_id,
+                "responsibleOfficeId": responsible_office_id,
+                "originOfficeId": responsible_office_id,
+                "participants": [
+                    {
+                        "contact": {"id": payload["responsible_external_id"]},
+                        "isResponsible": True,
+                        "isExecuter": True,
+                        "isRequester": True,
+                    }
+                ],
+            }
+
+            created_task = self.client.create_task(task_payload)
+            if not created_task or not created_task.get("id"):
+                raise Exception("Falha na criacao da tarefa (resposta invalida da API).")
+
+            task_id = created_task["id"]
+            self.client.link_task_to_lawsuit(task_id, {"linkType": "Litigation", "linkId": lawsuit_id})
+
+            log_item.status = "SUCESSO"
+            log_item.created_task_id = task_id
+            log_item.error_message = None
+            known_fingerprints.add(fingerprint)
+            self.db.commit()
+            return True
+        except Exception as exc:
+            log_item.status = "FALHA"
+            log_item.error_message = str(exc)
+            self.db.commit()
+            return False
+
+    async def _process_items_loop(
+        self,
+        execution_id: int,
+        worker_id: str,
+        *,
+        item_handler,
+    ) -> None:
+        item_ids = [
+            row.id
+            for row in (
+                self.db.query(BatchExecutionItem.id)
+                .filter(
+                    BatchExecutionItem.execution_id == execution_id,
+                    BatchExecutionItem.status.in_(["PENDENTE", "REPROCESSANDO"]),
+                )
+                .order_by(BatchExecutionItem.id.asc())
+                .all()
+            )
+        ]
+
+        for item_id in item_ids:
+            signal = self._get_control_signal(execution_id, worker_id)
+            if signal == BATCH_STATUS_PAUSED:
+                execution = self.db.query(BatchExecution).filter(BatchExecution.id == execution_id).first()
+                if execution:
+                    self._clear_execution_claim(execution)
+                    self.db.commit()
+                return
+            if signal == BATCH_STATUS_CANCELLED:
+                execution = self.db.query(BatchExecution).filter(BatchExecution.id == execution_id).first()
+                if execution:
+                    self._finalize_execution(execution, cancelled=True)
+                return
+            if signal in {"MISSING", "LOST"}:
+                return
+            if not self.heartbeat_execution(execution_id, worker_id):
+                return
+
+            item = self.db.query(BatchExecutionItem).filter(BatchExecutionItem.id == item_id).first()
+            if not item or item.status not in {"PENDENTE", "REPROCESSANDO"}:
+                continue
+            await item_handler(item)
+            self._refresh_execution_counts(execution_id)
+
+        execution = self.db.query(BatchExecution).filter(BatchExecution.id == execution_id).first()
+        if not execution:
+            return
+
+        status = self._get_control_signal(execution_id, worker_id)
+        if status == BATCH_STATUS_CANCELLED:
+            self._finalize_execution(execution, cancelled=True)
+            return
+        if status == BATCH_STATUS_PAUSED:
+            self._clear_execution_claim(execution)
+            self.db.commit()
+            return
+        self._finalize_execution(execution)
+
+    async def process_claimed_execution(self, execution_id: int, worker_id: str) -> None:
+        execution = (
+            self.db.query(BatchExecution)
+            .options(joinedload(BatchExecution.items))
+            .filter(BatchExecution.id == execution_id)
+            .first()
+        )
+        if not execution or execution.worker_id != worker_id:
+            return
+
+        try:
+            if execution.processor_type == BATCH_PROCESSOR_SPREADSHEET_UPLOAD:
+                strategy = SpreadsheetStrategy(self.db, self.client)
+                caches = await strategy._load_caches()
+                known_fingerprints = load_successful_fingerprints(self.db)
+                pending_rows = [
+                    item.input_data or {}
+                    for item in execution.items
+                    if item.status in {"PENDENTE", "REPROCESSANDO"}
+                ]
+                lawsuit_lookup, prefetched_cnj_numbers = strategy.preload_lawsuits_by_cnj(pending_rows)
+
+                async def handle_item(item: BatchExecutionItem):
+                    await strategy.process_single_item(
+                        item,
+                        item.input_data or {},
+                        caches,
+                        known_fingerprints=known_fingerprints,
+                        lawsuit_lookup=lawsuit_lookup,
+                        prefetched_cnj_numbers=prefetched_cnj_numbers,
+                    )
+
+                await self._process_items_loop(
+                    execution.id,
+                    worker_id,
+                    item_handler=handle_item,
+                )
+                return
+
+            if execution.processor_type == BATCH_PROCESSOR_SPREADSHEET_INTERACTIVE:
+                known_fingerprints = load_successful_fingerprints(self.db)
+                pending_payloads = [
+                    item.input_data or {}
+                    for item in execution.items
+                    if item.status in {"PENDENTE", "REPROCESSANDO"}
+                ]
+                lawsuit_lookup, prefetched_cnj_numbers = self._preload_lawsuits_by_cnj(
+                    [payload.get("cnj_number") for payload in pending_payloads]
+                )
+
+                async def handle_item(item: BatchExecutionItem):
+                    await self._process_interactive_item(
+                        item,
+                        known_fingerprints=known_fingerprints,
+                        lawsuit_lookup=lawsuit_lookup,
+                        prefetched_cnj_numbers=prefetched_cnj_numbers,
+                    )
+
+                await self._process_items_loop(
+                    execution.id,
+                    worker_id,
+                    item_handler=handle_item,
+                )
+                return
+
+            logging.warning("Processador de lote nao suportado pelo worker: %s", execution.processor_type)
+            execution.status = BATCH_STATUS_COMPLETED_WITH_ERRORS
+            self._clear_execution_claim(execution)
+            execution.end_time = self._utcnow()
+            self.db.commit()
+        except Exception as exc:
+            logging.error("Erro ao processar execucao %s: %s", execution_id, exc, exc_info=True)
+            execution = self.db.query(BatchExecution).filter(BatchExecution.id == execution_id).first()
+            if execution:
+                self._finalize_execution(
+                    execution,
+                    cancelled=(execution.status == BATCH_STATUS_CANCELLED),
+                )
+
+    async def process_spreadsheet_request(self, file_content: bytes, execution_id: int):
+        logging.info("Iniciando processamento legado de lote via planilha. ID Execucao: %s", execution_id)
+
+        execution_log = self.db.query(BatchExecution).filter(BatchExecution.id == execution_id).first()
+        if not execution_log:
+            logging.error("Log de execucao %s nao encontrado. Abortando.", execution_id)
+            return
+
+        if execution_log.status == BATCH_STATUS_CANCELLED:
+            self._finalize_execution(execution_log, cancelled=True)
+            return
+
+        execution_log.status = BATCH_STATUS_PROCESSING
+        execution_log.processor_type = BATCH_PROCESSOR_SPREADSHEET_UPLOAD
+        self.db.commit()
+
+        try:
+            spreadsheet_request = BatchTaskCreationRequest(
+                fonte="Planilha",
+                processos=[],
+                file_content=file_content,
+            )
+            strategy_instance = SpreadsheetStrategy(self.db, self.client)
+            result = await strategy_instance.process_batch(spreadsheet_request, execution_log)
+            execution_log.success_count = result.get("sucesso", 0)
+            execution_log.failure_count = result.get("falhas", 0)
+            self._finalize_execution(execution_log, cancelled=result.get("cancelled", False))
+        except Exception as exc:
+            logging.error("Erro catastrofico ao processar a planilha: %s", exc, exc_info=True)
+            total = execution_log.total_items or 0
+            sucesso = execution_log.success_count or 0
+            execution_log.failure_count = max(0, total - sucesso)
+            self._finalize_execution(execution_log)
+
+    async def process_interactive_batch_request(
+        self,
+        request: BatchInteractiveCreationRequest,
+        requested_by_email: str | None = None,
+    ):
+        execution = self.create_interactive_execution(request, requested_by_email=requested_by_email)
+        logging.info("Execucao interativa %s criada e aguardando worker.", execution.id)
 
     async def process_batch_request(self, request: BatchTaskCreationRequest):
-        """
-        Ponto de entrada genérico (usado por outras fontes ou retries legados).
-        """
-        logging.info(f"Recebida requisição de lote da fonte: '{request.fonte}' com {len(request.processos)} processos.")
-        now_utc = datetime.now(timezone.utc)
-        
-        # PASSO 1: Cria o registro principal da execução do lote no BD
+        logging.info(
+            "Recebida requisicao de lote da fonte '%s' com %s processos.",
+            request.fonte,
+            len(request.processos),
+        )
+        now_utc = self._utcnow()
+
         execution_log = BatchExecution(
             source=request.fonte,
+            processor_type=BATCH_PROCESSOR_GENERIC,
+            status=BATCH_STATUS_PROCESSING,
             total_items=len(request.processos),
-            start_time=now_utc
+            start_time=now_utc,
         )
         self.db.add(execution_log)
         self.db.commit()
         self.db.refresh(execution_log)
-        
+
         try:
             strategy_class = self._strategies.get(request.fonte)
-
             if not strategy_class:
-                raise ValueError(f"Nenhuma estratégia encontrada para a fonte: '{request.fonte}'")
+                raise ValueError(f"Nenhuma estrategia encontrada para a fonte: '{request.fonte}'")
 
             strategy_instance = strategy_class(self.db, self.client)
-            
-            # PASSO 2: Executa a estratégia
             result = await strategy_instance.process_batch(request, execution_log)
-
-            # PASSO 3: Atualiza o log principal
             execution_log.success_count = result.get("sucesso", 0)
             execution_log.failure_count = result.get("falhas", 0)
-            logging.info(f"Processamento do lote da fonte '{request.fonte}' concluído. Resultado: {result}")
-
-        except Exception as e:
-            logging.error(f"Erro catastrófico ao processar o lote: {e}", exc_info=True)
+            self._finalize_execution(execution_log, cancelled=result.get("cancelled", False))
+        except Exception as exc:
+            logging.error("Erro catastrofico ao processar o lote: %s", exc, exc_info=True)
             execution_log.failure_count = execution_log.total_items - execution_log.success_count
-        
-        finally:
-            execution_log.end_time = datetime.now(timezone.utc)
-            self.db.commit()
+            self._finalize_execution(execution_log)
 
-    # --- MÉTODO DE RETRY TURBINADO (SMART RETRY) ---
     async def retry_failed_items(self, original_execution_id: int, target_item_ids: list[int] = None):
-        """
-        Reprocessa itens falhos.
-        - Se target_item_ids for fornecido: Reprocessa APENAS esses itens.
-        - Se for None: Reprocessa TODOS os itens com falha.
-        """
-        logging.info(f"Iniciando retentativa INTELIGENTE para lote ID: {original_execution_id}")
-        
-        # Busca execução original e seus itens
-        original_execution = self.db.query(BatchExecution).options(
-            joinedload(BatchExecution.items)
-        ).filter(BatchExecution.id == original_execution_id).first()
+        logging.info("Enfileirando retentativa inteligente para lote ID: %s", original_execution_id)
 
+        original_execution = (
+            self.db.query(BatchExecution)
+            .options(joinedload(BatchExecution.items))
+            .filter(BatchExecution.id == original_execution_id)
+            .first()
+        )
         if not original_execution:
-            logging.error(f"Lote {original_execution_id} não encontrado.")
+            logging.error("Lote %s nao encontrado.", original_execution_id)
             return
 
-        # --- LÓGICA DE FILTRAGEM ---
         failed_items = []
         for item in original_execution.items:
-            # 1. Tem que estar com status FALHA
             if item.status != "FALHA":
                 continue
-            
-            # 2. Tem que ter input_data salvo
             if item.input_data is None:
                 continue
-
-            # 3. SE o usuário mandou uma lista de IDs, o item tem que estar nela
             if target_item_ids and item.id not in target_item_ids:
                 continue
-            
             failed_items.append(item)
-        
+
         if not failed_items:
-            logging.warning(f"Nenhum item elegível para retry encontrado no lote {original_execution_id}.")
+            logging.warning("Nenhum item elegivel para retry encontrado no lote %s.", original_execution_id)
             return
 
-        logging.info(f"Reprocessando {len(failed_items)} itens selecionados...")
-
-        # Instancia a estratégia. 
-        # NOTA: Para interativos, não temos uma "Strategy Class" dedicada ainda, usamos a SpreadsheetStrategy 
-        # ou criamos uma InteractiveStrategy se necessário. 
-        # Por enquanto, fallback para SpreadsheetStrategy que sabe lidar com dicionários genéricos.
-        strategy_class = self._strategies.get(original_execution.source) or SpreadsheetStrategy
-        strategy_instance = strategy_class(self.db, self.client)
-
-        # Carrega caches se necessário
-        caches = {}
-        if hasattr(strategy_instance, '_load_caches'):
-            caches = await strategy_instance._load_caches()
-
-        retry_success_count = 0
-        
         for item in failed_items:
-            # Atualiza status visual para reprocessando
-            item.status = "REPROCESSANDO"
+            item.status = "PENDENTE"
             item.error_message = None
-            self.db.commit()
 
-            # Chama o método isolado da estratégia
-            # Passamos o input_data que estava salvo no banco
-            if hasattr(strategy_instance, 'process_single_item'):
-                result = await strategy_instance.process_single_item(item, item.input_data, caches)
-                if result:
-                    retry_success_count += 1
-            else:
-                logging.error(f"Estratégia {original_execution.source} não suporta retry individual.")
-                item.status = "FALHA"
-                item.error_message = "Estratégia não implementa process_single_item."
-                self.db.commit()
-        
-        # Atualiza contadores globais
-        total_success = sum(1 for item in original_execution.items if item.status == "SUCESSO")
-        original_execution.success_count = total_success
-        original_execution.failure_count = original_execution.total_items - total_success
-        original_execution.end_time = datetime.now(timezone.utc)
+        original_execution.status = BATCH_STATUS_PENDING
+        original_execution.end_time = None
+        self._clear_execution_claim(original_execution)
         self.db.commit()
-        
-        logging.info(f"Reprocessamento seletivo concluído.")
+        self._refresh_execution_counts(original_execution.id)

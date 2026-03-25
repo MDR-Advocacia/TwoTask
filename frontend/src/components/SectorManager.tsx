@@ -32,6 +32,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { PlusCircle, Edit, Trash2 } from "lucide-react";
+import { apiFetch } from "@/lib/api-client";
 
 // --- Interfaces ---
 interface Sector {
@@ -52,7 +53,7 @@ const SectorManager = () => {
   const fetchSectors = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch("/api/v1/sectors");
+      const response = await apiFetch("/api/v1/sectors");
       if (!response.ok) throw new Error("Falha ao buscar setores.");
       const data: Sector[] = await response.json();
       setSectors(data);
@@ -75,7 +76,7 @@ const SectorManager = () => {
     const method = isEditing ? "PUT" : "POST";
 
     try {
-      const response = await fetch(url, {
+      const response = await apiFetch(url, {
         method,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: currentSector.name }),
@@ -106,7 +107,7 @@ const SectorManager = () => {
     if (!confirm(`Tem certeza que deseja desativar o setor "${sector.name}"?`)) return;
 
     try {
-      const response = await fetch(`/api/v1/sectors/${sector.id}`, { method: "DELETE" });
+      const response = await apiFetch(`/api/v1/sectors/${sector.id}`, { method: "DELETE" });
       if (!response.ok) throw new Error("Falha ao desativar o setor.");
 
       toast({

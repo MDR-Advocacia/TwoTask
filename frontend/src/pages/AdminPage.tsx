@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog";
 import { MultiSelect } from "@/components/ui/MultiSelect";
+import { apiFetch } from "@/lib/api-client";
 
 // --- Tipos de Dados ---
 interface Sector { id: number; name: string; }
@@ -38,8 +39,8 @@ const AssociateTasks = () => {
         setError(null);
         try {
             const [tasksResponse, sectorsResponse] = await Promise.all([
-                fetch('/api/v1/admin/task-types'),
-                fetch('/api/v1/sectors'),
+                apiFetch('/api/v1/admin/task-types'),
+                apiFetch('/api/v1/sectors'),
             ]);
             if (!tasksResponse.ok || !sectorsResponse.ok) throw new Error('Falha ao carregar dados iniciais.');
             
@@ -67,7 +68,7 @@ const AssociateTasks = () => {
 
     const fetchSquadsBySector = async (sectorId: string) => {
         try {
-            const res = await fetch(`/api/v1/squads?sector_id=${sectorId}`);
+            const res = await apiFetch(`/api/v1/squads?sector_id=${sectorId}`);
             if (!res.ok) throw new Error('Falha ao buscar squads.');
             setSquads(await res.json());
         } catch (err: any) {
@@ -93,7 +94,7 @@ const AssociateTasks = () => {
     const handleRenameSave = async () => {
         if (!editingGroup || !newGroupName.trim()) return;
         try {
-            const res = await fetch(`/api/v1/admin/task-parent-groups/${editingGroup.id}`, {
+            const res = await apiFetch(`/api/v1/admin/task-parent-groups/${editingGroup.id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name: newGroupName.trim() }),
@@ -113,7 +114,7 @@ const AssociateTasks = () => {
         if (!group) return;
         setSaving(true);
         try {
-            const res = await fetch('/api/v1/admin/task-types/associate', {
+            const res = await apiFetch('/api/v1/admin/task-types/associate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -200,7 +201,7 @@ const SyncManager = () => {
         });
 
         try {
-            const response = await fetch('/api/v1/admin/sync-metadata', {
+            const response = await apiFetch('/api/v1/admin/sync-metadata', {
                 method: 'POST',
             });
 

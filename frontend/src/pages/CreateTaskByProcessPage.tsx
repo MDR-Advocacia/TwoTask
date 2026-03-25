@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from "@/components/ui/checkbox";
 import UserSelector, { SelectableUser } from '@/components/ui/UserSelector';
+import { apiFetch } from '@/lib/api-client';
 
 // --- Tipos de Dados ---
 interface Lawsuit {
@@ -78,8 +79,8 @@ const CreateTaskByProcessPage = () => {
       setIsFormLoading(true);
       try {
         const [taskDataResponse, officesResponse] = await Promise.all([
-          fetch('/api/v1/tasks/task-creation-data'),
-          fetch('/api/v1/offices')
+          apiFetch('/api/v1/tasks/task-creation-data'),
+          apiFetch('/api/v1/offices')
         ]);
         if (!taskDataResponse.ok || !officesResponse.ok) {
           throw new Error('Falha ao carregar os dados do formulário.');
@@ -175,7 +176,7 @@ const CreateTaskByProcessPage = () => {
     };
 
     try {
-      const response = await fetch('/api/v1/tasks/create-full-process', {
+      const response = await apiFetch('/api/v1/tasks/create-full-process', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody),
@@ -217,7 +218,7 @@ const CreateTaskByProcessPage = () => {
     setSearchError(null);
     setFoundLawsuit(null);
     try {
-      const response = await fetch(`/api/v1/tasks/search-lawsuit?cnj=${encodeURIComponent(cnj)}`);
+      const response = await apiFetch(`/api/v1/tasks/search-lawsuit?cnj=${encodeURIComponent(cnj)}`);
       if (!response.ok) {
         if (response.status === 404) throw new Error('Nenhum processo encontrado com este CNJ.');
         const errorData = await response.json();

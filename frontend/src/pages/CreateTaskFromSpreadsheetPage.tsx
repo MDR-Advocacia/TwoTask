@@ -1,45 +1,177 @@
-import { useState, useEffect } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { useToast } from "@/hooks/use-toast";
-import { Upload, File, AlertCircle, Loader2, CheckCircle2 } from "lucide-react";
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { useEffect, useState } from "react";
+import { AlertCircle, CheckCircle2, Download, File, Loader2, Pause, Play, Square, Upload } from "lucide-react";
 
-// --- NOVOS IMPORTS DO SHADCN ---
-import { Progress } from "@/components/ui/progress";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
   AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogDescription,
 } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Progress } from "@/components/ui/progress";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { useToast } from "@/hooks/use-toast";
+import { apiFetch } from "@/lib/api-client";
+import {
+  cancelBatchExecution,
+  downloadBatchErrorReport,
+  pauseBatchExecution,
+  resumeBatchExecution,
+} from "@/services/api";
+
+
+interface PreviewRow {
+  row_id: number;
+  process_number?: string | null;
+  is_valid: boolean;
+  errors: string[];
+  warnings: string[];
+  data: Record<string, any>;
+}
+
+interface PreviewSummary {
+  total_rows: number;
+  valid_rows: number;
+  invalid_rows: number;
+  duplicate_rows_in_file: number;
+  duplicate_rows_in_history: number;
+}
+
+interface PreviewResponse {
+  filename: string;
+  headers: string[];
+  summary: PreviewSummary;
+  rows: PreviewRow[];
+}
+
+interface BatchStatusResponse {
+  id: number;
+  status: string;
+  total_items: number;
+  processed_items: number;
+  remaining_items: number;
+  success_count: number;
+  failure_count: number;
+  percentage: number;
+  source_filename?: string | null;
+  requested_by_email?: string | null;
+  can_pause: boolean;
+  can_resume: boolean;
+  can_cancel: boolean;
+}
+
 
 const CreateTaskFromSpreadsheetPage = () => {
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const { toast } = useToast();
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<PreviewResponse | null>(null);
+  const [isPreviewing, setIsPreviewing] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isDownloadingTemplate, setIsDownloadingTemplate] = useState(false);
+  const [isControlLoading, setIsControlLoading] = useState<"pause" | "resume" | "cancel" | "report" | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  // --- NOVOS ESTADOS PARA O PROGRESSO ---
   const [batchId, setBatchId] = useState<number | null>(null);
-  const [progress, setProgress] = useState(0);
-  const [processedCount, setProcessedCount] = useState(0);
-  const [totalCount, setTotalCount] = useState(0);
+  const [batchStatus, setBatchStatus] = useState<BatchStatusResponse | null>(null);
   const [isMonitoring, setIsMonitoring] = useState(false);
+  const [showBatchDialog, setShowBatchDialog] = useState(false);
+
+  const previewProblems = preview?.rows.filter((row) => !row.is_valid) ?? [];
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (file) {
-      if (file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") {
-        setSelectedFile(file);
-        setError(null);
-      } else {
-        setError("Formato de arquivo inválido. Por favor, selecione um arquivo .xlsx.");
-        setSelectedFile(null);
+    if (!file) return;
+
+    const isSpreadsheet =
+      file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+      file.name.toLowerCase().endsWith(".xlsx");
+
+    if (!isSpreadsheet) {
+      setError("Formato de arquivo invalido. Por favor, selecione um arquivo .xlsx.");
+      setSelectedFile(null);
+      setPreview(null);
+      return;
+    }
+
+    setSelectedFile(file);
+    setPreview(null);
+    setError(null);
+  };
+
+  const handleTemplateDownload = async () => {
+    setIsDownloadingTemplate(true);
+    try {
+      const response = await apiFetch("/api/v1/tasks/spreadsheet-template");
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Falha ao baixar o modelo.");
       }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "modelo_agendamento_planilha.xlsx";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      toast({
+        title: "Erro ao baixar modelo",
+        description: err instanceof Error ? err.message : "Erro inesperado.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsDownloadingTemplate(false);
+    }
+  };
+
+  const handlePreview = async () => {
+    if (!selectedFile) {
+      setError("Nenhum arquivo selecionado.");
+      return;
+    }
+
+    setIsPreviewing(true);
+    setError(null);
+
+    const formData = new FormData();
+    formData.append("file", selectedFile);
+
+    try {
+      const response = await apiFetch("/api/v1/tasks/preview-spreadsheet", {
+        method: "POST",
+        body: formData,
+      });
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || "Falha ao validar a planilha.");
+      }
+
+      const data: PreviewResponse = await response.json();
+      setPreview(data);
+      toast({
+        title: "Preview gerado",
+        description: `${data.summary.valid_rows} linhas prontas e ${data.summary.invalid_rows} com alerta ou erro.`,
+      });
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : "Erro desconhecido.";
+      setError(errorMessage);
+      toast({
+        title: "Erro no preview",
+        description: errorMessage,
+        variant: "destructive",
+      });
+    } finally {
+      setIsPreviewing(false);
     }
   };
 
@@ -48,131 +180,153 @@ const CreateTaskFromSpreadsheetPage = () => {
       setError("Nenhum arquivo selecionado.");
       return;
     }
+
     setIsSubmitting(true);
     setError(null);
-    setProgress(0); // Reseta visualmente
 
     const formData = new FormData();
-    formData.append('file', selectedFile);
+    formData.append("file", selectedFile);
 
     try {
-      // 1. Envia o arquivo e espera o ID do lote
-      const response = await fetch('/api/v1/tasks/batch-create-from-spreadsheet', {
-        method: 'POST',
+      const response = await apiFetch("/api/v1/tasks/batch-create-from-spreadsheet", {
+        method: "POST",
         body: formData,
       });
-
       if (response.status !== 202) {
         const errorData = await response.json();
-        throw new Error(errorData.detail || 'Ocorreu uma falha ao enviar o arquivo.');
+        throw new Error(errorData.detail || "Ocorreu uma falha ao enviar o arquivo.");
       }
 
       const data = await response.json();
-
-      // 2. Se o backend retornou o ID, inicia o monitoramento
-      if (data.batch_id) {
-          setBatchId(data.batch_id);
-          setIsMonitoring(true);
-          // O toast de "sucesso" final será exibido quando o polling terminar
-      } else {
-          // Fallback de segurança (caso o backend não retorne ID)
-          toast({
-            title: "Arquivo Enviado!",
-            description: "Processamento iniciado em segundo plano.",
-          });
-          setIsSubmitting(false);
-          setSelectedFile(null);
+      if (!data.batch_id) {
+        throw new Error("O backend nao retornou o identificador do lote.");
       }
 
+      setBatchId(data.batch_id);
+      setBatchStatus(null);
+      setIsMonitoring(true);
+      setShowBatchDialog(true);
     } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : "Erro desconhecido.";
-        setError(errorMessage);
-        toast({
-            title: "Erro no Envio",
-            description: errorMessage,
-            variant: "destructive",
-        });
-        setIsSubmitting(false);
+      const errorMessage = err instanceof Error ? err.message : "Erro desconhecido.";
+      setError(errorMessage);
+      toast({
+        title: "Erro no envio",
+        description: errorMessage,
+        variant: "destructive",
+      });
+      setIsSubmitting(false);
     }
   };
 
-  // --- EFEITO DE POLLING (CONSULTA DE STATUS) ---
+  const handleControlAction = async (action: "pause" | "resume" | "cancel" | "report") => {
+    if (!batchId) return;
+
+    setIsControlLoading(action);
+    try {
+      if (action === "pause") {
+        await pauseBatchExecution(batchId);
+      } else if (action === "resume") {
+        await resumeBatchExecution(batchId);
+      } else if (action === "cancel") {
+        await cancelBatchExecution(batchId);
+      } else if (action === "report") {
+        const blob = await downloadBatchErrorReport(batchId);
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `lote_${batchId}_erros.csv`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(url);
+      }
+    } catch (err) {
+      toast({
+        title: "Falha na acao do lote",
+        description: err instanceof Error ? err.message : "Erro inesperado.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsControlLoading(null);
+    }
+  };
+
   useEffect(() => {
     let intervalId: NodeJS.Timeout;
 
     if (isMonitoring && batchId) {
       intervalId = setInterval(async () => {
         try {
-          // Consulta o endpoint de status (criado no tasks.py)
-          const res = await fetch(`/api/v1/tasks/batch/status/${batchId}`);
-          if (!res.ok) return;
+          const response = await apiFetch(`/api/v1/tasks/batch/status/${batchId}`);
+          if (!response.ok) return;
 
-          const data = await res.json();
-          
-          setProgress(data.percentage);
-          setProcessedCount(data.processed_items);
-          setTotalCount(data.total_items);
+          const data: BatchStatusResponse = await response.json();
+          setBatchStatus(data);
 
-          // Condição de parada: Status CONCLUIDO ou 100% processado
-          if (data.status === 'CONCLUIDO' || (data.total_items > 0 && data.processed_items === data.total_items)) {
-              clearInterval(intervalId);
-              
-              // Pequeno delay para o usuário ver a barra cheia (100%)
-              setTimeout(() => {
-                  setIsMonitoring(false);
-                  setIsSubmitting(false);
-                  setSelectedFile(null);
-                  setBatchId(null);
-                  
-                  toast({
-                      title: "Processamento Finalizado!",
-                      description: `${data.processed_items} tarefas processadas.`,
-                      className: "bg-green-50 border-green-200"
-                  });
-              }, 1500);
+          if (
+            data.status === "CONCLUIDO" ||
+            data.status === "CONCLUIDO_COM_FALHAS" ||
+            data.status === "CANCELADO"
+          ) {
+            clearInterval(intervalId);
+            setIsMonitoring(false);
+            setIsSubmitting(false);
+
+            toast({
+              title:
+                data.status === "CANCELADO"
+                  ? "Lote cancelado"
+                  : data.status === "CONCLUIDO_COM_FALHAS"
+                    ? "Lote finalizado com falhas"
+                    : "Lote finalizado com sucesso",
+              description: `${data.success_count} sucesso(s) e ${data.failure_count} falha(s).`,
+              variant: data.failure_count > 0 || data.status === "CANCELADO" ? "destructive" : undefined,
+            });
           }
-
-        } catch (error) {
-            console.error("Erro ao buscar status do lote:", error);
+        } catch (err) {
+          console.error("Erro ao buscar status do lote:", err);
         }
-      }, 1500); // Consulta a cada 1.5 segundos
+      }, 1500);
     }
 
     return () => clearInterval(intervalId);
-  }, [isMonitoring, batchId, toast]);
+  }, [batchId, isMonitoring, toast]);
 
   return (
-    <div className="container mx-auto px-6 py-8">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-          Criação de Tarefas por Planilha
-        </h1>
-        <p className="text-muted-foreground mt-1">
-          Faça o upload de um arquivo .xlsx para agendar tarefas em lote.
-        </p>
+    <div className="container mx-auto px-6 py-8 space-y-8">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div>
+          <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
+            Criacao de Tarefas por Planilha
+          </h1>
+          <p className="text-muted-foreground mt-1">
+            Valide, acompanhe e controle o agendamento em lote com mais seguranca.
+          </p>
+        </div>
+        <Button variant="outline" onClick={handleTemplateDownload} disabled={isDownloadingTemplate}>
+          {isDownloadingTemplate ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
+          Baixar Modelo
+        </Button>
       </div>
-      
-      <Card className="max-w-2xl mx-auto glass-card border-0 animate-fade-in">
+
+      <Card className="max-w-3xl mx-auto glass-card border-0 animate-fade-in">
         <CardHeader>
-          <CardTitle>Upload de Planilha</CardTitle>
+          <CardTitle>Upload da Planilha</CardTitle>
           <CardDescription>
-            Selecione o arquivo .xlsx contendo as tarefas a serem criadas.
-            O arquivo deve conter as colunas: CNJ, ID_RESPONSAVEL, OBSERVACAO.
+            O arquivo deve conter ao menos: ESCRITORIO, CNJ, PUBLISH_DATE, SUBTIPO, EXECUTANTE e DATA_TAREFA.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
           <div className="grid w-full items-center gap-1.5">
             <Label htmlFor="spreadsheet-file">Arquivo Excel</Label>
-            <div className="flex items-center gap-3">
-              <Input
-                id="spreadsheet-file"
-                type="file"
-                accept=".xlsx"
-                onChange={handleFileChange}
-                disabled={isSubmitting} // Bloqueia input durante o processo
-                className="file:text-primary file:font-medium"
-              />
-            </div>
+            <Input
+              id="spreadsheet-file"
+              type="file"
+              accept=".xlsx"
+              onChange={handleFileChange}
+              disabled={isSubmitting || isPreviewing}
+              className="file:text-primary file:font-medium"
+            />
           </div>
 
           {selectedFile && (
@@ -190,55 +344,160 @@ const CreateTaskFromSpreadsheetPage = () => {
             </Alert>
           )}
 
-          <Button 
-            onClick={handleSubmit} 
-            disabled={!selectedFile || isSubmitting}
-            className="w-full glass-button text-white"
-          >
-            {isSubmitting ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <Upload className="mr-2 h-4 w-4" />
-            )}
-            {isSubmitting ? 'Processando...' : 'Enviar e Processar'}
-          </Button>
+          <div className="flex flex-col sm:flex-row gap-3">
+            <Button onClick={handlePreview} disabled={!selectedFile || isPreviewing || isSubmitting} variant="outline" className="flex-1">
+              {isPreviewing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
+              {isPreviewing ? "Validando..." : "Validar Planilha"}
+            </Button>
+            <Button onClick={handleSubmit} disabled={!selectedFile || isSubmitting} className="flex-1 glass-button text-white">
+              {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+              {isSubmitting ? "Processando..." : "Enviar e Processar"}
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
-      {/* --- COMPONENTE POPUP DE PROGRESSO --- */}
-      <AlertDialog open={isMonitoring}>
-        <AlertDialogContent className="sm:max-w-md">
+      {preview && (
+        <Card className="max-w-5xl mx-auto border-0">
+          <CardHeader>
+            <CardTitle>Resumo do Preview</CardTitle>
+            <CardDescription>
+              {preview.filename} foi validada antes do envio. Linhas com alerta ainda podem ser processadas, mas merecem revisao.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <Badge variant="outline" className="justify-center py-3">Total: {preview.summary.total_rows}</Badge>
+              <Badge className="justify-center py-3 bg-green-100 text-green-800">Validas: {preview.summary.valid_rows}</Badge>
+              <Badge variant="destructive" className="justify-center py-3">Invalidas: {preview.summary.invalid_rows}</Badge>
+              <Badge variant="outline" className="justify-center py-3">Dup. planilha: {preview.summary.duplicate_rows_in_file}</Badge>
+              <Badge variant="outline" className="justify-center py-3">Dup. historico: {preview.summary.duplicate_rows_in_history}</Badge>
+            </div>
+
+            {previewProblems.length > 0 ? (
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold">Principais linhas com problema</h3>
+                <ScrollArea className="h-72 rounded-md border p-4">
+                  <div className="space-y-4">
+                    {previewProblems.slice(0, 20).map((row) => (
+                      <div key={row.row_id} className="rounded-md border border-red-100 bg-red-50/40 p-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="font-medium text-sm">
+                            Linha {row.row_id} {row.process_number ? `- ${row.process_number}` : ""}
+                          </span>
+                          <Badge variant="destructive">Revisar</Badge>
+                        </div>
+                        {row.errors.map((item) => (
+                          <p key={item} className="text-sm text-red-700 mt-2">{item}</p>
+                        ))}
+                        {row.warnings.map((item) => (
+                          <p key={item} className="text-sm text-amber-700 mt-2">{item}</p>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </ScrollArea>
+              </div>
+            ) : (
+              <Alert>
+                <CheckCircle2 className="h-4 w-4" />
+                <AlertTitle>Preview limpo</AlertTitle>
+                <AlertDescription>Nao encontramos erros locais nem duplicidades conhecidas nessa planilha.</AlertDescription>
+              </Alert>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      <AlertDialog
+        open={showBatchDialog}
+        onOpenChange={(open) => {
+          if (!isMonitoring) {
+            setShowBatchDialog(open);
+          }
+        }}
+      >
+        <AlertDialogContent className="sm:max-w-lg">
           <AlertDialogHeader>
             <AlertDialogTitle className="flex items-center gap-2">
-              {progress === 100 ? (
+              {batchStatus?.status === "CONCLUIDO" ? (
                 <CheckCircle2 className="h-6 w-6 text-green-500" />
               ) : (
-                <Loader2 className="h-6 w-6 animate-spin text-blue-500" />
+                <Loader2 className={`h-6 w-6 text-blue-500 ${isMonitoring ? "animate-spin" : ""}`} />
               )}
-              {progress === 100 ? "Concluído!" : "Criando Tarefas..."}
+              Controle do Lote
             </AlertDialogTitle>
             <AlertDialogDescription>
-              Aguarde enquanto o sistema processa sua planilha e cria as tarefas no Legal One.
-              <br />
-              <span className="text-xs text-muted-foreground mt-1 block">
-                Não feche esta janela.
-              </span>
+              Use os controles abaixo para acompanhar, pausar, retomar ou cancelar o processamento.
             </AlertDialogDescription>
           </AlertDialogHeader>
 
-          <div className="py-6 space-y-4">
-            {/* Barra de Progresso Visual */}
-            <Progress value={progress} className="w-full h-4" />
-            
-            <div className="flex justify-between text-sm text-gray-500 font-medium">
-              <span>{progress}%</span>
-              <span>{processedCount} / {totalCount}</span>
+          <div className="space-y-5 py-2">
+            <Progress value={batchStatus?.percentage ?? 0} className="w-full h-4" />
+
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div className="rounded-md bg-muted/40 p-3">
+                <p className="text-muted-foreground">Status</p>
+                <p className="font-semibold">{batchStatus?.status ?? "Aguardando..."}</p>
+              </div>
+              <div className="rounded-md bg-muted/40 p-3">
+                <p className="text-muted-foreground">Progresso</p>
+                <p className="font-semibold">
+                  {batchStatus?.processed_items ?? 0} / {batchStatus?.total_items ?? 0}
+                </p>
+              </div>
+              <div className="rounded-md bg-muted/40 p-3">
+                <p className="text-muted-foreground">Sucessos</p>
+                <p className="font-semibold text-green-700">{batchStatus?.success_count ?? 0}</p>
+              </div>
+              <div className="rounded-md bg-muted/40 p-3">
+                <p className="text-muted-foreground">Falhas</p>
+                <p className="font-semibold text-red-700">{batchStatus?.failure_count ?? 0}</p>
+              </div>
             </div>
-            
-            <p className="text-xs text-center text-gray-400">
-               {progress < 100 ? "Validando dados e enviando para API..." : "Finalizando..."}
-            </p>
+
+            <div className="flex flex-wrap gap-3">
+              <Button
+                variant="outline"
+                onClick={() => handleControlAction("pause")}
+                disabled={!batchStatus?.can_pause || isControlLoading !== null}
+              >
+                {isControlLoading === "pause" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Pause className="mr-2 h-4 w-4" />}
+                Pausar
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => handleControlAction("resume")}
+                disabled={!batchStatus?.can_resume || isControlLoading !== null}
+              >
+                {isControlLoading === "resume" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
+                Retomar
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => handleControlAction("cancel")}
+                disabled={!batchStatus?.can_cancel || isControlLoading !== null}
+              >
+                {isControlLoading === "cancel" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Square className="mr-2 h-4 w-4" />}
+                Cancelar
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => handleControlAction("report")}
+                disabled={(batchStatus?.failure_count ?? 0) === 0 || isControlLoading !== null}
+              >
+                {isControlLoading === "report" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
+                Baixar Erros
+              </Button>
+            </div>
           </div>
+          {!isMonitoring && batchStatus && (
+            <AlertDialogFooter>
+              <Button variant="outline" onClick={() => setShowBatchDialog(false)}>
+                Fechar
+              </Button>
+            </AlertDialogFooter>
+          )}
         </AlertDialogContent>
       </AlertDialog>
     </div>

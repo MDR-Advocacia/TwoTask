@@ -1,35 +1,65 @@
-# app/main.py
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI # type: ignore
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.v1.endpoints import admin, dashboard, tasks, squads, sectors, users, offices, auth
 
-app = FastAPI(title="OneTask API", version="1.0.0")
+from app.api.v1.endpoints import admin, auth, dashboard, offices, sectors, squads, tasks, users
+from app.core import auth as auth_security
+from app.core.config import settings
+from app.services.batch_worker import BatchExecutionWorker
 
-# Configuração do CORS
-origins = [
-    "*"   # Adicionando a porta do vite.config.ts
-]
+batch_worker = BatchExecutionWorker()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    batch_worker.start()
+    try:
+        yield
+    finally:
+        batch_worker.stop()
+
+
+app = FastAPI(title="OneTask API", version="1.0.0", lifespan=lifespan)
+
+origins = settings.cors_origins
+allow_origin_regex = None
+allow_credentials = True
+
+if "*" in origins:
+    origins = []
+    allow_origin_regex = ".*"
+    allow_credentials = False
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=True,
+    allow_origin_regex=allow_origin_regex,
+    allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(admin.router, prefix="/api/v1/admin", tags=["Admin"])
-app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["Dashboard"])
-app.include_router(squads.router, prefix="/api/v1/squads", tags=["Squads"])
-app.include_router(sectors.router, prefix="/api/v1/sectors", tags=["Sectors"])
-app.include_router(tasks.router, prefix="/api/v1/tasks", tags=["Tasks"])
-app.include_router(users.router, prefix="/api/v1/users", tags=["Users"])
-app.include_router(offices.router, prefix="/api/v1", tags=["Offices"])
-app.include_router(auth.router, prefix="/api/v1/auth", tags=["Autenticação"])
+protected_dependencies = [Depends(auth_security.get_current_user)]
+
+app.include_router(admin.router, prefix="/api/v1/admin", tags=["Admin"], dependencies=protected_dependencies)
+app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["Dashboard"], dependencies=protected_dependencies)
+app.include_router(squads.router, prefix="/api/v1/squads", tags=["Squads"], dependencies=protected_dependencies)
+app.include_router(sectors.router, prefix="/api/v1/sectors", tags=["Sectors"], dependencies=protected_dependencies)
+app.include_router(tasks.router, prefix="/api/v1/tasks", tags=["Tasks"], dependencies=protected_dependencies)
+app.include_router(users.router, prefix="/api/v1/users", tags=["Users"], dependencies=protected_dependencies)
+app.include_router(offices.router, prefix="/api/v1", tags=["Offices"], dependencies=protected_dependencies)
+app.include_router(auth.router, prefix="/api/v1/auth", tags=["Autenticacao"])
 
 
-# Endpoint Raiz
 @app.get("/", tags=["Root"])
 async def read_root():
-    return {"message": "Bem-vindo à API OneTask"}
+    return {"message": "Bem-vindo a API OneTask"}
+
+
+@app.get("/healthz", tags=["Health"])
+async def healthcheck():
+    return {
+        "status": "ok",
+        "batch_worker_enabled": settings.batch_worker_enabled,
+    }
