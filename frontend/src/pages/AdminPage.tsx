@@ -475,10 +475,10 @@ const UsersAndPermissions = () => {
                                     </TableCell>
                                     <TableCell>
                                         {editingUserId === user.id ? (
-                                            <Select value={String(editingData.default_office_id || '')} onValueChange={(v) => setEditingData({ ...editingData, default_office_id: v ? parseInt(v) : null })}>
+                                            <Select value={editingData.default_office_id ? String(editingData.default_office_id) : '__none__'} onValueChange={(v) => setEditingData({ ...editingData, default_office_id: v === '__none__' ? null : parseInt(v) })}>
                                                 <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
                                                 <SelectContent>
-                                                    <SelectItem value="">Nenhum</SelectItem>
+                                                    <SelectItem value="__none__">Nenhum</SelectItem>
                                                     {offices.map((o) => (
                                                         <SelectItem key={o.id} value={String(o.id)}>{o.name}</SelectItem>
                                                     ))}
