@@ -50,3 +50,10 @@ def get_batch_task_creation_service(
 
 def get_task_rule_service(db: Session = Depends(get_db)) -> TaskRuleService:
     return TaskRuleService(db)
+
+
+def get_classification_service(
+    db: Session = Depends(get_db),
+):
+    from app.services.classifier.classification_service import ClassificationService
+    return ClassificationService(db=db)

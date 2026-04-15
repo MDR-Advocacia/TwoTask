@@ -1,7 +1,9 @@
 import csv
-from datetime import datetime, timezone
+import json
+from datetime import datetime, timedelta, timezone
 from io import BytesIO, StringIO
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -59,6 +61,10 @@ router = APIRouter()
 
 class RetryRequest(BaseModel):
     item_ids: Optional[List[int]] = None
+
+
+class LegalOnePositionFixControlRequest(BaseModel):
+    action: Literal["pause", "resume"]
 
 
 class SpreadsheetRow(BaseModel):
@@ -203,6 +209,191 @@ def _build_error_report_csv(items: list[BatchExecutionItem]) -> str:
             ]
         )
     return stream.getvalue()
+
+
+def _resolve_legal_one_position_fix_status_file() -> Path:
+    if settings.legal_one_position_fix_status_file:
+        return Path(settings.legal_one_position_fix_status_file)
+    return Path(__file__).resolve().parents[4] / "output" / "playwright" / "legalone" / "position-fix-live.json"
+
+
+def _resolve_legal_one_position_fix_control_file() -> Path:
+    status_file = _resolve_legal_one_position_fix_status_file()
+    if status_file.exists():
+        try:
+            payload = json.loads(status_file.read_text(encoding="utf-8"))
+            normalized = _normalize_legal_one_position_fix_payload(payload)
+            control_file = normalized.get("controlFile")
+            if control_file:
+                return Path(control_file)
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+
+    return status_file.with_name("position-fix.control")
+
+
+def _read_legal_one_position_fix_control_signal() -> str:
+    control_file = _resolve_legal_one_position_fix_control_file()
+    if not control_file.exists():
+        return "run"
+
+    try:
+        signal = control_file.read_text(encoding="utf-8").strip().lower()
+    except OSError:
+        return "run"
+
+    if signal in {"pause", "stop"}:
+        return signal
+    return "run"
+
+
+def set_legal_one_position_fix_control(action: Literal["pause", "resume"]) -> Dict[str, Any]:
+    control_file = _resolve_legal_one_position_fix_control_file()
+    desired_signal = "pause" if action == "pause" else "run"
+
+    control_file.parent.mkdir(parents=True, exist_ok=True)
+    control_file.write_text(desired_signal, encoding="utf-8")
+
+    return {
+        "message": "Sinal aplicado com sucesso.",
+        "action": action,
+        "signal": desired_signal,
+        "control_file": str(control_file),
+    }
+
+
+def _normalize_legal_one_position_fix_payload(payload: Any) -> Dict[str, Any]:
+    if isinstance(payload, list):
+        items = payload
+        updated_count = len([item for item in items if item.get("status") == "updated"])
+        failed_count = len([item for item in items if item.get("status") in {"error", "verify_failed"}])
+        retry_pending_count = len([item for item in items if item.get("status") == "scheduled_retry" or item.get("retryPending")])
+        return {
+            "generatedAt": None,
+            "state": None,
+            "batchSize": None,
+            "currentBatch": None,
+            "totalBatches": None,
+            "sleepUntil": None,
+            "controlFile": None,
+            "totalItems": len(items),
+            "processedItems": len(items),
+            "updatedCount": updated_count,
+            "failedCount": failed_count,
+            "retryPendingCount": retry_pending_count,
+            "remainingItems": max(0, len(items) - updated_count - failed_count),
+            "activeQueueType": None,
+            "retryPass": None,
+            "maxAttempts": None,
+            "workers": [],
+            "items": items,
+        }
+
+    if isinstance(payload, dict):
+        items = payload.get("items", [])
+        total_items = payload.get("totalItems", len(items))
+        processed_items = payload.get("processedItems", len(items))
+        updated_count = payload.get(
+            "updatedCount",
+            len([item for item in items if item.get("status") == "updated"]),
+        )
+        failed_count = payload.get(
+            "failedCount",
+            len([item for item in items if item.get("status") in {"error", "verify_failed"}]),
+        )
+        retry_pending_count = payload.get(
+            "retryPendingCount",
+            len([item for item in items if item.get("status") == "scheduled_retry" or item.get("retryPending")]),
+        )
+        return {
+            "generatedAt": payload.get("generatedAt"),
+            "state": payload.get("state"),
+            "batchSize": payload.get("batchSize"),
+            "currentBatch": payload.get("currentBatch"),
+            "totalBatches": payload.get("totalBatches"),
+            "sleepUntil": payload.get("sleepUntil"),
+            "controlFile": payload.get("controlFile"),
+            "totalItems": total_items,
+            "processedItems": processed_items,
+            "updatedCount": updated_count,
+            "failedCount": failed_count,
+            "retryPendingCount": retry_pending_count,
+            "remainingItems": payload.get("remainingItems", max(0, total_items - updated_count - failed_count)),
+            "activeQueueType": payload.get("activeQueueType"),
+            "retryPass": payload.get("retryPass"),
+            "maxAttempts": payload.get("maxAttempts"),
+            "workers": payload.get("workers", []),
+            "items": items,
+        }
+
+    raise ValueError("Formato de progresso invalido.")
+
+
+def _parse_iso_datetime(value: Any) -> Optional[datetime]:
+    if not value or not isinstance(value, str):
+        return None
+
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _build_legal_one_position_fix_timing_metrics(
+    items: List[Dict[str, Any]],
+    processed_items: int,
+    remaining_items: int,
+    generated_at: Optional[str],
+) -> Dict[str, Any]:
+    durations_in_seconds: List[float] = []
+    started_timestamps: List[datetime] = []
+
+    for item in items:
+        started_at = _parse_iso_datetime(item.get("startedAt"))
+        finished_at = _parse_iso_datetime(item.get("finishedAt"))
+
+        if started_at is not None:
+            started_timestamps.append(started_at)
+
+        if started_at is None or finished_at is None:
+            continue
+
+        duration = (finished_at - started_at).total_seconds()
+        if duration >= 0:
+            durations_in_seconds.append(duration)
+
+    average_update_seconds = (
+        sum(durations_in_seconds) / len(durations_in_seconds)
+        if durations_in_seconds
+        else None
+    )
+
+    generated_at_dt = _parse_iso_datetime(generated_at) or datetime.now(timezone.utc)
+    effective_average_seconds = None
+    estimated_remaining_seconds = None
+    estimated_completion_at = None
+
+    if processed_items > 0 and started_timestamps:
+        first_started_at = min(started_timestamps)
+        elapsed_seconds = max(0.0, (generated_at_dt - first_started_at).total_seconds())
+        effective_average_seconds = elapsed_seconds / processed_items if elapsed_seconds > 0 else 0.0
+        estimated_remaining_seconds = effective_average_seconds * remaining_items
+        estimated_completion_at = (generated_at_dt + timedelta(seconds=estimated_remaining_seconds)).isoformat()
+
+    return {
+        "averageUpdateSeconds": average_update_seconds,
+        "effectiveAverageSeconds": effective_average_seconds,
+        "estimatedRemainingSeconds": estimated_remaining_seconds,
+        "estimatedCompletionAt": estimated_completion_at,
+    }
 
 
 @router.get(
@@ -592,6 +783,87 @@ async def get_execution_details(
     if not execution:
         raise HTTPException(status_code=404, detail="Execucao nao encontrada")
     return execution
+
+
+@router.get("/legal-one-position-fix/status", summary="Acompanhar correcao de posicao do cliente principal")
+def get_legal_one_position_fix_status():
+    status_file = _resolve_legal_one_position_fix_status_file()
+    if not status_file.exists():
+        return {
+            "available": False,
+            "file_path": str(status_file),
+            "generated_at": None,
+            "state": None,
+            "batch_size": None,
+            "current_batch": None,
+            "total_batches": None,
+            "sleep_until": None,
+            "control_file": None,
+            "control_signal": _read_legal_one_position_fix_control_signal(),
+            "total_items": 0,
+            "processed_items": 0,
+            "updated_count": 0,
+            "failed_count": 0,
+            "retry_pending_count": 0,
+            "remaining_items": 0,
+            "progress_percentage": 0,
+            "average_update_seconds": None,
+            "effective_average_seconds": None,
+            "estimated_remaining_seconds": None,
+            "estimated_completion_at": None,
+            "active_queue_type": None,
+            "retry_pass": None,
+            "max_attempts": None,
+            "workers": [],
+            "items": [],
+        }
+
+    try:
+        payload = json.loads(status_file.read_text(encoding="utf-8"))
+        normalized = _normalize_legal_one_position_fix_payload(payload)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail=f"Nao foi possivel ler o andamento da correcao: {exc}") from exc
+
+    total_items = normalized["totalItems"] or 0
+    processed_items = normalized["processedItems"] or 0
+    percentage = int((processed_items / total_items) * 100) if total_items > 0 else 0
+    remaining_items = normalized["remainingItems"]
+    timing_metrics = _build_legal_one_position_fix_timing_metrics(
+        normalized["items"],
+        processed_items=processed_items,
+        remaining_items=remaining_items,
+        generated_at=normalized["generatedAt"],
+    )
+    recent_items = list(reversed(normalized["items"][-25:]))
+
+    return {
+        "available": True,
+        "file_path": str(status_file),
+        "generated_at": normalized["generatedAt"],
+        "state": normalized["state"],
+        "batch_size": normalized["batchSize"],
+        "current_batch": normalized["currentBatch"],
+        "total_batches": normalized["totalBatches"],
+        "sleep_until": normalized["sleepUntil"],
+        "control_file": normalized["controlFile"],
+        "control_signal": _read_legal_one_position_fix_control_signal(),
+        "total_items": total_items,
+        "processed_items": processed_items,
+        "updated_count": normalized["updatedCount"],
+        "failed_count": normalized["failedCount"],
+        "retry_pending_count": normalized["retryPendingCount"],
+        "remaining_items": remaining_items,
+        "progress_percentage": percentage,
+        "average_update_seconds": timing_metrics["averageUpdateSeconds"],
+        "effective_average_seconds": timing_metrics["effectiveAverageSeconds"],
+        "estimated_remaining_seconds": timing_metrics["estimatedRemainingSeconds"],
+        "estimated_completion_at": timing_metrics["estimatedCompletionAt"],
+        "active_queue_type": normalized["activeQueueType"],
+        "retry_pass": normalized["retryPass"],
+        "max_attempts": normalized["maxAttempts"],
+        "workers": normalized["workers"],
+        "items": recent_items,
+    }
 
 
 @router.post("/executions/{execution_id}/retry", summary="Reprocessar itens falhos")

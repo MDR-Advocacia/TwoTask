@@ -1,50 +1,38 @@
 from pathlib import Path
 import sys
 
-# Adiciona a raiz do projeto ao PYTHONPATH de forma robusta
+from alembic import context
+from logging.config import fileConfig
+from sqlalchemy import engine_from_config, pool
+
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from logging.config import fileConfig
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
-from alembic import context
-
-# Importa a Base do seu core e TODOS os modelos para que o autogenerate os detecte.
+from app import models as _models
 from app.db.session import Base, SQLALCHEMY_DATABASE_URL
-from app.models.canonical import *
-from app.models.legal_one import *
-from app.models.rules import *
-from app.models.associations import *
-from app.models.task_group import *
-from app.models.batch_execution import * # <-- ADICIONADO PARA COMPLETUDE
 
-# this is the Alembic Config object, which provides
-# access to the values within the .ini file in use.
 config = context.config
 config.set_main_option("sqlalchemy.url", SQLALCHEMY_DATABASE_URL)
 
-# Interpret the config file for Python logging.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Define o target_metadata para o autogenerate
 target_metadata = Base.metadata
 
+
 def run_migrations_offline() -> None:
-    """Run migrations in 'offline' mode."""
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        render_as_batch=True  # <-- ADICIONADO AQUI PARA MODO OFFLINE
+        render_as_batch=True,
     )
     with context.begin_transaction():
         context.run_migrations()
 
+
 def run_migrations_online() -> None:
-    """Run migrations in 'online' mode."""
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
@@ -55,12 +43,12 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            render_as_batch=True  # <-- SUA CORREÇÃO ESTÁ AQUI
+            render_as_batch=True,
         )
-
         with context.begin_transaction():
             context.run_migrations()
-            
+
+
 if context.is_offline_mode():
     run_migrations_offline()
 else:

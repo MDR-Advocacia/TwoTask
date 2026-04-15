@@ -1,58 +1,120 @@
-// frontend/src/components/Layout.tsx
-
+import { PropsWithChildren, useMemo } from "react";
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import {
   CircleUser,
-  Menu,
-  Home,
-  Users,
-  LogOut,
-  FilePlus2,
-  FileSearch2,
+  Clock,
   FileUp,
-  Sheet as SheetIcon, // <-- CORREÇÃO APLICADA AQUI
+  Home,
+  ListChecks,
+  LogOut,
+  Menu,
+  Newspaper,
+  Settings,
+  Users,
 } from "lucide-react";
 
 import { useAuth } from "@/hooks/useAuth";
-import { PropsWithChildren } from "react";
-// Esta importação está correta e permanece a mesma
-import { Sheet, SheetContent, SheetTrigger } from "./ui/sheet";
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuItem } from "./ui/dropdown-menu";
 import { Button } from "./ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "./ui/dropdown-menu";
+import { Sheet, SheetContent, SheetTrigger } from "./ui/sheet";
 
+type Permission = 'canScheduleBatch' | 'canUsePublications' | 'isAdmin';
 
-// Centralizamos os links de navegação em um array para facilitar a manutenção
-const navLinks = [
-  { to: "/", icon: Home, label: "Dashboard" },
-  { to: "/tasks/by-process", icon: FileSearch2, label: "Tarefa por Processo" },
-  { to: "/tasks/spreadsheet-batch", icon: FileUp, label: "Tarefas por Planilha (Em lote)" },
-  // --- CORREÇÃO APLICADA AQUI ---
-  { to: "/tasks/spreadsheet-analysis", icon: SheetIcon, label: "Análise de Planilha (Interativo)" },
-  { to: "/admin", icon: Users, label: "Administração" },
-];
+interface NavItem {
+  to: string;
+  icon: React.ElementType;
+  label: string;
+  requirePermission?: Permission;
+}
+
+interface NavSection {
+  title?: string;
+  items: NavItem[];
+}
 
 export default function Layout({ children }: PropsWithChildren) {
-  const { user, logout } = useAuth();
+  const { user, logout, canScheduleBatch, canUsePublications, isAdmin } = useAuth();
   const navigate = useNavigate();
+
+  const hasPermission = (perm?: Permission) => {
+    if (!perm) return true;
+    if (perm === 'canScheduleBatch') return canScheduleBatch;
+    if (perm === 'canUsePublications') return canUsePublications;
+    if (perm === 'isAdmin') return isAdmin;
+    return false;
+  };
+
+  const baseSections: NavSection[] = [
+    {
+      items: [
+        { to: "/", icon: Home, label: "Dashboard" },
+      ],
+    },
+    {
+      title: "Criação de Tarefas",
+      items: [
+        { to: "/tasks/spreadsheet-batch", icon: FileUp, label: "Tarefas por Planilha", requirePermission: 'canScheduleBatch' },
+        { to: "/batches", icon: ListChecks, label: "Acompanhamento de Lotes", requirePermission: 'canScheduleBatch' },
+      ],
+    },
+    {
+      title: "Tratamento de Publicações",
+      items: [
+        { to: "/automations", icon: Clock, label: "Agendamentos", requirePermission: 'canUsePublications' },
+        { to: "/publications", icon: Newspaper, label: "Publicações Legal One", requirePermission: 'canUsePublications' },
+        { to: "/publications/treatment", icon: ListChecks, label: "Tratamento Web", requirePermission: 'canUsePublications' },
+        { to: "/publications/templates", icon: Settings, label: "Templates de Agendamento", requirePermission: 'canUsePublications' },
+      ],
+    },
+    {
+      items: [
+        { to: "/admin", icon: Users, label: "Administração", requirePermission: 'isAdmin' },
+      ],
+    },
+  ];
+
+  const visibleSections = useMemo(() => {
+    return baseSections
+      .map(sec => ({ ...sec, items: sec.items.filter(it => hasPermission(it.requirePermission)) }))
+      .filter(sec => sec.items.length > 0);
+  }, [canScheduleBatch, canUsePublications, isAdmin]);
 
   const handleLogout = () => {
     logout();
-    navigate('/login');
+    navigate("/login");
   };
 
   const NavContent = () => (
     <nav className="grid items-start px-2 text-sm font-medium lg:px-4">
-      {navLinks.map(({ to, icon: Icon, label }) => (
-        <NavLink
-          key={to}
-          to={to}
-          className={({ isActive }) =>
-            `flex items-center gap-3 rounded-lg px-3 py-2 text-muted-foreground transition-all hover:text-primary ${isActive ? 'bg-muted !text-primary' : ''}`
-          }
-        >
-          <Icon className="h-4 w-4" />
-          {label}
-        </NavLink>
+      {visibleSections.map((section, idx) => (
+        <div key={section.title ?? `sec-${idx}`} className={idx > 0 ? "mt-4" : ""}>
+          {section.title && (
+            <div className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+              {section.title}
+            </div>
+          )}
+          {section.items.map(({ to, icon: Icon, label }) => (
+            <NavLink
+              key={to}
+              to={to}
+              className={({ isActive }) =>
+                `flex items-center gap-3 rounded-lg px-3 py-2 text-muted-foreground transition-all hover:text-primary ${
+                  isActive ? "bg-muted !text-primary" : ""
+                }`
+              }
+            >
+              <Icon className="h-4 w-4" />
+              {label}
+            </NavLink>
+          ))}
+        </div>
       ))}
     </nav>
   );
@@ -63,8 +125,8 @@ export default function Layout({ children }: PropsWithChildren) {
         <div className="flex h-full max-h-screen flex-col gap-2">
           <div className="flex h-14 items-center border-b px-4 lg:h-[60px] lg:px-6">
             <Link to="/" className="flex items-center gap-2 font-semibold">
-              <img src="/logo-escritorio2.png" alt="Logo" className="w-20 h-15" />
-              <span className="font-bold text-xl bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
+              <img src="/logo-escritorio2.png" alt="Logo" className="h-15 w-20" />
+              <span className="bg-gradient-to-r from-primary to-accent bg-clip-text text-xl font-bold text-transparent">
                 TwoTask
               </span>
             </Link>
@@ -76,18 +138,18 @@ export default function Layout({ children }: PropsWithChildren) {
       </div>
 
       <div className="flex flex-col">
-        <header className="flex h-14 items-center gap-4 border-b bg-muted/40 px-4 lg:h-[60px] lg:px-6 sticky top-0 z-40 bg-background">
+        <header className="sticky top-0 z-40 flex h-14 items-center gap-4 border-b bg-background px-4 lg:h-[60px] lg:px-6">
           <Sheet>
             <SheetTrigger asChild>
               <Button variant="outline" size="icon" className="shrink-0 md:hidden">
                 <Menu className="h-5 w-5" />
-                <span className="sr-only">Abrir menu de navegação</span>
+                <span className="sr-only">Abrir menu de navegacao</span>
               </Button>
             </SheetTrigger>
             <SheetContent side="left" className="flex flex-col">
-              <div className="flex items-center gap-2 text-lg font-semibold mb-4">
-                <img src="/logo-escritorio2.png" alt="Logo" className="w-10 h-10" />
-                <span className="font-bold text-xl bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
+              <div className="mb-4 flex items-center gap-2 text-lg font-semibold">
+                <img src="/logo-escritorio2.png" alt="Logo" className="h-10 w-10" />
+                <span className="bg-gradient-to-r from-primary to-accent bg-clip-text text-xl font-bold text-transparent">
                   TwoTask
                 </span>
               </div>
@@ -95,20 +157,29 @@ export default function Layout({ children }: PropsWithChildren) {
             </SheetContent>
           </Sheet>
 
-          <div className="w-full flex-1">
-          </div>
+          <div className="w-full flex-1" />
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="secondary" size="icon" className="rounded-full">
                 <CircleUser className="h-5 w-5" />
-                <span className="sr-only">Abrir menu do usuário</span>
+                <span className="sr-only">Abrir menu do usuario</span>
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuLabel>{user?.name || 'Minha Conta'}</DropdownMenuLabel>
+              <DropdownMenuLabel>{user?.name || "Minha Conta"}</DropdownMenuLabel>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={handleLogout} className="text-red-600 focus:text-red-500 focus:bg-red-50 cursor-pointer">
+              <DropdownMenuItem asChild>
+                <Link to="/me" className="cursor-pointer">
+                  <CircleUser className="mr-2 h-4 w-4" />
+                  <span>Meu Perfil</span>
+                </Link>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={handleLogout}
+                className="cursor-pointer text-red-600 focus:bg-red-50 focus:text-red-500"
+              >
                 <LogOut className="mr-2 h-4 w-4" />
                 <span>Sair</span>
               </DropdownMenuItem>
@@ -116,9 +187,7 @@ export default function Layout({ children }: PropsWithChildren) {
           </DropdownMenu>
         </header>
 
-        <main className="flex flex-1 flex-col gap-4 p-4 lg:gap-6 lg:p-6 overflow-auto">
-          {children}
-        </main>
+        <main className="flex flex-1 flex-col gap-4 overflow-auto p-4 lg:gap-6 lg:p-6">{children}</main>
       </div>
     </div>
   );

@@ -1,0 +1,41 @@
+# Override automático pra desenvolvimento local.
+# docker compose up usa docker-compose.yml + este arquivo por padrão.
+# No Coolify, só o docker-compose.yml é lido (este é ignorado).
+
+services:
+  postgres:
+    ports:
+      - "5433:5432"
+
+  api:
+    environment:
+      PYTHONPATH: /app
+      RELOAD: "true"
+    ports:
+      - "8112:8000"
+    volumes:
+      - ./app:/app/app
+      - ./alembic:/app/alembic
+      - ./alembic.ini:/app/alembic.ini
+      - ./data:/app/data
+      - ./output:/app/output
+    # main:app (raiz) — não é app.main:app, main.py está na raiz do projeto.
+    command: >
+      uvicorn main:app
+      --host 0.0.0.0 --port 8000
+      --reload --reload-dir /app/app --reload-dir /app
+
+  # Em dev roda o Vite dev server direto, sem passar pelo nginx.
+  # Pra testar o build de produção localmente: docker compose -f docker-compose.yml up --build
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    build: !reset null
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0 --port 5173"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      VITE_API_BASE_URL: http://localhost:8112

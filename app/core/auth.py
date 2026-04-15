@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+import secrets
+import string
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -11,6 +13,7 @@ from app.api.v1.schemas import TokenData
 from app.core.config import settings
 from app.core.dependencies import get_db
 from app.models.legal_one import LegalOneUser
+from typing import Literal
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
@@ -24,12 +27,48 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+def generate_temp_password(length: int = 12) -> str:
+    """
+    Generate a temporary random password.
+    Excludes confusing characters like 0/O and 1/l.
+    """
+    # Remove confusing characters: 0, O, l, 1, I
+    alphabet = string.ascii_letters + string.digits
+    alphabet = alphabet.replace('0', '').replace('O', '').replace('l', '').replace('1', '').replace('I', '')
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
+
+
+def validate_password(pwd: str) -> None:
+    """
+    Validate password strength.
+    Raises HTTPException if password is invalid.
+    """
+    if len(pwd) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Senha deve ter no mínimo 8 caracteres.",
+        )
+
+
+def create_access_token(
+    data: dict,
+    role: str = "user",
+    can_schedule_batch: bool = False,
+    can_use_publications: bool = True,
+    must_change_password: bool = False,
+    expires_delta: Optional[timedelta] = None
+) -> str:
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + (
         expires_delta or timedelta(minutes=settings.access_token_expire_minutes)
     )
-    to_encode.update({"exp": expire})
+    to_encode.update({
+        "exp": expire,
+        "role": role,
+        "can_schedule_batch": can_schedule_batch,
+        "can_use_publications": can_use_publications,
+        "must_change_password": must_change_password,
+    })
     return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
 
 
@@ -57,3 +96,29 @@ def get_current_user(
         raise credentials_exception
 
     return user
+
+
+def require_permission(permission: Literal["schedule_batch", "publications"]):
+    """
+    Dependency factory to check if user has specific permission.
+    Usage: Depends(require_permission("schedule_batch"))
+    """
+    async def check_permission(current_user: LegalOneUser = Depends(get_current_user)):
+        # Admins bypass all permission checks
+        if getattr(current_user, "role", "user") == "admin":
+            return current_user
+        if permission == "schedule_batch":
+            if not current_user.can_schedule_batch:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Usuário não tem permissão para agendar automatizações.",
+                )
+        elif permission == "publications":
+            if not current_user.can_use_publications:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Usuário não tem permissão para usar publicações.",
+                )
+        return current_user
+
+    return check_permission

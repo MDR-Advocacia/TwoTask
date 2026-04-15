@@ -22,6 +22,16 @@ class Settings(BaseSettings):
     legal_one_base_url: str | None = None
     legal_one_client_id: str | None = None
     legal_one_client_secret: str | None = None
+    legal_one_position_fix_status_file: str | None = None
+    legal_one_web_username: str | None = None
+    legal_one_web_password: str | None = None
+    legal_one_web_key_label: str | None = None
+    publication_treatment_output_dir: str | None = None
+    publication_treatment_runner_script: str | None = None
+    publication_treatment_batch_size: int = 20
+    publication_treatment_pause_seconds: int = 5
+    publication_treatment_max_attempts: int = 3
+    publication_treatment_monitor_poll_seconds: int = 5
 
     smtp_server: str | None = None
     smtp_port: int = 587
@@ -29,6 +39,37 @@ class Settings(BaseSettings):
     smtp_password: str | None = None
     email_from: str | None = None
     email_to: str | None = None
+
+    datajud_base_url: str = "https://api-publica.datajud.cnj.jus.br"
+    datajud_api_key: str | None = None
+    datajud_timeout_seconds: int = 30
+    datajud_default_page_size: int = 100
+
+    comunica_base_url: str = "https://comunicaapi.pje.jus.br"
+    comunica_timeout_seconds: int = 30
+    djen_default_meio: str = "D"
+
+    process_monitoring_idle_window_days: int = 15
+    process_monitoring_recency_window_days: int = 10
+
+    # ── Publication Capture (Legal One /Updates) ──────────────────────
+    # Quando um escritório é capturado pela primeira vez (nenhum cursor
+    # prévio), a rodagem inicial olha para trás este número de dias.
+    publication_initial_lookback_days: int = 3
+    # Overlap defensivo aplicado em todas as rodagens seguintes
+    # (date_from = last_success − overlap). Mantém a janela fechada
+    # mesmo se houver atraso de processamento/indexação no L1.
+    publication_overlap_hours: int = 1
+    # Campo do Legal One usado para filtrar a busca:
+    # "creationDate" = data em que o L1 disponibilizou a publicação (recomendado)
+    # "date"         = data efetiva da publicação no diário (pode perder entradas tardias)
+    publication_capture_date_field: str = "creationDate"
+
+    # Classifier Engine
+    anthropic_api_key: str | None = None
+    classifier_model: str = "claude-haiku-4-5-20251001"
+    classifier_max_concurrent: int = 5
+    classifier_max_tokens: int = 1024
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -2,22 +2,45 @@
 
 import { useState, useEffect } from 'react';
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/useAuth";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Loader2, Save, Pencil, RefreshCw, AlertCircle } from "lucide-react";
+import { Loader2, Save, Pencil, RefreshCw, AlertCircle, Copy, Shield } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog";
 import { MultiSelect } from "@/components/ui/MultiSelect";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { apiFetch } from "@/lib/api-client";
 
 // --- Tipos de Dados ---
 interface Sector { id: number; name: string; }
 interface Squad { id: number; name: string; }
 interface TaskTypeGroup { parent_id: number; parent_name: string; sub_types: { id: number; name: string; squad_ids: number[]; }[]; }
+interface AdminUser {
+  id: number;
+  name: string;
+  email: string;
+  external_id: number;
+  is_active: boolean;
+  role: string;
+  can_schedule_batch: boolean;
+  can_use_publications: boolean;
+  default_office_id: number | null;
+  has_password: boolean;
+  must_change_password: boolean;
+}
+interface Office {
+  id: number;
+  name: string;
+}
 
 // --- Componente de Associação (Código completo restaurado) ---
 const AssociateTasks = () => {
@@ -248,8 +271,336 @@ const SyncManager = () => {
     )
 }
 
-// --- Componente Principal da Página (Renderizando ambos) ---
+// --- Componente de Usuários & Permissões ---
+const UsersAndPermissions = () => {
+    const { toast } = useToast();
+    const [editingUserId, setEditingUserId] = useState<number | null>(null);
+    const [editingData, setEditingData] = useState<Partial<AdminUser>>({});
+    const [tempPasswordDialog, setTempPasswordDialog] = useState<{ isOpen: boolean; password?: string; userName?: string }>({ isOpen: false });
+    const [searchQuery, setSearchQuery] = useState('');
+
+    const { data: users = [], isLoading: usersLoading, refetch: refetchUsers } = useQuery({
+        queryKey: ['admin-users'],
+        queryFn: async () => {
+            const res = await apiFetch('/api/v1/admin/users');
+            if (!res.ok) throw new Error('Falha ao carregar usuários');
+            return res.json() as Promise<AdminUser[]>;
+        },
+    });
+
+    const { data: offices = [], isLoading: officesLoading } = useQuery({
+        queryKey: ['offices'],
+        queryFn: async () => {
+            const res = await apiFetch('/api/v1/offices');
+            if (!res.ok) throw new Error('Falha ao carregar escritórios');
+            return res.json() as Promise<Office[]>;
+        },
+    });
+
+    const updateUserMutation = useMutation({
+        mutationFn: async (data: { userId: number; updates: Partial<AdminUser> }) => {
+            const res = await apiFetch(`/api/v1/admin/users/${data.userId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data.updates),
+            });
+            if (!res.ok) throw new Error('Falha ao atualizar usuário');
+            return res.json();
+        },
+        onSuccess: () => {
+            toast({ title: 'Sucesso', description: 'Usuário atualizado.' });
+            setEditingUserId(null);
+            refetchUsers();
+        },
+        onError: (err: any) => {
+            toast({ title: 'Erro', description: err.message, variant: 'destructive' });
+        },
+    });
+
+    const activateUserMutation = useMutation({
+        mutationFn: async (userId: number) => {
+            const res = await apiFetch(`/api/v1/admin/users/${userId}/activate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+            });
+            if (!res.ok) throw new Error('Falha ao ativar usuário');
+            return res.json();
+        },
+        onSuccess: (data) => {
+            setTempPasswordDialog({ isOpen: true, password: data.temp_password, userName: data.name });
+            refetchUsers();
+        },
+        onError: (err: any) => {
+            toast({ title: 'Erro', description: err.message, variant: 'destructive' });
+        },
+    });
+
+    const resetPasswordMutation = useMutation({
+        mutationFn: async (userId: number) => {
+            const res = await apiFetch(`/api/v1/admin/users/${userId}/reset-password`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+            });
+            if (!res.ok) throw new Error('Falha ao resetar senha');
+            return res.json();
+        },
+        onSuccess: (data) => {
+            setTempPasswordDialog({ isOpen: true, password: data.temp_password, userName: data.name });
+            refetchUsers();
+        },
+        onError: (err: any) => {
+            toast({ title: 'Erro', description: err.message, variant: 'destructive' });
+        },
+    });
+
+    const deactivateUserMutation = useMutation({
+        mutationFn: async (userId: number) => {
+            const res = await apiFetch(`/api/v1/admin/users/${userId}/deactivate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+            });
+            if (!res.ok) throw new Error('Falha ao desativar usuário');
+            return res.json();
+        },
+        onSuccess: () => {
+            toast({ title: 'Sucesso', description: 'Usuário desativado.' });
+            refetchUsers();
+        },
+        onError: (err: any) => {
+            toast({ title: 'Erro', description: err.message, variant: 'destructive' });
+        },
+    });
+
+    const handleEditClick = (user: AdminUser) => {
+        setEditingUserId(user.id);
+        setEditingData({ ...user });
+    };
+
+    const handleSave = (userId: number) => {
+        updateUserMutation.mutate({ userId, updates: editingData });
+    };
+
+    const filteredUsers = users.filter(u =>
+        u.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        u.email.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+
+    const getOfficeName = (id: number | null) => {
+        if (!id) return '—';
+        return offices.find(o => o.id === id)?.name || 'Desconhecido';
+    };
+
+    const copyToClipboard = (text: string) => {
+        navigator.clipboard.writeText(text);
+        toast({ title: 'Copiado!', description: 'Senha copiada para a área de transferência.' });
+    };
+
+    if (usersLoading || officesLoading) return <Loader2 className="h-8 w-8 animate-spin" />;
+
+    return (
+        <Card>
+            <CardHeader>
+                <CardTitle>Usuários & Permissões</CardTitle>
+                <CardDescription>Gerencie papéis, permissões e acesso dos usuários.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+                <Input
+                    placeholder="Buscar por nome ou e-mail..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full"
+                />
+                <div className="overflow-x-auto">
+                    <Table>
+                        <TableHeader>
+                            <TableRow>
+                                <TableHead>Nome</TableHead>
+                                <TableHead>E-mail</TableHead>
+                                <TableHead>Status</TableHead>
+                                <TableHead>Acesso</TableHead>
+                                <TableHead>Papel</TableHead>
+                                <TableHead>Agendar</TableHead>
+                                <TableHead>Publicações</TableHead>
+                                <TableHead>Escritório</TableHead>
+                                <TableHead>Ações</TableHead>
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            {filteredUsers.map((user) => (
+                                <TableRow key={user.id}>
+                                    <TableCell className="font-medium text-sm">{user.name}</TableCell>
+                                    <TableCell className="font-mono text-sm">{user.email}</TableCell>
+                                    <TableCell>
+                                        <Badge variant={user.is_active ? "default" : "secondary"}>
+                                            {user.is_active ? "Ativo" : "Inativo"}
+                                        </Badge>
+                                    </TableCell>
+                                    <TableCell>
+                                        <Badge variant={user.has_password ? "outline" : "destructive"}>
+                                            {user.has_password ? "Configurado" : "Sem senha"}
+                                        </Badge>
+                                    </TableCell>
+                                    <TableCell>
+                                        {editingUserId === user.id ? (
+                                            <Select value={editingData.role || ''} onValueChange={(v) => setEditingData({ ...editingData, role: v })}>
+                                                <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="admin">Admin</SelectItem>
+                                                    <SelectItem value="user">User</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        ) : (
+                                            <span className="text-sm">{user.role}</span>
+                                        )}
+                                    </TableCell>
+                                    <TableCell>
+                                        {editingUserId === user.id ? (
+                                            <Checkbox
+                                                checked={editingData.can_schedule_batch ?? false}
+                                                onCheckedChange={(c) => setEditingData({ ...editingData, can_schedule_batch: !!c })}
+                                            />
+                                        ) : (
+                                            <Checkbox checked={user.can_schedule_batch} disabled />
+                                        )}
+                                    </TableCell>
+                                    <TableCell>
+                                        {editingUserId === user.id ? (
+                                            <Checkbox
+                                                checked={editingData.can_use_publications ?? false}
+                                                onCheckedChange={(c) => setEditingData({ ...editingData, can_use_publications: !!c })}
+                                            />
+                                        ) : (
+                                            <Checkbox checked={user.can_use_publications} disabled />
+                                        )}
+                                    </TableCell>
+                                    <TableCell>
+                                        {editingUserId === user.id ? (
+                                            <Select value={String(editingData.default_office_id || '')} onValueChange={(v) => setEditingData({ ...editingData, default_office_id: v ? parseInt(v) : null })}>
+                                                <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="">Nenhum</SelectItem>
+                                                    {offices.map((o) => (
+                                                        <SelectItem key={o.id} value={String(o.id)}>{o.name}</SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        ) : (
+                                            <span className="text-sm">{getOfficeName(user.default_office_id)}</span>
+                                        )}
+                                    </TableCell>
+                                    <TableCell className="space-y-1">
+                                        {editingUserId === user.id ? (
+                                            <div className="flex gap-1">
+                                                <Button
+                                                    size="sm"
+                                                    variant="default"
+                                                    onClick={() => handleSave(user.id)}
+                                                    disabled={updateUserMutation.isPending}
+                                                >
+                                                    <Save className="h-3 w-3" />
+                                                </Button>
+                                                <Button
+                                                    size="sm"
+                                                    variant="secondary"
+                                                    onClick={() => setEditingUserId(null)}
+                                                >
+                                                    ✕
+                                                </Button>
+                                            </div>
+                                        ) : (
+                                            <div className="flex flex-col gap-1">
+                                                {!user.has_password && (
+                                                    <Button
+                                                        size="sm"
+                                                        variant="default"
+                                                        onClick={() => activateUserMutation.mutate(user.id)}
+                                                        disabled={activateUserMutation.isPending}
+                                                    >
+                                                        <Shield className="h-3 w-3 mr-1" />
+                                                        Ativar
+                                                    </Button>
+                                                )}
+                                                {user.has_password && (
+                                                    <Button
+                                                        size="sm"
+                                                        variant="outline"
+                                                        onClick={() => resetPasswordMutation.mutate(user.id)}
+                                                        disabled={resetPasswordMutation.isPending}
+                                                    >
+                                                        Resetar
+                                                    </Button>
+                                                )}
+                                                <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    onClick={() => handleEditClick(user)}
+                                                >
+                                                    <Pencil className="h-3 w-3" />
+                                                </Button>
+                                                <Button
+                                                    size="sm"
+                                                    variant={user.is_active ? "outline" : "default"}
+                                                    onClick={() => user.is_active ? deactivateUserMutation.mutate(user.id) : null}
+                                                    disabled={deactivateUserMutation.isPending || !user.is_active}
+                                                >
+                                                    {user.is_active ? "Desativar" : "Inativo"}
+                                                </Button>
+                                            </div>
+                                        )}
+                                    </TableCell>
+                                </TableRow>
+                            ))}
+                        </TableBody>
+                    </Table>
+                </div>
+            </CardContent>
+
+            <Dialog open={tempPasswordDialog.isOpen} onOpenChange={(open) => setTempPasswordDialog({ isOpen: open })}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Senha Gerada para {tempPasswordDialog.userName}</DialogTitle>
+                    </DialogHeader>
+                    <Alert className="bg-blue-50 border-blue-200">
+                        <AlertCircle className="h-4 w-4 text-blue-600" />
+                        <AlertDescription className="text-blue-800">
+                            Esta senha só será exibida uma vez. Copie-a com segurança e repasse ao usuário.
+                        </AlertDescription>
+                    </Alert>
+                    <div className="flex gap-2 items-center bg-muted p-3 rounded font-mono text-sm">
+                        <span className="flex-1 break-all">{tempPasswordDialog.password}</span>
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => copyToClipboard(tempPasswordDialog.password || '')}
+                        >
+                            <Copy className="h-4 w-4" />
+                        </Button>
+                    </div>
+                    <DialogFooter>
+                        <Button onClick={() => setTempPasswordDialog({ isOpen: false })}>Fechar</Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+        </Card>
+    );
+};
+
+// --- Componente Principal da Página (Renderizando todos) ---
 const AdminPage = () => {
+    const { isAdmin } = useAuth();
+
+    if (!isAdmin) {
+        return (
+            <div className="container mx-auto px-6 py-8">
+                <Alert variant="destructive">
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertTitle>Acesso Negado</AlertTitle>
+                    <AlertDescription>Você não tem permissão para acessar esta página.</AlertDescription>
+                </Alert>
+            </div>
+        );
+    }
+
     return (
         <div className="container mx-auto px-6 py-8 space-y-8">
             <div className="mb-8">
@@ -258,10 +609,23 @@ const AdminPage = () => {
                     Gerencie as configurações e associações do sistema.
                 </p>
             </div>
-            
-            <SyncManager />
 
-            <AssociateTasks />
+            <Tabs defaultValue="sync" className="w-full">
+                <TabsList>
+                    <TabsTrigger value="sync">Sincronização</TabsTrigger>
+                    <TabsTrigger value="tasks">Tipos de Tarefa</TabsTrigger>
+                    <TabsTrigger value="users">Usuários & Permissões</TabsTrigger>
+                </TabsList>
+                <TabsContent value="sync" className="space-y-6">
+                    <SyncManager />
+                </TabsContent>
+                <TabsContent value="tasks" className="space-y-6">
+                    <AssociateTasks />
+                </TabsContent>
+                <TabsContent value="users" className="space-y-6">
+                    <UsersAndPermissions />
+                </TabsContent>
+            </Tabs>
         </div>
     )
 }

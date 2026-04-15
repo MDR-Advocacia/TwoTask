@@ -1,41 +1,71 @@
+# Arquivo de PRODUÇÃO (consumido pelo Coolify).
+# Localmente, docker-compose.override.yml é carregado automaticamente em cima
+# deste (adiciona bind mounts, Vite dev server, etc). No Coolify, apenas este
+# arquivo é usado.
+
 services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-onetask}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-onetask}
+      POSTGRES_DB: ${POSTGRES_DB:-onetask}
+      TZ: America/Fortaleza
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-onetask} -d ${POSTGRES_DB:-onetask}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
   api:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: ${API_CONTAINER_NAME:-onetask-api}
-    env_file:
-      - .env
+    restart: unless-stopped
+    # Em produção (Coolify) as variáveis vêm do painel.
+    # Localmente o docker compose lê .env do diretório automaticamente.
     environment:
       PYTHONPATH: /app
       TZ: America/Fortaleza
-      DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/docker-test.db}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-onetask}:${POSTGRES_PASSWORD:-onetask}@postgres:5432/${POSTGRES_DB:-onetask}
       BATCH_WORKER_ENABLED: ${BATCH_WORKER_ENABLED:-true}
-    ports:
-      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
     volumes:
-      - ./data:/app/data
+      - api_data:/app/data
+      - api_output:/app/output
     healthcheck:
       test:
-        [
-          "CMD-SHELL",
-          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')\"",
-        ]
-      interval: 15s
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"
+      interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 20s
+      start_period: 45s
 
   frontend:
     build:
-      context: ./frontend
+      context: .
       dockerfile: Dockerfile.frontend
-    container_name: ${FRONTEND_CONTAINER_NAME:-onetask-frontend}
+    restart: unless-stopped
     depends_on:
       api:
         condition: service_healthy
-    environment:
-      VITE_API_URL: http://api:8000
-      CHOKIDAR_USEPOLLING: "true"
     ports:
-      - "${FRONTEND_PORT:-5173}:5173"
+      - "${FRONTEND_PORT:-8111}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  postgres_data:
+  api_data:
+  api_output:

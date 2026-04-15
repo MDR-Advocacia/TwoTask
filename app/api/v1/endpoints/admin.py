@@ -1,18 +1,20 @@
 import logging
-from typing import List
+from typing import List, Optional, Dict, Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 
+from app.core import auth
 from app.core.dependencies import get_batch_task_creation_service, get_db
-from app.models.legal_one import LegalOneTaskType
+from app.models.legal_one import LegalOneTaskType, LegalOneUser, SavedFilter
 from app.models.rules import Squad
 from app.models.task_group import TaskParentGroup
 from app.services.batch_task_creation_service import BatchTaskCreationService
 from app.services.metadata_sync_service import run_metadata_sync_job
 
 router = APIRouter()
+me_router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
@@ -125,17 +127,424 @@ def associate_task_types(payload: TaskTypeAssociationPayload, db: Session = Depe
     return {"message": "Associacao de tipos de tarefa atualizada com sucesso."}
 
 
+class RetryBatchRequest(BaseModel):
+    item_ids: Optional[List[int]] = None  # se None, retry em todos os FALHA
+
+
 @router.post(
     "/batch-executions/{execution_id}/retry",
     status_code=202,
-    summary="Reprocessar itens falhos de um lote",
+    summary="Reprocessar itens falhos de um lote (opcionalmente seletivo por item_ids)",
     tags=["Admin"],
 )
 async def retry_failed_batch_items(
     execution_id: int,
     background_tasks: BackgroundTasks,
+    payload: Optional[RetryBatchRequest] = None,
     service: BatchTaskCreationService = Depends(get_batch_task_creation_service),
 ):
-    logger.info("Recebida solicitacao para reprocessar falhas do lote ID: %s", execution_id)
-    background_tasks.add_task(service.retry_failed_items, execution_id)
-    return {"message": f"Reprocessamento para o lote {execution_id} iniciado em segundo plano."}
+    target_ids = payload.item_ids if payload else None
+    logger.info(
+        "Reprocessar lote %s (itens=%s)",
+        execution_id,
+        f"{len(target_ids)} seletivos" if target_ids else "todos FALHA",
+    )
+    background_tasks.add_task(service.retry_failed_items, execution_id, target_ids)
+    return {
+        "message": f"Reprocessamento do lote {execution_id} iniciado.",
+        "selective": bool(target_ids),
+        "count": len(target_ids) if target_ids else None,
+    }
+
+
+@router.get(
+    "/batch-executions/{execution_id}/error-groups",
+    summary="Agrupa falhas do lote por mensagem de erro (para retry seletivo)",
+    tags=["Admin"],
+)
+def get_batch_error_groups(
+    execution_id: int,
+    db: Session = Depends(get_db),
+):
+    """Retorna grupos de falhas com o mesmo error_message e seus item_ids."""
+    from app.models.batch_execution import BatchExecution, BatchExecutionItem
+
+    exec_ = db.query(BatchExecution).filter(BatchExecution.id == execution_id).first()
+    if not exec_:
+        raise HTTPException(status_code=404, detail="Lote não encontrado")
+
+    failed = (
+        db.query(BatchExecutionItem)
+        .filter(
+            BatchExecutionItem.execution_id == execution_id,
+            BatchExecutionItem.status == "FALHA",
+        )
+        .all()
+    )
+
+    groups: Dict[str, Dict[str, Any]] = {}
+    for it in failed:
+        key = (it.error_message or "(sem mensagem)").strip()
+        bucket = groups.setdefault(key, {"error_message": key, "count": 0, "item_ids": [], "sample_processes": []})
+        bucket["count"] += 1
+        bucket["item_ids"].append(it.id)
+        if len(bucket["sample_processes"]) < 3:
+            bucket["sample_processes"].append(it.process_number)
+
+    ordered = sorted(groups.values(), key=lambda g: g["count"], reverse=True)
+    return {
+        "execution_id": execution_id,
+        "total_failed": len(failed),
+        "groups": ordered,
+    }
+
+
+# ─── User Management ────────────────────────────────────────────────────────
+
+class UserUpdateRequest(BaseModel):
+    role: Optional[str] = None
+    can_schedule_batch: Optional[bool] = None
+    can_use_publications: Optional[bool] = None
+    default_office_id: Optional[int] = None
+
+
+class UserResponseSchema(BaseModel):
+    id: int
+    email: str
+    name: str
+    role: str
+    can_schedule_batch: bool
+    can_use_publications: bool
+    default_office_id: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/users", tags=["Admin"])
+async def list_users(
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth.get_current_user),
+):
+    """List all users (admin only)."""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+
+    users = db.query(LegalOneUser).order_by(LegalOneUser.name).all()
+    return [
+        {
+            "id": u.id,
+            "email": u.email,
+            "name": u.name,
+            "external_id": u.external_id,
+            "is_active": u.is_active,
+            "role": u.role,
+            "can_schedule_batch": u.can_schedule_batch,
+            "can_use_publications": u.can_use_publications,
+            "default_office_id": u.default_office_id,
+            "has_password": u.hashed_password is not None,
+            "must_change_password": u.must_change_password,
+        }
+        for u in users
+    ]
+
+
+@router.patch("/users/{user_id}", tags=["Admin"])
+async def update_user(
+    user_id: int,
+    payload: UserUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth.get_current_user),
+):
+    """Update user permissions (admin only)."""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+
+    user = db.query(LegalOneUser).filter(LegalOneUser.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if payload.role is not None:
+        user.role = payload.role
+    if payload.can_schedule_batch is not None:
+        user.can_schedule_batch = payload.can_schedule_batch
+    if payload.can_use_publications is not None:
+        user.can_use_publications = payload.can_use_publications
+    if payload.default_office_id is not None:
+        user.default_office_id = payload.default_office_id
+
+    db.commit()
+    db.refresh(user)
+    return {
+        "id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "role": user.role,
+        "can_schedule_batch": user.can_schedule_batch,
+        "can_use_publications": user.can_use_publications,
+        "default_office_id": user.default_office_id,
+    }
+
+
+@router.post("/users/{user_id}/activate", tags=["Admin"])
+async def activate_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth.get_current_user),
+):
+    """Activate user and generate temporary password (admin only)."""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+
+    user = db.query(LegalOneUser).filter(LegalOneUser.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    # Generate temporary password
+    temp_password = auth.generate_temp_password()
+    user.hashed_password = auth.get_password_hash(temp_password)
+    user.is_active = True
+    user.must_change_password = True
+
+    db.commit()
+    db.refresh(user)
+
+    # Return the plaintext password ONCE
+    return {
+        "id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "temp_password": temp_password,
+        "message": "Esta senha só será exibida uma vez. Repasse-a ao usuário com segurança.",
+    }
+
+
+@router.post("/users/{user_id}/reset-password", tags=["Admin"])
+async def reset_user_password(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth.get_current_user),
+):
+    """Reset user password (admin only)."""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+
+    user = db.query(LegalOneUser).filter(LegalOneUser.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    # Generate temporary password
+    temp_password = auth.generate_temp_password()
+    user.hashed_password = auth.get_password_hash(temp_password)
+    user.must_change_password = True
+
+    db.commit()
+    db.refresh(user)
+
+    # Return the plaintext password ONCE
+    return {
+        "id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "temp_password": temp_password,
+        "message": "Esta senha só será exibida uma vez. Repasse-a ao usuário com segurança.",
+    }
+
+
+@router.post("/users/{user_id}/deactivate", tags=["Admin"])
+async def deactivate_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth.get_current_user),
+):
+    """Deactivate user (admin only)."""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+
+    user = db.query(LegalOneUser).filter(LegalOneUser.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    user.is_active = False
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "is_active": user.is_active,
+    }
+
+
+# ─── Saved Filters ──────────────────────────────────────────────────────────
+
+class SavedFilterCreateRequest(BaseModel):
+    name: str
+    module: str  # "publications", "scheduler", etc.
+    filters_json: Dict[str, Any]
+    is_default: bool = False
+
+
+class SavedFilterSchema(BaseModel):
+    id: int
+    name: str
+    module: str
+    filters_json: Dict[str, Any]
+    is_default: bool
+
+    class Config:
+        from_attributes = True
+
+
+@me_router.get("/me/saved-filters", tags=["User"])
+async def get_saved_filters(
+    module: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth.get_current_user),
+):
+    """Get user's saved filters."""
+    query = db.query(SavedFilter).filter(SavedFilter.user_id == current_user.id)
+    if module:
+        query = query.filter(SavedFilter.module == module)
+
+    filters = query.order_by(SavedFilter.created_at.desc()).all()
+    return [
+        {
+            "id": f.id,
+            "name": f.name,
+            "module": f.module,
+            "filters_json": f.filters_json,
+            "is_default": f.is_default,
+        }
+        for f in filters
+    ]
+
+
+@me_router.post("/me/saved-filters", status_code=201, tags=["User"])
+async def create_saved_filter(
+    payload: SavedFilterCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth.get_current_user),
+):
+    """Create a new saved filter for the user."""
+    # If marked as default, unset any existing default for this module
+    if payload.is_default:
+        db.query(SavedFilter).filter(
+            SavedFilter.user_id == current_user.id,
+            SavedFilter.module == payload.module,
+            SavedFilter.is_default == True,
+        ).update({"is_default": False})
+
+    saved_filter = SavedFilter(
+        user_id=current_user.id,
+        name=payload.name,
+        module=payload.module,
+        filters_json=payload.filters_json,
+        is_default=payload.is_default,
+    )
+    db.add(saved_filter)
+    db.commit()
+    db.refresh(saved_filter)
+
+    return {
+        "id": saved_filter.id,
+        "name": saved_filter.name,
+        "module": saved_filter.module,
+        "filters_json": saved_filter.filters_json,
+        "is_default": saved_filter.is_default,
+    }
+
+
+@me_router.delete("/me/saved-filters/{filter_id}", status_code=204, tags=["User"])
+async def delete_saved_filter(
+    filter_id: int,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth.get_current_user),
+):
+    """Delete a saved filter."""
+    saved_filter = db.query(SavedFilter).filter(
+        SavedFilter.id == filter_id,
+        SavedFilter.user_id == current_user.id,
+    ).first()
+
+    if not saved_filter:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filter not found")
+
+    db.delete(saved_filter)
+    db.commit()
+    return None
+
+
+# ─── User Self-Service Endpoints ───────────────────────────────────────────
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class MeResponseSchema(BaseModel):
+    id: int
+    name: str
+    email: str
+    role: str
+    can_schedule_batch: bool
+    can_use_publications: bool
+    default_office_id: Optional[int]
+    must_change_password: bool
+
+    class Config:
+        from_attributes = True
+
+
+@me_router.get("/me", tags=["User"])
+async def get_current_user_info(
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth.get_current_user),
+):
+    """Get current user information."""
+    return {
+        "id": current_user.id,
+        "name": current_user.name,
+        "email": current_user.email,
+        "role": current_user.role,
+        "can_schedule_batch": current_user.can_schedule_batch,
+        "can_use_publications": current_user.can_use_publications,
+        "default_office_id": current_user.default_office_id,
+        "must_change_password": current_user.must_change_password,
+    }
+
+
+@me_router.post("/me/change-password", tags=["User"])
+async def change_password(
+    payload: ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth.get_current_user),
+):
+    """Change current user password."""
+    # Validate current password
+    if not current_user.hashed_password or not auth.verify_password(
+        payload.current_password, current_user.hashed_password
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Senha atual incorreta.",
+        )
+
+    # Validate new password
+    auth.validate_password(payload.new_password)
+
+    # Update password
+    current_user.hashed_password = auth.get_password_hash(payload.new_password)
+    current_user.must_change_password = False
+
+    db.commit()
+    db.refresh(current_user)
+
+    return {
+        "id": current_user.id,
+        "email": current_user.email,
+        "name": current_user.name,
+        "message": "Senha alterada com sucesso.",
+    }

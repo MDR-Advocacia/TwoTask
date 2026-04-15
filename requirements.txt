@@ -1,30 +1,34 @@
-# Conteúdo para: requirements.txt
+# ─── FastAPI core ─────────────────────────────────
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
 
-# Core do FastAPI
-fastapi
-uvicorn[standard]
+# ─── Banco / migrations ───────────────────────────
+sqlalchemy==2.0.36
+alembic==1.14.0
+psycopg2-binary==2.9.10
 
-# Banco de Dados e Migrations
-sqlalchemy
-alembic
-psycopg2-binary
+# ─── Validação / config ───────────────────────────
+pydantic==2.10.4
+pydantic-settings==2.7.0
 
-# Validação e Configurações
-pydantic
-pydantic-settings
-
-# Segurança e Autenticação
-# FIX: Bcrypt travado na 3.2.2 para compatibilidade com Passlib 1.7.4
+# ─── Segurança / auth ─────────────────────────────
+# bcrypt 3.2.2 travado por compatibilidade com passlib 1.7.4
 bcrypt==3.2.2
-passlib[bcrypt]
-python-jose[cryptography]
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
 
-# Comunicação e Utilitários
-python-multipart
-python-dotenv
-requests
-httpx
-python-dateutil
+# ─── HTTP / utilitários ───────────────────────────
+python-multipart==0.0.20
+python-dotenv==1.0.1
+requests==2.32.3
+httpx==0.28.1
+python-dateutil==2.9.0.post0
 
-# Biblioteca para leitura e manipulação de arquivos Excel (.xlsx)
-openpyxl
+# ─── Scheduling ───────────────────────────────────
+apscheduler==3.11.0
+
+# ─── Planilhas ────────────────────────────────────
+openpyxl==3.1.5
+
+# ─── Classificador ────────────────────────────────
+anthropic==0.40.0

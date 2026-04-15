@@ -1,22 +1,29 @@
-# Estágio 1: Builder do Frontend
-# Usamos uma imagem Node.js leve, ideal para build e desenvolvimento.
-FROM node:20-alpine AS frontend-builder
+# ─── Stage 1: build estático ────────────────────────
+FROM node:20-alpine AS builder
 
-# Define o diretório de trabalho dentro do container.
 WORKDIR /app
 
-# Copia os arquivos de manifesto de pacotes.
-COPY package*.json ./
+# Cache de dependências
+COPY frontend/package*.json ./
+RUN npm ci --no-audit --no-fund
 
-# Instala as dependências. Isso aproveita o cache do Docker,
-# reinstalando dependências apenas quando o package.json muda.
-RUN npm install
+# Código-fonte do frontend
+COPY frontend/ ./
 
-# Copia o restante dos arquivos de configuração e código-fonte do frontend.
-COPY tailwind.config.js ./
-COPY ./static ./static
-COPY ./templates ./templates
+# Build de produção (Vite). Gera /app/dist.
+ENV NODE_ENV=production
+RUN npm run build
 
-# O comando a ser executado é definido no docker-compose.yml,
-# mas deixamos este CMD como documentação.
-CMD ["npm", "run", "build:dev"]
+
+# ─── Stage 2: runtime nginx ─────────────────────────
+FROM nginx:1.27-alpine AS runtime
+
+# Config custom que faz SPA fallback + proxy /api → api:8000
+COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
+
+# Assets estáticos gerados no build
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]

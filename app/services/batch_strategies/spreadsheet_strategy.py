@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import re
+import unicodedata
 from datetime import datetime, time, timezone
 from io import BytesIO
 from typing import Any
@@ -55,6 +57,51 @@ class SpreadsheetStrategy(BaseStrategy):
             return ""
         return str(cnj_number).strip()
 
+    @staticmethod
+    def _normalize_lookup_value(value: Any) -> str:
+        if value is None:
+            return ""
+
+        normalized = str(value).replace("\xa0", " ").strip().lower()
+        normalized = unicodedata.normalize("NFKD", normalized)
+        normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+        normalized = re.sub(r"\s*/\s*", " / ", normalized)
+        normalized = re.sub(r"\s+", " ", normalized)
+        return normalized.strip()
+
+    @staticmethod
+    def _parse_task_time_value(time_value: Any) -> time:
+        if isinstance(time_value, time):
+            return time_value.replace(microsecond=0)
+
+        if isinstance(time_value, datetime):
+            return time_value.time().replace(microsecond=0)
+
+        if isinstance(time_value, (int, float)):
+            numeric_value = float(time_value)
+        else:
+            normalized_value = str(time_value).strip()
+            if not normalized_value:
+                raise ValueError("Valor de hora vazio.")
+
+            try:
+                return time.fromisoformat(normalized_value).replace(microsecond=0)
+            except ValueError:
+                pass
+
+            try:
+                numeric_value = float(normalized_value)
+            except ValueError as exc:
+                raise ValueError(f"Hora invalida: '{time_value}'") from exc
+
+        if not 0 <= numeric_value < 1:
+            raise ValueError(f"Hora invalida: '{time_value}'")
+
+        total_seconds = min(round(numeric_value * 24 * 60 * 60), (24 * 60 * 60) - 1)
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return time(hours, minutes, seconds)
+
     def _parse_and_format_date_to_utc(self, date_value: Any, time_value: Any = None) -> str:
         if not date_value:
             raise ValueError("Valor de data nao pode ser nulo.")
@@ -72,10 +119,7 @@ class SpreadsheetStrategy(BaseStrategy):
             task_time = time(23, 59, 59)
             if time_value:
                 try:
-                    if isinstance(time_value, (datetime, time)):
-                        task_time = time_value if isinstance(time_value, time) else time_value.time()
-                    else:
-                        task_time = datetime.strptime(str(time_value), "%H:%M").time()
+                    task_time = self._parse_task_time_value(time_value)
                 except (TypeError, ValueError):
                     logging.warning("Formato de hora invalido: '%s'. Usando horario padrao.", time_value)
 
@@ -106,15 +150,15 @@ class SpreadsheetStrategy(BaseStrategy):
     async def _load_caches(self):
         return {
             "users": {
-                user.name.strip().lower(): user
+                self._normalize_lookup_value(user.name): user
                 for user in self.db.query(LegalOneUser).filter(LegalOneUser.is_active == True).all()
             },
             "offices": {
-                office.path.strip().lower(): office
+                self._normalize_lookup_value(office.path): office
                 for office in self.db.query(LegalOneOffice).filter(LegalOneOffice.is_active == True).all()
             },
             "subtypes": {
-                subtype.name.strip().lower(): subtype
+                self._normalize_lookup_value(subtype.name): subtype
                 for subtype in self.db.query(LegalOneTaskSubType)
                 .options(joinedload(LegalOneTaskSubType.parent_type))
                 .filter(LegalOneTaskSubType.is_active == True)
@@ -190,17 +234,17 @@ class SpreadsheetStrategy(BaseStrategy):
             raise ValueError(f"Dados essenciais faltando: {', '.join(missing)}")
 
         office_name = data.get("ESCRITORIO")
-        office = caches["offices"].get(office_name.lower() if office_name else None)
+        office = caches["offices"].get(self._normalize_lookup_value(office_name))
         if not office:
             raise ValueError(f"Escritorio '{office_name}' nao encontrado.")
 
         user_name = data.get("EXECUTANTE")
-        user = caches["users"].get(user_name.lower() if user_name else None)
+        user = caches["users"].get(self._normalize_lookup_value(user_name))
         if not user:
             raise ValueError(f"Usuario '{user_name}' nao encontrado.")
 
         subtype_name = data.get("SUBTIPO")
-        sub_type = caches["subtypes"].get(subtype_name.lower() if subtype_name else None)
+        sub_type = caches["subtypes"].get(self._normalize_lookup_value(subtype_name))
         if not sub_type or not sub_type.parent_type:
             raise ValueError(f"Subtipo '{subtype_name}' nao encontrado.")
 

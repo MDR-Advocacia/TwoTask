@@ -34,9 +34,18 @@ def login_for_access_token(
 
     # 3. Cria o token de acesso.
     # O "sub" (subject) do token será o e-mail do usuário.
+    # Também incluimos role, permissões e must_change_password no token.
     access_token = auth.create_access_token(
-        data={"sub": user.email}
+        data={"sub": user.email},
+        role=user.role,
+        can_schedule_batch=user.can_schedule_batch,
+        can_use_publications=user.can_use_publications,
+        must_change_password=user.must_change_password,
     )
 
-    # 4. Retorna o token.
-    return {"access_token": access_token, "token_type": "bearer"}
+    # 4. Retorna o token e inclui must_change_password no response para o frontend redirecionar.
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "must_change_password": user.must_change_password,
+    }

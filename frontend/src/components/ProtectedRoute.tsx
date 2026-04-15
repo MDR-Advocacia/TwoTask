@@ -1,12 +1,54 @@
 // frontend/src/components/ProtectedRoute.tsx
 
-import { Navigate, Outlet } from 'react-router-dom';
+import { Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth'
 import Layout from './Layout';
 import { Loader2 } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { useToast } from '@/hooks/use-toast';
 
 const ProtectedRoute = () => {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading, canScheduleBatch, canUsePublications, isAdmin } = useAuth();
+  const { pathname } = useLocation();
+  const { toast } = useToast();
+  const [permissionDenied, setPermissionDenied] = useState(false);
+
+  useEffect(() => {
+    if (!isLoading && isAuthenticated) {
+      // Check route permissions
+      if (pathname.startsWith('/tasks/') && !canScheduleBatch) {
+        toast({
+          title: 'Acesso Negado',
+          description: 'Você não tem permissão para acessar agendamento em lote.',
+          variant: 'destructive',
+        });
+        setPermissionDenied(true);
+      } else if (pathname.startsWith('/publications') && !canUsePublications) {
+        toast({
+          title: 'Acesso Negado',
+          description: 'Você não tem permissão para acessar publicações.',
+          variant: 'destructive',
+        });
+        setPermissionDenied(true);
+      } else if (pathname.startsWith('/automations') && !canScheduleBatch) {
+        toast({
+          title: 'Acesso Negado',
+          description: 'Você não tem permissão para acessar agendamentos.',
+          variant: 'destructive',
+        });
+        setPermissionDenied(true);
+      } else if (pathname.startsWith('/admin') && !isAdmin) {
+        toast({
+          title: 'Acesso Negado',
+          description: 'Você não tem permissão para acessar o painel administrativo.',
+          variant: 'destructive',
+        });
+        setPermissionDenied(true);
+      } else {
+        setPermissionDenied(false);
+      }
+    }
+  }, [pathname, isLoading, isAuthenticated, canScheduleBatch, canUsePublications, isAdmin, toast]);
 
   // Se ainda estivermos verificando a autenticação (ex: ao recarregar a página),
   // mostramos um indicador de carregamento.
@@ -16,6 +58,11 @@ const ProtectedRoute = () => {
         <Loader2 className="h-8 w-8 animate-spin text-primary" />
       </div>
     );
+  }
+
+  // Se permissão negada, redireciona para home
+  if (permissionDenied) {
+    return <Navigate to="/" replace />;
   }
 
   // Se o usuário estiver autenticado, renderizamos o Layout principal

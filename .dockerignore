@@ -1,29 +1,65 @@
-# .dockerignore
+# Segredos
+.env
+.env.*
+!.env.example
 
-# Python virtual environment
-.venv
-venv/
-**/venv/
+# Git
+.git
+.gitignore
+.github
 
-# Python caches
-__pycache__/
+# Python
+__pycache__
 *.py[cod]
 *$py.class
+.venv
+venv/
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
 
-# Node.js dependencies and build outputs
-node_modules/
-frontend/node_modules/
-frontend/dist/
+# Node (instalado dentro do container)
+node_modules
+frontend/node_modules
+frontend/dist
+frontend/bun.lockb
 
-# Database and runtime data
+# Logs, outputs e runtime
+*.log
+backend-dev*.log
+logs/
+output/*.log
+output/*.pid
+output/*.err.log
+tmp/
+
+# Dados locais e planilhas de teste
 data/
-database.db
-*.db-journal
+*.db
+*.sqlite*
+*.bak-*
+entrada.xlsx
+planilha_de_processos.xlsx
 
-# IDE and OS files
-.vscode/
-.idea/
+# Scripts de diagnóstico local
+/test_*.py
+/run_manual_sync.py
+/inspect_lawsuit.py
+/update_lawsuits.py
+/test.py
+
+# IDE / SO
+.vscode
+.idea
 .DS_Store
+Thumbs.db
 
-# Local environment files
-.env
+# Documentação (não precisa no runtime)
+docs/
+*.md
+!README.md
+
+# Junk
+Dockerfile copy.frontend
+legal-one-firms-brazil-api.json

@@ -2,38 +2,90 @@
 
 import { createContext, useState, ReactNode, useEffect } from 'react';
 
-// ... (interfaces User e AuthContextType permanecem as mesmas) ...
 interface User {
   id: number;
-  external_id: number;
+  external_id?: number;
   name: string;
   email: string;
+  role?: string;
+  can_schedule_batch?: boolean;
+  can_use_publications?: boolean;
+  must_change_password?: boolean;
+}
+
+interface TokenData {
+  sub: string;
+  role: string;
+  can_schedule_batch: boolean;
+  can_use_publications: boolean;
+  must_change_password: boolean;
+  exp: number;
 }
 
 interface AuthContextType {
   isAuthenticated: boolean;
   user: User | null;
   token: string | null;
+  tokenData: TokenData | null;
+  mustChangePassword: boolean;
   login: (email: string, password: string) => Promise<void>;
   logout: () => void;
   isLoading: boolean;
+  canScheduleBatch: boolean;
+  canUsePublications: boolean;
+  isAdmin: boolean;
+  refreshMe: () => Promise<void>;
 }
 
 // Exporta o contexto para que o hook externo possa usá-lo
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+// Helper to decode JWT
+function decodeToken(token: string): TokenData | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const decoded = JSON.parse(atob(parts[1]));
+    return decoded;
+  } catch (e) {
+    return null;
+  }
+}
+
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
-  // ... (toda a lógica interna de useState, useEffect, login e logout permanece EXATAMENTE a mesma) ...
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
+  const [tokenData, setTokenData] = useState<TokenData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  const refreshMe = async () => {
+    const storedToken = localStorage.getItem('authToken');
+    if (storedToken) {
+      try {
+        const userResponse = await fetch('/api/v1/me', {
+          headers: {
+            Authorization: `Bearer ${storedToken}`,
+          },
+        });
+        if (!userResponse.ok) {
+          throw new Error('Falha ao atualizar dados do usuário');
+        }
+        const userData: User = await userResponse.json();
+        setUser(userData);
+      } catch (error) {
+        console.error("Erro ao atualizar usuário:", error);
+      }
+    }
+  };
 
   useEffect(() => {
     const loadUserFromToken = async () => {
       const storedToken = localStorage.getItem('authToken');
       if (storedToken) {
         try {
-          const userResponse = await fetch('/api/v1/users/me', {
+          const decoded = decodeToken(storedToken);
+          setTokenData(decoded);
+          const userResponse = await fetch('/api/v1/me', {
             headers: {
               Authorization: `Bearer ${storedToken}`,
             },
@@ -49,6 +101,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
           localStorage.removeItem('authToken');
           setUser(null);
           setToken(null);
+          setTokenData(null);
         }
       }
       setIsLoading(false);
@@ -75,9 +128,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       }
       const data = await response.json();
       const receivedToken = data.access_token;
+      const decoded = decodeToken(receivedToken);
       setToken(receivedToken);
+      setTokenData(decoded);
       localStorage.setItem('authToken', receivedToken);
-      const userResponse = await fetch('/api/v1/users/me', {
+      const userResponse = await fetch('/api/v1/me', {
         headers: {
           Authorization: `Bearer ${receivedToken}`,
         },
@@ -98,6 +153,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const logout = () => {
     setUser(null);
     setToken(null);
+    setTokenData(null);
     localStorage.removeItem('authToken');
   };
 
@@ -105,9 +161,15 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     isAuthenticated: !!token,
     user,
     token,
+    tokenData,
+    mustChangePassword: tokenData?.must_change_password ?? false,
     login,
     logout,
     isLoading,
+    canScheduleBatch: tokenData?.can_schedule_batch ?? false,
+    canUsePublications: tokenData?.can_use_publications ?? true,
+    isAdmin: tokenData?.role === 'admin',
+    refreshMe,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

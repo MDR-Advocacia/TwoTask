@@ -1,5 +1,13 @@
 import { apiFetch } from "@/lib/api-client";
-import { BatchExecution } from "@/types/api";
+import {
+  BatchExecution,
+  LegalOnePositionFixControlResponse,
+  LegalOnePositionFixStatus,
+  PublicationTreatmentControlResponse,
+  PublicationTreatmentMonitor,
+  PublicationTreatmentRun,
+  PublicationTreatmentStartResponse,
+} from "@/types/api";
 
 
 async function expectJson<T>(response: Response): Promise<T> {
@@ -62,4 +70,63 @@ export async function downloadBatchErrorReport(executionId: number): Promise<Blo
     throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
   }
   return response.blob();
+}
+
+
+export async function fetchLegalOnePositionFixStatus(): Promise<LegalOnePositionFixStatus> {
+  const response = await apiFetch("/api/v1/monitor/legal-one-position-fix/status");
+  return expectJson<LegalOnePositionFixStatus>(response);
+}
+
+
+export async function updateLegalOnePositionFixControl(
+  action: "pause" | "resume",
+): Promise<LegalOnePositionFixControlResponse> {
+  const response = await apiFetch("/api/v1/monitor/legal-one-position-fix/control", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ action }),
+  });
+  return expectJson<LegalOnePositionFixControlResponse>(response);
+}
+
+
+export async function fetchPublicationTreatmentMonitor(): Promise<PublicationTreatmentMonitor> {
+  const response = await apiFetch("/api/v1/publications/treatment/monitor");
+  return expectJson<PublicationTreatmentMonitor>(response);
+}
+
+
+export async function fetchPublicationTreatmentRuns(): Promise<PublicationTreatmentRun[]> {
+  const response = await apiFetch("/api/v1/publications/treatment/runs");
+  return expectJson<PublicationTreatmentRun[]>(response);
+}
+
+
+export async function startPublicationTreatmentRun(): Promise<PublicationTreatmentStartResponse> {
+  const response = await apiFetch("/api/v1/publications/treatment/runs/start", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({}),
+  });
+  return expectJson<PublicationTreatmentStartResponse>(response);
+}
+
+
+export async function updatePublicationTreatmentRunControl(
+  runId: number,
+  action: "pause" | "resume",
+): Promise<PublicationTreatmentControlResponse> {
+  const response = await apiFetch(`/api/v1/publications/treatment/runs/${runId}/control`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ action }),
+  });
+  return expectJson<PublicationTreatmentControlResponse>(response);
 }
