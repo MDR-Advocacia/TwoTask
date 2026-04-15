@@ -26,6 +26,9 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    # Chromium (Playwright) crasha com "Target closed" se /dev/shm for muito
+    # pequeno. Padrão do Docker é 64MB — subimos pra 1GB.
+    shm_size: "1gb"
     # Em produção (Coolify) as variáveis vêm do painel.
     # Localmente o docker compose lê .env do diretório automaticamente.
     environment:
