@@ -19,10 +19,57 @@ class LegalOneAuthenticationError(RuntimeError):
     pass
 
 
+class _GlobalRateLimiter:
+    """
+    Token-bucket rate limiter compartilhado por todas as instâncias do client.
+    Garante no máximo `rate` requests por segundo globalmente, independente
+    de quantas threads estejam rodando.
+
+    Legal One: 90 req/min ≈ 1.5 req/s.  Usamos 1.2 req/s como margem.
+    """
+
+    _instance: Optional["_GlobalRateLimiter"] = None
+    _lock = threading.Lock()
+
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._init(rate=1.2)
+        return cls._instance
+
+    def _init(self, rate: float):
+        self._rate = rate          # tokens por segundo
+        self._capacity = 5.0       # burst máximo
+        self._tokens = self._capacity
+        self._last_refill = time.monotonic()
+        self._bucket_lock = threading.Lock()
+
+    def acquire(self):
+        """Bloqueia até ter 1 token disponível."""
+        while True:
+            with self._bucket_lock:
+                now = time.monotonic()
+                elapsed = now - self._last_refill
+                self._tokens = min(self._capacity, self._tokens + elapsed * self._rate)
+                self._last_refill = now
+
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+
+                # Calcula quanto esperar pelo próximo token
+                wait = (1.0 - self._tokens) / self._rate
+
+            time.sleep(wait)
+
+
 class LegalOneApiClient:
     _session = requests.Session()
     _CNJ_LOOKUP_BATCH_SIZE = 20
     _PROCESS_LOOKUP_SELECT = "id,identifierNumber,responsibleOfficeId,creationDate"
+    _rate_limiter = _GlobalRateLimiter()
 
     class _Auth:
         token: Optional[str] = None
@@ -140,18 +187,23 @@ class LegalOneApiClient:
         )
         last_exception = None
 
-        # 8 tentativas com backoff exponencial + jitter para não ter threads
-        # paralelas acordando em uníssono e re-batendo em 429 juntas.
         for attempt in range(8):
+            # Rate limiter global: aguarda slot antes de cada tentativa.
+            # Isso impede que múltiplas threads estourem 90 req/min.
+            self._rate_limiter.acquire()
+
             try:
                 response = self._authenticated_request(method, url, **kwargs)
                 if response.status_code == 404:
-                    # 404 não é transitório — propaga imediatamente para o
-                    # caller tratar (ex.: get_lawsuit_responsible_user).
                     response.raise_for_status()
                     return response
                 if response.status_code in (429, 500, 502, 503, 504):
-                    wait = (2 ** attempt) + random.uniform(0, 2)
+                    # 429 = rate-limited. Espera mais longo e com jitter amplo
+                    # para evitar thundering herd entre threads.
+                    if response.status_code == 429:
+                        wait = min(60, (3 ** attempt)) + random.uniform(1, 5)
+                    else:
+                        wait = (2 ** attempt) + random.uniform(0, 2)
                     self.logger.warning(
                         "Status %s recebido. Nova tentativa em %.1fs (attempt %d/8).",
                         response.status_code, wait, attempt + 1,

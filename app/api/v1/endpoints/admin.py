@@ -79,8 +79,14 @@ def sync_caches(
         return {"message": "Nenhum escritório ativo encontrado."}
 
     def _run():
+        import time as _time
         from app.db.session import SessionLocal
-        from app.services.office_lawsuit_index_service import OfficeLawsuitIndexService
+        from app.services.office_lawsuit_index_service import (
+            OfficeLawsuitIndexService,
+            _do_full_sync,
+            _do_incremental_sync,
+        )
+        from app.models.office_lawsuit_index import OfficeLawsuitIndex, OfficeLawsuitSync
         from app.services.legal_one_client import LegalOneApiClient
 
         bg_db = SessionLocal()
@@ -88,17 +94,60 @@ def sync_caches(
             client = LegalOneApiClient()
             svc = OfficeLawsuitIndexService(bg_db, client)
 
-            for oid in office_ids:
-                logger.info("Pre-warm: sync índice escritório %s", oid)
+            # Sync SEQUENCIAL dos escritórios — um de cada vez para não
+            # estourar o rate limit (90 req/min) com threads paralelas.
+            for idx, oid in enumerate(office_ids):
+                logger.info("Pre-warm: sync índice escritório %s (%d/%d)", oid, idx + 1, len(office_ids))
                 try:
-                    svc.ensure_sync(oid, force_full=False)
+                    state = svc._get_or_create_state(oid)
+
+                    # Pula se já tem sync rodando (disparado por outro request)
+                    if state.in_progress:
+                        logger.info("Pre-warm: escritório %s já em sync, pulando.", oid)
+                        continue
+
+                    needs_full = (
+                        state.last_full_sync_at is None
+                        or not svc.is_fresh(oid)
+                    )
+
+                    # Marca como in_progress
+                    from datetime import datetime, timezone
+                    state.in_progress = True
+                    state.last_sync_status = "running"
+                    state.last_sync_error = None
+                    state.progress_pct = 0
+                    state.started_at = datetime.now(timezone.utc)
+                    state.finished_at = None
+                    bg_db.commit()
+
+                    # Roda SYNC SÍNCRONO (mesma thread, sem spawn de thread extra)
+                    if needs_full:
+                        _do_full_sync(bg_db, client, state)
+                    else:
+                        _do_incremental_sync(bg_db, client, state)
+
                 except Exception as exc:
                     logger.warning("Pre-warm: falha no índice do escritório %s: %s", oid, exc)
+                    # Marca erro no estado
+                    try:
+                        st = bg_db.query(OfficeLawsuitSync).filter(
+                            OfficeLawsuitSync.office_id == oid
+                        ).one_or_none()
+                        if st:
+                            st.in_progress = False
+                            st.last_sync_status = "error"
+                            st.last_sync_error = str(exc)[:1000]
+                            bg_db.commit()
+                    except Exception:
+                        bg_db.rollback()
+
+                # Pausa entre escritórios para aliviar o rate limit
+                if idx < len(office_ids) - 1:
+                    _time.sleep(2)
 
             # Pre-warm lawsuit_cache: busca dados (CNJ + creationDate) de todos
             # os processos indexados. O client salva automaticamente no cache.
-            from app.models.office_lawsuit_index import OfficeLawsuitIndex
-
             all_lawsuit_ids = [
                 r[0]
                 for r in bg_db.query(OfficeLawsuitIndex.lawsuit_id).distinct().all()
@@ -106,14 +155,21 @@ def sync_caches(
             logger.info("Pre-warm: carregando cache de %s processos...", len(all_lawsuit_ids))
 
             if all_lawsuit_ids:
-                # fetch_lawsuits_by_ids já usa e popula o lawsuit_cache
-                BATCH = 500
+                # Batches menores + pausa para não estourar rate limit
+                BATCH = 100
                 for i in range(0, len(all_lawsuit_ids), BATCH):
                     chunk = all_lawsuit_ids[i:i + BATCH]
                     try:
                         client.fetch_lawsuits_by_ids(chunk)
+                        logger.info(
+                            "Pre-warm cache: %d/%d processos...",
+                            min(i + BATCH, len(all_lawsuit_ids)),
+                            len(all_lawsuit_ids),
+                        )
                     except Exception as exc:
                         logger.warning("Pre-warm: falha no batch %s-%s: %s", i, i + len(chunk), exc)
+                    # Pausa entre batches
+                    _time.sleep(1)
 
             logger.info("Pre-warm: concluído. %s escritórios, %s processos.", len(office_ids), len(all_lawsuit_ids))
         except Exception as exc:
