@@ -18,7 +18,7 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy.orm import Session
 
 from app.models.legal_one import LegalOneOffice
-from app.models.publication_search import PublicationRecord
+from app.models.publication_search import RECORD_STATUS_OBSOLETE, PublicationRecord
 
 
 # Ordem e cabeçalho das colunas exportadas. Espelha os campos visíveis
@@ -50,6 +50,8 @@ def _apply_filters(query, *, search_id, status, linked_office_id, date_from, dat
         query = query.filter(PublicationRecord.search_id == search_id)
     if status:
         query = query.filter(PublicationRecord.status == status)
+    else:
+        query = query.filter(PublicationRecord.status != RECORD_STATUS_OBSOLETE)
     if linked_office_id is not None:
         query = query.filter(PublicationRecord.linked_office_id == linked_office_id)
     if date_from:

@@ -240,6 +240,7 @@ const statusColor = (status: string): "default" | "secondary" | "destructive" | 
   const map: Record<string, any> = {
     CONCLUIDO: "default", EXECUTANDO: "secondary", FALHA: "destructive", CANCELADO: "outline",
     NOVO: "secondary", CLASSIFICADO: "default", AGENDADO: "default", IGNORADO: "outline", ERRO: "destructive",
+    DESCARTADO_DUPLICADA: "outline", DESCARTADO_OBSOLETA: "outline",
   };
   return map[status] || "secondary";
 };
@@ -1603,6 +1604,7 @@ const PublicationsPage = () => {
                   <SelectItem value="AGENDADO">Agendados</SelectItem>
                   <SelectItem value="IGNORADO">Ignorados</SelectItem>
                   <SelectItem value="ERRO">Com erro</SelectItem>
+                  <SelectItem value="DESCARTADO_OBSOLETA">Obsoletas</SelectItem>
                 </SelectContent>
               </Select>
               <Select value={filterOffice || "all"}

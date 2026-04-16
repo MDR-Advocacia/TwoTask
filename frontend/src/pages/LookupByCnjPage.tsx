@@ -106,6 +106,7 @@ function statusColor(status: string): string {
     IGNORADO: "bg-amber-100 text-amber-800",
     ERRO: "bg-red-100 text-red-800",
     DESCARTADO_DUPLICADA: "bg-purple-100 text-purple-800",
+    DESCARTADO_OBSOLETA: "bg-orange-100 text-orange-800",
     PENDENTE: "bg-slate-100 text-slate-700",
     PROCESSANDO: "bg-blue-100 text-blue-800",
     CONCLUIDO: "bg-green-100 text-green-800",

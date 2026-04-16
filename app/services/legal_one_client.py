@@ -22,7 +22,7 @@ class LegalOneAuthenticationError(RuntimeError):
 class LegalOneApiClient:
     _session = requests.Session()
     _CNJ_LOOKUP_BATCH_SIZE = 20
-    _PROCESS_LOOKUP_SELECT = "id,identifierNumber,responsibleOfficeId"
+    _PROCESS_LOOKUP_SELECT = "id,identifierNumber,responsibleOfficeId,creationDate"
 
     class _Auth:
         token: Optional[str] = None

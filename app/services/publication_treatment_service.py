@@ -21,6 +21,7 @@ from app.core.config import settings
 from app.models.publication_search import (
     RECORD_STATUS_DISCARDED_DUPLICATE,
     RECORD_STATUS_IGNORED,
+    RECORD_STATUS_OBSOLETE,
     RECORD_STATUS_SCHEDULED,
     PublicationRecord,
 )
@@ -113,6 +114,10 @@ class PublicationTreatmentService:
             # Duplicatas (mesmo processo/data) não têm providência nova a tomar:
             # a publicação "irmã" já está sendo tratada. O RPA só precisa
             # marcar no Legal One como "sem providência" para limpar a caixa.
+            return TREATMENT_TARGET_WITHOUT_PROVIDENCE
+        if record_status == RECORD_STATUS_OBSOLETE:
+            # Publicações anteriores à criação da pasta do processo já foram
+            # auditadas na esteira de admissão — sem providência necessária.
             return TREATMENT_TARGET_WITHOUT_PROVIDENCE
         return None
 

@@ -26,6 +26,9 @@ RECORD_STATUS_ERROR = "ERRO"
 # uma mesma publicação para um mesmo processo no mesmo dia é tratada
 # apenas uma vez, economizando tokens de classificação e chamadas à API do L1.
 RECORD_STATUS_DISCARDED_DUPLICATE = "DESCARTADO_DUPLICADA"
+# Publicação anterior à data de criação da pasta do processo no Legal One —
+# já auditada na esteira processual de admissão, sem providência necessária.
+RECORD_STATUS_OBSOLETE = "DESCARTADO_OBSOLETA"
 
 # Polo da publicação (a qual lado do processo a publicação se refere)
 POLO_ATIVO = "ativo"

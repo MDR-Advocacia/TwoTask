@@ -26,6 +26,7 @@ from app.models.publication_search import (
     RECORD_STATUS_ERROR,
     RECORD_STATUS_IGNORED,
     RECORD_STATUS_NEW,
+    RECORD_STATUS_OBSOLETE,
     RECORD_STATUS_SCHEDULED,
     RECORD_STATUS_DISCARDED_DUPLICATE,
     SEARCH_STATUS_CANCELLED,
@@ -261,9 +262,11 @@ class PublicationSearchService:
 
             new_records: List[PublicationRecord] = []
             duplicate_records: List[PublicationRecord] = []
+            obsolete_records: List[PublicationRecord] = []
             new_count = 0
             dup_count = 0
             discarded_count = 0
+            obsolete_count = 0
 
             for pub in publications:
                 update_id = pub.get("id")
@@ -295,6 +298,31 @@ class PublicationSearchService:
                     dedup_key is not None and dedup_key in existing_keys
                 )
 
+                # ── Detecção de publicação obsoleta ─────────────────
+                # Se a data da publicação é anterior à data de criação
+                # da pasta do processo no Legal One, a publicação já
+                # foi auditada na esteira de admissão → obsoleta.
+                is_obsolete = False
+                if not is_lawsuit_date_duplicate and publication_date:
+                    lawsuit_creation = pub.get("_lawsuit_creation_date")
+                    if lawsuit_creation:
+                        try:
+                            # Datas podem vir como ISO completo ou só "YYYY-MM-DD"
+                            pub_dt = publication_date[:10]
+                            law_dt = lawsuit_creation[:10]
+                            if pub_dt < law_dt:
+                                is_obsolete = True
+                        except (TypeError, IndexError):
+                            pass
+
+                # Decide o status final do registro
+                if is_lawsuit_date_duplicate:
+                    record_status = RECORD_STATUS_DISCARDED_DUPLICATE
+                elif is_obsolete:
+                    record_status = RECORD_STATUS_OBSOLETE
+                else:
+                    record_status = RECORD_STATUS_NEW
+
                 cnj = pub.get("_cnj")
                 record = PublicationRecord(
                     search_id=search.id,
@@ -309,11 +337,7 @@ class PublicationSearchService:
                     linked_lawsuit_cnj=cnj,
                     linked_office_id=pub.get("_responsible_office_id"),
                     raw_relationships=relationships,
-                    status=(
-                        RECORD_STATUS_DISCARDED_DUPLICATE
-                        if is_lawsuit_date_duplicate
-                        else RECORD_STATUS_NEW
-                    ),
+                    status=record_status,
                     is_duplicate=is_lawsuit_date_duplicate,
                     uf=uf_from_cnj(cnj),
                 )
@@ -323,6 +347,9 @@ class PublicationSearchService:
                 if is_lawsuit_date_duplicate:
                     discarded_count += 1
                     duplicate_records.append(record)
+                elif is_obsolete:
+                    obsolete_count += 1
+                    obsolete_records.append(record)
                 else:
                     new_records.append(record)
                     if dedup_key is not None:
@@ -339,51 +366,47 @@ class PublicationSearchService:
             if new_records:
                 self._build_task_proposals(new_records)
 
-            # 7) Duplicatas (mesmo processo/data) vão direto pra fila do RPA
-            # com target_status="sem providência": a providência real já está
-            # sendo tomada via a publicação não-duplicata; o RPA só marca a
+            # 7) Duplicatas e obsoletas vão direto pra fila do RPA
+            # com target_status="sem providência": o RPA só marca a
             # publicação como tratada no Legal One.
-            if duplicate_records:
+            rpa_records = duplicate_records + obsolete_records
+            if rpa_records:
                 try:
                     from app.services.publication_treatment_service import (
                         PublicationTreatmentService,
                     )
                     treatment_service = PublicationTreatmentService(self.db)
-                    for dup in duplicate_records:
-                        treatment_service.sync_item_from_record(dup, commit=False)
+                    for rec in rpa_records:
+                        treatment_service.sync_item_from_record(rec, commit=False)
                     self.db.commit()
                     logger.info(
-                        "Busca #%s: %s duplicatas enfileiradas pro RPA (sem providência).",
-                        search.id, len(duplicate_records),
+                        "Busca #%s: %s duplicatas + %s obsoletas enfileiradas pro RPA (sem providência).",
+                        search.id, len(duplicate_records), len(obsolete_records),
                     )
                 except Exception as exc:
                     logger.exception(
-                        "Falha ao enfileirar duplicatas da busca #%s: %s",
+                        "Falha ao enfileirar duplicatas/obsoletas da busca #%s: %s",
                         search.id, exc,
                     )
                     self.db.rollback()
 
             # `total_found` = registros que ESTA busca efetivamente vinculou
-            # ao sistema (novos + descartados por dedup de processo/data).
-            # Importante NÃO usar `len(publications)` aqui — esse é o total
-            # cru devolvido pela API do Legal One e, em re-execuções da mesma
-            # janela, fica inflado (todas as publicações já estão no banco
-            # com update_id duplicado, mas apareciam como "encontradas" no
-            # histórico mesmo sem nada ter sido adicionado).
-            search.total_found = new_count + discarded_count
+            # ao sistema (novos + descartados + obsoletas).
+            search.total_found = new_count + discarded_count + obsolete_count
             search.total_new = new_count
-            # total_duplicate agrega os dois tipos: duplicata por update_id +
-            # descartadas pelo dedup (lawsuit_id, publication_date).
-            search.total_duplicate = dup_count + discarded_count
+            # total_duplicate agrega: duplicata por update_id +
+            # descartadas pelo dedup (lawsuit_id, publication_date) + obsoletas.
+            search.total_duplicate = dup_count + discarded_count + obsolete_count
             search.status = SEARCH_STATUS_COMPLETED
             search.finished_at = datetime.now(timezone.utc)
             self.db.commit()
 
             logger.info(
                 "Busca #%s concluida: %s api-total, %s vinculadas, %s novas, "
-                "%s dup update_id, %s descartadas (mesmo processo/data)",
-                search.id, len(publications), new_count + discarded_count,
-                new_count, dup_count, discarded_count,
+                "%s dup update_id, %s descartadas (processo/data), %s obsoletas",
+                search.id, len(publications),
+                new_count + discarded_count + obsolete_count,
+                new_count, dup_count, discarded_count, obsolete_count,
             )
 
             return self._search_to_dict(search)
@@ -441,6 +464,7 @@ class PublicationSearchService:
             if lawsuit:
                 pub["_responsible_office_id"] = lawsuit.get("responsibleOfficeId")
                 pub["_cnj"] = lawsuit.get("identifierNumber")
+                pub["_lawsuit_creation_date"] = lawsuit.get("creationDate")
 
         return publications
 
@@ -950,6 +974,9 @@ class PublicationSearchService:
             query = query.filter(PublicationRecord.search_id == search_id)
         if status:
             query = query.filter(PublicationRecord.status == status)
+        else:
+            # Sem filtro explícito, esconde obsoletas (não poluem a listagem principal).
+            query = query.filter(PublicationRecord.status != RECORD_STATUS_OBSOLETE)
         if linked_office_id is not None:
             query = query.filter(PublicationRecord.linked_office_id == linked_office_id)
         if date_from:
