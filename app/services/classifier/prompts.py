@@ -109,23 +109,100 @@ Texto: "Fica designada audiência de instrução e julgamento para 10 de abril d
 Resposta: {{"categoria": "Audiência Agendada", "subcategoria": "Instrução", "polo": "ambos", "audiencia_data": "2026-04-10", "audiencia_hora": "09:30", "audiencia_link": "https://meet.google.com/abc-defg-hij", "confianca": "alta", "justificativa": "Designação de audiência de instrução com data, hora e link de videoconferência"}}
 
 Texto: "Intimem-se as partes acerca da audiência já designada..."
-Resposta: {{"categoria": "Audiência Agendada", "subcategoria": "Não especificada", "polo": "ambos", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "confianca": "media", "justificativa": "Menção a audiência já designada sem indicação de data/hora no texto"}}
+Resposta: {{"categoria": "Audiência Agendada", "subcategoria": "Não especificada", "polo": "ambos", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "confianca": "alta", "justificativa": "Menção a audiência já designada sem indicação de data/hora no texto"}}
+"""
+
+
+# ──────────────────────────────────────────────────────────────
+# Instrução extra para publicações sem pasta vinculada:
+# identifica a natureza do processo a partir do texto.
+# ──────────────────────────────────────────────────────────────
+
+NATUREZA_PROCESSO_ADDENDUM = """
+
+# DETECÇÃO DE NATUREZA DO PROCESSO (publicação sem pasta vinculada)
+
+Esta publicação NÃO está vinculada a nenhuma pasta de processo no sistema. É fundamental
+detectar a NATUREZA do processo a partir do texto, pois permite triagem especializada.
+
+Adicione o campo "natureza_processo" ao JSON de resposta com o tipo de ação/recurso
+identificado no texto. Use nomenclatura processual padronizada. Exemplos de valores:
+
+  - "Embargos à Execução"
+  - "Agravo de Instrumento"
+  - "Agravo Interno"
+  - "Mandado de Segurança"
+  - "Ação Rescisória"
+  - "Recurso Especial"
+  - "Recurso Extraordinário"
+  - "Recurso Ordinário"
+  - "Embargos de Declaração"
+  - "Reclamação Trabalhista"
+  - "Habeas Corpus"
+  - "Execução Fiscal"
+  - "Ação Civil Pública"
+  - "Cumprimento de Sentença"
+  - "Ação Monitória"
+  - "Ação de Conhecimento" (genérico, quando não identificar tipo específico)
+  - null (se realmente não for possível identificar)
+
+Dicas para detecção:
+  - O texto normalmente indica a natureza no cabeçalho ou corpo: "nos autos dos Embargos
+    à Execução nº...", "nos autos do Agravo de Instrumento nº...", etc.
+  - O número do processo (CNJ) pode ajudar: se houver menção a apenso, incidente, ou
+    processo acessório, isso indica tipo (agravo, embargos, etc.)
+  - Quando o texto é genérico demais, use "Ação de Conhecimento" ao invés de null
+
+## CASOS CRÍTICOS — MÁXIMA ATENÇÃO:
+
+### Embargos à Execução
+INDICADORES FORTES — se QUALQUER um destes aparecer, classifique como "Embargos à Execução":
+  - Termos "embargante" ou "embargado" no texto
+  - Menção a "embargos à execução", "embargos do devedor", "embargos do executado"
+  - Referência a "excesso de execução", "impugnação ao cumprimento"
+  - Contexto de contestação de valor executado, penhora questionada, nulidade de execução
+  - Menção a "apenso", "incidente" em contexto de execução
+
+### Agravo de Instrumento
+INDICADORES FORTES — se QUALQUER um destes aparecer, classifique como "Agravo de Instrumento":
+  - Termos "agravante" ou "agravado" no texto
+  - Menção explícita a "agravo de instrumento"
+  - Referência a decisão interlocutória recorrida, efeito suspensivo, antecipação de tutela recursal
+  - Tribunal de Justiça ou TRT como órgão julgador de recurso contra decisão de 1ª instância
+  - NÃO confundir com "Agravo Interno" (que é recurso contra decisão monocrática do relator)
+
+### Agravo Interno
+  - Termos "agravo interno", "agravo regimental"
+  - Recurso contra decisão monocrática do relator (diferente do agravo de instrumento)
+
+Estes três tipos (Embargos à Execução, Agravo de Instrumento, Agravo Interno) são os casos
+mais sensíveis do escritório. PRIORIZE a detecção correta deles. Na dúvida entre Agravo de
+Instrumento e Agravo Interno, analise se o recurso é contra decisão interlocutória de 1ª
+instância (= Agravo de Instrumento) ou contra decisão monocrática do relator (= Agravo Interno).
+
+IMPORTANTE: o campo "natureza_processo" é OBRIGATÓRIO na resposta para esta publicação.
 """
 
 
 def build_system_prompt_for_office(
     excluded: set[tuple[str, str | None]] | None = None,
     custom_additions: list[dict[str, str]] | None = None,
+    is_unlinked: bool = False,
 ) -> str:
     """
     Gera um system prompt customizado com taxonomia filtrada para o escritório.
     Se excluded/custom_additions forem None, retorna o prompt padrão (SYSTEM_PROMPT).
+    Se is_unlinked=True, adiciona instrução para detectar natureza do processo.
     """
-    if not excluded and not custom_additions:
-        return SYSTEM_PROMPT
+    base = SYSTEM_PROMPT
+    if excluded or custom_additions:
+        custom_taxonomy = build_taxonomy_text(excluded=excluded, custom_additions=custom_additions)
+        base = SYSTEM_PROMPT.replace(build_taxonomy_text(), custom_taxonomy)
 
-    custom_taxonomy = build_taxonomy_text(excluded=excluded, custom_additions=custom_additions)
-    return SYSTEM_PROMPT.replace(build_taxonomy_text(), custom_taxonomy)
+    if is_unlinked:
+        base += NATUREZA_PROCESSO_ADDENDUM
+
+    return base
 
 
 def load_office_overrides(db, office_external_id: int) -> tuple[

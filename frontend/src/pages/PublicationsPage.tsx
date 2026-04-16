@@ -360,6 +360,7 @@ const PublicationsPage = () => {
   const [filterDateTo, setFilterDateTo] = useState<string>("");
   const [filterCategory, setFilterCategory] = useState<string>("");
   const [filterUf, setFilterUf] = useState<string>("");
+  const [filterVinculo, setFilterVinculo] = useState<string>("");
   const [groupPage, setGroupPage] = useState(0);
   const GROUP_PAGE_SIZE = 20;
 
@@ -458,7 +459,7 @@ const PublicationsPage = () => {
   }, []);
 
   const loadGrouped = useCallback(async (
-    page = 0, status = "", officeId = "", dateFrom = "", dateTo = "", category = "", ufParam = "",
+    page = 0, status = "", officeId = "", dateFrom = "", dateTo = "", category = "", ufParam = "", vinculoParam = "",
   ) => {
     try {
       let url = `${API}/records/grouped?limit=${GROUP_PAGE_SIZE}&offset=${page * GROUP_PAGE_SIZE}`;
@@ -468,6 +469,7 @@ const PublicationsPage = () => {
       if (dateTo) url += `&date_to=${dateTo}`;
       if (category) url += `&category=${encodeURIComponent(category)}`;
       if (ufParam) url += `&uf=${encodeURIComponent(ufParam)}`;
+      if (vinculoParam) url += `&vinculo=${vinculoParam}`;
       const res = await apiFetch(url);
       if (res.ok) setGrouped(await res.json());
     } catch { /* ignore */ }
@@ -559,6 +561,7 @@ const PublicationsPage = () => {
         dateTo: filterDateTo,
         category: filterCategory,
         uf: filterUf,
+        vinculo: filterVinculo,
       };
       const res = await apiFetch("/api/v1/me/saved-filters", {
         method: "POST",
@@ -586,7 +589,7 @@ const PublicationsPage = () => {
   const handleApplySavedFilter = (filter: any) => {
     try {
       const parsed = typeof filter.filters_json === 'string' ? JSON.parse(filter.filters_json) : filter.filters_json;
-      handleFilterChange(parsed.status || "", parsed.office || "", parsed.dateFrom, parsed.dateTo, parsed.category, parsed.uf || "");
+      handleFilterChange(parsed.status || "", parsed.office || "", parsed.dateFrom, parsed.dateTo, parsed.category, parsed.uf || "", parsed.vinculo || "");
     } catch (err) {
       toast({ title: "Erro", description: "Não foi possível aplicar o filtro.", variant: "destructive" });
     }
@@ -608,7 +611,7 @@ const PublicationsPage = () => {
     loadTaskMeta();
     loadStats();
     loadSearches();
-    loadGrouped(0, "", "", "", "", "", "");
+    loadGrouped(0, "", "", "", "", "", "", "");
     loadBatches();
     loadSavedFilters();
   }, []);
@@ -670,7 +673,7 @@ const PublicationsPage = () => {
       }
       toast({ title: "Busca iniciada", description: "Acompanhe o progresso no histórico." });
       [3000, 8000, 15000, 30000].forEach((delay) => {
-        setTimeout(() => { loadSearches(); loadStats(); loadGrouped(0, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory); }, delay);
+        setTimeout(() => { loadSearches(); loadStats(); loadGrouped(0, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo); }, delay);
       });
     } catch (err: any) {
       setError(err.message);
@@ -680,7 +683,7 @@ const PublicationsPage = () => {
   };
 
   const handleFilterChange = (
-    status: string, officeId: string, dateFrom?: string, dateTo?: string, category?: string, ufParam?: string,
+    status: string, officeId: string, dateFrom?: string, dateTo?: string, category?: string, ufParam?: string, vinculoParam?: string,
   ) => {
     setFilterStatus(status);
     setFilterOffice(officeId);
@@ -688,19 +691,21 @@ const PublicationsPage = () => {
     if (dateTo !== undefined) setFilterDateTo(dateTo);
     if (category !== undefined) setFilterCategory(category);
     if (ufParam !== undefined) setFilterUf(ufParam);
+    if (vinculoParam !== undefined) setFilterVinculo(vinculoParam);
     const df = dateFrom ?? filterDateFrom;
     const dt = dateTo ?? filterDateTo;
     const cat = category ?? filterCategory;
     const uf = ufParam ?? filterUf;
+    const vin = vinculoParam ?? filterVinculo;
     setGroupPage(0);
     setSelectedGroupKeys(new Set());
-    loadGrouped(0, status, officeId, df, dt, cat, uf);
+    loadGrouped(0, status, officeId, df, dt, cat, uf, vin);
   };
 
   const handleGroupPageChange = (newPage: number) => {
     setGroupPage(newPage);
     setSelectedGroupKeys(new Set());
-    loadGrouped(newPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory);
+    loadGrouped(newPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo);
   };
 
   const handleIgnoreRecord = async (recordId: number) => {
@@ -711,7 +716,7 @@ const PublicationsPage = () => {
         body: JSON.stringify({ status: "IGNORADO" }),
       });
       toast({ title: "Registro ignorado" });
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo);
       loadStats();
     } catch { /* ignore */ }
   };
@@ -743,7 +748,7 @@ const PublicationsPage = () => {
         title: "Reclassificado",
         description: `${category}${subcategory ? " → " + subcategory : ""} aplicado a ${recordIds.length} publicação(ões). Proposta de tarefa atualizada.`,
       });
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo);
       loadStats();
     } catch (err: any) {
       toast({ title: "Erro", description: err.message, variant: "destructive" });
@@ -753,7 +758,7 @@ const PublicationsPage = () => {
   };
 
   const handleRefreshAll = () => {
-    loadStats(); loadSearches(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf); loadBatches();
+    loadStats(); loadSearches(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo); loadBatches();
   };
 
   // ─── Batch classification ────────────────────────────────────────────
@@ -818,7 +823,7 @@ const PublicationsPage = () => {
       });
       // Pequeno polling para refletir o efeito na UI
       [3000, 8000, 20000].forEach((delay) => {
-        setTimeout(() => { loadBatches(); loadStats(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf); }, delay);
+        setTimeout(() => { loadBatches(); loadStats(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo); }, delay);
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -872,7 +877,7 @@ const PublicationsPage = () => {
         description: `Propostas sendo reconstruídas para ${scopeLabel}. Atualize em instantes.`,
       });
       setTimeout(() => {
-        loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf);
+        loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo);
       }, 3000);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -938,7 +943,7 @@ const PublicationsPage = () => {
       });
       setScheduleOpen(false);
       setRemovedTaskIndices(new Set());
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo);
       loadStats();
     } catch (err: any) {
       toast({ title: "Erro ao agendar", description: err.message, variant: "destructive" });
@@ -1042,7 +1047,7 @@ const PublicationsPage = () => {
 
     clearSelection();
     setBulkProcessing(false);
-    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf);
+    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo);
     loadStats();
   };
 
@@ -1083,7 +1088,7 @@ const PublicationsPage = () => {
 
     clearSelection();
     setBulkProcessing(false);
-    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf);
+    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo);
     loadStats();
   };
 
@@ -1643,6 +1648,17 @@ const PublicationsPage = () => {
                   ))}
                 </SelectContent>
               </Select>
+              <Select value={filterVinculo || "all"}
+                onValueChange={(v) => handleFilterChange(filterStatus, filterOffice, undefined, undefined, undefined, undefined, v === "all" ? "" : v)}>
+                <SelectTrigger className="w-[160px]">
+                  <SelectValue placeholder="Vínculo" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos os vínculos</SelectItem>
+                  <SelectItem value="com_processo">Com processo</SelectItem>
+                  <SelectItem value="sem_processo">Sem processo</SelectItem>
+                </SelectContent>
+              </Select>
               <div className="flex items-center gap-1">
                 <div className="relative flex items-center gap-1">
                   <Input
@@ -1806,6 +1822,22 @@ const PublicationsPage = () => {
                             ) : (
                               <div>
                                 <span className="italic text-orange-600">sem processo</span>
+                                {(() => {
+                                  const naturezas = [...new Set(
+                                    group.records
+                                      .map((r: any) => r.natureza_processo)
+                                      .filter(Boolean)
+                                  )];
+                                  return naturezas.length > 0 ? (
+                                    <div className="flex flex-wrap gap-1 mt-0.5">
+                                      {naturezas.map((n: string) => (
+                                        <Badge key={n} variant="outline" className="text-[9px] px-1 py-0 border-orange-300 text-orange-700 font-normal">
+                                          {n}
+                                        </Badge>
+                                      ))}
+                                    </div>
+                                  ) : null;
+                                })()}
                                 <div className="text-[10px] text-muted-foreground">
                                   {group.records.length} publicação(ões)
                                 </div>

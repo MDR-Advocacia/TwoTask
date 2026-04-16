@@ -518,21 +518,27 @@ class PublicationSearchService:
         office_prompts: dict[int, str] = {}
 
         def _prompt_for(rec: PublicationRecord) -> str:
+            is_unlinked = rec.linked_lawsuit_id is None
             oid = rec.linked_office_id
-            if not oid:
-                return SYSTEM_PROMPT
-            if oid not in office_prompts:
+            # Cache key inclui o flag de unlinked pra não misturar prompts
+            cache_key = (oid or 0, is_unlinked)
+            if cache_key not in office_prompts:
                 try:
-                    excluded, custom = load_office_overrides(self.db, oid)
-                    office_prompts[oid] = (
-                        build_system_prompt_for_office(excluded, custom)
-                        if (excluded or custom)
-                        else SYSTEM_PROMPT
+                    if oid:
+                        excluded, custom = load_office_overrides(self.db, oid)
+                    else:
+                        excluded, custom = set(), []
+                    office_prompts[cache_key] = build_system_prompt_for_office(
+                        excluded or None,
+                        custom or None,
+                        is_unlinked=is_unlinked,
                     )
                 except Exception as exc:
                     logger.warning("Falha ao carregar overrides do escritório %s: %s", oid, exc)
-                    office_prompts[oid] = SYSTEM_PROMPT
-            return office_prompts[oid]
+                    office_prompts[cache_key] = build_system_prompt_for_office(
+                        is_unlinked=is_unlinked,
+                    )
+            return office_prompts[cache_key]
 
         async def _classify_all():
             sem = asyncio.Semaphore(CONCURRENCY)
@@ -561,11 +567,15 @@ class PublicationSearchService:
                             # Audiência: extrair data/hora se presente
                             rec.audiencia_data = result.get("audiencia_data") or None
                             rec.audiencia_hora = result.get("audiencia_hora") or None
+                            # Natureza do processo: só pra publicações sem pasta vinculada
+                            if rec.linked_lawsuit_id is None:
+                                rec.natureza_processo = result.get("natureza_processo") or None
                             rec.status = RECORD_STATUS_CLASSIFIED
                             logger.debug(
-                                "Classificado #%s → %s / %s (polo=%s, aud=%s %s)",
+                                "Classificado #%s → %s / %s (polo=%s, aud=%s %s, nat=%s)",
                                 rec.id, cat, sub, polo,
                                 rec.audiencia_data, rec.audiencia_hora,
+                                rec.natureza_processo if rec.linked_lawsuit_id is None else "-",
                             )
                         else:
                             logger.warning(
@@ -967,6 +977,7 @@ class PublicationSearchService:
         date_to: Optional[str] = None,
         category: Optional[str] = None,
         uf: Optional[str] = None,
+        vinculo: Optional[str] = None,
     ):
         """Query base reutilizada por list_records_grouped e contagens."""
         query = self.db.query(PublicationRecord).filter(PublicationRecord.is_duplicate == False)  # noqa: E712
@@ -987,6 +998,11 @@ class PublicationSearchService:
             query = query.filter(PublicationRecord.category == category)
         if uf:
             query = query.filter(PublicationRecord.uf == uf.strip().upper())
+        # Filtro de vínculo: com_processo / sem_processo
+        if vinculo == "sem_processo":
+            query = query.filter(PublicationRecord.linked_lawsuit_id.is_(None))
+        elif vinculo == "com_processo":
+            query = query.filter(PublicationRecord.linked_lawsuit_id.isnot(None))
         return query
 
     @staticmethod
@@ -1052,6 +1068,7 @@ class PublicationSearchService:
         date_to: Optional[str] = None,
         category: Optional[str] = None,
         uf: Optional[str] = None,
+        vinculo: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
@@ -1067,6 +1084,7 @@ class PublicationSearchService:
             linked_office_id=linked_office_id,
             date_from=date_from, date_to=date_to,
             category=category, uf=uf,
+            vinculo=vinculo,
         )
 
         # ─── Etapa 1: contar e paginar grupos (lawsuit_ids distintos) ───
@@ -1132,6 +1150,7 @@ class PublicationSearchService:
             linked_office_id=linked_office_id,
             date_from=date_from, date_to=date_to,
             category=category, uf=uf,
+            vinculo=vinculo,
         )
 
         # Filtro: records que pertencem aos grupos da página
@@ -1855,6 +1874,7 @@ class PublicationSearchService:
             "audiencia_link": record.audiencia_link,
             "classifications": record.classifications,
             "uf": record.uf,
+            "natureza_processo": record.natureza_processo,
             "has_proposal": bool(proposal),
             "proposal": proposal if include_full_text else None,
             "proposals_count": len(proposals) if proposals else (1 if proposal else 0),

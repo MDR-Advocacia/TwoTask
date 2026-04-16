@@ -233,16 +233,23 @@ class PublicationBatchClassifier:
         if not records:
             raise ValueError("Nenhum registro para classificar.")
 
-        # Pré-carrega prompts customizados por escritório (com overrides)
-        office_prompts: dict[int, str] = {}
+        # Pré-carrega prompts customizados por escritório (com overrides).
+        # Cache key = (office_id, is_unlinked) pra não misturar prompts.
+        office_prompts: dict[tuple, str] = {}
         office_ids = {rec.linked_office_id for rec in records if rec.linked_office_id}
         for oid in office_ids:
             try:
                 excluded, custom = load_office_overrides(self.db, oid)
-                if excluded or custom:
-                    office_prompts[oid] = build_system_prompt_for_office(excluded, custom)
+                for unlinked in (False, True):
+                    if excluded or custom or unlinked:
+                        office_prompts[(oid, unlinked)] = build_system_prompt_for_office(
+                            excluded or None, custom or None, is_unlinked=unlinked,
+                        )
             except Exception as exc:
                 logger.warning("Falha ao carregar overrides do escritório %s: %s", oid, exc)
+        # Prompt base para publicações sem escritório
+        office_prompts[(0, False)] = SYSTEM_PROMPT
+        office_prompts[(0, True)] = build_system_prompt_for_office(is_unlinked=True)
 
         # Monta as requisições do batch
         batch_requests = []
@@ -256,8 +263,11 @@ class PublicationBatchClassifier:
             if len(text) > MAX_PUBLICATION_TEXT_CHARS:
                 text = text[:MAX_PUBLICATION_TEXT_CHARS] + "\n[...texto truncado]"
 
-            # Usa prompt específico do escritório se disponível
-            prompt = office_prompts.get(rec.linked_office_id, SYSTEM_PROMPT) if rec.linked_office_id else SYSTEM_PROMPT
+            # Usa prompt específico do escritório + flag unlinked
+            is_unlinked = rec.linked_lawsuit_id is None
+            oid = rec.linked_office_id or 0
+            cache_key = (oid, is_unlinked)
+            prompt = office_prompts.get(cache_key) or office_prompts.get((0, is_unlinked), SYSTEM_PROMPT)
 
             user_msg = build_user_message(rec.linked_lawsuit_cnj or "", text)
             batch_requests.append(
@@ -474,6 +484,9 @@ class PublicationBatchClassifier:
                 rec.audiencia_data = aud_data
                 rec.audiencia_hora = aud_hora
                 rec.audiencia_link = aud_link
+                # Natureza do processo: só pra publicações sem pasta vinculada
+                if rec.linked_lawsuit_id is None:
+                    rec.natureza_processo = classification.get("natureza_processo") or None
                 # Múltiplas classificações
                 extra = classification.get("_extra_classifications")
                 if extra:
@@ -485,8 +498,9 @@ class PublicationBatchClassifier:
                 rec.status = RECORD_STATUS_CLASSIFIED
                 succeeded += 1
                 logger.debug(
-                    "Classificado #%s → %s / %s (polo=%s, aud=%s %s)",
+                    "Classificado #%s → %s / %s (polo=%s, aud=%s %s, nat=%s)",
                     rec.id, cat, sub, polo, aud_data, aud_hora,
+                    rec.natureza_processo if rec.linked_lawsuit_id is None else "-",
                 )
                 # Propaga a classificação para os "irmãos" (mesmo processo,
                 # mesmo dia) que foram descartados pela deduplicação.

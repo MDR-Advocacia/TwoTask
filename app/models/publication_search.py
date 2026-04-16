@@ -107,6 +107,12 @@ class PublicationRecord(Base):
     # [{categoria, subcategoria, polo, audiencia_data, audiencia_hora, audiencia_link, confianca, justificativa}]
     classifications = Column(JSON, nullable=True)
 
+    # Natureza do processo detectada pela IA, apenas para publicações sem
+    # pasta vinculada (linked_lawsuit_id IS NULL). Valores típicos:
+    # "Embargos à Execução", "Agravo de Instrumento", "Mandado de Segurança",
+    # "Ação Rescisória", etc.  Ajuda no tratamento especializado de avulsas.
+    natureza_processo = Column(String, nullable=True, index=True)
+
     # UF/região derivada do CNJ (materializada para filtro SQL eficiente).
     # Ex.: "SP", "RJ", "TRT7", "TRF1", "TRE-SP". Populada automaticamente
     # ao criar o registro e pela data migration perf002.

@@ -468,6 +468,7 @@ def list_records_grouped(
     date_to: Optional[str] = Query(None, description="Data fim (YYYY-MM-DD). Filtra por creation_date (data do Ajus)."),
     category: Optional[str] = Query(None, description="Filtra por categoria de classificação."),
     uf: Optional[str] = Query(None, description="UF/região derivada do CNJ (ex.: SP, RJ, TRT7, TRF1)."),
+    vinculo: Optional[str] = Query(None, description="Filtro de vínculo: com_processo, sem_processo."),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     service: PublicationSearchService = Depends(_get_service),
@@ -481,6 +482,7 @@ def list_records_grouped(
         date_to=date_to,
         category=category,
         uf=uf,
+        vinculo=vinculo,
         limit=limit,
         offset=offset,
     )
