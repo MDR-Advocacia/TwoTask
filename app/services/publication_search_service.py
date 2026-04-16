@@ -17,7 +17,8 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, List, Optional
 
-from sqlalchemy import func as sa_func
+import sqlalchemy as sa
+from sqlalchemy import func as sa_func, literal_column, case, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.publication_search import (
@@ -294,6 +295,7 @@ class PublicationSearchService:
                     dedup_key is not None and dedup_key in existing_keys
                 )
 
+                cnj = pub.get("_cnj")
                 record = PublicationRecord(
                     search_id=search.id,
                     legal_one_update_id=update_id,
@@ -304,7 +306,7 @@ class PublicationSearchService:
                     publication_date=publication_date,
                     creation_date=pub.get("creationDate"),
                     linked_lawsuit_id=lawsuit_id,
-                    linked_lawsuit_cnj=pub.get("_cnj"),
+                    linked_lawsuit_cnj=cnj,
                     linked_office_id=pub.get("_responsible_office_id"),
                     raw_relationships=relationships,
                     status=(
@@ -313,6 +315,7 @@ class PublicationSearchService:
                         else RECORD_STATUS_NEW
                     ),
                     is_duplicate=is_lawsuit_date_duplicate,
+                    uf=uf_from_cnj(cnj),
                 )
                 self.db.add(record)
                 existing_ids.add(update_id)
@@ -929,6 +932,90 @@ class PublicationSearchService:
             "records": [self._record_to_dict(r) for r in records],
         }
 
+    # ── Helpers para query base filtrada ──────────────────────────────
+
+    def _base_publication_query(
+        self,
+        search_id: Optional[int] = None,
+        status: Optional[str] = None,
+        linked_office_id: Optional[int] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        category: Optional[str] = None,
+        uf: Optional[str] = None,
+    ):
+        """Query base reutilizada por list_records_grouped e contagens."""
+        query = self.db.query(PublicationRecord).filter(PublicationRecord.is_duplicate == False)  # noqa: E712
+        if search_id is not None:
+            query = query.filter(PublicationRecord.search_id == search_id)
+        if status:
+            query = query.filter(PublicationRecord.status == status)
+        if linked_office_id is not None:
+            query = query.filter(PublicationRecord.linked_office_id == linked_office_id)
+        if date_from:
+            query = query.filter(PublicationRecord.creation_date >= date_from)
+        if date_to:
+            query = query.filter(PublicationRecord.creation_date < date_to + "T99")
+        if category:
+            query = query.filter(PublicationRecord.category == category)
+        if uf:
+            query = query.filter(PublicationRecord.uf == uf.strip().upper())
+        return query
+
+    @staticmethod
+    def _build_group(items: list) -> dict[str, Any]:
+        """Constrói o dict de um grupo a partir de seus records."""
+        first = items[0]
+
+        proposed_task = None
+        proposed_tasks: list = []
+        if isinstance(first.raw_relationships, dict):
+            raw_proposal = first.raw_relationships.get("_proposed_task")
+            if raw_proposal:
+                payload = raw_proposal.get("payload") if "payload" in raw_proposal else raw_proposal
+                if isinstance(payload, dict):
+                    if raw_proposal.get("template_name"):
+                        payload["template_name"] = raw_proposal["template_name"]
+                    if raw_proposal.get("suggested_responsible"):
+                        payload["suggested_responsible"] = raw_proposal["suggested_responsible"]
+                proposed_task = payload
+            raw_proposals = first.raw_relationships.get("_proposed_tasks")
+            if raw_proposals and isinstance(raw_proposals, list):
+                for rp in raw_proposals:
+                    p = rp.get("payload") if isinstance(rp, dict) and "payload" in rp else rp
+                    if isinstance(p, dict) and isinstance(rp, dict):
+                        if rp.get("template_name"):
+                            p["template_name"] = rp["template_name"]
+                        if rp.get("suggested_responsible"):
+                            p["suggested_responsible"] = rp["suggested_responsible"]
+                    if p:
+                        proposed_tasks.append(p)
+            elif proposed_task:
+                proposed_tasks = [proposed_task]
+
+        all_classifications: list = []
+        for r in items:
+            if isinstance(r.raw_relationships, dict):
+                cls_list = r.raw_relationships.get("classifications") or []
+                if cls_list:
+                    all_classifications.extend(cls_list)
+            if hasattr(r, "classifications") and r.classifications:
+                for c in r.classifications:
+                    if c not in all_classifications:
+                        all_classifications.append(c)
+
+        return {
+            "lawsuit_id": first.linked_lawsuit_id,
+            "lawsuit_cnj": first.linked_lawsuit_cnj,
+            "office_id": first.linked_office_id,
+            "records": [PublicationSearchService._record_to_dict(r) for r in items],
+            "proposed_task": proposed_task,
+            "proposed_tasks": proposed_tasks,
+            "classifications": all_classifications,
+        }
+
+    # ── Endpoint principal ────────────────────────────────────────
+
     def list_records_grouped(
         self,
         search_id: Optional[int] = None,
@@ -943,119 +1030,131 @@ class PublicationSearchService:
     ) -> dict[str, Any]:
         """
         Lista registros agrupados por processo (linked_lawsuit_id).
-        Cada grupo inclui a lista completa de publicações e a proposta de tarefa
-        extraída do raw_relationships._proposed_task do primeiro registro.
 
-        date_from / date_to filtram por creation_date (data em que o Ajus capturou
-        a publicação), que é a data de referência para o fluxo de trabalho.
-        category filtra por categoria de classificação.
+        Fase 2: filtro UF via SQL (coluna materializada) e paginação de
+        grupos no banco em 2 etapas — primeiro busca os lawsuit_ids da
+        página, depois carrega apenas os records desses grupos.
         """
-        query = self.db.query(PublicationRecord).filter(PublicationRecord.is_duplicate == False)
-        if search_id is not None:
-            query = query.filter(PublicationRecord.search_id == search_id)
-        if status:
-            query = query.filter(PublicationRecord.status == status)
-        if linked_office_id is not None:
-            query = query.filter(PublicationRecord.linked_office_id == linked_office_id)
-        if date_from:
-            query = query.filter(PublicationRecord.creation_date >= date_from)
-        if date_to:
-            # Inclui o dia inteiro: "2026-04-13" → até "2026-04-14T00:00"
-            query = query.filter(PublicationRecord.creation_date < date_to + "T99")
-        if category:
-            query = query.filter(PublicationRecord.category == category)
+        base = self._base_publication_query(
+            search_id=search_id, status=status,
+            linked_office_id=linked_office_id,
+            date_from=date_from, date_to=date_to,
+            category=category, uf=uf,
+        )
+
+        # ─── Etapa 1: contar e paginar grupos (lawsuit_ids distintos) ───
+        # Calcula uma group_key: lawsuit_id quando existe, senão uma chave
+        # sintética. A paginação é sobre essa chave.
+        group_key = case(
+            (
+                PublicationRecord.linked_lawsuit_id.isnot(None),
+                sa_func.cast(PublicationRecord.linked_lawsuit_id, sa.String),
+            ),
+            else_=(
+                literal_column("'no-lawsuit|'")
+                + sa_func.coalesce(sa_func.cast(PublicationRecord.linked_office_id, sa.String), '0')
+                + literal_column("'|'")
+                + sa_func.coalesce(PublicationRecord.category, 'sem-classificacao')
+                + literal_column("'|'")
+                + sa_func.coalesce(sa_func.left(PublicationRecord.publication_date, 10), '')
+            ),
+        ).label("group_key")
+
+        groups_subq = (
+            base
+            .with_entities(group_key, sa_func.count().label("cnt"))
+            .group_by(literal_column("group_key"))
+            .order_by(literal_column("group_key"))
+            .subquery()
+        )
+
+        total_groups = self.db.query(sa_func.count()).select_from(groups_subq).scalar() or 0
+        total_records = self.db.query(sa_func.sum(groups_subq.c.cnt)).scalar() or 0
+
+        # Busca as group_keys da página atual
+        page_keys_rows = (
+            self.db.query(groups_subq.c.group_key)
+            .order_by(groups_subq.c.group_key)
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        page_keys = {row[0] for row in page_keys_rows}
+
+        if not page_keys:
+            return {
+                "total_groups": total_groups,
+                "total_records": total_records,
+                "offset": offset,
+                "limit": limit,
+                "groups": [],
+            }
+
+        # ─── Etapa 2: carrega records só dos grupos da página ───────
+        # Separa lawsuit_ids numéricos de chaves sintéticas (no-lawsuit).
+        lawsuit_ids: set[int] = set()
+        synthetic_keys: set[str] = set()
+        for k in page_keys:
+            try:
+                lawsuit_ids.add(int(k))
+            except (ValueError, TypeError):
+                synthetic_keys.add(k)
+
+        page_query = self._base_publication_query(
+            search_id=search_id, status=status,
+            linked_office_id=linked_office_id,
+            date_from=date_from, date_to=date_to,
+            category=category, uf=uf,
+        )
+
+        # Filtro: records que pertencem aos grupos da página
+        conditions = []
+        if lawsuit_ids:
+            conditions.append(PublicationRecord.linked_lawsuit_id.in_(lawsuit_ids))
+        if synthetic_keys:
+            # Para grupos sem processo, temos que carregar os registros
+            # que NÃO têm lawsuit_id e reconstruir a chave em Python.
+            conditions.append(PublicationRecord.linked_lawsuit_id.is_(None))
+        if conditions:
+            page_query = page_query.filter(or_(*conditions))
 
         records = (
-            query
-            .order_by(PublicationRecord.linked_lawsuit_id, PublicationRecord.publication_date.desc())
+            page_query
+            .order_by(
+                PublicationRecord.linked_lawsuit_id,
+                PublicationRecord.publication_date.desc(),
+            )
             .all()
         )
 
-        groups: dict = defaultdict(list)
+        # Agrupa em Python (apenas os records da página — conjunto pequeno)
+        groups_map: dict = defaultdict(list)
         for r in records:
             if r.linked_lawsuit_id:
-                key = r.linked_lawsuit_id
+                key = str(r.linked_lawsuit_id)
             else:
-                # Publicações sem processo: agrupa por (escritório, categoria, data_publicação)
-                # para que fiquem juntas por contexto semelhante
                 office_key = r.linked_office_id or 0
                 cat_key = r.category or "sem-classificacao"
                 pub_date = (r.publication_date or "")[:10]
                 key = f"no-lawsuit|{office_key}|{cat_key}|{pub_date}"
-            groups[key].append(r)
 
+            # Só inclui se pertence à página
+            if key in page_keys:
+                groups_map[key].append(r)
+
+        # Mantém a ordem da paginação
         grouped_list = []
-        for _key, items in groups.items():
-            first = items[0]
-            # Extrai proposta(s) de tarefa do raw_relationships
-            proposed_task = None
-            proposed_tasks: list = []
-            if isinstance(first.raw_relationships, dict):
-                raw_proposal = first.raw_relationships.get("_proposed_task")
-                if raw_proposal:
-                    payload = raw_proposal.get("payload") if "payload" in raw_proposal else raw_proposal
-                    # Merge meta info into payload for frontend
-                    if isinstance(payload, dict):
-                        if raw_proposal.get("template_name"):
-                            payload["template_name"] = raw_proposal["template_name"]
-                        if raw_proposal.get("suggested_responsible"):
-                            payload["suggested_responsible"] = raw_proposal["suggested_responsible"]
-                    proposed_task = payload
-                raw_proposals = first.raw_relationships.get("_proposed_tasks")
-                if raw_proposals and isinstance(raw_proposals, list):
-                    for rp in raw_proposals:
-                        p = rp.get("payload") if isinstance(rp, dict) and "payload" in rp else rp
-                        if isinstance(p, dict) and isinstance(rp, dict):
-                            if rp.get("template_name"):
-                                p["template_name"] = rp["template_name"]
-                            if rp.get("suggested_responsible"):
-                                p["suggested_responsible"] = rp["suggested_responsible"]
-                        if p:
-                            proposed_tasks.append(p)
-                elif proposed_task:
-                    proposed_tasks = [proposed_task]
+        for k in sorted(groups_map.keys()):
+            items = groups_map[k]
+            if items:
+                grouped_list.append(self._build_group(items))
 
-            # Coleta classificações de todos os registros do grupo
-            all_classifications: list = []
-            for r in items:
-                if isinstance(r.raw_relationships, dict):
-                    cls_list = r.raw_relationships.get("classifications") or []
-                    if cls_list:
-                        all_classifications.extend(cls_list)
-                # Também tenta campo direto `classifications` (JSON)
-                if hasattr(r, "classifications") and r.classifications:
-                    for c in r.classifications:
-                        if c not in all_classifications:
-                            all_classifications.append(c)
-
-            grouped_list.append({
-                "lawsuit_id": first.linked_lawsuit_id,
-                "lawsuit_cnj": first.linked_lawsuit_cnj,
-                "office_id": first.linked_office_id,
-                "records": [self._record_to_dict(r) for r in items],
-                "proposed_task": proposed_task,
-                "proposed_tasks": proposed_tasks,
-                "classifications": all_classifications,
-            })
-
-        # Filtro UF (derivado do CNJ) — aplicado em memória porque UF não está
-        # materializada em coluna. Grupos sem CNJ/UF são excluídos quando uf é pedida.
-        if uf:
-            uf_upper = uf.strip().upper()
-            grouped_list = [
-                g for g in grouped_list
-                if (uf_from_cnj(g.get("lawsuit_cnj")) or "").upper() == uf_upper
-            ]
-
-        total = len(grouped_list)
-        total_records = sum(len(g["records"]) for g in grouped_list)
-        page = grouped_list[offset : offset + limit]
         return {
-            "total_groups": total,
+            "total_groups": total_groups,
             "total_records": total_records,
             "offset": offset,
             "limit": limit,
-            "groups": page,
+            "groups": grouped_list,
         }
 
     def get_record(self, record_id: int) -> dict[str, Any]:
@@ -1611,6 +1710,7 @@ class PublicationSearchService:
             "audiencia_hora": record.audiencia_hora,
             "audiencia_link": record.audiencia_link,
             "classifications": record.classifications,
+            "uf": record.uf,
             "has_proposal": bool(proposal),
             "proposal": proposal if include_full_text else None,
             "proposals_count": len(proposals) if proposals else (1 if proposal else 0),

@@ -104,6 +104,11 @@ class PublicationRecord(Base):
     # [{categoria, subcategoria, polo, audiencia_data, audiencia_hora, audiencia_link, confianca, justificativa}]
     classifications = Column(JSON, nullable=True)
 
+    # UF/região derivada do CNJ (materializada para filtro SQL eficiente).
+    # Ex.: "SP", "RJ", "TRT7", "TRF1", "TRE-SP". Populada automaticamente
+    # ao criar o registro e pela data migration perf002.
+    uf = Column(String(10), nullable=True, index=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 

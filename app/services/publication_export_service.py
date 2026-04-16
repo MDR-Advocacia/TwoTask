@@ -163,6 +163,10 @@ def export_records_grouped_xlsx(
         date_to=date_to,
         category=category,
     )
+    # Filtro UF via coluna materializada (SQL) — antes era em memória.
+    if uf:
+        query = query.filter(PublicationRecord.uf == uf.strip().upper())
+
     records = (
         query
         .order_by(
@@ -171,15 +175,6 @@ def export_records_grouped_xlsx(
         )
         .all()
     )
-
-    # Filtro UF (derivado do CNJ). Mantém paridade com /records/grouped.
-    if uf:
-        from app.services.publication_search_service import uf_from_cnj
-        uf_upper = uf.strip().upper()
-        records = [
-            r for r in records
-            if (uf_from_cnj(r.linked_lawsuit_cnj) or "").upper() == uf_upper
-        ]
 
     # Pré-carrega nomes de escritórios para mapear id → nome sem N+1.
     office_ids = {r.linked_office_id for r in records if r.linked_office_id is not None}
