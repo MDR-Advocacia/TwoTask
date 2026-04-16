@@ -201,6 +201,7 @@ interface GroupedRecord {
 
 interface GroupedResponse {
   total_groups: number;
+  total_records?: number;
   offset: number;
   limit: number;
   groups: GroupedRecord[];
@@ -357,6 +358,7 @@ const PublicationsPage = () => {
   const [filterDateFrom, setFilterDateFrom] = useState<string>("");
   const [filterDateTo, setFilterDateTo] = useState<string>("");
   const [filterCategory, setFilterCategory] = useState<string>("");
+  const [filterUf, setFilterUf] = useState<string>("");
   const [groupPage, setGroupPage] = useState(0);
   const GROUP_PAGE_SIZE = 20;
 
@@ -455,7 +457,7 @@ const PublicationsPage = () => {
   }, []);
 
   const loadGrouped = useCallback(async (
-    page = 0, status = "", officeId = "", dateFrom = "", dateTo = "", category = "",
+    page = 0, status = "", officeId = "", dateFrom = "", dateTo = "", category = "", ufParam = "",
   ) => {
     try {
       let url = `${API}/records/grouped?limit=${GROUP_PAGE_SIZE}&offset=${page * GROUP_PAGE_SIZE}`;
@@ -464,6 +466,7 @@ const PublicationsPage = () => {
       if (dateFrom) url += `&date_from=${dateFrom}`;
       if (dateTo) url += `&date_to=${dateTo}`;
       if (category) url += `&category=${encodeURIComponent(category)}`;
+      if (ufParam) url += `&uf=${encodeURIComponent(ufParam)}`;
       const res = await apiFetch(url);
       if (res.ok) setGrouped(await res.json());
     } catch { /* ignore */ }
@@ -479,6 +482,7 @@ const PublicationsPage = () => {
       if (filterDateFrom) params.set("date_from", filterDateFrom);
       if (filterDateTo) params.set("date_to", filterDateTo);
       if (filterCategory) params.set("category", filterCategory);
+      if (filterUf) params.set("uf", filterUf);
       const qs = params.toString();
       const url = `${API}/records/grouped/export${qs ? `?${qs}` : ""}`;
 
@@ -553,6 +557,7 @@ const PublicationsPage = () => {
         dateFrom: filterDateFrom,
         dateTo: filterDateTo,
         category: filterCategory,
+        uf: filterUf,
       };
       const res = await apiFetch("/api/v1/me/saved-filters", {
         method: "POST",
@@ -580,7 +585,7 @@ const PublicationsPage = () => {
   const handleApplySavedFilter = (filter: any) => {
     try {
       const parsed = typeof filter.filters_json === 'string' ? JSON.parse(filter.filters_json) : filter.filters_json;
-      handleFilterChange(parsed.status || "", parsed.office || "", parsed.dateFrom, parsed.dateTo, parsed.category);
+      handleFilterChange(parsed.status || "", parsed.office || "", parsed.dateFrom, parsed.dateTo, parsed.category, parsed.uf || "");
     } catch (err) {
       toast({ title: "Erro", description: "Não foi possível aplicar o filtro.", variant: "destructive" });
     }
@@ -602,7 +607,7 @@ const PublicationsPage = () => {
     loadTaskMeta();
     loadStats();
     loadSearches();
-    loadGrouped(0, "", "", "", "", "");
+    loadGrouped(0, "", "", "", "", "", "");
     loadBatches();
     loadSavedFilters();
   }, []);
@@ -674,18 +679,21 @@ const PublicationsPage = () => {
   };
 
   const handleFilterChange = (
-    status: string, officeId: string, dateFrom?: string, dateTo?: string, category?: string,
+    status: string, officeId: string, dateFrom?: string, dateTo?: string, category?: string, ufParam?: string,
   ) => {
     setFilterStatus(status);
     setFilterOffice(officeId);
     if (dateFrom !== undefined) setFilterDateFrom(dateFrom);
     if (dateTo !== undefined) setFilterDateTo(dateTo);
     if (category !== undefined) setFilterCategory(category);
+    if (ufParam !== undefined) setFilterUf(ufParam);
     const df = dateFrom ?? filterDateFrom;
     const dt = dateTo ?? filterDateTo;
     const cat = category ?? filterCategory;
+    const uf = ufParam ?? filterUf;
     setGroupPage(0);
-    loadGrouped(0, status, officeId, df, dt, cat);
+    setSelectedGroupKeys(new Set());
+    loadGrouped(0, status, officeId, df, dt, cat, uf);
   };
 
   const handleGroupPageChange = (newPage: number) => {
@@ -702,7 +710,7 @@ const PublicationsPage = () => {
         body: JSON.stringify({ status: "IGNORADO" }),
       });
       toast({ title: "Registro ignorado" });
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf);
       loadStats();
     } catch { /* ignore */ }
   };
@@ -734,7 +742,7 @@ const PublicationsPage = () => {
         title: "Reclassificado",
         description: `${category}${subcategory ? " → " + subcategory : ""} aplicado a ${recordIds.length} publicação(ões). Proposta de tarefa atualizada.`,
       });
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf);
       loadStats();
     } catch (err: any) {
       toast({ title: "Erro", description: err.message, variant: "destructive" });
@@ -744,7 +752,7 @@ const PublicationsPage = () => {
   };
 
   const handleRefreshAll = () => {
-    loadStats(); loadSearches(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory); loadBatches();
+    loadStats(); loadSearches(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf); loadBatches();
   };
 
   // ─── Batch classification ────────────────────────────────────────────
@@ -809,7 +817,7 @@ const PublicationsPage = () => {
       });
       // Pequeno polling para refletir o efeito na UI
       [3000, 8000, 20000].forEach((delay) => {
-        setTimeout(() => { loadBatches(); loadStats(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory); }, delay);
+        setTimeout(() => { loadBatches(); loadStats(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf); }, delay);
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -863,7 +871,7 @@ const PublicationsPage = () => {
         description: `Propostas sendo reconstruídas para ${scopeLabel}. Atualize em instantes.`,
       });
       setTimeout(() => {
-        loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory);
+        loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf);
       }, 3000);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -929,7 +937,7 @@ const PublicationsPage = () => {
       });
       setScheduleOpen(false);
       setRemovedTaskIndices(new Set());
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf);
       loadStats();
     } catch (err: any) {
       toast({ title: "Erro ao agendar", description: err.message, variant: "destructive" });
@@ -1033,7 +1041,7 @@ const PublicationsPage = () => {
 
     clearSelection();
     setBulkProcessing(false);
-    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory);
+    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf);
     loadStats();
   };
 
@@ -1074,13 +1082,31 @@ const PublicationsPage = () => {
 
     clearSelection();
     setBulkProcessing(false);
-    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory);
+    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf);
     loadStats();
   };
 
   // ─── Derived ─────────────────────────────────────────────────────────
 
   const totalPages = grouped ? Math.ceil(grouped.total_groups / GROUP_PAGE_SIZE) : 0;
+
+  // UFs disponíveis na página atual (derivadas do CNJ). A lista é limitada ao
+  // que vem do servidor na página vigente; inclui sempre a UF atualmente
+  // selecionada pra evitar sumir do Select quando o resultado fica vazio.
+  const availableUfs: string[] = grouped
+    ? (() => {
+        const ufs = new Set(
+          grouped.groups
+            .map((g) => ufFromCnj(g.lawsuit_cnj))
+            .filter((u): u is string => !!u),
+        );
+        if (filterUf) ufs.add(filterUf);
+        return Array.from(ufs).sort();
+      })()
+    : (filterUf ? [filterUf] : []);
+
+  // O filtro UF agora é server-side, então os grupos já vêm filtrados.
+  const visibleGroups: GroupedRecord[] = grouped ? grouped.groups : [];
 
   const groupStatusSummary = (group: GroupedRecord) => {
     const statuses = group.records.map((r) => r.status);
@@ -1527,7 +1553,15 @@ const PublicationsPage = () => {
             <CardTitle className="flex items-center gap-2">
               <BookOpen className="h-5 w-5" />
               Processos com Publicações
-              {grouped && <Badge variant="secondary">{grouped.total_groups} grupos</Badge>}
+              {grouped && (
+                <>
+                  <Badge variant="secondary">{grouped.total_groups} grupos</Badge>
+                  {typeof grouped.total_records === "number" && (
+                    <Badge variant="outline">{grouped.total_records} publicações</Badge>
+                  )}
+                  {filterUf && <Badge variant="default">UF: {filterUf}</Badge>}
+                </>
+              )}
             </CardTitle>
             <div className="flex flex-wrap items-center gap-2">
               <Button
@@ -1595,6 +1629,18 @@ const PublicationsPage = () => {
                   ))}
                 </SelectContent>
               </Select>
+              <Select value={filterUf || "all"}
+                onValueChange={(v) => handleFilterChange(filterStatus, filterOffice, undefined, undefined, undefined, v === "all" ? "" : v)}>
+                <SelectTrigger className="w-[120px]">
+                  <SelectValue placeholder="UF" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todas UFs</SelectItem>
+                  {availableUfs.map((uf) => (
+                    <SelectItem key={uf} value={uf}>{uf}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <div className="flex items-center gap-1">
                 <div className="relative flex items-center gap-1">
                   <Input
@@ -1652,9 +1698,11 @@ const PublicationsPage = () => {
           </div>
         </CardHeader>
         <CardContent>
-          {!grouped || grouped.groups.length === 0 ? (
+          {!grouped || visibleGroups.length === 0 ? (
             <div className="flex h-32 items-center justify-center text-muted-foreground">
-              Nenhum registro encontrado. Dispare uma busca acima.
+              {grouped && filterUf
+                ? `Nenhum grupo encontrado para a UF ${filterUf} com os filtros atuais.`
+                : "Nenhum registro encontrado. Dispare uma busca acima."}
             </div>
           ) : (
             <>
@@ -1685,8 +1733,8 @@ const PublicationsPage = () => {
                       <TableHead className="w-[40px]">
                         <Checkbox
                           checked={
-                            grouped.groups.length > 0 &&
-                            grouped.groups.every((g) => selectedGroupKeys.has(groupKey(g)))
+                            visibleGroups.length > 0 &&
+                            visibleGroups.every((g) => selectedGroupKeys.has(groupKey(g)))
                           }
                           onCheckedChange={toggleSelectAllVisible}
                           aria-label="Selecionar todos os grupos visíveis"
@@ -1703,7 +1751,7 @@ const PublicationsPage = () => {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {grouped.groups.map((group, gi) => {
+                    {visibleGroups.map((group, gi) => {
                       const status = groupStatusSummary(group);
                       // Classificações: usa array do grupo ou fallback dos records
                       const groupClassifications = group.classifications && group.classifications.length > 0

@@ -149,6 +149,7 @@ def export_records_grouped_xlsx(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     category: Optional[str] = None,
+    uf: Optional[str] = None,
 ) -> tuple[bytes, str]:
     """Gera o XLSX e devolve ``(bytes, filename)``."""
 
@@ -170,6 +171,15 @@ def export_records_grouped_xlsx(
         )
         .all()
     )
+
+    # Filtro UF (derivado do CNJ). Mantém paridade com /records/grouped.
+    if uf:
+        from app.services.publication_search_service import uf_from_cnj
+        uf_upper = uf.strip().upper()
+        records = [
+            r for r in records
+            if (uf_from_cnj(r.linked_lawsuit_cnj) or "").upper() == uf_upper
+        ]
 
     # Pré-carrega nomes de escritórios para mapear id → nome sem N+1.
     office_ids = {r.linked_office_id for r in records if r.linked_office_id is not None}
@@ -225,6 +235,7 @@ def export_records_grouped_xlsx(
         ("date_from", date_from or ""),
         ("date_to", date_to or ""),
         ("category", category or ""),
+        ("uf", uf or ""),
     ]
     for row_idx, (label, value) in enumerate(meta_rows, start=1):
         meta.cell(row=row_idx, column=1, value=label).font = Font(bold=True)

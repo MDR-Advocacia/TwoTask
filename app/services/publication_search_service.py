@@ -40,6 +40,50 @@ from app.services.legal_one_client import LegalOneApiClient
 logger = logging.getLogger(__name__)
 
 
+# ── UF derivation from CNJ ──────────────────────────────────────────────
+# Espelha a lógica de frontend/src/pages/PublicationsPage.tsx::ufFromCnj.
+# Formato CNJ: NNNNNNN-DD.AAAA.J.TR.OOOO (20 dígitos sem pontuação).
+_UF_ESTADUAL = {
+    "01": "AC", "02": "AL", "03": "AP", "04": "AM", "05": "BA", "06": "CE",
+    "07": "DF", "08": "ES", "09": "GO", "10": "MA", "11": "MT", "12": "MS",
+    "13": "MG", "14": "PA", "15": "PB", "16": "PR", "17": "PE", "18": "PI",
+    "19": "RJ", "20": "RN", "21": "RS", "22": "RO", "23": "RR", "24": "SC",
+    "25": "SP", "26": "SE", "27": "TO",
+}
+
+
+def uf_from_cnj(cnj: Optional[str]) -> Optional[str]:
+    """Extrai UF/região a partir do CNJ. Retorna None se padrão não bate."""
+    if not cnj:
+        return None
+    digits = "".join(c for c in cnj if c.isdigit())
+    if len(digits) != 20:
+        return None
+    j = digits[13]
+    tr = digits[14:16]
+    if j == "8":
+        return _UF_ESTADUAL.get(tr)
+    if j == "4":
+        try:
+            return f"TRF{int(tr)}"
+        except ValueError:
+            return f"TRF{tr}"
+    if j == "7":
+        try:
+            return f"TRT{int(tr)}"
+        except ValueError:
+            return f"TRT{tr}"
+    if j == "5":
+        try:
+            return f"JME{int(tr)}"
+        except ValueError:
+            return f"JME{tr}"
+    if j == "6":
+        base = _UF_ESTADUAL.get(tr, tr)
+        return f"TRE-{base}"
+    return None
+
+
 class PublicationSearchService:
 
     def __init__(self, db: Session, client: LegalOneApiClient):
@@ -884,6 +928,7 @@ class PublicationSearchService:
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
         category: Optional[str] = None,
+        uf: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
@@ -984,9 +1029,25 @@ class PublicationSearchService:
                 "classifications": all_classifications,
             })
 
+        # Filtro UF (derivado do CNJ) — aplicado em memória porque UF não está
+        # materializada em coluna. Grupos sem CNJ/UF são excluídos quando uf é pedida.
+        if uf:
+            uf_upper = uf.strip().upper()
+            grouped_list = [
+                g for g in grouped_list
+                if (uf_from_cnj(g.get("lawsuit_cnj")) or "").upper() == uf_upper
+            ]
+
         total = len(grouped_list)
+        total_records = sum(len(g["records"]) for g in grouped_list)
         page = grouped_list[offset : offset + limit]
-        return {"total_groups": total, "offset": offset, "limit": limit, "groups": page}
+        return {
+            "total_groups": total,
+            "total_records": total_records,
+            "offset": offset,
+            "limit": limit,
+            "groups": page,
+        }
 
     def get_record(self, record_id: int) -> dict[str, Any]:
         record = self.db.query(PublicationRecord).filter_by(id=record_id).first()

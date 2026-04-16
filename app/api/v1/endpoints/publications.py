@@ -451,6 +451,7 @@ async def list_records_grouped(
     date_from: Optional[str] = Query(None, description="Data início (YYYY-MM-DD). Filtra por creation_date (data do Ajus)."),
     date_to: Optional[str] = Query(None, description="Data fim (YYYY-MM-DD). Filtra por creation_date (data do Ajus)."),
     category: Optional[str] = Query(None, description="Filtra por categoria de classificação."),
+    uf: Optional[str] = Query(None, description="UF/região derivada do CNJ (ex.: SP, RJ, TRT7, TRF1)."),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     service: PublicationSearchService = Depends(_get_service),
@@ -463,6 +464,7 @@ async def list_records_grouped(
         date_from=date_from,
         date_to=date_to,
         category=category,
+        uf=uf,
         limit=limit,
         offset=offset,
     )
@@ -476,6 +478,7 @@ async def export_records_grouped(
     date_from: Optional[str] = Query(None, description="Data início (YYYY-MM-DD)."),
     date_to: Optional[str] = Query(None, description="Data fim (YYYY-MM-DD)."),
     category: Optional[str] = Query(None, description="Classificação primária."),
+    uf: Optional[str] = Query(None, description="UF/região derivada do CNJ."),
     db: Session = Depends(get_db),
 ):
     """
@@ -492,6 +495,7 @@ async def export_records_grouped(
         date_from=date_from,
         date_to=date_to,
         category=category,
+        uf=uf,
     )
     return Response(
         content=content,
