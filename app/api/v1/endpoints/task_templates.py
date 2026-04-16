@@ -35,6 +35,7 @@ class TaskTemplateBase(BaseModel):
     responsible_user_external_id: int
     priority: str = "Normal"
     due_business_days: int = Field(default=3, ge=0, le=365)
+    due_date_reference: str = Field(default="publication", pattern=r"^(publication|today)$")
     description_template: Optional[str] = None
     notes_template: Optional[str] = None
     is_active: bool = True
@@ -53,6 +54,7 @@ class TaskTemplateUpdate(BaseModel):
     responsible_user_external_id: Optional[int] = None
     priority: Optional[str] = None
     due_business_days: Optional[int] = Field(default=None, ge=0, le=365)
+    due_date_reference: Optional[str] = Field(default=None, pattern=r"^(publication|today)$")
     description_template: Optional[str] = None
     notes_template: Optional[str] = None
     is_active: Optional[bool] = None
@@ -103,6 +105,7 @@ def _to_response(tmpl: TaskTemplate) -> dict:
         "responsible_user_name": user_name,
         "priority": tmpl.priority,
         "due_business_days": tmpl.due_business_days,
+        "due_date_reference": tmpl.due_date_reference or "publication",
         "description_template": tmpl.description_template,
         "notes_template": tmpl.notes_template,
         "is_active": tmpl.is_active,

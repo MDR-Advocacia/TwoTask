@@ -792,8 +792,11 @@ class PublicationSearchService:
                 # Sem horário: usa 23:59:59 como fallback
                 due_iso = f"{rec.audiencia_data}T23:59:59Z"
         else:
-            # Sem audiência: usa prazo padrão (publicação + due_business_days)
-            due_date = base_date + timedelta(days=tmpl.due_business_days or 5)
+            # Sem audiência: usa prazo padrão
+            # Se due_date_reference == "today", conta a partir da data atual
+            due_ref = getattr(tmpl, "due_date_reference", "publication") or "publication"
+            due_base = date_cls.today() if due_ref == "today" else base_date
+            due_date = due_base + timedelta(days=tmpl.due_business_days or 5)
             due_iso = due_date.strftime("%Y-%m-%dT23:59:59Z")
 
         publish_iso = base_date.strftime("%Y-%m-%dT00:00:00Z")
@@ -1576,7 +1579,7 @@ class PublicationSearchService:
         records = (
             self.db.query(PublicationRecord)
             .filter(PublicationRecord.linked_lawsuit_id == lawsuit_id)
-            .filter(PublicationRecord.status.in_([RECORD_STATUS_NEW, RECORD_STATUS_CLASSIFIED]))
+            .filter(PublicationRecord.status.in_([RECORD_STATUS_NEW, RECORD_STATUS_CLASSIFIED, RECORD_STATUS_IGNORED]))
             .all()
         )
         if not records:
@@ -1648,7 +1651,7 @@ class PublicationSearchService:
         records = (
             self.db.query(PublicationRecord)
             .filter(PublicationRecord.id.in_(record_ids))
-            .filter(PublicationRecord.status.in_([RECORD_STATUS_NEW, RECORD_STATUS_CLASSIFIED]))
+            .filter(PublicationRecord.status.in_([RECORD_STATUS_NEW, RECORD_STATUS_CLASSIFIED, RECORD_STATUS_IGNORED]))
             .all()
         )
         if not records:

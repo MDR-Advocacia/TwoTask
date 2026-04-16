@@ -61,6 +61,10 @@ class TaskTemplate(Base):
 
     priority = Column(String, nullable=False, default="Normal")  # Low, Normal, High
     due_business_days = Column(Integer, nullable=False, default=3)
+    due_date_reference = Column(
+        String, nullable=False, default="publication",
+        doc='Referência para cálculo do prazo: "publication" (data da publicação) ou "today" (data atual)',
+    )  # "publication" | "today"
 
     # Templates de texto (podem usar placeholders como {cnj}, {publication_date})
     description_template = Column(Text, nullable=True)

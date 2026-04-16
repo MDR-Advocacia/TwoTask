@@ -128,6 +128,7 @@ interface TaskTemplate {
   responsible_user_name: string | null;
   priority: string;
   due_business_days: number;
+  due_date_reference: string;
   description_template: string | null;
   notes_template: string | null;
   is_active: boolean;
@@ -143,6 +144,7 @@ const BLANK_TASK_BLOCK = {
   responsible_user_external_id: "",
   priority: "Normal",
   due_business_days: "3",
+  due_date_reference: "publication",
   description_template:
     "Publicação judicial referente ao processo {cnj} em {publication_date}.",
   notes_template: "",
@@ -444,6 +446,7 @@ const TaskTemplatesPage = () => {
         responsible_user_external_id: String(tmpl.responsible_user_external_id),
         priority: tmpl.priority,
         due_business_days: String(tmpl.due_business_days),
+        due_date_reference: tmpl.due_date_reference || "publication",
         description_template: tmpl.description_template ?? "",
         notes_template: tmpl.notes_template ?? "",
         is_active: tmpl.is_active,
@@ -502,6 +505,7 @@ const TaskTemplatesPage = () => {
       responsible_user_external_id: parseInt(block.responsible_user_external_id),
       priority: block.priority,
       due_business_days: parseInt(block.due_business_days) || 3,
+      due_date_reference: block.due_date_reference || "publication",
       description_template: block.description_template || null,
       notes_template: block.notes_template || null,
       is_active: block.is_active,
@@ -1094,6 +1098,9 @@ const TaskTemplatesPage = () => {
                       </TableCell>
                       <TableCell className="text-xs text-center">
                         {tmpl.due_business_days}d
+                        <span className="ml-1 text-[10px] text-muted-foreground">
+                          {tmpl.due_date_reference === "today" ? "(hoje)" : "(pub.)"}
+                        </span>
                       </TableCell>
                       <TableCell>
                         <Badge
@@ -1933,8 +1940,8 @@ const TaskTemplatesPage = () => {
                       </Select>
                     </div>
 
-                    {/* Prazo e Prioridade */}
-                    <div className="grid grid-cols-2 gap-3">
+                    {/* Prazo, Referência e Prioridade */}
+                    <div className="grid grid-cols-3 gap-3">
                       <div className="grid gap-1.5">
                         <Label className="text-xs">Prazo (dias úteis)</Label>
                         <Input
@@ -1945,6 +1952,21 @@ const TaskTemplatesPage = () => {
                           onChange={(e) => setBlockField(idx, "due_business_days", e.target.value)}
                           className="h-8 text-sm"
                         />
+                      </div>
+                      <div className="grid gap-1.5">
+                        <Label className="text-xs">Contar a partir de</Label>
+                        <Select
+                          value={block.due_date_reference || "publication"}
+                          onValueChange={(v) => setBlockField(idx, "due_date_reference", v)}
+                        >
+                          <SelectTrigger className="h-8 text-sm">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="publication">Data da publicação</SelectItem>
+                            <SelectItem value="today">Data atual (hoje)</SelectItem>
+                          </SelectContent>
+                        </Select>
                       </div>
                       <div className="grid gap-1.5">
                         <Label className="text-xs">Prioridade</Label>

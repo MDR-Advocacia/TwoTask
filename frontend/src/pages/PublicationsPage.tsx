@@ -1881,14 +1881,6 @@ const PublicationsPage = () => {
                                     title="Ver detalhes">
                                     <Eye className="h-3 w-3" />
                                   </Button>
-                                  {r.status !== "AGENDADO" && r.status !== "IGNORADO" && (
-                                    <Button variant="ghost" size="sm"
-                                      className="h-5 w-5 flex-shrink-0 p-0 text-muted-foreground hover:text-destructive"
-                                      onClick={() => handleIgnoreRecord(r.id)}
-                                      title="Ignorar esta publicação">
-                                      <EyeOff className="h-3 w-3" />
-                                    </Button>
-                                  )}
                                 </div>
                               ))}
                               {group.records.length > 2 && (
@@ -2354,6 +2346,27 @@ const PublicationsPage = () => {
           <div className="flex-1 overflow-y-auto px-6 py-4">
             {scheduleGroup && (
               <div className="space-y-5">
+
+                {/* Texto da publicação */}
+                <div>
+                  <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Texto da publicação
+                  </p>
+                  <div className="max-h-48 overflow-y-auto rounded-md border bg-muted/20 p-3">
+                    {scheduleGroup.records.map((r, ri) => (
+                      <div key={r.id} className={ri > 0 ? "mt-3 border-t pt-3" : ""}>
+                        {scheduleGroup.records.length > 1 && (
+                          <p className="mb-1 text-[10px] font-medium text-muted-foreground">
+                            Publicação {ri + 1} — {r.description_preview || r.legal_one_update_id}
+                          </p>
+                        )}
+                        <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/80">
+                          {r.description || r.description_preview || "Sem texto disponível."}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
 
                 {/* Publicações incluídas */}
                 <div>
