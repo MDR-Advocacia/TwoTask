@@ -87,7 +87,7 @@ class AutomationRunResponseSchema(BaseModel):
 # ─── Endpoints ──────────────────────────────────────────────────────────────
 
 @router.get("", tags=["Automations"])
-async def list_automations(
+def list_automations(
     db: Session = Depends(get_db),
     current_user: LegalOneUser = Depends(auth.require_permission("schedule_batch")),
 ):
@@ -178,7 +178,7 @@ async def list_automations(
 
 
 @router.post("", status_code=201, tags=["Automations"])
-async def create_automation(
+def create_automation(
     payload: AutomationCreateRequest,
     db: Session = Depends(get_db),
     scheduler: BackgroundScheduler = Depends(get_scheduler),
@@ -218,7 +218,7 @@ async def create_automation(
 
 
 @router.get("/{automation_id}", tags=["Automations"])
-async def get_automation(
+def get_automation(
     automation_id: int,
     db: Session = Depends(get_db),
     current_user: LegalOneUser = Depends(auth.require_permission("schedule_batch")),
@@ -249,7 +249,7 @@ async def get_automation(
 
 
 @router.patch("/{automation_id}", tags=["Automations"])
-async def update_automation(
+def update_automation(
     automation_id: int,
     payload: AutomationUpdateRequest,
     db: Session = Depends(get_db),
@@ -291,7 +291,7 @@ async def update_automation(
 
 
 @router.delete("/{automation_id}", status_code=204, tags=["Automations"])
-async def delete_automation(
+def delete_automation(
     automation_id: int,
     db: Session = Depends(get_db),
     scheduler: BackgroundScheduler = Depends(get_scheduler),
@@ -309,7 +309,7 @@ async def delete_automation(
 
 
 @router.post("/{automation_id}/run", status_code=202, tags=["Automations"])
-async def run_automation_now(
+def run_automation_now(
     automation_id: int,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
@@ -344,7 +344,7 @@ async def run_automation_now(
 
 
 @router.get("/{automation_id}/runs", tags=["Automations"])
-async def get_automation_runs(
+def get_automation_runs(
     automation_id: int,
     limit: int = 50,
     db: Session = Depends(get_db),

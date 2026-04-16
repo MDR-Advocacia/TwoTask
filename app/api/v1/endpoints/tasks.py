@@ -535,7 +535,7 @@ def create_full_task(
     status_code=202,
     summary="Criar tarefas em lote a partir de uma fonte externa",
 )
-async def create_batch_tasks(
+def create_batch_tasks(
     request: BatchTaskCreationRequest,
     background_tasks: BackgroundTasks,
     service: BatchTaskCreationService = Depends(get_batch_task_creation_service),
@@ -622,7 +622,7 @@ async def analyze_spreadsheet(file: UploadFile = File(...)):
     status_code=202,
     summary="Criar tarefas em lote a partir da interface interativa",
 )
-async def create_batch_tasks_interactive(
+def create_batch_tasks_interactive(
     request: BatchInteractiveCreationRequest,
     service: BatchTaskCreationService = Depends(get_batch_task_creation_service),
     current_user: LegalOneUser = Depends(auth_security.get_current_user),
@@ -642,7 +642,7 @@ async def create_batch_tasks_interactive(
     "/validate-publication-tasks",
     summary="Validar regras de negocio para um conjunto de tarefas de uma publicacao",
 )
-async def validate_publication_tasks(
+def validate_publication_tasks(
     request: ValidatePublicationTasksRequest,
     rule_service: TaskRuleService = Depends(get_task_rule_service),
 ):
@@ -770,7 +770,7 @@ def download_error_report(
 
 
 @router.get("/executions/{execution_id}", summary="Obter detalhes completos da execucao")
-async def get_execution_details(
+def get_execution_details(
     execution_id: int,
     db: Session = Depends(get_db),
 ):

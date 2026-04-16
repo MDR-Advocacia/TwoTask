@@ -84,7 +84,7 @@ class ReclassifyRecordsRequest(BaseModel):
 # ─── Dashboard ──────────────────────────────────
 
 @router.get("/statistics")
-async def get_statistics(
+def get_statistics(
     service: PublicationSearchService = Depends(_get_service),
 ):
     """Retorna contagens gerais para o painel de controle."""
@@ -94,7 +94,7 @@ async def get_statistics(
 # ─── Buscas ─────────────────────────────────────
 
 @router.post("/search")
-async def create_search(
+def create_search(
     payload: SearchRequest,
     background_tasks: BackgroundTasks,
     service: PublicationSearchService = Depends(_get_service),
@@ -122,7 +122,7 @@ async def create_search(
 
 
 @router.post("/reclassify")
-async def reclassify_pending(
+def reclassify_pending(
     background_tasks: BackgroundTasks,
     linked_office_id: Optional[int] = None,
     service: PublicationSearchService = Depends(_get_service),
@@ -153,7 +153,7 @@ async def reclassify_pending(
 
 
 @router.post("/rebuild-proposals")
-async def rebuild_task_proposals(
+def rebuild_task_proposals(
     background_tasks: BackgroundTasks,
     linked_office_id: Optional[int] = None,
     service: PublicationSearchService = Depends(_get_service),
@@ -242,7 +242,7 @@ async def submit_classify_batch(
 
 
 @router.get("/classify-batch")
-async def list_classify_batches(
+def list_classify_batches(
     limit: int = Query(50, ge=1, le=200),
     classifier: PublicationBatchClassifier = Depends(_get_batch_classifier),
     _=Depends(auth_security.get_current_user),
@@ -253,7 +253,7 @@ async def list_classify_batches(
 
 
 @router.get("/classify-batch/{batch_id}")
-async def get_classify_batch(
+def get_classify_batch(
     batch_id: int,
     classifier: PublicationBatchClassifier = Depends(_get_batch_classifier),
     _=Depends(auth_security.get_current_user),
@@ -388,7 +388,7 @@ async def retry_batch_errors(
 
 
 @router.get("/classify-batch/{batch_id}/errors")
-async def get_batch_errors(
+def get_batch_errors(
     batch_id: int,
     classifier: PublicationBatchClassifier = Depends(_get_batch_classifier),
     _=Depends(auth_security.get_current_user),
@@ -406,7 +406,7 @@ async def get_batch_errors(
 
 
 @router.get("/searches")
-async def list_searches(
+def list_searches(
     limit: int = Query(20, ge=1, le=100),
     service: PublicationSearchService = Depends(_get_service),
 ):
@@ -415,7 +415,7 @@ async def list_searches(
 
 
 @router.get("/searches/{search_id}")
-async def get_search(
+def get_search(
     search_id: int,
     service: PublicationSearchService = Depends(_get_service),
 ):
@@ -427,7 +427,7 @@ async def get_search(
 
 
 @router.post("/searches/{search_id}/cancel")
-async def cancel_search(
+def cancel_search(
     search_id: int,
     service: PublicationSearchService = Depends(_get_service),
 ):
@@ -441,7 +441,7 @@ async def cancel_search(
 # ─── Registros de Publicações ───────────────────
 
 @router.get("/records")
-async def list_records(
+def list_records(
     search_id: Optional[int] = Query(None),
     status: Optional[str] = Query(None),
     linked_office_id: Optional[int] = Query(None, description="Filtra por escritório responsável"),
@@ -460,7 +460,7 @@ async def list_records(
 
 
 @router.get("/records/grouped")
-async def list_records_grouped(
+def list_records_grouped(
     search_id: Optional[int] = Query(None),
     status: Optional[str] = Query(None),
     linked_office_id: Optional[int] = Query(None),
@@ -487,7 +487,7 @@ async def list_records_grouped(
 
 
 @router.get("/records/grouped/export")
-async def export_records_grouped(
+def export_records_grouped(
     search_id: Optional[int] = Query(None),
     status: Optional[str] = Query(None),
     linked_office_id: Optional[int] = Query(None),
@@ -521,7 +521,7 @@ async def export_records_grouped(
 
 
 @router.get("/lookup-by-cnj")
-async def lookup_by_cnj(
+def lookup_by_cnj(
     cnj: str = Query(..., description="Número CNJ do processo (com ou sem formatação)."),
     service: PublicationSearchService = Depends(_get_service),
 ):
@@ -537,7 +537,7 @@ async def lookup_by_cnj(
 
 
 @router.get("/records/duplicate-divergences")
-async def list_duplicate_divergences(
+def list_duplicate_divergences(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     service: PublicationSearchService = Depends(_get_service),
@@ -550,7 +550,7 @@ async def list_duplicate_divergences(
 
 
 @router.get("/records/{record_id}")
-async def get_record(
+def get_record(
     record_id: int,
     service: PublicationSearchService = Depends(_get_service),
 ):
@@ -562,7 +562,7 @@ async def get_record(
 
 
 @router.patch("/records/{record_id}")
-async def update_record_status(
+def update_record_status(
     record_id: int,
     payload: UpdateRecordStatusRequest,
     service: PublicationSearchService = Depends(_get_service),
@@ -575,7 +575,7 @@ async def update_record_status(
 
 
 @router.post("/records/reclassify")
-async def reclassify_records(
+def reclassify_records(
     payload: ReclassifyRecordsRequest,
     service: PublicationSearchService = Depends(_get_service),
     _=Depends(auth_security.get_current_user),
@@ -598,7 +598,7 @@ async def reclassify_records(
 # ─── Agendamento por grupo (processo) ───────────
 
 @router.post("/groups/{lawsuit_id}/schedule")
-async def schedule_group(
+def schedule_group(
     lawsuit_id: int,
     payload: ScheduleGroupRequest,
     service: PublicationSearchService = Depends(_get_service),
@@ -620,7 +620,7 @@ async def schedule_group(
 
 
 @router.post("/groups/records/schedule")
-async def schedule_records(
+def schedule_records(
     payload: ScheduleRecordsRequest,
     service: PublicationSearchService = Depends(_get_service),
 ):
@@ -645,7 +645,7 @@ async def schedule_records(
 # ─── Debug ──────────────────────────────────────
 
 @router.get("/debug-api")
-async def debug_legalone_api(
+def debug_legalone_api(
     query: str = Query(default="", description="Query string OData manual, ex: $filter=originType eq 'OfficialJournalsCrawler'&$top=2"),
     client: LegalOneApiClient = Depends(get_api_client),
     _=Depends(auth_security.get_current_user),
@@ -700,7 +700,7 @@ class OverrideBulkRequest(BaseModel):
 
 
 @router.get("/classification-overrides")
-async def list_classification_overrides(
+def list_classification_overrides(
     office_external_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
     _=Depends(auth_security.get_current_user),
@@ -733,7 +733,7 @@ async def list_classification_overrides(
 
 
 @router.post("/classification-overrides")
-async def create_classification_override(
+def create_classification_override(
     body: OverrideCreate,
     db: Session = Depends(get_db),
     _=Depends(auth_security.get_current_user),
@@ -778,7 +778,7 @@ async def create_classification_override(
 
 
 @router.patch("/classification-overrides/{override_id}")
-async def update_classification_override(
+def update_classification_override(
     override_id: int,
     body: OverrideUpdate,
     db: Session = Depends(get_db),
@@ -799,7 +799,7 @@ async def update_classification_override(
 
 
 @router.delete("/classification-overrides/{override_id}")
-async def delete_classification_override(
+def delete_classification_override(
     override_id: int,
     db: Session = Depends(get_db),
     _=Depends(auth_security.get_current_user),
@@ -816,7 +816,7 @@ async def delete_classification_override(
 
 
 @router.post("/classification-overrides/bulk")
-async def bulk_create_classification_overrides(
+def bulk_create_classification_overrides(
     body: OverrideBulkRequest,
     db: Session = Depends(get_db),
     _=Depends(auth_security.get_current_user),
@@ -876,7 +876,7 @@ async def bulk_create_classification_overrides(
 
 
 @router.delete("/classification-overrides/bulk")
-async def bulk_delete_classification_overrides(
+def bulk_delete_classification_overrides(
     category: str = Query(...),
     subcategory: Optional[str] = Query(None),
     action: Optional[str] = Query(None),
@@ -906,7 +906,7 @@ async def bulk_delete_classification_overrides(
 
 
 @router.get("/classification-taxonomy")
-async def get_classification_taxonomy(
+def get_classification_taxonomy(
     office_external_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
     _=Depends(auth_security.get_current_user),

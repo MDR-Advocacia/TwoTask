@@ -82,7 +82,7 @@ async def _run_classification(service: ClassificationService, batch_id: int):
 
 
 @router.get("/batches")
-async def list_batches(
+def list_batches(
     service: ClassificationService = Depends(get_classification_service),
 ):
     """Lista os batches de classificação mais recentes."""
@@ -90,7 +90,7 @@ async def list_batches(
 
 
 @router.get("/batches/{batch_id}")
-async def get_batch_status(
+def get_batch_status(
     batch_id: int,
     service: ClassificationService = Depends(get_classification_service),
 ):
@@ -102,7 +102,7 @@ async def get_batch_status(
 
 
 @router.get("/batches/{batch_id}/results")
-async def get_batch_results(
+def get_batch_results(
     batch_id: int,
     service: ClassificationService = Depends(get_classification_service),
 ):
@@ -114,7 +114,7 @@ async def get_batch_results(
 
 
 @router.get("/batches/{batch_id}/export")
-async def export_batch_results(
+def export_batch_results(
     batch_id: int,
     service: ClassificationService = Depends(get_classification_service),
 ):
@@ -134,7 +134,7 @@ async def export_batch_results(
 
 
 @router.post("/batches/{batch_id}/cancel")
-async def cancel_batch(
+def cancel_batch(
     batch_id: int,
     service: ClassificationService = Depends(get_classification_service),
 ):

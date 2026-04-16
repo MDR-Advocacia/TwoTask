@@ -41,7 +41,7 @@ class RunControlRequest(BaseModel):
 
 
 @router.get("/summary")
-async def get_treatment_summary(
+def get_treatment_summary(
     office_ids: Optional[str] = Query(default=None),
     service: PublicationTreatmentService = Depends(_get_service),
     _: LegalOneUser = Depends(auth.require_permission("publications")),
@@ -50,7 +50,7 @@ async def get_treatment_summary(
 
 
 @router.get("/items")
-async def get_treatment_items(
+def get_treatment_items(
     office_ids: Optional[str] = Query(default=None),
     queue_status: Optional[str] = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
@@ -65,7 +65,7 @@ async def get_treatment_items(
 
 
 @router.get("/runs")
-async def get_treatment_runs(
+def get_treatment_runs(
     limit: int = Query(default=20, ge=1, le=100),
     service: PublicationTreatmentService = Depends(_get_service),
     _: LegalOneUser = Depends(auth.require_permission("publications")),
@@ -74,7 +74,7 @@ async def get_treatment_runs(
 
 
 @router.get("/monitor")
-async def get_treatment_monitor(
+def get_treatment_monitor(
     office_ids: Optional[str] = Query(default=None),
     service: PublicationTreatmentService = Depends(_get_service),
     _: LegalOneUser = Depends(auth.require_permission("publications")),
@@ -83,7 +83,7 @@ async def get_treatment_monitor(
 
 
 @router.post("/runs/start")
-async def start_treatment_run(
+def start_treatment_run(
     payload: StartRunRequest,
     service: PublicationTreatmentService = Depends(_get_service),
     current_user: LegalOneUser = Depends(auth.require_permission("publications")),
@@ -98,7 +98,7 @@ async def start_treatment_run(
 
 
 @router.post("/runs/{run_id}/control")
-async def control_treatment_run(
+def control_treatment_run(
     run_id: int,
     payload: RunControlRequest,
     service: PublicationTreatmentService = Depends(_get_service),

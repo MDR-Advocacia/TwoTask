@@ -40,7 +40,7 @@ class TaskParentGroupUpdatePayload(BaseModel):
 
 
 @router.post("/sync-metadata", status_code=202, summary="Sincronizar metadados do Legal One", tags=["Admin"])
-async def sync_metadata(
+def sync_metadata(
     background_tasks: BackgroundTasks,
 ):
     logger.info("Endpoint /sync-metadata chamado. Adicionando tarefa em background.")
@@ -137,7 +137,7 @@ class RetryBatchRequest(BaseModel):
     summary="Reprocessar itens falhos de um lote (opcionalmente seletivo por item_ids)",
     tags=["Admin"],
 )
-async def retry_failed_batch_items(
+def retry_failed_batch_items(
     execution_id: int,
     background_tasks: BackgroundTasks,
     payload: Optional[RetryBatchRequest] = None,
@@ -222,7 +222,7 @@ class UserResponseSchema(BaseModel):
 
 
 @router.get("/users", tags=["Admin"])
-async def list_users(
+def list_users(
     db: Session = Depends(get_db),
     current_user: LegalOneUser = Depends(auth.get_current_user),
 ):
@@ -250,7 +250,7 @@ async def list_users(
 
 
 @router.patch("/users/{user_id}", tags=["Admin"])
-async def update_user(
+def update_user(
     user_id: int,
     payload: UserUpdateRequest,
     db: Session = Depends(get_db),
@@ -287,7 +287,7 @@ async def update_user(
 
 
 @router.post("/users/{user_id}/activate", tags=["Admin"])
-async def activate_user(
+def activate_user(
     user_id: int,
     db: Session = Depends(get_db),
     current_user: LegalOneUser = Depends(auth.get_current_user),
@@ -320,7 +320,7 @@ async def activate_user(
 
 
 @router.post("/users/{user_id}/reset-password", tags=["Admin"])
-async def reset_user_password(
+def reset_user_password(
     user_id: int,
     db: Session = Depends(get_db),
     current_user: LegalOneUser = Depends(auth.get_current_user),
@@ -352,7 +352,7 @@ async def reset_user_password(
 
 
 @router.post("/users/{user_id}/deactivate", tags=["Admin"])
-async def deactivate_user(
+def deactivate_user(
     user_id: int,
     db: Session = Depends(get_db),
     current_user: LegalOneUser = Depends(auth.get_current_user),
@@ -398,7 +398,7 @@ class SavedFilterSchema(BaseModel):
 
 
 @me_router.get("/me/saved-filters", tags=["User"])
-async def get_saved_filters(
+def get_saved_filters(
     module: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: LegalOneUser = Depends(auth.get_current_user),
@@ -422,7 +422,7 @@ async def get_saved_filters(
 
 
 @me_router.post("/me/saved-filters", status_code=201, tags=["User"])
-async def create_saved_filter(
+def create_saved_filter(
     payload: SavedFilterCreateRequest,
     db: Session = Depends(get_db),
     current_user: LegalOneUser = Depends(auth.get_current_user),
@@ -457,7 +457,7 @@ async def create_saved_filter(
 
 
 @me_router.delete("/me/saved-filters/{filter_id}", status_code=204, tags=["User"])
-async def delete_saved_filter(
+def delete_saved_filter(
     filter_id: int,
     db: Session = Depends(get_db),
     current_user: LegalOneUser = Depends(auth.get_current_user),
@@ -499,7 +499,7 @@ class MeResponseSchema(BaseModel):
 
 
 @me_router.get("/me", tags=["User"])
-async def get_current_user_info(
+def get_current_user_info(
     db: Session = Depends(get_db),
     current_user: LegalOneUser = Depends(auth.get_current_user),
 ):
@@ -517,7 +517,7 @@ async def get_current_user_info(
 
 
 @me_router.post("/me/change-password", tags=["User"])
-async def change_password(
+def change_password(
     payload: ChangePasswordRequest,
     db: Session = Depends(get_db),
     current_user: LegalOneUser = Depends(auth.get_current_user),
