@@ -129,6 +129,100 @@ def sync_caches(
 
 
 @router.get(
+    "/cache-status",
+    summary="Status dos caches de escritórios e processos",
+    tags=["Admin"],
+)
+def get_cache_status(db: Session = Depends(get_db)):
+    """
+    Retorna status detalhado dos caches:
+    - Índice de processos por escritório (office_lawsuit_index)
+    - Cache de dados dos processos (lawsuit_cache)
+    - Metadados (escritórios, usuários, tipos de tarefa)
+    """
+    from app.models.legal_one import LegalOneOffice, LegalOneUser, LegalOneTaskType
+    from app.models.office_lawsuit_index import OfficeLawsuitIndex, OfficeLawsuitSync
+    from app.models.lawsuit_cache import LawsuitCache, LAWSUIT_CACHE_TTL
+    from app.services.office_lawsuit_index_service import FULL_SYNC_TTL
+    from datetime import datetime, timezone
+    from sqlalchemy import func as sa_func
+
+    # ── Metadados ──
+    offices_count = db.query(sa_func.count(LegalOneOffice.id)).filter(
+        LegalOneOffice.is_active == True  # noqa: E712
+    ).scalar() or 0
+    users_count = db.query(sa_func.count(LegalOneUser.id)).filter(
+        LegalOneUser.is_active == True  # noqa: E712
+    ).scalar() or 0
+    task_types_count = db.query(sa_func.count(LegalOneTaskType.id)).scalar() or 0
+
+    # ── Índices por escritório ──
+    sync_states = db.query(OfficeLawsuitSync).all()
+    now = datetime.now(timezone.utc)
+
+    offices_index = []
+    any_in_progress = False
+    total_indexed = 0
+
+    # Nomes dos escritórios
+    office_names: dict[int, str] = {}
+    if sync_states:
+        oids = [s.office_id for s in sync_states]
+        rows = db.query(LegalOneOffice).filter(LegalOneOffice.external_id.in_(oids)).all()
+        office_names = {o.external_id: o.name for o in rows}
+
+    for s in sync_states:
+        last = s.last_full_sync_at
+        is_fresh = False
+        if last:
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            is_fresh = (now - last) < FULL_SYNC_TTL
+
+        offices_index.append({
+            "office_id": s.office_id,
+            "office_name": office_names.get(s.office_id, f"ID {s.office_id}"),
+            "total_ids": s.total_ids or 0,
+            "in_progress": bool(s.in_progress),
+            "progress_pct": s.progress_pct or 0,
+            "status": s.last_sync_status,
+            "error": s.last_sync_error,
+            "is_fresh": is_fresh,
+            "last_sync": s.finished_at.isoformat() if s.finished_at else None,
+        })
+        if s.in_progress:
+            any_in_progress = True
+        total_indexed += (s.total_ids or 0)
+
+    # ── Cache de processos ──
+    lawsuit_cache_total = db.query(sa_func.count(LawsuitCache.lawsuit_id)).scalar() or 0
+    cutoff = now - LAWSUIT_CACHE_TTL
+    lawsuit_cache_fresh = db.query(sa_func.count(LawsuitCache.lawsuit_id)).filter(
+        LawsuitCache.fetched_at >= cutoff
+    ).scalar() or 0
+    lawsuit_cache_stale = lawsuit_cache_total - lawsuit_cache_fresh
+
+    return {
+        "metadata": {
+            "offices": offices_count,
+            "users": users_count,
+            "task_types": task_types_count,
+        },
+        "office_index": {
+            "offices": offices_index,
+            "total_indexed": total_indexed,
+            "any_in_progress": any_in_progress,
+        },
+        "lawsuit_cache": {
+            "total": lawsuit_cache_total,
+            "fresh": lawsuit_cache_fresh,
+            "stale": lawsuit_cache_stale,
+            "ttl_hours": LAWSUIT_CACHE_TTL.total_seconds() / 3600,
+        },
+    }
+
+
+@router.get(
     "/task-types",
     summary="Listar tipos de tarefa agrupados",
     tags=["Admin"],
