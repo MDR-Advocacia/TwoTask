@@ -12,6 +12,23 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-onetask}
       POSTGRES_DB: ${POSTGRES_DB:-onetask}
       TZ: America/Fortaleza
+    # Tunning para atender múltiplos workers do Uvicorn.
+    # max_connections acomoda: N_workers × (pool_size + max_overflow) + folga admin.
+    # shared_buffers ≈ 25% da RAM dedicada ao Postgres em EC2 pequena/média.
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1536MB
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - random_page_cost=1.1
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
