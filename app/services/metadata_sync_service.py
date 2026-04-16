@@ -98,25 +98,42 @@ class MetadataSyncService:
             with self.db.begin_nested():
                 existing_users = {user.external_id: user for user in self.db.query(LegalOneUser).all()}
 
+                # Índice secundário por email para detectar usuários criados
+                # manualmente (ex.: admin com external_id=0) e vinculá-los ao
+                # external_id real do Legal One sem gerar UniqueViolation.
+                existing_by_email = {u.email: u for u in existing_users.values() if u.email}
+
                 for user_data in users_data:
                     external_id = user_data.get("id")
                     if not external_id:
                         continue
 
+                    email = user_data.get("email")
                     user = existing_users.get(external_id)
+
+                    if not user and email:
+                        # Fallback: talvez exista pelo email (criado manualmente).
+                        user = existing_by_email.get(email)
+                        if user:
+                            # Vincula ao external_id real; preserva role, senha
+                            # e permissões que foram configurados manualmente.
+                            user.external_id = external_id
+                            existing_users[external_id] = user
+
                     if user:
                         user.name = user_data.get("name")
-                        user.email = user_data.get("email")
+                        user.email = email
                         user.is_active = user_data.get("isActive", False)
                     else:
-                        self.db.add(
-                            LegalOneUser(
-                                external_id=external_id,
-                                name=user_data.get("name"),
-                                email=user_data.get("email"),
-                                is_active=user_data.get("isActive", False),
-                            )
+                        new_user = LegalOneUser(
+                            external_id=external_id,
+                            name=user_data.get("name"),
+                            email=email,
+                            is_active=user_data.get("isActive", False),
                         )
+                        self.db.add(new_user)
+                        if email:
+                            existing_by_email[email] = new_user
 
                 active_external_ids = {
                     user["id"]
