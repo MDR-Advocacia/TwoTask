@@ -48,6 +48,86 @@ def sync_metadata(
     return {"message": "Processo de sincronizacao de metadados do Legal One iniciado em segundo plano."}
 
 
+@router.post(
+    "/sync-caches",
+    status_code=202,
+    summary="Pré-carregar caches de escritórios e processos",
+    tags=["Admin"],
+)
+def sync_caches(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """
+    Dispara em background o pre-warm dos caches:
+    1. Índice de processos por escritório (office_lawsuit_index)
+    2. Cache de dados do processo (lawsuit_cache: CNJ, creationDate, officeId)
+
+    Evita que a primeira busca de publicações seja lenta e economiza
+    chamadas à API do Legal One.
+    """
+    from app.models.legal_one import LegalOneOffice
+
+    offices = (
+        db.query(LegalOneOffice)
+        .filter(LegalOneOffice.is_active == True)  # noqa: E712
+        .all()
+    )
+    office_ids = [o.external_id for o in offices]
+
+    if not office_ids:
+        return {"message": "Nenhum escritório ativo encontrado."}
+
+    def _run():
+        from app.db.session import SessionLocal
+        from app.services.office_lawsuit_index_service import OfficeLawsuitIndexService
+        from app.services.legal_one_client import LegalOneApiClient
+
+        bg_db = SessionLocal()
+        try:
+            client = LegalOneApiClient()
+            svc = OfficeLawsuitIndexService(bg_db, client)
+
+            for oid in office_ids:
+                logger.info("Pre-warm: sync índice escritório %s", oid)
+                try:
+                    svc.ensure_sync(oid, force_full=False)
+                except Exception as exc:
+                    logger.warning("Pre-warm: falha no índice do escritório %s: %s", oid, exc)
+
+            # Pre-warm lawsuit_cache: busca dados (CNJ + creationDate) de todos
+            # os processos indexados. O client salva automaticamente no cache.
+            from app.models.office_lawsuit_index import OfficeLawsuitIndex
+
+            all_lawsuit_ids = [
+                r[0]
+                for r in bg_db.query(OfficeLawsuitIndex.lawsuit_id).distinct().all()
+            ]
+            logger.info("Pre-warm: carregando cache de %s processos...", len(all_lawsuit_ids))
+
+            if all_lawsuit_ids:
+                # fetch_lawsuits_by_ids já usa e popula o lawsuit_cache
+                BATCH = 500
+                for i in range(0, len(all_lawsuit_ids), BATCH):
+                    chunk = all_lawsuit_ids[i:i + BATCH]
+                    try:
+                        client.fetch_lawsuits_by_ids(chunk)
+                    except Exception as exc:
+                        logger.warning("Pre-warm: falha no batch %s-%s: %s", i, i + len(chunk), exc)
+
+            logger.info("Pre-warm: concluído. %s escritórios, %s processos.", len(office_ids), len(all_lawsuit_ids))
+        except Exception as exc:
+            logger.exception("Pre-warm: erro geral: %s", exc)
+        finally:
+            bg_db.close()
+
+    background_tasks.add_task(_run)
+    return {
+        "message": f"Pre-warm de caches iniciado para {len(office_ids)} escritórios.",
+        "offices": len(office_ids),
+    }
+
+
 @router.get(
     "/task-types",
     summary="Listar tipos de tarefa agrupados",

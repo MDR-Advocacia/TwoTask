@@ -215,6 +215,7 @@ const AssociateTasks = () => {
 const SyncManager = () => {
     const { toast } = useToast();
     const [isSyncing, setIsSyncing] = useState(false);
+    const [isCacheWarming, setIsCacheWarming] = useState(false);
 
     const handleSync = async () => {
         setIsSyncing(true);
@@ -245,29 +246,83 @@ const SyncManager = () => {
                     title: "Ação Enviada",
                     description: "Verifique os logs do servidor para acompanhar o progresso da sincronização.",
                 });
-            }, 3000); 
+            }, 3000);
+        }
+    };
+
+    const handleCacheWarm = async () => {
+        setIsCacheWarming(true);
+        toast({
+            title: "Pré-carga de Caches Iniciada",
+            description: "Carregando índices de escritórios e dados de processos em segundo plano...",
+        });
+
+        try {
+            const response = await apiFetch('/api/v1/admin/sync-caches', {
+                method: 'POST',
+            });
+
+            if (response.status !== 202) {
+                const errorData = await response.json();
+                throw new Error(errorData.detail || 'Falha ao disparar a pré-carga de caches.');
+            }
+            const data = await response.json();
+            toast({
+                title: "Pré-carga Disparada",
+                description: `Carregando caches para ${data.offices || '?'} escritórios. Isso pode levar alguns minutos.`,
+            });
+        } catch (error: any) {
+            toast({
+                title: "Erro ao Iniciar Pré-carga",
+                description: error.message,
+                variant: "destructive",
+            });
+        } finally {
+            setTimeout(() => setIsCacheWarming(false), 5000);
         }
     };
 
     return (
-        <Card>
-            <CardHeader>
-                <CardTitle>Sincronização de Metadados</CardTitle>
-                <CardDescription>
-                    Mantenha os dados do sistema (escritórios, usuários, tipos de tarefas) atualizados com o Legal One.
-                </CardDescription>
-            </CardHeader>
-            <CardContent>
-                <Button onClick={handleSync} disabled={isSyncing}>
-                    {isSyncing ? (
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    ) : (
-                        <RefreshCw className="mr-2 h-4 w-4" />
-                    )}
-                    {isSyncing ? "Sincronizando..." : "Iniciar Sincronização Manual"}
-                </Button>
-            </CardContent>
-        </Card>
+        <div className="space-y-4">
+            <Card>
+                <CardHeader>
+                    <CardTitle>Sincronização de Metadados</CardTitle>
+                    <CardDescription>
+                        Mantenha os dados do sistema (escritórios, usuários, tipos de tarefas) atualizados com o Legal One.
+                    </CardDescription>
+                </CardHeader>
+                <CardContent>
+                    <Button onClick={handleSync} disabled={isSyncing}>
+                        {isSyncing ? (
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                            <RefreshCw className="mr-2 h-4 w-4" />
+                        )}
+                        {isSyncing ? "Sincronizando..." : "Iniciar Sincronização Manual"}
+                    </Button>
+                </CardContent>
+            </Card>
+
+            <Card>
+                <CardHeader>
+                    <CardTitle>Cache de Escritórios e Processos</CardTitle>
+                    <CardDescription>
+                        Pré-carrega o índice de processos por escritório e os dados dos processos (CNJ, data de criação da pasta).
+                        Acelera a primeira busca de publicações e economiza chamadas à API do Legal One.
+                    </CardDescription>
+                </CardHeader>
+                <CardContent>
+                    <Button onClick={handleCacheWarm} disabled={isCacheWarming} variant="outline">
+                        {isCacheWarming ? (
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                            <RefreshCw className="mr-2 h-4 w-4" />
+                        )}
+                        {isCacheWarming ? "Carregando caches..." : "Pré-carregar Caches"}
+                    </Button>
+                </CardContent>
+            </Card>
+        </div>
     )
 }
 
