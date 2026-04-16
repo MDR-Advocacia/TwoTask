@@ -360,7 +360,14 @@ class PublicationSearchService:
                     )
                     self.db.rollback()
 
-            search.total_found = len(publications)
+            # `total_found` = registros que ESTA busca efetivamente vinculou
+            # ao sistema (novos + descartados por dedup de processo/data).
+            # Importante NÃO usar `len(publications)` aqui — esse é o total
+            # cru devolvido pela API do Legal One e, em re-execuções da mesma
+            # janela, fica inflado (todas as publicações já estão no banco
+            # com update_id duplicado, mas apareciam como "encontradas" no
+            # histórico mesmo sem nada ter sido adicionado).
+            search.total_found = new_count + discarded_count
             search.total_new = new_count
             # total_duplicate agrega os dois tipos: duplicata por update_id +
             # descartadas pelo dedup (lawsuit_id, publication_date).
@@ -370,8 +377,10 @@ class PublicationSearchService:
             self.db.commit()
 
             logger.info(
-                "Busca #%s concluida: %s encontradas, %s novas, %s dup update_id, %s descartadas (mesmo processo/data)",
-                search.id, len(publications), new_count, dup_count, discarded_count,
+                "Busca #%s concluida: %s api-total, %s vinculadas, %s novas, "
+                "%s dup update_id, %s descartadas (mesmo processo/data)",
+                search.id, len(publications), new_count + discarded_count,
+                new_count, dup_count, discarded_count,
             )
 
             return self._search_to_dict(search)
