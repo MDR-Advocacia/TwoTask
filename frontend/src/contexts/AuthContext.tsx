@@ -162,7 +162,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     user,
     token,
     tokenData,
-    mustChangePassword: tokenData?.must_change_password ?? false,
+    // Usa o estado do /me (banco) como fonte de verdade — o JWT pode estar
+    // defasado se a senha foi trocada sem reemissão de token.
+    mustChangePassword: user?.must_change_password ?? tokenData?.must_change_password ?? false,
     login,
     logout,
     isLoading,

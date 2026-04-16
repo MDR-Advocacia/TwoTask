@@ -73,7 +73,13 @@ function AppContent() {
         isMandatory={authContext?.mustChangePassword ?? false}
         onPasswordChanged={() => {
           setShowChangePasswordDialog(false);
-          authContext?.refreshMe();
+          // O JWT atual ainda carrega must_change_password=true.
+          // Força logout para que o próximo login emita um token com a claim atualizada.
+          if (authContext?.mustChangePassword) {
+            authContext?.logout();
+          } else {
+            authContext?.refreshMe();
+          }
         }}
       />
     </>

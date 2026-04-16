@@ -370,6 +370,10 @@ const PublicationsPage = () => {
   const [editedPayloads, setEditedPayloads] = useState<Partial<ProposedTask>[]>([]);
   const [scheduling, setScheduling] = useState(false);
 
+  // Bulk selection de grupos (Processos com Publicações)
+  const [selectedGroupKeys, setSelectedGroupKeys] = useState<Set<string>>(new Set());
+  const [bulkProcessing, setBulkProcessing] = useState(false);
+
   // Batch classification
   const [batches, setBatches] = useState<PublicationBatch[]>([]);
   const [batchesExpanded, setBatchesExpanded] = useState(true);
@@ -686,6 +690,7 @@ const PublicationsPage = () => {
 
   const handleGroupPageChange = (newPage: number) => {
     setGroupPage(newPage);
+    setSelectedGroupKeys(new Set());
     loadGrouped(newPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory);
   };
 
@@ -931,6 +936,146 @@ const PublicationsPage = () => {
     } finally {
       setScheduling(false);
     }
+  };
+
+  // ─── Bulk actions (seleção múltipla de grupos) ───────────────────────
+
+  // Chave estável do grupo (não depende do índice da iteração)
+  const groupKey = (group: GroupedRecord): string =>
+    `${group.lawsuit_id ?? "nl"}-${group.records[0]?.id ?? "x"}`;
+
+  const toggleGroupSelection = (key: string) => {
+    setSelectedGroupKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const toggleSelectAllVisible = () => {
+    if (!grouped) return;
+    const visibleKeys = grouped.groups.map(groupKey);
+    setSelectedGroupKeys((prev) => {
+      const allSelected = visibleKeys.every((k) => prev.has(k));
+      if (allSelected) {
+        const next = new Set(prev);
+        visibleKeys.forEach((k) => next.delete(k));
+        return next;
+      }
+      return new Set([...prev, ...visibleKeys]);
+    });
+  };
+
+  const clearSelection = () => setSelectedGroupKeys(new Set());
+
+  const handleBulkConfirm = async () => {
+    if (!grouped) return;
+    const selected = grouped.groups.filter((g) => selectedGroupKeys.has(groupKey(g)));
+    const schedulable = selected.filter((g) => {
+      const tasks = g.proposed_tasks || (g.proposed_task ? [g.proposed_task] : []);
+      const status = groupStatusSummary(g);
+      return tasks.length > 0 && status !== "AGENDADO";
+    });
+
+    if (schedulable.length === 0) {
+      toast({
+        title: "Nada a confirmar",
+        description: "Nenhum grupo selecionado possui proposta pendente.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setBulkProcessing(true);
+    let ok = 0;
+    const errors: string[] = [];
+
+    for (const group of schedulable) {
+      const tasks = group.proposed_tasks && group.proposed_tasks.length > 0
+        ? group.proposed_tasks
+        : (group.proposed_task ? [group.proposed_task] : []);
+      const payloadOverrides = tasks.map((t) => ({ ...t }));
+
+      try {
+        if (!group.lawsuit_id) {
+          const recordIds = group.records.map((r) => r.id);
+          const res = await apiFetch(`${API}/groups/records/schedule`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ record_ids: recordIds, payload_overrides: payloadOverrides }),
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.detail || "Erro ao agendar.");
+          }
+        } else {
+          const res = await apiFetch(`${API}/groups/${group.lawsuit_id}/schedule`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ payload_overrides: payloadOverrides }),
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.detail || "Erro ao agendar.");
+          }
+        }
+        ok += 1;
+      } catch (err: any) {
+        errors.push(`${group.lawsuit_cnj ?? group.lawsuit_id ?? "sem processo"}: ${err.message}`);
+      }
+    }
+
+    toast({
+      title: `${ok} grupo(s) agendado(s)`,
+      description: errors.length > 0 ? `Falhas: ${errors.slice(0, 3).join(" | ")}${errors.length > 3 ? ` (+${errors.length - 3})` : ""}` : undefined,
+      variant: errors.length > 0 ? "destructive" : "default",
+    });
+
+    clearSelection();
+    setBulkProcessing(false);
+    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory);
+    loadStats();
+  };
+
+  const handleBulkIgnore = async () => {
+    if (!grouped) return;
+    const selected = grouped.groups.filter((g) => selectedGroupKeys.has(groupKey(g)));
+    const recordIds = selected.flatMap((g) =>
+      g.records.filter((r) => r.status !== "AGENDADO" && r.status !== "IGNORADO").map((r) => r.id),
+    );
+
+    if (recordIds.length === 0) {
+      toast({
+        title: "Nada a ignorar",
+        description: "As publicações selecionadas já estão agendadas ou ignoradas.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setBulkProcessing(true);
+    const results = await Promise.allSettled(
+      recordIds.map((id) =>
+        apiFetch(`${API}/records/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "IGNORADO" }),
+        }),
+      ),
+    );
+    const ok = results.filter((r) => r.status === "fulfilled").length;
+    const failed = results.length - ok;
+
+    toast({
+      title: `${ok} publicação(ões) ignorada(s)`,
+      description: failed > 0 ? `${failed} falharam.` : undefined,
+      variant: failed > 0 ? "destructive" : "default",
+    });
+
+    clearSelection();
+    setBulkProcessing(false);
+    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory);
+    loadStats();
   };
 
   // ─── Derived ─────────────────────────────────────────────────────────
@@ -1513,10 +1658,40 @@ const PublicationsPage = () => {
             </div>
           ) : (
             <>
+              {selectedGroupKeys.size > 0 && (
+                <div className="mb-2 flex items-center justify-between gap-2 rounded border border-primary/30 bg-primary/5 px-3 py-2 text-sm">
+                  <span>
+                    <strong>{selectedGroupKeys.size}</strong> grupo(s) selecionado(s)
+                  </span>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="default" disabled={bulkProcessing} onClick={handleBulkConfirm}>
+                      <Send className="mr-1 h-3 w-3" />
+                      Confirmar agendamentos
+                    </Button>
+                    <Button size="sm" variant="outline" disabled={bulkProcessing} onClick={handleBulkIgnore}>
+                      <EyeOff className="mr-1 h-3 w-3" />
+                      Ignorar selecionados
+                    </Button>
+                    <Button size="sm" variant="ghost" disabled={bulkProcessing} onClick={clearSelection}>
+                      Limpar seleção
+                    </Button>
+                  </div>
+                </div>
+              )}
               <ScrollArea className="h-[min(820px,calc(100vh-280px))] rounded border text-[13px]">
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead className="w-[40px]">
+                        <Checkbox
+                          checked={
+                            grouped.groups.length > 0 &&
+                            grouped.groups.every((g) => selectedGroupKeys.has(groupKey(g)))
+                          }
+                          onCheckedChange={toggleSelectAllVisible}
+                          aria-label="Selecionar todos os grupos visíveis"
+                        />
+                      </TableHead>
                       <TableHead className="w-[130px]">Processo</TableHead>
                       <TableHead className="w-[160px]">Escritório</TableHead>
                       <TableHead className="w-[100px]">Datas</TableHead>
@@ -1548,8 +1723,16 @@ const PublicationsPage = () => {
                       const proposedTasks = group.proposed_tasks || (group.proposed_task ? [group.proposed_task] : []);
                       const hasProposal = proposedTasks.length > 0;
 
+                      const gKey = groupKey(group);
                       return (
                         <TableRow key={`${group.lawsuit_id}-${gi}`}>
+                          <TableCell className="w-[40px]">
+                            <Checkbox
+                              checked={selectedGroupKeys.has(gKey)}
+                              onCheckedChange={() => toggleGroupSelection(gKey)}
+                              aria-label="Selecionar grupo"
+                            />
+                          </TableCell>
                           <TableCell className="font-mono text-xs">
                             {group.lawsuit_cnj ? (
                               <div title={group.lawsuit_cnj}>
