@@ -338,6 +338,7 @@ const PublicationsPage = () => {
   const [dateTo, setDateTo] = useState("");
   const [originType, setOriginType] = useState("OfficialJournalsCrawler");
   const [searchOfficeId, setSearchOfficeId] = useState<string>("");
+  const [searchOnlyUnlinked, setSearchOnlyUnlinked] = useState(false);
   const [indexStatus, setIndexStatus] = useState<{
     total_ids: number;
     in_progress: boolean;
@@ -386,6 +387,7 @@ const PublicationsPage = () => {
   const [applyingBatchId, setApplyingBatchId] = useState<number | null>(null);
   const [batchOfficeId, setBatchOfficeId] = useState<string>("");
   const [batchLimit, setBatchLimit] = useState<string>("");
+  const [batchOnlyUnlinked, setBatchOnlyUnlinked] = useState(false);
   const [retryingBatchId, setRetryingBatchId] = useState<number | null>(null);
   const [errorDetailsBatchId, setErrorDetailsBatchId] = useState<number | null>(null);
   const [removedTaskIndices, setRemovedTaskIndices] = useState<Set<number>>(new Set());
@@ -661,6 +663,7 @@ const PublicationsPage = () => {
         origin_type: originType,
         responsible_office_id: searchOfficeId ? parseInt(searchOfficeId) : null,
         auto_classify: false,
+        only_unlinked: searchOnlyUnlinked,
       };
       const res = await apiFetch(`${API}/search`, {
         method: "POST",
@@ -772,6 +775,7 @@ const PublicationsPage = () => {
         const parsed = parseInt(batchLimit);
         if (!Number.isNaN(parsed) && parsed > 0) payload.limit = parsed;
       }
+      if (batchOnlyUnlinked) payload.only_unlinked = true;
       const res = await apiFetch(`${API}/classify-batch/submit`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1281,6 +1285,16 @@ const PublicationsPage = () => {
                 </SelectContent>
               </Select>
             </div>
+            <div className="flex items-center gap-2 self-end">
+              <Checkbox
+                id="searchOnlyUnlinked"
+                checked={searchOnlyUnlinked}
+                onCheckedChange={(v) => setSearchOnlyUnlinked(!!v)}
+              />
+              <Label htmlFor="searchOnlyUnlinked" className="text-xs cursor-pointer whitespace-nowrap">
+                Apenas sem processo
+              </Label>
+            </div>
             <Button onClick={handleSearch} disabled={isSearching || !dateFrom} className="self-end">
               {isSearching ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />}
               Buscar
@@ -1421,6 +1435,16 @@ const PublicationsPage = () => {
                 <Input type="number" placeholder="Ex.: 3000"
                   value={batchLimit} onChange={(e) => setBatchLimit(e.target.value)}
                   className="w-[140px]" />
+              </div>
+              <div className="flex items-center gap-2 self-end">
+                <Checkbox
+                  id="batchOnlyUnlinked"
+                  checked={batchOnlyUnlinked}
+                  onCheckedChange={(v) => setBatchOnlyUnlinked(!!v)}
+                />
+                <Label htmlFor="batchOnlyUnlinked" className="text-xs cursor-pointer whitespace-nowrap">
+                  Apenas sem processo
+                </Label>
               </div>
               <Button onClick={handleSubmitBatch} disabled={submittingBatch}>
                 {submittingBatch

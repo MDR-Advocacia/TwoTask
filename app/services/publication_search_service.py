@@ -104,6 +104,7 @@ class PublicationSearchService:
         responsible_office_id: Optional[int] = None,
         auto_classify: bool = False,
         requested_by: Optional[str] = None,
+        only_unlinked: bool = False,
     ) -> dict[str, Any]:
         """Cria um registro de busca, executa, enriquece e persiste resultados."""
 
@@ -229,6 +230,21 @@ class PublicationSearchService:
                 logger.info(
                     "Filtro por escritório %s: %s → %s publicações.",
                     responsible_office_id, before, len(publications),
+                )
+
+            # 3.5) Filtra apenas publicações sem processo vinculado (se solicitado)
+            if only_unlinked:
+                before_unlinked = len(publications)
+                publications = [
+                    p for p in publications
+                    if not any(
+                        r.get("linkType") == "Litigation"
+                        for r in (p.get("relationships") or [])
+                    )
+                ]
+                logger.info(
+                    "Filtro only_unlinked: %s → %s publicações.",
+                    before_unlinked, len(publications),
                 )
 
             # 4) Deduplica e persiste os novos

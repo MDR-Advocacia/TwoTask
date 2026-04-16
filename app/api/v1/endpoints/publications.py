@@ -52,6 +52,7 @@ class SearchRequest(BaseModel):
     origin_type: str = "OfficialJournalsCrawler"
     responsible_office_id: Optional[int] = None
     auto_classify: bool = True
+    only_unlinked: bool = False  # Buscar apenas publicações sem processo vinculado
 
 
 class UpdateRecordStatusRequest(BaseModel):
@@ -113,6 +114,7 @@ def create_search(
                 responsible_office_id=payload.responsible_office_id,
                 auto_classify=payload.auto_classify,
                 requested_by=current_user.email if hasattr(current_user, "email") else None,
+                only_unlinked=payload.only_unlinked,
             )
         except Exception as exc:
             logger.error("Erro na busca de publicacoes: %s", exc)
@@ -199,6 +201,7 @@ def rebuild_task_proposals(
 class SubmitBatchRequest(BaseModel):
     linked_office_id: Optional[int] = None
     limit: Optional[int] = None
+    only_unlinked: bool = False  # Classificar apenas publicações sem processo vinculado
 
 
 @router.post("/classify-batch/submit")
@@ -220,6 +223,7 @@ async def submit_classify_batch(
     records = classifier.collect_pending_records(
         linked_office_id=payload.linked_office_id,
         limit=payload.limit,
+        only_unlinked=payload.only_unlinked,
     )
     if not records:
         raise HTTPException(

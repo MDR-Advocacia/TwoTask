@@ -78,6 +78,7 @@ class PublicationBatchClassifier:
         self,
         linked_office_id: Optional[int] = None,
         limit: Optional[int] = None,
+        only_unlinked: bool = False,
     ) -> List[PublicationRecord]:
         """
         Retorna registros NOVOS com texto que precisam ser classificados,
@@ -103,6 +104,8 @@ class PublicationBatchClassifier:
         )
         if linked_office_id is not None:
             query = query.filter(PublicationRecord.linked_office_id == linked_office_id)
+        if only_unlinked:
+            query = query.filter(PublicationRecord.linked_lawsuit_id.is_(None))
         query = query.order_by(PublicationRecord.id)
 
         all_records = query.all()
