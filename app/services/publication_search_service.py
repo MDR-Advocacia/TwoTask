@@ -93,6 +93,20 @@ class PublicationSearchService:
         self.client = client
 
     # ──────────────────────────────────────────────
+    # Progress helper
+    # ──────────────────────────────────────────────
+
+    def _update_search_progress(self, search, step: str, detail: str, pct: int):
+        """Atualiza progresso intermediário da busca (commit imediato)."""
+        search.progress_step = step
+        search.progress_detail = detail
+        search.progress_pct = min(pct, 100)
+        try:
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+
+    # ──────────────────────────────────────────────
     # Disparo de busca
     # ──────────────────────────────────────────────
 
@@ -122,10 +136,16 @@ class PublicationSearchService:
 
         try:
             # 1) Busca TODAS as publicações (paginação automática)
+            self._update_search_progress(search, "FETCH", "Buscando publicações na API Legal One...", 5)
             publications = self.client.fetch_all_publications(
                 date_from=date_from,
                 date_to=date_to,
                 origin_type=origin_type,
+            )
+            self._update_search_progress(
+                search, "FETCH",
+                f"{len(publications)} publicações encontradas na API",
+                15,
             )
 
             # 1.5) Pré-filtro por escritório (otimização):
@@ -192,7 +212,17 @@ class PublicationSearchService:
                     publications = kept
 
             # 2) Enriquece com responsibleOfficeId via lookup de processos
+            self._update_search_progress(
+                search, "ENRICH",
+                f"Enriquecendo {len(publications)} publicações com dados de processos...",
+                25,
+            )
             publications = self._enrich_with_lawsuit_data(publications)
+            self._update_search_progress(
+                search, "FILTER",
+                f"Filtrando {len(publications)} publicações...",
+                40,
+            )
 
             # 3) Filtra por escritório responsável (se especificado)
             if responsible_office_id is not None:
@@ -248,6 +278,11 @@ class PublicationSearchService:
                 )
 
             # 4) Deduplica e persiste os novos
+            self._update_search_progress(
+                search, "PERSIST",
+                f"Deduplicando e persistindo {len(publications)} publicações...",
+                50,
+            )
             #
             # Dedup em duas camadas:
             #   (a) legal_one_update_id (id único do Legal One) → duplicata exata
@@ -374,12 +409,23 @@ class PublicationSearchService:
 
             self.db.commit()
 
+            self._update_search_progress(
+                search, "PERSIST",
+                f"{new_count} novas, {dup_count} duplicatas, {discarded_count} descartadas, {obsolete_count} obsoletas",
+                70,
+            )
+
             # 5) Classificação agora é EXCLUSIVAMENTE via Batch API
             # (mais barato, sem rate limit). A busca apenas persiste os registros.
             # O operador envia o lote manualmente via painel de classificação em lote.
 
             # 6) Tenta construir proposta de tarefa para cada publicação classificada
             if new_records:
+                self._update_search_progress(
+                    search, "PROPOSALS",
+                    f"Montando propostas de tarefa para {len(new_records)} publicações...",
+                    80,
+                )
                 self._build_task_proposals(new_records)
 
             # 7) Duplicatas e obsoletas vão direto pra fila do RPA
@@ -414,6 +460,9 @@ class PublicationSearchService:
             # descartadas pelo dedup (lawsuit_id, publication_date) + obsoletas.
             search.total_duplicate = dup_count + discarded_count + obsolete_count
             search.status = SEARCH_STATUS_COMPLETED
+            search.progress_step = "DONE"
+            search.progress_detail = f"Concluída — {new_count} novas publicações"
+            search.progress_pct = 100
             search.finished_at = datetime.now(timezone.utc)
             self.db.commit()
 
@@ -1858,6 +1907,9 @@ class PublicationSearchService:
             "total_found": search.total_found,
             "total_new": search.total_new,
             "total_duplicate": search.total_duplicate,
+            "progress_step": search.progress_step,
+            "progress_detail": search.progress_detail,
+            "progress_pct": search.progress_pct,
             "requested_by_email": search.requested_by_email,
             "error_message": search.error_message,
             "created_at": search.created_at.isoformat() if search.created_at else None,

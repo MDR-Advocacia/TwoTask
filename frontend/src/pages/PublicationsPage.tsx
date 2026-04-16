@@ -79,6 +79,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api-client";
@@ -105,6 +106,9 @@ interface SearchItem {
   total_found: number;
   total_new: number;
   total_duplicate: number;
+  progress_step: string | null;
+  progress_detail: string | null;
+  progress_pct: number | null;
   requested_by_email: string | null;
   error_message: string | null;
   created_at: string | null;
@@ -649,6 +653,21 @@ const PublicationsPage = () => {
     const t = setInterval(() => loadIndexStatus(searchOfficeId), 3000);
     return () => clearInterval(t);
   }, [searchOfficeId, indexStatus?.in_progress, loadIndexStatus]);
+
+  // ─── Polling de progresso de busca ativa ─────────────────────────────
+  const activeSearch = searches.find((s) => s.status === "EXECUTANDO");
+  useEffect(() => {
+    if (!activeSearch) return;
+    const t = setInterval(async () => {
+      await loadSearches();
+    }, 2000);
+    return () => {
+      clearInterval(t);
+      // Quando polling para (busca terminou), recarrega dados
+      loadStats();
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo);
+    };
+  }, [activeSearch?.id]);
 
   // ─── Actions ─────────────────────────────────────────────────────────
 
@@ -1334,6 +1353,25 @@ const PublicationsPage = () => {
               {indexStatus.last_sync_status === "error" && (
                 <span className="text-red-600">erro no último sync</span>
               )}
+            </div>
+          )}
+          {activeSearch && (
+            <div className="mt-3 rounded-md border border-blue-200 bg-blue-50 p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+                  <span className="text-sm font-medium text-blue-800">
+                    Busca #{activeSearch.id} em andamento
+                  </span>
+                </div>
+                <span className="text-xs font-semibold text-blue-700">
+                  {activeSearch.progress_pct ?? 0}%
+                </span>
+              </div>
+              <Progress value={activeSearch.progress_pct ?? 0} className="h-2" />
+              <p className="text-xs text-blue-700">
+                {activeSearch.progress_detail || "Iniciando..."}
+              </p>
             </div>
           )}
         </CardContent>

@@ -49,6 +49,11 @@ class PublicationSearch(Base):
     origin_type = Column(String, nullable=False, default="OfficialJournalsCrawler")
     office_filter = Column(String, nullable=True)
 
+    # Progresso em tempo real (atualizado durante execução)
+    progress_step = Column(String, nullable=True)   # etapa atual: FETCH, ENRICH, FILTER, PERSIST, CLASSIFY, DONE
+    progress_detail = Column(String, nullable=True)  # detalhe textual (ex: "1.250 publicações encontradas")
+    progress_pct = Column(Integer, nullable=True)    # percentual estimado 0–100
+
     # Resultados
     total_found = Column(Integer, default=0)
     total_new = Column(Integer, default=0)
