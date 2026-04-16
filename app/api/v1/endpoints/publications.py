@@ -299,6 +299,8 @@ async def apply_classify_batch(
     Esta operação pode levar algum tempo (dependendo do tamanho do batch),
     então roda em background.
     """
+    # Valida a existência usando a sessão da request; só guarda o id para o
+    # background task — a sessão abaixo será fechada ao retornar a response.
     batch = classifier.get_batch(batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="Batch não encontrado.")
@@ -306,21 +308,35 @@ async def apply_classify_batch(
     import logging as _logging
     _logger = _logging.getLogger(__name__)
 
-    async def _run():
+    async def _run(target_batch_id: int):
+        """
+        Roda depois que a request termina. Como a sessão injetada via
+        ``Depends(get_db)`` já está fechada nesse ponto, abrimos uma nova
+        SessionLocal() aqui e carregamos o batch de novo. Isso evita o erro
+        'Instance is not persistent within this Session' no commit final.
+        """
+        from app.db.session import SessionLocal
+        db = SessionLocal()
         try:
-            # Garante status atualizado antes de baixar
-            refreshed = await classifier.refresh_batch_status(batch)
+            bg_classifier = PublicationBatchClassifier(db=db)
+            fresh_batch = bg_classifier.get_batch(target_batch_id)
+            if not fresh_batch:
+                _logger.warning("Batch %s sumiu antes do apply.", target_batch_id)
+                return
+            refreshed = await bg_classifier.refresh_batch_status(fresh_batch)
             if not refreshed.results_url:
                 _logger.info(
                     "Batch %s ainda não finalizado (status=%s). Pulando.",
-                    batch_id, refreshed.anthropic_status,
+                    target_batch_id, refreshed.anthropic_status,
                 )
                 return
-            await classifier.apply_batch_results(refreshed)
+            await bg_classifier.apply_batch_results(refreshed)
         except Exception as exc:
-            _logger.error("Erro ao aplicar batch %s: %s", batch_id, exc)
+            _logger.exception("Erro ao aplicar batch %s: %s", target_batch_id, exc)
+        finally:
+            db.close()
 
-    background_tasks.add_task(_run)
+    background_tasks.add_task(_run, batch_id)
     return {
         "message": "Aplicação do batch iniciada em background.",
         "batch_id": batch_id,
