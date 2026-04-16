@@ -23,14 +23,17 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
-
-# Install the Playwright runner dependencies and the Chromium browser
-# (with its OS-level dependencies). Doing this in the image avoids
-# runtime downloads and keeps cold-start fast.
+# ─── Layer de Playwright (cacheada) ───────────────────────────────
+# Copia SÓ os arquivos de dependência do runner. Assim a instalação
+# pesada do Chromium (5-8min) só roda de novo quando package*.json mudam,
+# não em toda alteração de código Python.
+COPY app/runners/legalone/package.json app/runners/legalone/package-lock.json /app/app/runners/legalone/
 RUN cd /app/app/runners/legalone \
     && npm ci --omit=dev \
     && npx --yes playwright install --with-deps chromium
+
+# ─── Código da aplicação (layer leve) ─────────────────────────────
+COPY . .
 
 RUN chmod +x /app/scripts/docker-api-start.sh
 
