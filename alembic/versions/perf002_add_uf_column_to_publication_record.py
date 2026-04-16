@@ -75,8 +75,6 @@ def _build_case_sql() -> str:
         FROM (
             SELECT
                 id,
-                substring(digits FROM 14 FOR 1) AS j,
-                substring(digits FROM 15 FOR 2) AS tr,
                 CASE
                     {joined}
                     ELSE NULL
@@ -84,11 +82,17 @@ def _build_case_sql() -> str:
             FROM (
                 SELECT
                     id,
-                    regexp_replace(linked_lawsuit_cnj, '[^0-9]', '', 'g') AS digits
-                FROM publicacao_registros
-                WHERE linked_lawsuit_cnj IS NOT NULL
-                  AND length(regexp_replace(linked_lawsuit_cnj, '[^0-9]', '', 'g')) = 20
-            ) raw
+                    substring(digits FROM 14 FOR 1) AS j,
+                    substring(digits FROM 15 FOR 2) AS tr
+                FROM (
+                    SELECT
+                        id,
+                        regexp_replace(linked_lawsuit_cnj, '[^0-9]', '', 'g') AS digits
+                    FROM publicacao_registros
+                    WHERE linked_lawsuit_cnj IS NOT NULL
+                      AND length(regexp_replace(linked_lawsuit_cnj, '[^0-9]', '', 'g')) = 20
+                ) raw
+            ) parsed
         ) derived
         WHERE publicacao_registros.id = derived.id
           AND derived.uf_value IS NOT NULL
