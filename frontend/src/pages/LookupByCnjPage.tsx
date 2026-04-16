@@ -1,21 +1,38 @@
 import { useState } from "react";
-import { Search, Loader2, AlertCircle, ExternalLink } from "lucide-react";
+import {
+  Search,
+  Loader2,
+  AlertCircle,
+  ExternalLink,
+  ChevronDown,
+  ChevronRight,
+  Clock,
+  Bot,
+  Tag,
+  Calendar,
+  CheckCircle2,
+  XCircle,
+  ArrowRight,
+  User,
+  Building2,
+  FileText,
+} from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api-client";
+
+/* ─── Types ───────────────────────────────────────────────────────── */
 
 type TreatmentInfo = {
   id: number;
@@ -37,6 +54,7 @@ type RecordDetail = {
   legal_one_update_id: number;
   description_preview?: string;
   description?: string;
+  notes?: string;
   publication_date: string | null;
   creation_date: string | null;
   linked_lawsuit_id: number | null;
@@ -49,8 +67,16 @@ type RecordDetail = {
   polo: string | null;
   audiencia_data: string | null;
   audiencia_hora: string | null;
-  classifications: unknown;
+  audiencia_link: string | null;
+  classifications: any;
   treatment: TreatmentInfo | null;
+  created_at: string | null;
+  updated_at: string | null;
+  requested_by_email: string | null;
+  has_proposal: boolean;
+  proposal: any;
+  proposals_count: number;
+  raw_relationships?: any;
 };
 
 type SearchInfo = {
@@ -67,11 +93,29 @@ type SearchInfo = {
   total_duplicate: number;
 };
 
+type TimelineEvent = {
+  timestamp: string;
+  event: string;
+  label: string;
+  detail: string | null;
+  user: string | null;
+  record_id: number | null;
+};
+
+type LawsuitInfo = {
+  id: number;
+  cnj: string | null;
+  creation_date: string | null;
+  responsible_office_id: number | null;
+  responsible_office_name: string | null;
+};
+
 type LookupResponse = {
   cnj_input: string;
   cnj_normalized: string;
   cnj_display: string | null;
   lawsuit_id: number | null;
+  lawsuit_info: LawsuitInfo | null;
   found: boolean;
   totals: {
     records: number;
@@ -80,9 +124,12 @@ type LookupResponse = {
     by_category: Record<string, number>;
     by_queue_status: Record<string, number>;
   };
+  timeline: TimelineEvent[];
   searches: SearchInfo[];
   records: RecordDetail[];
 };
+
+/* ─── Helpers ─────────────────────────────────────────────────────── */
 
 function formatDate(value: string | null | undefined) {
   if (!value) return "—";
@@ -96,6 +143,17 @@ function formatDate(value: string | null | undefined) {
     }
   }
   return value;
+}
+
+function formatDateTime(value: string | null | undefined) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return value;
+  return new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short",
+    timeZone: "America/Sao_Paulo",
+  }).format(d);
 }
 
 function statusColor(status: string): string {
@@ -115,6 +173,399 @@ function statusColor(status: string): string {
   };
   return map[status] || "bg-slate-100 text-slate-700";
 }
+
+function eventIcon(event: string) {
+  switch (event) {
+    case "captura":
+      return <Bot className="h-4 w-4 text-blue-500" />;
+    case "classificacao":
+      return <Tag className="h-4 w-4 text-indigo-500" />;
+    case "status_change":
+      return <ArrowRight className="h-4 w-4 text-amber-500" />;
+    case "rpa_enfileirada":
+      return <Clock className="h-4 w-4 text-slate-500" />;
+    case "rpa_concluida":
+      return <CheckCircle2 className="h-4 w-4 text-green-500" />;
+    case "rpa_erro":
+      return <XCircle className="h-4 w-4 text-red-500" />;
+    default:
+      return <Calendar className="h-4 w-4 text-slate-400" />;
+  }
+}
+
+/* ─── Components ──────────────────────────────────────────────────── */
+
+function LawsuitHeader({ info, cnj, lawsuitId }: { info: LawsuitInfo | null; cnj: string; lawsuitId: number | null }) {
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-lg flex items-center gap-2">
+          <FileText className="h-5 w-5" />
+          Processo {cnj}
+        </CardTitle>
+        {lawsuitId && (
+          <CardDescription>
+            Legal One ID: <code className="text-xs">{lawsuitId}</code>
+          </CardDescription>
+        )}
+      </CardHeader>
+      <CardContent>
+        {info ? (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
+            <div className="flex items-center gap-2">
+              <Calendar className="h-4 w-4 text-muted-foreground" />
+              <div>
+                <div className="text-muted-foreground text-xs">Criação da pasta</div>
+                <div className="font-medium">{formatDate(info.creation_date)}</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Building2 className="h-4 w-4 text-muted-foreground" />
+              <div>
+                <div className="text-muted-foreground text-xs">Escritório responsável</div>
+                <div className="font-medium">{info.responsible_office_name || `ID ${info.responsible_office_id}` || "—"}</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <ExternalLink className="h-4 w-4 text-muted-foreground" />
+              <div>
+                <div className="text-muted-foreground text-xs">Legal One</div>
+                <a
+                  href={`https://firm.legalone.com.br/lawsuits/${info.id}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-blue-600 hover:underline font-medium"
+                >
+                  Abrir processo
+                </a>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            {lawsuitId
+              ? "Não foi possível carregar dados do processo no Legal One."
+              : "Nenhum lawsuit_id vinculado nos registros."}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function StatsCards({ totals }: { totals: LookupResponse["totals"] }) {
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <Card className="p-4">
+        <div className="text-xs text-muted-foreground">Publicações</div>
+        <div className="text-2xl font-bold">{totals.records}</div>
+      </Card>
+      <Card className="p-4">
+        <div className="text-xs text-muted-foreground">Duplicatas</div>
+        <div className="text-2xl font-bold">{totals.duplicates}</div>
+      </Card>
+      <Card className="p-4">
+        <div className="text-xs text-muted-foreground">Na fila RPA</div>
+        <div className="text-2xl font-bold">
+          {Object.values(totals.by_queue_status).reduce((a, b) => a + b, 0)}
+        </div>
+      </Card>
+      <Card className="p-4">
+        <div className="text-xs text-muted-foreground">Classificações</div>
+        <div className="text-2xl font-bold">
+          {Object.values(totals.by_category).reduce((a, b) => a + b, 0)}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function StatusSummary({ totals }: { totals: LookupResponse["totals"] }) {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium">Por status</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-1.5 text-sm">
+          {Object.entries(totals.by_status).map(([k, v]) => (
+            <div key={k} className="flex items-center justify-between">
+              <Badge variant="outline" className={statusColor(k)}>{k}</Badge>
+              <span className="font-medium">{v}</span>
+            </div>
+          ))}
+          {Object.keys(totals.by_status).length === 0 && (
+            <div className="text-muted-foreground">—</div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium">Por classificação</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-1.5 text-sm">
+          {Object.entries(totals.by_category).map(([k, v]) => (
+            <div key={k} className="flex items-center justify-between gap-2">
+              <span className="truncate" title={k}>{k}</span>
+              <span className="font-medium shrink-0">{v}</span>
+            </div>
+          ))}
+          {Object.keys(totals.by_category).length === 0 && (
+            <div className="text-muted-foreground">Nenhuma classificada</div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium">Fila RPA</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-1.5 text-sm">
+          {Object.entries(totals.by_queue_status).map(([k, v]) => (
+            <div key={k} className="flex items-center justify-between">
+              <Badge variant="outline" className={statusColor(k)}>{k}</Badge>
+              <span className="font-medium">{v}</span>
+            </div>
+          ))}
+          {Object.keys(totals.by_queue_status).length === 0 && (
+            <div className="text-muted-foreground">Nenhuma enfileirada</div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function Timeline({ events }: { events: TimelineEvent[] }) {
+  if (events.length === 0) return null;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base flex items-center gap-2">
+          <Clock className="h-4 w-4" />
+          Timeline de eventos
+        </CardTitle>
+        <CardDescription>Histórico cronológico de tudo que aconteceu com as publicações deste processo.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="relative pl-6 space-y-0">
+          {/* Vertical line */}
+          <div className="absolute left-[11px] top-2 bottom-2 w-px bg-border" />
+
+          {events.map((ev, i) => (
+            <div key={i} className="relative flex items-start gap-3 pb-4 last:pb-0">
+              {/* Dot on timeline */}
+              <div className="absolute -left-6 mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-background border">
+                {eventIcon(ev.event)}
+              </div>
+
+              <div className="flex-1 min-w-0 ml-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-sm font-medium">{ev.label}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {formatDateTime(ev.timestamp)}
+                  </span>
+                  {ev.record_id && (
+                    <span className="text-xs text-muted-foreground font-mono">
+                      pub #{ev.record_id}
+                    </span>
+                  )}
+                </div>
+                {ev.detail && (
+                  <p className="text-xs text-muted-foreground mt-0.5">{ev.detail}</p>
+                )}
+                {ev.user && (
+                  <div className="flex items-center gap-1 text-xs text-muted-foreground mt-0.5">
+                    <User className="h-3 w-3" />
+                    {ev.user}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function RecordCard({ record }: { record: RecordDetail }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const cls = Array.isArray(record.classifications) && record.classifications.length > 0
+    ? record.classifications[0]
+    : null;
+
+  return (
+    <div className="border rounded-lg overflow-hidden">
+      {/* Header — always visible */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full text-left p-4 hover:bg-slate-50 transition-colors"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap mb-1">
+              {expanded ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
+              <Badge variant="outline" className={statusColor(record.status)}>{record.status}</Badge>
+              {record.is_duplicate && (
+                <Badge variant="outline" className={statusColor("DESCARTADO_DUPLICADA")}>duplicata</Badge>
+              )}
+              {record.polo && <Badge variant="outline">polo: {record.polo}</Badge>}
+              {record.category && (
+                <span className="text-xs font-medium text-blue-700">
+                  {record.category}{record.subcategory && record.subcategory !== "-" ? ` / ${record.subcategory}` : ""}
+                </span>
+              )}
+            </div>
+            <div className="text-sm text-muted-foreground flex flex-wrap gap-x-3 gap-y-1">
+              <span>Publicação: <strong className="text-foreground">{formatDate(record.publication_date)}</strong></span>
+              <span>Capturada: {formatDateTime(record.created_at)}</span>
+              <span>Busca #{record.search_id}</span>
+              {record.requested_by_email && (
+                <span className="flex items-center gap-1"><User className="h-3 w-3" />{record.requested_by_email}</span>
+              )}
+            </div>
+          </div>
+          {record.legal_one_update_id && (
+            <a
+              href={`https://firm.legalone.com.br/publications?publicationId=${record.legal_one_update_id}&treatStatus=3`}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs inline-flex items-center gap-1 text-blue-600 hover:underline shrink-0"
+              onClick={(e) => e.stopPropagation()}
+            >
+              Legal One <ExternalLink className="h-3 w-3" />
+            </a>
+          )}
+        </div>
+      </button>
+
+      {/* Expanded detail */}
+      {expanded && (
+        <div className="border-t bg-slate-50/50 p-4 space-y-4">
+          {/* Classificação IA */}
+          <div>
+            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Classificação IA</h4>
+            {record.category ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                <div>
+                  <span className="text-muted-foreground">Categoria:</span>{" "}
+                  <strong>{record.category}</strong>
+                  {record.subcategory && record.subcategory !== "-" && <> / {record.subcategory}</>}
+                </div>
+                {record.polo && (
+                  <div>
+                    <span className="text-muted-foreground">Polo:</span> <strong>{record.polo}</strong>
+                  </div>
+                )}
+                {(record.audiencia_data || record.audiencia_hora) && (
+                  <div>
+                    <span className="text-muted-foreground">Audiência:</span>{" "}
+                    <strong>{record.audiencia_data || "?"} {record.audiencia_hora || ""}</strong>
+                    {record.audiencia_link && (
+                      <a href={record.audiencia_link} target="_blank" rel="noreferrer"
+                        className="ml-2 text-blue-600 hover:underline text-xs">
+                        link da videoconferência
+                      </a>
+                    )}
+                  </div>
+                )}
+                {cls?.confianca != null && (
+                  <div>
+                    <span className="text-muted-foreground">Confiança:</span>{" "}
+                    <strong>{typeof cls.confianca === "number" ? `${(cls.confianca * 100).toFixed(0)}%` : cls.confianca}</strong>
+                  </div>
+                )}
+                {cls?.justificativa && (
+                  <div className="sm:col-span-2">
+                    <span className="text-muted-foreground">Justificativa IA:</span>
+                    <p className="mt-1 text-xs bg-white p-2 rounded border">{cls.justificativa}</p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">Não classificada</p>
+            )}
+          </div>
+
+          {/* Proposta de tarefa */}
+          {record.has_proposal && record.proposal && (
+            <div>
+              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Proposta de Tarefa</h4>
+              <div className="text-sm bg-white p-2 rounded border">
+                <pre className="whitespace-pre-wrap font-sans text-xs">
+                  {typeof record.proposal === "object" ? JSON.stringify(record.proposal, null, 2) : String(record.proposal)}
+                </pre>
+              </div>
+            </div>
+          )}
+
+          {/* Fila RPA */}
+          <div>
+            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Fila RPA</h4>
+            {record.treatment ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                <div>
+                  <span className="text-muted-foreground">Status fila:</span>{" "}
+                  <Badge variant="outline" className={statusColor(record.treatment.queue_status)}>
+                    {record.treatment.queue_status}
+                  </Badge>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Alvo:</span>{" "}
+                  <strong>{record.treatment.target_status || "—"}</strong>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Tentativas:</span>{" "}
+                  <strong>{record.treatment.attempt_count}</strong>
+                </div>
+                {record.treatment.treated_at && (
+                  <div>
+                    <span className="text-muted-foreground">Tratada em:</span>{" "}
+                    <strong>{formatDateTime(record.treatment.treated_at)}</strong>
+                  </div>
+                )}
+                {record.treatment.last_error && (
+                  <div className="sm:col-span-2 text-red-600 text-xs bg-red-50 p-2 rounded">
+                    Erro: {record.treatment.last_error}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">Não enfileirada</p>
+            )}
+          </div>
+
+          {/* Texto da publicação */}
+          {record.description && (
+            <details className="text-xs">
+              <summary className="cursor-pointer text-muted-foreground hover:text-foreground font-semibold uppercase tracking-wide">
+                Texto completo da publicação
+              </summary>
+              <pre className="mt-2 whitespace-pre-wrap font-sans text-xs bg-white p-3 rounded border max-h-64 overflow-y-auto">
+                {record.description}
+              </pre>
+            </details>
+          )}
+
+          {/* Metadados técnicos */}
+          <div className="text-xs text-muted-foreground border-t pt-2 flex flex-wrap gap-x-4 gap-y-1">
+            <span>ID interno: {record.id}</span>
+            <span>update_id: {record.legal_one_update_id}</span>
+            <span>lawsuit_id: {record.linked_lawsuit_id || "—"}</span>
+            <span>office_id: {record.linked_office_id || "—"}</span>
+            <span>criado: {formatDateTime(record.created_at)}</span>
+            {record.updated_at && <span>atualizado: {formatDateTime(record.updated_at)}</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Page ────────────────────────────────────────────────────────── */
 
 const LookupByCnjPage = () => {
   const { toast } = useToast();
@@ -161,15 +612,15 @@ const LookupByCnjPage = () => {
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Consulta por CNJ</h1>
+        <h1 className="text-2xl font-bold">Auditoria de Processo</h1>
         <p className="text-sm text-muted-foreground">
-          Verifica o que o robô já capturou, como classificou e se foi enviado pra fila do RPA.
+          Consulta completa: publicações capturadas, classificações, agendamentos, tratamento RPA e dados do processo no Legal One.
         </p>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Número do processo</CardTitle>
+          <CardTitle className="text-base">Número do processo (CNJ)</CardTitle>
           <CardDescription>
             Pode colar com ou sem formatação (0000000-00.0000.0.00.0000 ou só dígitos).
           </CardDescription>
@@ -204,243 +655,60 @@ const LookupByCnjPage = () => {
 
       {result && result.found && (
         <>
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">
-                Processo {result.cnj_display || result.cnj_normalized}
-              </CardTitle>
-              <CardDescription>
-                {result.lawsuit_id ? (
-                  <>Legal One lawsuit_id: <code>{result.lawsuit_id}</code></>
-                ) : (
-                  "lawsuit_id não resolvido nos registros"
-                )}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-              <div>
-                <div className="text-muted-foreground">Publicações</div>
-                <div className="text-xl font-semibold">{result.totals.records}</div>
-              </div>
-              <div>
-                <div className="text-muted-foreground">Duplicatas</div>
-                <div className="text-xl font-semibold">{result.totals.duplicates}</div>
-              </div>
-              <div>
-                <div className="text-muted-foreground">Buscas que o alcançaram</div>
-                <div className="text-xl font-semibold">{result.searches.length}</div>
-              </div>
-              <div>
-                <div className="text-muted-foreground">Na fila RPA</div>
-                <div className="text-xl font-semibold">
-                  {Object.values(result.totals.by_queue_status).reduce((a, b) => a + b, 0)}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+          {/* Header do processo com dados do Legal One */}
+          <LawsuitHeader
+            info={result.lawsuit_info}
+            cnj={result.cnj_display || result.cnj_normalized}
+            lawsuitId={result.lawsuit_id}
+          />
 
-          {/* Totais detalhados */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium">Por status</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-1 text-sm">
-                {Object.entries(result.totals.by_status).map(([k, v]) => (
-                  <div key={k} className="flex items-center justify-between">
-                    <Badge variant="outline" className={statusColor(k)}>{k}</Badge>
-                    <span className="font-medium">{v}</span>
-                  </div>
-                ))}
-                {Object.keys(result.totals.by_status).length === 0 && (
-                  <div className="text-muted-foreground">—</div>
-                )}
-              </CardContent>
-            </Card>
+          {/* Números resumidos */}
+          <StatsCards totals={result.totals} />
 
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium">Por classificação</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-1 text-sm">
-                {Object.entries(result.totals.by_category).map(([k, v]) => (
-                  <div key={k} className="flex items-center justify-between gap-2">
-                    <span className="truncate" title={k}>{k}</span>
-                    <span className="font-medium shrink-0">{v}</span>
-                  </div>
-                ))}
-                {Object.keys(result.totals.by_category).length === 0 && (
-                  <div className="text-muted-foreground">Nenhuma classificada ainda</div>
-                )}
-              </CardContent>
-            </Card>
+          {/* Timeline de eventos */}
+          <Timeline events={result.timeline} />
 
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium">Fila RPA</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-1 text-sm">
-                {Object.entries(result.totals.by_queue_status).map(([k, v]) => (
-                  <div key={k} className="flex items-center justify-between">
-                    <Badge variant="outline" className={statusColor(k)}>{k}</Badge>
-                    <span className="font-medium">{v}</span>
-                  </div>
-                ))}
-                {Object.keys(result.totals.by_queue_status).length === 0 && (
-                  <div className="text-muted-foreground">Nenhuma enfileirada</div>
-                )}
-              </CardContent>
-            </Card>
-          </div>
+          {/* Resumos por status / classificação / RPA */}
+          <StatusSummary totals={result.totals} />
 
-          {/* Buscas */}
+          {/* Buscas que capturaram este processo */}
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Buscas que capturaram publicações deste processo</CardTitle>
             </CardHeader>
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>#</TableHead>
-                    <TableHead>Período</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Escritório</TableHead>
-                    <TableHead className="text-right">Encontradas</TableHead>
-                    <TableHead className="text-right">Novas</TableHead>
-                    <TableHead className="text-right">Duplicatas</TableHead>
-                    <TableHead>Criada</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {result.searches.map((s) => (
-                    <TableRow key={s.id}>
-                      <TableCell className="font-mono">#{s.id}</TableCell>
-                      <TableCell className="text-xs">
-                        {s.date_from} → {s.date_to || "—"}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className={statusColor(s.status)}>{s.status}</Badge>
-                      </TableCell>
-                      <TableCell className="text-xs">{s.office_filter || "—"}</TableCell>
-                      <TableCell className="text-right">{s.total_found}</TableCell>
-                      <TableCell className="text-right">{s.total_new}</TableCell>
-                      <TableCell className="text-right">{s.total_duplicate}</TableCell>
-                      <TableCell className="text-xs">{formatDate(s.created_at)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+            <CardContent className="space-y-2">
+              {result.searches.map((s) => (
+                <div key={s.id} className="flex items-center gap-3 text-sm border rounded p-2">
+                  <span className="font-mono text-xs">#{s.id}</span>
+                  <Badge variant="outline" className={statusColor(s.status)}>{s.status}</Badge>
+                  <span className="text-muted-foreground">
+                    {s.date_from} → {s.date_to || "—"}
+                  </span>
+                  <span className="text-xs">{s.total_found} encontradas · {s.total_new} novas</span>
+                  {s.requested_by_email && (
+                    <span className="text-xs flex items-center gap-1 text-muted-foreground">
+                      <User className="h-3 w-3" />{s.requested_by_email}
+                    </span>
+                  )}
+                  <span className="text-xs text-muted-foreground ml-auto">{formatDateTime(s.created_at)}</span>
+                </div>
+              ))}
             </CardContent>
           </Card>
 
-          {/* Publicações */}
+          {/* Publicações — cards expansíveis */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Publicações deste processo</CardTitle>
+              <CardTitle className="text-base">
+                Publicações ({result.records.length})
+              </CardTitle>
               <CardDescription>
-                Ordenadas da mais recente para a mais antiga.
+                Clique em cada publicação para expandir os detalhes completos (classificação IA, justificativa, fila RPA, texto).
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-2">
               {result.records.map((r) => (
-                <div key={r.id} className="border rounded-lg p-4 space-y-2">
-                  <div className="flex items-start justify-between gap-4 flex-wrap">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-mono text-xs text-muted-foreground">
-                          update_id: {r.legal_one_update_id}
-                        </span>
-                        <Badge variant="outline" className={statusColor(r.status)}>{r.status}</Badge>
-                        {r.is_duplicate && (
-                          <Badge variant="outline" className={statusColor("DESCARTADO_DUPLICADA")}>
-                            duplicata
-                          </Badge>
-                        )}
-                        {r.polo && (
-                          <Badge variant="outline">polo: {r.polo}</Badge>
-                        )}
-                      </div>
-                      <div className="text-sm">
-                        <span className="text-muted-foreground">Publicação:</span>{" "}
-                        <strong>{formatDate(r.publication_date)}</strong>{" "}
-                        <span className="text-muted-foreground">· Criação Ajus:</span>{" "}
-                        {formatDate(r.creation_date)}{" "}
-                        <span className="text-muted-foreground">· Busca:</span>{" "}
-                        #{r.search_id}
-                      </div>
-                    </div>
-                    {r.legal_one_update_id && (
-                      <a
-                        href={`https://firm.legalone.com.br/publications?publicationId=${r.legal_one_update_id}&treatStatus=3`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-xs inline-flex items-center gap-1 text-blue-600 hover:underline"
-                      >
-                        abrir no Legal One <ExternalLink className="h-3 w-3" />
-                      </a>
-                    )}
-                  </div>
-
-                  <div className="text-sm">
-                    <span className="text-muted-foreground">Classificação:</span>{" "}
-                    {r.category ? (
-                      <>
-                        <strong>{r.category}</strong>
-                        {r.subcategory && r.subcategory !== "-" && (
-                          <> / {r.subcategory}</>
-                        )}
-                      </>
-                    ) : (
-                      <em className="text-muted-foreground">não classificada</em>
-                    )}
-                    {(r.audiencia_data || r.audiencia_hora) && (
-                      <span className="ml-2 text-muted-foreground">
-                        · audiência: {r.audiencia_data || "?"} {r.audiencia_hora || ""}
-                      </span>
-                    )}
-                  </div>
-
-                  {r.description && (
-                    <details className="text-xs">
-                      <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
-                        ver texto da publicação
-                      </summary>
-                      <pre className="mt-2 whitespace-pre-wrap font-sans text-xs bg-slate-50 p-3 rounded">
-                        {r.description}
-                      </pre>
-                    </details>
-                  )}
-
-                  <div className="text-xs border-t pt-2">
-                    <span className="text-muted-foreground">Fila RPA:</span>{" "}
-                    {r.treatment ? (
-                      <>
-                        <Badge variant="outline" className={statusColor(r.treatment.queue_status)}>
-                          {r.treatment.queue_status}
-                        </Badge>{" "}
-                        <span className="text-muted-foreground">alvo:</span>{" "}
-                        {r.treatment.target_status || "—"}{" "}
-                        <span className="text-muted-foreground">· tentativas:</span>{" "}
-                        {r.treatment.attempt_count}
-                        {r.treatment.treated_at && (
-                          <>
-                            {" "}
-                            <span className="text-muted-foreground">· tratada em</span>{" "}
-                            {formatDate(r.treatment.treated_at)}
-                          </>
-                        )}
-                        {r.treatment.last_error && (
-                          <div className="text-red-600 mt-1">
-                            erro: {r.treatment.last_error}
-                          </div>
-                        )}
-                      </>
-                    ) : (
-                      <em className="text-muted-foreground">não enfileirada</em>
-                    )}
-                  </div>
-                </div>
+                <RecordCard key={r.id} record={r} />
               ))}
             </CardContent>
           </Card>

@@ -1310,11 +1310,127 @@ class PublicationSearchService:
             raw,
         )
 
+        # Mapeia search_id → requested_by_email para cada publicação
+        search_by_id = {s["id"]: s for s in searches}
+        for rec in records_payload:
+            sid = rec.get("search_id")
+            s_info = search_by_id.get(sid, {})
+            rec["requested_by_email"] = s_info.get("requested_by_email")
+
+        # Enriquece com dados do processo no Legal One (se tiver lawsuit_id)
+        lawsuit_info: dict[str, Any] | None = None
+        if lawsuit_id is not None:
+            try:
+                lawsuit_map = self.client.fetch_lawsuits_by_ids([lawsuit_id])
+                raw_lawsuit = lawsuit_map.get(lawsuit_id)
+                if raw_lawsuit:
+                    # Resolve nome do escritório
+                    office_id = raw_lawsuit.get("responsibleOfficeId")
+                    office_name = None
+                    if office_id is not None:
+                        from app.models.legal_one import LegalOneOffice
+                        office = (
+                            self.db.query(LegalOneOffice)
+                            .filter(LegalOneOffice.external_id == office_id)
+                            .first()
+                        )
+                        office_name = office.name if office else None
+
+                    lawsuit_info = {
+                        "id": raw_lawsuit.get("id"),
+                        "cnj": raw_lawsuit.get("identifierNumber"),
+                        "creation_date": raw_lawsuit.get("creationDate"),
+                        "responsible_office_id": office_id,
+                        "responsible_office_name": office_name,
+                    }
+            except Exception as exc:
+                logger.warning("Falha ao buscar dados do processo %s no Legal One: %s", lawsuit_id, exc)
+
+        # Constrói timeline de eventos a partir dos timestamps disponíveis
+        timeline: list[dict[str, Any]] = []
+        for rec in records_payload:
+            pub_id = rec.get("id")
+            # 1) Captura
+            if rec.get("created_at"):
+                timeline.append({
+                    "timestamp": rec["created_at"],
+                    "event": "captura",
+                    "label": "Publicação capturada pelo robô",
+                    "detail": f"Busca #{rec.get('search_id')} · Publicação de {rec.get('publication_date') or '?'}",
+                    "user": rec.get("requested_by_email"),
+                    "record_id": pub_id,
+                })
+            # 2) Classificação
+            if rec.get("category") and rec.get("updated_at"):
+                cls_detail = rec.get("category", "")
+                if rec.get("subcategory") and rec["subcategory"] != "-":
+                    cls_detail += f" / {rec['subcategory']}"
+                if rec.get("polo"):
+                    cls_detail += f" · polo: {rec['polo']}"
+                timeline.append({
+                    "timestamp": rec["updated_at"],
+                    "event": "classificacao",
+                    "label": "Classificada pela IA",
+                    "detail": cls_detail,
+                    "user": None,
+                    "record_id": pub_id,
+                })
+            # 3) Status terminal (agendado, ignorado, obsoleta)
+            status = rec.get("status", "")
+            if status in ("AGENDADO", "IGNORADO", "DESCARTADO_OBSOLETA") and rec.get("updated_at"):
+                label_map = {
+                    "AGENDADO": "Tarefa agendada no Legal One",
+                    "IGNORADO": "Publicação ignorada pelo operador",
+                    "DESCARTADO_OBSOLETA": "Descartada como obsoleta (anterior à criação da pasta)",
+                }
+                timeline.append({
+                    "timestamp": rec["updated_at"],
+                    "event": "status_change",
+                    "label": label_map.get(status, f"Status → {status}"),
+                    "detail": None,
+                    "user": None,
+                    "record_id": pub_id,
+                })
+            # 4) Tratamento RPA
+            treatment = rec.get("treatment")
+            if treatment:
+                if treatment.get("created_at"):
+                    timeline.append({
+                        "timestamp": treatment["created_at"],
+                        "event": "rpa_enfileirada",
+                        "label": f"Enfileirada pro RPA ({treatment.get('target_status') or '?'})",
+                        "detail": None,
+                        "user": None,
+                        "record_id": pub_id,
+                    })
+                if treatment.get("treated_at"):
+                    timeline.append({
+                        "timestamp": treatment["treated_at"],
+                        "event": "rpa_concluida",
+                        "label": "RPA tratou no Legal One",
+                        "detail": f"Tentativas: {treatment.get('attempt_count', 0)}",
+                        "user": None,
+                        "record_id": pub_id,
+                    })
+                if treatment.get("last_error"):
+                    timeline.append({
+                        "timestamp": treatment.get("last_attempt_at") or treatment.get("updated_at") or "",
+                        "event": "rpa_erro",
+                        "label": "Erro no RPA",
+                        "detail": treatment["last_error"],
+                        "user": None,
+                        "record_id": pub_id,
+                    })
+
+        # Ordena timeline cronologicamente (mais recente primeiro)
+        timeline.sort(key=lambda e: e.get("timestamp") or "", reverse=True)
+
         return {
             "cnj_input": raw,
             "cnj_normalized": digits,
             "cnj_display": cnj_display,
             "lawsuit_id": lawsuit_id,
+            "lawsuit_info": lawsuit_info,
             "found": len(records) > 0,
             "totals": {
                 "records": len(records),
@@ -1323,6 +1439,7 @@ class PublicationSearchService:
                 "by_category": category_counts,
                 "by_queue_status": queue_counts,
             },
+            "timeline": timeline,
             "searches": searches,
             "records": records_payload,
         }
@@ -1742,6 +1859,7 @@ class PublicationSearchService:
             "proposal": proposal if include_full_text else None,
             "proposals_count": len(proposals) if proposals else (1 if proposal else 0),
             "created_at": record.created_at.isoformat() if record.created_at else None,
+            "updated_at": record.updated_at.isoformat() if record.updated_at else None,
         }
         if include_full_text:
             result["description"] = record.description
