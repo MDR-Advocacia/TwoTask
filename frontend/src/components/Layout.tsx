@@ -123,15 +123,15 @@ export default function Layout({ children }: PropsWithChildren) {
     <div className="grid min-h-screen w-full md:grid-cols-[220px_1fr] lg:grid-cols-[280px_1fr]">
       <div className="hidden border-r bg-muted/40 md:block">
         <div className="flex h-full max-h-screen flex-col gap-2">
-          <div className="flex h-auto min-h-14 items-center border-b px-4 py-2 lg:min-h-[72px] lg:px-6">
-            <Link to="/" className="flex flex-col items-center gap-1 w-full" title="DunaFlow by DUNATECH">
+          <div className="flex h-14 items-center border-b px-4 lg:h-[60px] lg:px-6">
+            <Link to="/" className="flex items-center gap-2.5 w-full justify-center" title="DunaFlow by DUNATECH">
               <img
                 src="/brand/dunaflow-logo.png"
                 alt="DUNATECH"
-                className="h-5 w-auto max-w-full object-contain"
+                className="h-6 w-auto object-contain"
               />
-              <span className="text-lg font-bold tracking-tight leading-none text-[hsl(var(--dunatech-navy))]">
-                Duna<span className="italic font-semibold text-[hsl(var(--dunatech-blue))]">Flow</span>
+              <span className="text-xl italic font-semibold leading-none text-[hsl(var(--dunatech-blue))]">
+                Flow
               </span>
             </Link>
           </div>
@@ -151,14 +151,14 @@ export default function Layout({ children }: PropsWithChildren) {
               </Button>
             </SheetTrigger>
             <SheetContent side="left" className="flex flex-col">
-              <div className="mb-4 flex flex-col items-center gap-1">
+              <div className="mb-4 flex items-center justify-center gap-2.5">
                 <img
                   src="/brand/dunaflow-logo.png"
                   alt="DUNATECH"
-                  className="h-5 w-auto max-w-full object-contain"
+                  className="h-6 w-auto object-contain"
                 />
-                <span className="text-lg font-bold tracking-tight leading-none text-[hsl(var(--dunatech-navy))]">
-                  Duna<span className="italic font-semibold text-[hsl(var(--dunatech-blue))]">Flow</span>
+                <span className="text-xl italic font-semibold leading-none text-[hsl(var(--dunatech-blue))]">
+                  Flow
                 </span>
               </div>
               <NavContent />

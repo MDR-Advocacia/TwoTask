@@ -155,8 +155,42 @@
     @apply bg-background text-foreground antialiased;
     background: var(--gradient-surface);
     min-height: 100vh;
+    position: relative;
   }
-  
+
+  /* Marca d'água da onda DUNATECH — extremamente suave, fixa na viewport.
+     pointer-events:none garante que não intercepta cliques. */
+  body::before {
+    content: "";
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    width: min(640px, 60vmin);
+    height: min(640px, 60vmin);
+    transform: translate(-50%, -50%);
+    background-image: url("/brand/dunaflow-icon.png");
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center;
+    opacity: 0.04;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* Garante que o conteúdo fique acima da marca d'água — onde houver
+     superfícies opacas (cards, sidebar), a marca some; em espaços
+     transparentes ela aparece sutilmente. */
+  #root {
+    position: relative;
+    z-index: 1;
+    min-height: 100vh;
+  }
+
+  /* Dark mode: levemente mais clara para continuar perceptível */
+  .dark body::before {
+    opacity: 0.05;
+  }
+
   /* Liquid Glass Components */
   .glass-card {
     background: var(--gradient-glass);
