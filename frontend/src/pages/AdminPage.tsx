@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Loader2, Save, Pencil, RefreshCw, AlertCircle, Copy, Shield, CheckCircle2, XCircle, Clock, Database, Building2, FileText } from "lucide-react";
+import { Loader2, Save, Pencil, RefreshCw, AlertCircle, Copy, Shield, ShieldCheck, CheckCircle2, XCircle, Clock, Database, Building2, FileText } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -834,7 +834,7 @@ const AdminPage = () => {
 
     if (!isAdmin) {
         return (
-            <div className="container mx-auto px-6 py-8">
+            <div className="space-y-6">
                 <Alert variant="destructive">
                     <AlertCircle className="h-4 w-4" />
                     <AlertTitle>Acesso Negado</AlertTitle>
@@ -845,12 +845,17 @@ const AdminPage = () => {
     }
 
     return (
-        <div className="container mx-auto px-6 py-8 space-y-8">
-            <div className="mb-8">
-                <h1 className="text-3xl font-bold">Painel Administrativo</h1>
-                <p className="text-muted-foreground mt-1">
-                    Gerencie as configurações e associações do sistema.
-                </p>
+        <div className="space-y-6">
+            <div className="flex items-center justify-between">
+                <div>
+                    <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
+                        <ShieldCheck className="h-6 w-6" />
+                        Painel Administrativo
+                    </h1>
+                    <p className="text-muted-foreground">
+                        Gerencie as configurações e associações do sistema.
+                    </p>
+                </div>
             </div>
 
             <Tabs defaultValue="sync" className="w-full">

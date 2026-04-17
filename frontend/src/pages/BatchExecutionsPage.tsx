@@ -10,6 +10,7 @@ import {
   ChevronsRight,
   Clock,
   Filter,
+  ListChecks,
   Loader2,
   RefreshCw,
   RotateCw,
@@ -272,18 +273,23 @@ export default function BatchExecutionsPage() {
   };
 
   return (
-    <div className="container mx-auto px-6 py-8 space-y-6">
-      <div className="flex items-start justify-between">
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Acompanhamento de Lotes</h1>
-          <p className="text-muted-foreground mt-1">
+          <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
+            <ListChecks className="h-6 w-6" />
+            Acompanhamento de Lotes
+          </h1>
+          <p className="text-muted-foreground">
             Histórico das execuções dos motores de criação em lote (OneRequest, OneSid, Planilha).
           </p>
         </div>
-        <Button variant="outline" onClick={() => refetch()} disabled={isFetching}>
-          <RefreshCw className={`h-4 w-4 mr-2 ${isFetching ? 'animate-spin' : ''}`} />
-          Atualizar
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
+            <RefreshCw className={`h-4 w-4 mr-2 ${isFetching ? 'animate-spin' : ''}`} />
+            Atualizar
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

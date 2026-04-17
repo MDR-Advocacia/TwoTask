@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AlertCircle, ExternalLink, Loader2, Pause, Play, RefreshCw, Rocket, RotateCw } from "lucide-react";
+import { AlertCircle, ExternalLink, Loader2, Pause, Play, RefreshCw, Rocket, RotateCw, Workflow } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -283,30 +283,34 @@ export default function PublicationTreatmentPage() {
     : [];
 
   return (
-    <div className="container mx-auto px-6 py-8 space-y-8">
-      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
         <div>
           <div className="flex items-center gap-3">
-            <h1 className="text-3xl font-bold">Tratamento de Publicações</h1>
+            <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
+              <Workflow className="h-6 w-6" />
+              Tratamento de Publicações
+            </h1>
             {monitor?.active_run ? (
               <Badge className={statusBadge(monitor.active_run.status)}>{runStatusLabel(monitor.active_run.status)}</Badge>
             ) : (
               <Badge variant="outline">Sem execução ativa</Badge>
             )}
           </div>
-          <p className="text-muted-foreground mt-1">
+          <p className="text-muted-foreground">
             Cada tratamento usa o `publicationId` exato retornado pela API do Legal One, então a execução fica segura
             mesmo quando há multiplicidade no mesmo processo e na mesma data.
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <Button onClick={handleStart} disabled={isLoading || isSubmitting || monitor?.active_run?.is_final === false}>
+          <Button size="sm" onClick={handleStart} disabled={isLoading || isSubmitting || monitor?.active_run?.is_final === false}>
             <Rocket className="mr-2 h-4 w-4" />
             Iniciar execução
           </Button>
           <Button
             variant="outline"
+            size="sm"
             onClick={() => handleControl("pause")}
             disabled={isLoading || isSubmitting || !monitor?.active_run || monitor.control_signal === "pause"}
           >
@@ -315,13 +319,14 @@ export default function PublicationTreatmentPage() {
           </Button>
           <Button
             variant="outline"
+            size="sm"
             onClick={() => handleControl("resume")}
             disabled={isLoading || isSubmitting || !monitor?.active_run || monitor.control_signal === "run"}
           >
             <Play className="mr-2 h-4 w-4" />
             Continuar
           </Button>
-          <Button variant="outline" onClick={() => loadData(true)} disabled={isLoading || isSubmitting}>
+          <Button variant="outline" size="sm" onClick={() => loadData(true)} disabled={isLoading || isSubmitting}>
             <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
             Atualizar
           </Button>

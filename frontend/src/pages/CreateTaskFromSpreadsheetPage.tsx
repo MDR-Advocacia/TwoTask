@@ -293,20 +293,23 @@ const CreateTaskFromSpreadsheetPage = () => {
   }, [batchId, isMonitoring, toast]);
 
   return (
-    <div className="container mx-auto px-6 py-8 space-y-8">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-            Criacao de Tarefas por Planilha
+          <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
+            <Upload className="h-6 w-6" />
+            Criação de Tarefas por Planilha
           </h1>
-          <p className="text-muted-foreground mt-1">
-            Valide, acompanhe e controle o agendamento em lote com mais seguranca.
+          <p className="text-muted-foreground">
+            Valide, acompanhe e controle o agendamento em lote com mais segurança.
           </p>
         </div>
-        <Button variant="outline" onClick={handleTemplateDownload} disabled={isDownloadingTemplate}>
-          {isDownloadingTemplate ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
-          Baixar Modelo
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={handleTemplateDownload} disabled={isDownloadingTemplate}>
+            {isDownloadingTemplate ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
+            Baixar Modelo
+          </Button>
+        </div>
       </div>
 
       <Card className="max-w-3xl mx-auto glass-card border-0 animate-fade-in">
