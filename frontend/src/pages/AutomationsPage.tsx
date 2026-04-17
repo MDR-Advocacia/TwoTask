@@ -415,7 +415,7 @@ const AutomationsPage = () => {
     );
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <style>{`
         @keyframes automation-progress {
           0%   { left: -35%; }
@@ -424,12 +424,15 @@ const AutomationsPage = () => {
       `}</style>
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Agendamentos Automáticos</h1>
-          <p className="text-muted-foreground mt-2">
+          <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
+            <Clock className="h-6 w-6" />
+            Agendamentos Automáticos
+          </h1>
+          <p className="text-muted-foreground">
             Configure e gerencie suas automações de processamento.
           </p>
         </div>
-        <Button onClick={() => { resetForm(); setIsDialogOpen(true); }}>
+        <Button size="sm" onClick={() => { resetForm(); setIsDialogOpen(true); }}>
           <Plus className="h-4 w-4 mr-2" />
           Novo Agendamento
         </Button>

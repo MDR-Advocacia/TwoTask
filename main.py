@@ -100,6 +100,38 @@ async def lifespan(_: FastAPI):
     except Exception:
         logger.exception("Falha ao reapear runs órfãs no startup.")
 
+    # Reapa syncs de escritório órfãs — thread daemon morre no restart sem rodar o finally
+    try:
+        from datetime import datetime, timezone
+
+        from app.db.session import SessionLocal
+        from app.models.office_lawsuit_index import OfficeLawsuitSync
+
+        db = SessionLocal()
+        try:
+            stuck = (
+                db.query(OfficeLawsuitSync)
+                .filter(OfficeLawsuitSync.in_progress == True)  # noqa: E712
+                .all()
+            )
+            for state in stuck:
+                state.in_progress = False
+                state.last_sync_status = "error"
+                state.last_sync_error = (
+                    "API reiniciou durante a sincronização - thread interrompida."
+                )
+                state.finished_at = datetime.now(timezone.utc)
+            if stuck:
+                logger.warning(
+                    "Reapei %d sync(s) órfã(s) de escritório (in_progress=True).",
+                    len(stuck),
+                )
+                db.commit()
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Falha ao reapear syncs órfãs de escritório no startup.")
+
     try:
         yield
     finally:

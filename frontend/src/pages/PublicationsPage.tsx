@@ -32,6 +32,7 @@ import {
   MessageSquareWarning,
   Newspaper,
   Play,
+  Plus,
   RefreshCw,
   RotateCcw,
   Save,
@@ -195,6 +196,7 @@ interface ProposedTask {
   notes: string | null;
   template_name?: string;
   suggested_responsible?: SuggestedResponsible | null;
+  is_custom?: boolean;
 }
 
 interface GroupedRecord {
@@ -992,18 +994,74 @@ const PublicationsPage = () => {
     setScheduleOpen(true);
   };
 
+  // Adiciona uma tarefa avulsa (manual) no modal de agendamento.
+  // Começa em branco — usuário preenche subtipo, responsável, data etc.
+  const handleAddCustomTask = () => {
+    const in7Days = new Date();
+    in7Days.setDate(in7Days.getDate() + 7);
+    const dateStr = in7Days.toISOString().slice(0, 10);
+    const defaultIso = `${dateStr}T23:59:00Z`;
+
+    const newTask: Partial<ProposedTask> = {
+      description: "",
+      priority: "Normal",
+      startDateTime: defaultIso,
+      endDateTime: defaultIso,
+      typeId: undefined,
+      subTypeId: undefined,
+      responsibleOfficeId: null,
+      participants: [],
+      notes: null,
+      is_custom: true,
+    };
+    setEditedPayloads((prev) => [...prev, newTask]);
+  };
+
   const handleConfirmSchedule = async () => {
     if (!scheduleGroup) return;
+
+    const activeTasks = editedPayloads.filter((_, i) => !removedTaskIndices.has(i));
+
+    // Validação: bloqueia envio se alguma tarefa ativa (especialmente avulsas) estiver incompleta
+    for (let i = 0; i < activeTasks.length; i++) {
+      const t = activeTasks[i];
+      const label = t.is_custom ? `Tarefa avulsa ${i + 1}` : `Tarefa ${i + 1}`;
+      if (!t.description || !t.description.trim()) {
+        toast({ title: `${label}: preencha a descrição`, variant: "destructive" });
+        return;
+      }
+      if (!t.subTypeId) {
+        toast({ title: `${label}: selecione um subtipo de tarefa`, variant: "destructive" });
+        return;
+      }
+      const hasResponsible = (t.participants || []).some(
+        (p: any) => p?.isResponsible && p?.contact?.id
+      );
+      if (!hasResponsible) {
+        toast({ title: `${label}: selecione um responsável`, variant: "destructive" });
+        return;
+      }
+      if (!t.endDateTime) {
+        toast({ title: `${label}: defina o prazo/data`, variant: "destructive" });
+        return;
+      }
+    }
+
+    // Remove campos de metadata (frontend-only) antes de enviar ao backend
+    const sanitizedTasks = activeTasks.map((t) => {
+      const { is_custom: _ic, template_name: _tn, suggested_responsible: _sr, ...rest } = t as any;
+      return rest;
+    });
+
     setScheduling(true);
     const isNoProcess = !scheduleGroup.lawsuit_id;
     try {
-      const activeTasks = editedPayloads.filter((_, i) => !removedTaskIndices.has(i));
       const results: string[] = [];
 
       if (isNoProcess) {
         // Publicações sem processo: agendamento único com N payloads
         const recordIds = scheduleGroup.records.map((r) => r.id);
-        const body: any = { record_ids: recordIds, payload_overrides: activeTasks };
+        const body: any = { record_ids: recordIds, payload_overrides: sanitizedTasks };
         const res = await apiFetch(`${API}/groups/records/schedule`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1018,7 +1076,7 @@ const PublicationsPage = () => {
         results.push(...ids.map(String));
       } else {
         // Publicações com processo vinculado: agendamento único com N payloads
-        const body: any = { payload_overrides: activeTasks };
+        const body: any = { payload_overrides: sanitizedTasks };
         const res = await apiFetch(`${API}/groups/${scheduleGroup.lawsuit_id}/schedule`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -2658,13 +2716,17 @@ const PublicationsPage = () => {
                         >
                           {/* Cabeçalho do bloco */}
                           <div className="flex items-center justify-between rounded-t-lg border-b bg-muted/40 px-4 py-2">
-                            <span className="text-xs font-semibold text-muted-foreground">
+                            <span className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
                               Tarefa {idx + 1}
-                              {payload.template_name && (
-                                <span className="ml-2 font-normal text-muted-foreground/70">
+                              {payload.is_custom ? (
+                                <Badge variant="outline" className="border-amber-300 bg-amber-50 text-[10px] font-medium text-amber-700">
+                                  Avulsa
+                                </Badge>
+                              ) : payload.template_name ? (
+                                <span className="font-normal text-muted-foreground/70">
                                   · {payload.template_name}
                                 </span>
-                              )}
+                              ) : null}
                             </span>
                             <Button
                               variant="ghost"
@@ -2944,19 +3006,43 @@ const PublicationsPage = () => {
                         </div>
                       );
                     })}
+
+                    {/* Botão para adicionar tarefa avulsa extra */}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="w-full border-dashed"
+                      onClick={handleAddCustomTask}
+                    >
+                      <Plus className="mr-2 h-4 w-4" />
+                      Adicionar tarefa avulsa
+                    </Button>
                   </div>
                 ) : (
-                  <Alert>
-                    <AlertCircle className="h-4 w-4" />
-                    <AlertTitle>Sem template configurado</AlertTitle>
-                    <AlertDescription>
-                      Não há template para a classificação deste processo.{" "}
-                      <Link to="/publications/templates" className="font-medium underline">
-                        Configurar templates
-                      </Link>{" "}
-                      para habilitar o agendamento automático.
-                    </AlertDescription>
-                  </Alert>
+                  <div className="space-y-3">
+                    <Alert>
+                      <AlertCircle className="h-4 w-4" />
+                      <AlertTitle>Sem template configurado</AlertTitle>
+                      <AlertDescription>
+                        Não há template para a classificação deste processo.{" "}
+                        <Link to="/publications/templates" className="font-medium underline">
+                          Configurar templates
+                        </Link>{" "}
+                        para habilitar o agendamento automático — ou adicione uma tarefa avulsa abaixo.
+                      </AlertDescription>
+                    </Alert>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="w-full border-dashed"
+                      onClick={handleAddCustomTask}
+                    >
+                      <Plus className="mr-2 h-4 w-4" />
+                      Adicionar tarefa avulsa
+                    </Button>
+                  </div>
                 )}
               </div>
             )}
