@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     classifier_model: str = "claude-haiku-4-5-20251001"
     classifier_max_concurrent: int = 5
-    classifier_max_tokens: int = 2048
+    classifier_max_tokens: int = 4096
 
     model_config = SettingsConfigDict(
         env_file=".env",

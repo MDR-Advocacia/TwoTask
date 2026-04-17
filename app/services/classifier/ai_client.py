@@ -337,15 +337,69 @@ class AnthropicClassifierClient:
             raise Exception("Mensagem sem conteúdo.")
 
         raw_text = content_blocks[0].get("text", "")
-        return AnthropicClassifierClient._parse_classification_response(raw_text)
+        stop_reason = message.get("stop_reason")
+        return AnthropicClassifierClient._parse_classification_response(
+            raw_text, stop_reason=stop_reason
+        )
 
     @staticmethod
-    def _parse_classification_response(raw_text: str) -> dict[str, Any] | list[dict[str, Any]]:
+    def _try_repair_truncated_array(text: str) -> list | None:
+        """
+        Quando `max_tokens` estoura no meio de um array JSON de classificações,
+        tenta recuperar os objetos completos fechando o array no último '}' de
+        profundidade raiz válido. Percorre o texto rastreando strings (com
+        escape) e profundidade de brackets para não se confundir com '}' dentro
+        de valores string (ex.: justificativa).
+        Retorna a lista recuperada ou None se não houver nenhum objeto completo.
+        """
+        if not text.startswith("["):
+            return None
+        depth = 0
+        in_string = False
+        escape = False
+        last_complete_end = -1  # índice do último '}' que fechou objeto no nível raiz
+
+        for i, ch in enumerate(text):
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch in "{[":
+                depth += 1
+            elif ch in "}]":
+                depth -= 1
+                # depth == 1 após um '}' significa: acabou de fechar um objeto
+                # raiz do array (o próprio array mantém depth=1 enquanto aberto)
+                if ch == "}" and depth == 1:
+                    last_complete_end = i
+
+        if last_complete_end == -1:
+            return None
+        candidate = text[: last_complete_end + 1] + "]"
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            return None
+
+    @staticmethod
+    def _parse_classification_response(
+        raw_text: str, stop_reason: str | None = None
+    ) -> dict[str, Any] | list[dict[str, Any]]:
         """
         Extrai JSON da resposta, tolerando markdown code fences.
         Suporta tanto um objeto único quanto um array de classificações.
         Retorna sempre um dict (classificação principal) com campo opcional
         '_extra_classifications' contendo as classificações adicionais.
+
+        Se `stop_reason == "max_tokens"` e a resposta for um array truncado,
+        tenta recuperar as classificações que já vieram completas antes de
+        desistir, reportando um erro claro caso não seja possível.
         """
         text = raw_text.strip()
         if text.startswith("```"):
@@ -356,8 +410,26 @@ class AnthropicClassifierClient:
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError as exc:
-            logger.warning("Falha ao parsear resposta: %s", text[:300])
-            raise Exception(f"Resposta não é JSON válido: {text[:200]}") from exc
+            # Tenta reparar array truncado por max_tokens
+            if stop_reason == "max_tokens" or text.startswith("["):
+                recovered = AnthropicClassifierClient._try_repair_truncated_array(text)
+                if recovered:
+                    logger.warning(
+                        "Resposta truncada (stop_reason=%s) — recuperadas %d classificações do array.",
+                        stop_reason, len(recovered),
+                    )
+                    parsed = recovered
+                else:
+                    logger.warning("Falha ao parsear resposta: %s", text[:300])
+                    if stop_reason == "max_tokens":
+                        raise Exception(
+                            "Resposta truncada (max_tokens atingido) — "
+                            "aumente classifier_max_tokens ou reduza o texto de entrada."
+                        ) from exc
+                    raise Exception(f"Resposta não é JSON válido: {text[:200]}") from exc
+            else:
+                logger.warning("Falha ao parsear resposta: %s", text[:300])
+                raise Exception(f"Resposta não é JSON válido: {text[:200]}") from exc
 
         # Suporte a múltiplas classificações (array)
         if isinstance(parsed, list):
