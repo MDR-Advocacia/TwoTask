@@ -1141,6 +1141,7 @@ class PublicationSearchService:
         uf: Optional[str] = None,
         vinculo: Optional[str] = None,
         natureza: Optional[str] = None,
+        polo: Optional[str] = None,
     ):
         """Query base reutilizada por list_records_grouped e contagens."""
         query = self.db.query(PublicationRecord).filter(PublicationRecord.is_duplicate == False)  # noqa: E712
@@ -1168,6 +1169,8 @@ class PublicationSearchService:
             query = query.filter(PublicationRecord.linked_lawsuit_id.isnot(None))
         if natureza:
             query = query.filter(PublicationRecord.natureza_processo == natureza)
+        if polo:
+            query = query.filter(PublicationRecord.polo == polo.strip().lower())
         return query
 
     @staticmethod
@@ -1235,6 +1238,7 @@ class PublicationSearchService:
         uf: Optional[str] = None,
         vinculo: Optional[str] = None,
         natureza: Optional[str] = None,
+        polo: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
@@ -1251,6 +1255,7 @@ class PublicationSearchService:
             date_from=date_from, date_to=date_to,
             category=category, uf=uf,
             vinculo=vinculo, natureza=natureza,
+            polo=polo,
         )
 
         # ─── Etapa 1: contar e paginar grupos (lawsuit_ids distintos) ───
@@ -1313,6 +1318,7 @@ class PublicationSearchService:
             date_from=date_from, date_to=date_to,
             category=category, uf=uf,
             vinculo=vinculo, natureza=natureza,
+            polo=polo,
         )
 
         # Filtro: records que pertencem aos grupos da página

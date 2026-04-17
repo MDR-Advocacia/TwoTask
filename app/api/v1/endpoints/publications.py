@@ -474,6 +474,7 @@ def list_records_grouped(
     uf: Optional[str] = Query(None, description="UF/região derivada do CNJ (ex.: SP, RJ, TRT7, TRF1)."),
     vinculo: Optional[str] = Query(None, description="Filtro de vínculo: com_processo, sem_processo."),
     natureza: Optional[str] = Query(None, description="Filtra por natureza do processo (ex.: Embargos à Execução)."),
+    polo: Optional[str] = Query(None, description="Filtra por polo indicado (ativo, passivo, ambos)."),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     service: PublicationSearchService = Depends(_get_service),
@@ -489,6 +490,7 @@ def list_records_grouped(
         uf=uf,
         vinculo=vinculo,
         natureza=natureza,
+        polo=polo,
         limit=limit,
         offset=offset,
     )
@@ -503,6 +505,7 @@ def export_records_grouped(
     date_to: Optional[str] = Query(None, description="Data fim (YYYY-MM-DD)."),
     category: Optional[str] = Query(None, description="Classificação primária."),
     uf: Optional[str] = Query(None, description="UF/região derivada do CNJ."),
+    polo: Optional[str] = Query(None, description="Filtra por polo indicado (ativo, passivo, ambos)."),
     db: Session = Depends(get_db),
 ):
     """
@@ -520,6 +523,7 @@ def export_records_grouped(
         date_to=date_to,
         category=category,
         uf=uf,
+        polo=polo,
     )
     return Response(
         content=content,

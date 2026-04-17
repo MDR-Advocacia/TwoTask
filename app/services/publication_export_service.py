@@ -44,7 +44,7 @@ EXPORT_COLUMNS: list[tuple[str, str, int]] = [
 ]
 
 
-def _apply_filters(query, *, search_id, status, linked_office_id, date_from, date_to, category):
+def _apply_filters(query, *, search_id, status, linked_office_id, date_from, date_to, category, polo=None):
     query = query.filter(PublicationRecord.is_duplicate == False)  # noqa: E712
     if search_id is not None:
         query = query.filter(PublicationRecord.search_id == search_id)
@@ -61,6 +61,8 @@ def _apply_filters(query, *, search_id, status, linked_office_id, date_from, dat
         query = query.filter(PublicationRecord.creation_date < date_to + "T99")
     if category:
         query = query.filter(PublicationRecord.category == category)
+    if polo:
+        query = query.filter(PublicationRecord.polo == polo.strip().lower())
     return query
 
 
@@ -152,6 +154,7 @@ def export_records_grouped_xlsx(
     date_to: Optional[str] = None,
     category: Optional[str] = None,
     uf: Optional[str] = None,
+    polo: Optional[str] = None,
 ) -> tuple[bytes, str]:
     """Gera o XLSX e devolve ``(bytes, filename)``."""
 
@@ -164,6 +167,7 @@ def export_records_grouped_xlsx(
         date_from=date_from,
         date_to=date_to,
         category=category,
+        polo=polo,
     )
     # Filtro UF via coluna materializada (SQL) — antes era em memória.
     if uf:
@@ -237,6 +241,7 @@ def export_records_grouped_xlsx(
         ("date_to", date_to or ""),
         ("category", category or ""),
         ("uf", uf or ""),
+        ("polo", polo or ""),
     ]
     for row_idx, (label, value) in enumerate(meta_rows, start=1):
         meta.cell(row=row_idx, column=1, value=label).font = Font(bold=True)

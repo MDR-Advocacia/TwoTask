@@ -371,6 +371,7 @@ const PublicationsPage = () => {
   const [filterUf, setFilterUf] = useState<string>("");
   const [filterVinculo, setFilterVinculo] = useState<string>("");
   const [filterNatureza, setFilterNatureza] = useState<string>("");
+  const [filterPolo, setFilterPolo] = useState<string>("");
   const [groupPage, setGroupPage] = useState(0);
   const GROUP_PAGE_SIZE = 20;
 
@@ -481,7 +482,7 @@ const PublicationsPage = () => {
   }, []);
 
   const loadGrouped = useCallback(async (
-    page = 0, status = "", officeId = "", dateFrom = "", dateTo = "", category = "", ufParam = "", vinculoParam = "", naturezaParam = "",
+    page = 0, status = "", officeId = "", dateFrom = "", dateTo = "", category = "", ufParam = "", vinculoParam = "", naturezaParam = "", poloParam = "",
   ) => {
     try {
       let url = `${API}/records/grouped?limit=${GROUP_PAGE_SIZE}&offset=${page * GROUP_PAGE_SIZE}`;
@@ -493,6 +494,7 @@ const PublicationsPage = () => {
       if (ufParam) url += `&uf=${encodeURIComponent(ufParam)}`;
       if (vinculoParam) url += `&vinculo=${vinculoParam}`;
       if (naturezaParam) url += `&natureza=${encodeURIComponent(naturezaParam)}`;
+      if (poloParam) url += `&polo=${encodeURIComponent(poloParam)}`;
       const res = await apiFetch(url);
       if (res.ok) setGrouped(await res.json());
     } catch { /* ignore */ }
@@ -509,6 +511,7 @@ const PublicationsPage = () => {
       if (filterDateTo) params.set("date_to", filterDateTo);
       if (filterCategory) params.set("category", filterCategory);
       if (filterUf) params.set("uf", filterUf);
+      if (filterPolo) params.set("polo", filterPolo);
       const qs = params.toString();
       const url = `${API}/records/grouped/export${qs ? `?${qs}` : ""}`;
 
@@ -586,6 +589,7 @@ const PublicationsPage = () => {
         uf: filterUf,
         vinculo: filterVinculo,
         natureza: filterNatureza,
+        polo: filterPolo,
       };
       const res = await apiFetch("/api/v1/me/saved-filters", {
         method: "POST",
@@ -613,7 +617,7 @@ const PublicationsPage = () => {
   const handleApplySavedFilter = (filter: any) => {
     try {
       const parsed = typeof filter.filters_json === 'string' ? JSON.parse(filter.filters_json) : filter.filters_json;
-      handleFilterChange(parsed.status || "", parsed.office || "", parsed.dateFrom, parsed.dateTo, parsed.category, parsed.uf || "", parsed.vinculo || "", parsed.natureza || "");
+      handleFilterChange(parsed.status || "", parsed.office || "", parsed.dateFrom, parsed.dateTo, parsed.category, parsed.uf || "", parsed.vinculo || "", parsed.natureza || "", parsed.polo || "");
     } catch (err) {
       toast({ title: "Erro", description: "Não foi possível aplicar o filtro.", variant: "destructive" });
     }
@@ -635,7 +639,7 @@ const PublicationsPage = () => {
     loadTaskMeta();
     loadStats();
     loadSearches();
-    loadGrouped(0, "", "", "", "", "", "", "");
+    loadGrouped(0, "", "", "", "", "", "", "", "", "");
     loadBatches();
     loadSavedFilters();
   }, []);
@@ -683,7 +687,7 @@ const PublicationsPage = () => {
       clearInterval(t);
       // Quando polling para (busca terminou), recarrega dados
       loadStats();
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo);
     };
   }, [activeSearch?.id]);
 
@@ -713,7 +717,7 @@ const PublicationsPage = () => {
       }
       toast({ title: "Busca iniciada", description: "Acompanhe o progresso no histórico." });
       [3000, 8000, 15000, 30000].forEach((delay) => {
-        setTimeout(() => { loadSearches(); loadStats(); loadGrouped(0, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza); }, delay);
+        setTimeout(() => { loadSearches(); loadStats(); loadGrouped(0, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo); }, delay);
       });
     } catch (err: any) {
       setError(err.message);
@@ -723,7 +727,7 @@ const PublicationsPage = () => {
   };
 
   const handleFilterChange = (
-    status: string, officeId: string, dateFrom?: string, dateTo?: string, category?: string, ufParam?: string, vinculoParam?: string, naturezaParam?: string,
+    status: string, officeId: string, dateFrom?: string, dateTo?: string, category?: string, ufParam?: string, vinculoParam?: string, naturezaParam?: string, poloParam?: string,
   ) => {
     setFilterStatus(status);
     setFilterOffice(officeId);
@@ -733,21 +737,23 @@ const PublicationsPage = () => {
     if (ufParam !== undefined) setFilterUf(ufParam);
     if (vinculoParam !== undefined) setFilterVinculo(vinculoParam);
     if (naturezaParam !== undefined) setFilterNatureza(naturezaParam);
+    if (poloParam !== undefined) setFilterPolo(poloParam);
     const df = dateFrom ?? filterDateFrom;
     const dt = dateTo ?? filterDateTo;
     const cat = category ?? filterCategory;
     const uf = ufParam ?? filterUf;
     const vin = vinculoParam ?? filterVinculo;
     const nat = naturezaParam ?? filterNatureza;
+    const pol = poloParam ?? filterPolo;
     setGroupPage(0);
     setSelectedGroupKeys(new Set());
-    loadGrouped(0, status, officeId, df, dt, cat, uf, vin, nat);
+    loadGrouped(0, status, officeId, df, dt, cat, uf, vin, nat, pol);
   };
 
   const handleGroupPageChange = (newPage: number) => {
     setGroupPage(newPage);
     setSelectedGroupKeys(new Set());
-    loadGrouped(newPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza);
+    loadGrouped(newPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo);
   };
 
   const handleIgnoreRecord = async (recordId: number) => {
@@ -758,7 +764,7 @@ const PublicationsPage = () => {
         body: JSON.stringify({ status: "IGNORADO" }),
       });
       toast({ title: "Registro ignorado" });
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo);
       loadStats();
     } catch { /* ignore */ }
   };
@@ -790,7 +796,7 @@ const PublicationsPage = () => {
         title: "Reclassificado",
         description: `${category}${subcategory ? " → " + subcategory : ""} aplicado a ${recordIds.length} publicação(ões). Proposta de tarefa atualizada.`,
       });
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo);
       loadStats();
     } catch (err: any) {
       toast({ title: "Erro", description: err.message, variant: "destructive" });
@@ -838,7 +844,7 @@ const PublicationsPage = () => {
       }
       toast({ title: "Feedback registrado", description: "Obrigado! O classificador vai aprender com essa correção." });
       setFeedbackOpen(false);
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo);
     } catch (err: any) {
       toast({ title: "Erro", description: err.message, variant: "destructive" });
     } finally {
@@ -847,7 +853,7 @@ const PublicationsPage = () => {
   };
 
   const handleRefreshAll = () => {
-    loadStats(); loadSearches(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza); loadBatches();
+    loadStats(); loadSearches(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo); loadBatches();
   };
 
   // ─── Batch classification ────────────────────────────────────────────
@@ -913,7 +919,7 @@ const PublicationsPage = () => {
       });
       // Pequeno polling para refletir o efeito na UI
       [3000, 8000, 20000].forEach((delay) => {
-        setTimeout(() => { loadBatches(); loadStats(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza); }, delay);
+        setTimeout(() => { loadBatches(); loadStats(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo); }, delay);
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -967,7 +973,7 @@ const PublicationsPage = () => {
         description: `Propostas sendo reconstruídas para ${scopeLabel}. Atualize em instantes.`,
       });
       setTimeout(() => {
-        loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza);
+        loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo);
       }, 3000);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1033,7 +1039,7 @@ const PublicationsPage = () => {
       });
       setScheduleOpen(false);
       setRemovedTaskIndices(new Set());
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo);
       loadStats();
     } catch (err: any) {
       toast({ title: "Erro ao agendar", description: err.message, variant: "destructive" });
@@ -1137,7 +1143,7 @@ const PublicationsPage = () => {
 
     clearSelection();
     setBulkProcessing(false);
-    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza);
+    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo);
     loadStats();
   };
 
@@ -1178,7 +1184,7 @@ const PublicationsPage = () => {
 
     clearSelection();
     setBulkProcessing(false);
-    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza);
+    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo);
     loadStats();
   };
 
@@ -1803,6 +1809,20 @@ const PublicationsPage = () => {
                   </Select>
                 </div>
               )}
+
+              <div className="space-y-1">
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Polo</Label>
+                <Select value={filterPolo || "all"}
+                  onValueChange={(v) => handleFilterChange(filterStatus, filterOffice, undefined, undefined, undefined, undefined, undefined, undefined, v === "all" ? "" : v)}>
+                  <SelectTrigger className="h-8 w-[160px] text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos</SelectItem>
+                    <SelectItem value="ativo">Polo Ativo</SelectItem>
+                    <SelectItem value="passivo">Polo Passivo</SelectItem>
+                    <SelectItem value="ambos">Ambos os Polos</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
 
             {/* Linha 2: UF, período e ações */}
@@ -1861,12 +1881,12 @@ const PublicationsPage = () => {
               </div>
 
               {/* Botão limpar filtros (aparece quando há filtros ativos) */}
-              {(filterStatus || filterOffice || filterCategory || filterUf || filterVinculo || filterNatureza || filterDateFrom || filterDateTo) && (
+              {(filterStatus || filterOffice || filterCategory || filterUf || filterVinculo || filterNatureza || filterPolo || filterDateFrom || filterDateTo) && (
                 <Button
                   variant="ghost"
                   size="sm"
                   className="h-8 text-xs text-muted-foreground"
-                  onClick={() => handleFilterChange("", "", "", "", "", "", "", "")}
+                  onClick={() => handleFilterChange("", "", "", "", "", "", "", "", "")}
                 >
                   <XCircle className="h-3.5 w-3.5 mr-1" />
                   Limpar filtros
@@ -2392,6 +2412,21 @@ const PublicationsPage = () => {
                       {selectedRecord.audiencia_link.length > 50
                         ? selectedRecord.audiencia_link.slice(0, 50) + "..."
                         : selectedRecord.audiencia_link}
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  </div>
+                )}
+                {selectedRecord.legal_one_update_id && (
+                  <div className="col-span-2">
+                    <span className="font-medium text-muted-foreground">Publicação no Legal One: </span>
+                    <a
+                      href={`https://firm.legalone.com.br/publications?publicationId=${selectedRecord.legal_one_update_id}&treatStatus=3`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 rounded border border-blue-300 bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700 hover:underline"
+                    >
+                      <Link2 className="h-3 w-3" />
+                      Abrir no Legal One
                       <ExternalLink className="h-3 w-3" />
                     </a>
                   </div>
