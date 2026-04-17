@@ -2,27 +2,33 @@
 @tailwind components;
 @tailwind utilities;
 
-/* OneTask Design System - Liquid Glass Theme
-All colors MUST be HSL.
+/* DunaFlow Design System — Marca DUNATECH
+   Paleta: azul-marinho #0A1940 + azul elétrico #1E7BFF
+   All colors MUST be HSL.
 */
 
 @layer base {
   :root {
     /* Primary Brand Colors */
     --background: 220 15% 97%;
-    --foreground: 220 25% 15%;
-    
-    /* Liquid Glass Effect Colors */
-    --glass-primary: 220 70% 55%;
-    --glass-secondary: 210 60% 65%;
-    --glass-accent: 195 85% 60%;
+    --foreground: 220 74% 14%;          /* DUNATECH navy — usado como texto principal */
+
+    /* DUNATECH — cores da marca */
+    --dunatech-navy: 220 74% 14%;       /* #0A1940 — "DUNA" */
+    --dunatech-blue: 217 100% 56%;      /* #1E7BFF — "TECH" e onda elétrica */
+    --dunatech-blue-soft: 215 95% 72%;  /* tint mais claro pra hover/backgrounds */
+
+    /* Liquid Glass Effect Colors — realinhadas ao tom DUNATECH */
+    --glass-primary: 217 100% 56%;      /* = dunatech-blue */
+    --glass-secondary: 215 95% 72%;     /* = dunatech-blue-soft */
+    --glass-accent: 220 74% 14%;        /* = dunatech-navy */
     --glass-surface: 220 20% 98%;
     --glass-border: 220 20% 85%;
-    
-    /* Corporate Blues */
-    --corp-navy: 220 85% 15%;
-    --corp-blue: 220 70% 40%;
-    --corp-light: 210 50% 70%;
+
+    /* Corporate Blues — alinhadas à marca */
+    --corp-navy: 220 74% 14%;           /* = dunatech-navy */
+    --corp-blue: 217 100% 56%;          /* = dunatech-blue */
+    --corp-light: 215 95% 80%;
     
     /* Status Colors */
     --success: 140 70% 45%;
@@ -90,21 +96,29 @@ All colors MUST be HSL.
   }
 
   .dark {
-    --background: 220 25% 8%;
+    --background: 220 74% 8%;            /* navy DUNATECH mais escuro */
     --foreground: 220 15% 92%;
-    
-    /* Dark Liquid Glass */
-    --glass-surface: 220 25% 12%;
-    --glass-border: 220 25% 20%;
 
-    --card: 222.2 84% 4.9%;
+    /* DUNATECH — mesmas tintas, só que a "navy" vira background */
+    --dunatech-navy: 220 74% 14%;
+    --dunatech-blue: 217 100% 62%;       /* um pouco mais claro no dark pra contraste */
+    --dunatech-blue-soft: 215 95% 72%;
+
+    /* Dark Liquid Glass */
+    --glass-surface: 220 40% 12%;
+    --glass-border: 220 30% 22%;
+    --glass-primary: 217 100% 62%;
+    --glass-secondary: 215 95% 72%;
+    --glass-accent: 220 74% 14%;
+
+    --card: 220 40% 10%;
     --card-foreground: 210 40% 98%;
 
-    --popover: 222.2 84% 4.9%;
+    --popover: 220 40% 10%;
     --popover-foreground: 210 40% 98%;
 
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
+    --primary: 217 100% 62%;             /* dunatech-blue */
+    --primary-foreground: 0 0% 100%;
 
     --secondary: 217.2 32.6% 17.5%;
     --secondary-foreground: 210 40% 98%;

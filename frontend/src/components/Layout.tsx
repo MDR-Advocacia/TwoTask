@@ -125,9 +125,13 @@ export default function Layout({ children }: PropsWithChildren) {
         <div className="flex h-full max-h-screen flex-col gap-2">
           <div className="flex h-14 items-center border-b px-4 lg:h-[60px] lg:px-6">
             <Link to="/" className="flex items-center gap-2 font-semibold">
-              <img src="/logo-escritorio2.png" alt="Logo" className="h-15 w-20" />
-              <span className="bg-gradient-to-r from-primary to-accent bg-clip-text text-xl font-bold text-transparent">
-                TwoTask
+              <img
+                src="/brand/dunaflow-logo.png"
+                alt="DunaFlow"
+                className="h-9 w-auto"
+              />
+              <span className="text-xl font-bold tracking-tight text-[hsl(var(--dunatech-navy))]">
+                Duna<span className="italic font-semibold text-[hsl(var(--dunatech-blue))]">Flow</span>
               </span>
             </Link>
           </div>
@@ -148,9 +152,13 @@ export default function Layout({ children }: PropsWithChildren) {
             </SheetTrigger>
             <SheetContent side="left" className="flex flex-col">
               <div className="mb-4 flex items-center gap-2 text-lg font-semibold">
-                <img src="/logo-escritorio2.png" alt="Logo" className="h-10 w-10" />
-                <span className="bg-gradient-to-r from-primary to-accent bg-clip-text text-xl font-bold text-transparent">
-                  TwoTask
+                <img
+                  src="/brand/dunaflow-logo.png"
+                  alt="DunaFlow"
+                  className="h-8 w-auto"
+                />
+                <span className="text-xl font-bold tracking-tight text-[hsl(var(--dunatech-navy))]">
+                  Duna<span className="italic font-semibold text-[hsl(var(--dunatech-blue))]">Flow</span>
                 </span>
               </div>
               <NavContent />

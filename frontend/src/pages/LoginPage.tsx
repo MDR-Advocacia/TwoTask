@@ -40,14 +40,30 @@ const LoginPage = () => {
   };
 
   return (
-    <div className="flex items-center justify-center min-h-screen bg-background">
-      <Card className="mx-auto max-w-sm w-full">
-        <CardHeader>
-          <CardTitle className="text-2xl text-center">Login</CardTitle>
-          <CardDescription className="text-center">
-            Entre com seu e-mail para acessar o painel
-          </CardDescription>
-        </CardHeader>
+    <div className="flex items-center justify-center min-h-screen bg-background px-4">
+      <div className="w-full max-w-sm space-y-6">
+        <div className="flex flex-col items-center gap-3">
+          <img
+            src="/brand/dunaflow-logo.png"
+            alt="DunaFlow"
+            className="h-16 w-auto"
+          />
+          <div className="flex flex-col items-center gap-0.5">
+            <h1 className="text-3xl font-bold tracking-tight text-[hsl(var(--dunatech-navy))]">
+              Duna<span className="italic font-semibold text-[hsl(var(--dunatech-blue))]">Flow</span>
+            </h1>
+            <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
+              by DUNATECH
+            </p>
+          </div>
+        </div>
+        <Card className="w-full">
+          <CardHeader>
+            <CardTitle className="text-2xl text-center">Entrar</CardTitle>
+            <CardDescription className="text-center">
+              Acesse com seu e-mail corporativo
+            </CardDescription>
+          </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit}>
             <div className="grid gap-4">
@@ -88,8 +104,9 @@ const LoginPage = () => {
               </Button>
             </div>
           </form>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 };
