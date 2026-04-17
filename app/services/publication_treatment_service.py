@@ -504,11 +504,17 @@ class PublicationTreatmentService:
         self,
         *,
         office_ids: Optional[list[int]] = None,
+        item_ids: Optional[list[int]] = None,
         trigger_type: str = RUN_TRIGGER_MANUAL,
         triggered_by_email: Optional[str] = None,
         automation_id: Optional[int] = None,
     ) -> dict[str, Any]:
-        backfill = self.backfill_eligible_items(office_ids)
+        # Retries direcionados (item_ids) pulam o backfill global para evitar
+        # reabrir itens FALHA de outros processos sem intencao explicita.
+        if item_ids:
+            backfill = {"created": 0, "updated": 0, "cancelled": 0, "scanned": 0}
+        else:
+            backfill = self.backfill_eligible_items(office_ids)
         active_run = self.get_active_run()
         if active_run:
             return {
@@ -528,6 +534,8 @@ class PublicationTreatmentService:
         )
         if office_ids:
             items_query = items_query.filter(PublicationTreatmentItem.linked_office_id.in_(office_ids))
+        if item_ids:
+            items_query = items_query.filter(PublicationTreatmentItem.id.in_(item_ids))
 
         items = items_query.all()
         if not items:
@@ -751,6 +759,51 @@ class PublicationTreatmentService:
             self.db.commit()
             self.db.refresh(run)
         return run
+
+    def retry_item(
+        self,
+        item_id: int,
+        *,
+        triggered_by_email: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Reenfileira um unico item (tipicamente em FALHA) e inicia um run dedicado."""
+        item = (
+            self.db.query(PublicationTreatmentItem)
+            .filter(PublicationTreatmentItem.id == item_id)
+            .first()
+        )
+        if item is None:
+            raise ValueError(f"Item de tratamento #{item_id} nao encontrado.")
+        if item.queue_status == QUEUE_STATUS_COMPLETED:
+            raise ValueError(
+                f"Item #{item_id} ja foi concluido e nao pode ser reexecutado."
+            )
+        if item.queue_status == QUEUE_STATUS_PROCESSING:
+            raise RuntimeError(
+                f"Item #{item_id} esta em processamento no momento. Aguarde a execucao atual finalizar."
+            )
+
+        active_run = self.get_active_run()
+        if active_run:
+            raise RuntimeError(
+                "Ja existe uma execucao em andamento. Aguarde finalizar antes de reexecutar itens individualmente."
+            )
+
+        now = self._utcnow()
+        item.queue_status = QUEUE_STATUS_PENDING
+        item.last_error = None
+        item.last_response = None
+        item.attempt_count = 0
+        item.treated_at = None
+        item.updated_at = now
+        self.db.commit()
+        self.db.refresh(item)
+
+        return self.start_run(
+            item_ids=[item_id],
+            triggered_by_email=triggered_by_email,
+            trigger_type=RUN_TRIGGER_MANUAL,
+        )
 
     def set_run_control(self, run_id: int, action: str) -> dict[str, Any]:
         run = self.get_run(run_id, sync_from_file=True)

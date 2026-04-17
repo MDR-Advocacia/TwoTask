@@ -117,6 +117,20 @@ export async function startPublicationTreatmentRun(): Promise<PublicationTreatme
 }
 
 
+export async function retryPublicationTreatmentItem(
+  itemId: number,
+): Promise<PublicationTreatmentStartResponse> {
+  const response = await apiFetch(`/api/v1/publications/treatment/items/${itemId}/retry`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({}),
+  });
+  return expectJson<PublicationTreatmentStartResponse>(response);
+}
+
+
 export async function updatePublicationTreatmentRunControl(
   runId: number,
   action: "pause" | "resume",

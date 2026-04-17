@@ -97,6 +97,20 @@ def start_treatment_run(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/items/{item_id}/retry")
+def retry_treatment_item(
+    item_id: int,
+    service: PublicationTreatmentService = Depends(_get_service),
+    current_user: LegalOneUser = Depends(auth.require_permission("publications")),
+):
+    try:
+        return service.retry_item(item_id, triggered_by_email=current_user.email)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.post("/runs/{run_id}/control")
 def control_treatment_run(
     run_id: int,
