@@ -1064,6 +1064,7 @@ class PublicationSearchService:
         category: Optional[str] = None,
         uf: Optional[str] = None,
         vinculo: Optional[str] = None,
+        natureza: Optional[str] = None,
     ):
         """Query base reutilizada por list_records_grouped e contagens."""
         query = self.db.query(PublicationRecord).filter(PublicationRecord.is_duplicate == False)  # noqa: E712
@@ -1089,6 +1090,8 @@ class PublicationSearchService:
             query = query.filter(PublicationRecord.linked_lawsuit_id.is_(None))
         elif vinculo == "com_processo":
             query = query.filter(PublicationRecord.linked_lawsuit_id.isnot(None))
+        if natureza:
+            query = query.filter(PublicationRecord.natureza_processo == natureza)
         return query
 
     @staticmethod
@@ -1155,6 +1158,7 @@ class PublicationSearchService:
         category: Optional[str] = None,
         uf: Optional[str] = None,
         vinculo: Optional[str] = None,
+        natureza: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
@@ -1170,7 +1174,7 @@ class PublicationSearchService:
             linked_office_id=linked_office_id,
             date_from=date_from, date_to=date_to,
             category=category, uf=uf,
-            vinculo=vinculo,
+            vinculo=vinculo, natureza=natureza,
         )
 
         # ─── Etapa 1: contar e paginar grupos (lawsuit_ids distintos) ───
@@ -1232,7 +1236,7 @@ class PublicationSearchService:
             linked_office_id=linked_office_id,
             date_from=date_from, date_to=date_to,
             category=category, uf=uf,
-            vinculo=vinculo,
+            vinculo=vinculo, natureza=natureza,
         )
 
         # Filtro: records que pertencem aos grupos da página
@@ -1818,6 +1822,18 @@ class PublicationSearchService:
             .first()
         )
 
+        # Naturezas distintas para filtro dinâmico
+        naturezas = [
+            row[0] for row in
+            self.db.query(PublicationRecord.natureza_processo)
+            .filter(PublicationRecord.is_duplicate == False)
+            .filter(PublicationRecord.natureza_processo.isnot(None))
+            .filter(PublicationRecord.natureza_processo != "")
+            .distinct()
+            .order_by(PublicationRecord.natureza_processo)
+            .all()
+        ]
+
         return {
             "total_records": total,
             "by_status": {
@@ -1829,6 +1845,7 @@ class PublicationSearchService:
             },
             "total_searches": total_searches,
             "last_search": self._search_to_dict(last_search) if last_search else None,
+            "available_naturezas": naturezas,
         }
 
     # ──────────────────────────────────────────────

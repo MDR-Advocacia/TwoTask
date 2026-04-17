@@ -96,6 +96,7 @@ interface Statistics {
   by_status: { novo: number; classificado: number; agendado: number; ignorado: number; erro: number };
   total_searches: number;
   last_search: SearchItem | null;
+  available_naturezas: string[];
 }
 
 interface SearchItem {
@@ -369,6 +370,7 @@ const PublicationsPage = () => {
   const [filterCategory, setFilterCategory] = useState<string>("");
   const [filterUf, setFilterUf] = useState<string>("");
   const [filterVinculo, setFilterVinculo] = useState<string>("");
+  const [filterNatureza, setFilterNatureza] = useState<string>("");
   const [groupPage, setGroupPage] = useState(0);
   const GROUP_PAGE_SIZE = 20;
 
@@ -479,7 +481,7 @@ const PublicationsPage = () => {
   }, []);
 
   const loadGrouped = useCallback(async (
-    page = 0, status = "", officeId = "", dateFrom = "", dateTo = "", category = "", ufParam = "", vinculoParam = "",
+    page = 0, status = "", officeId = "", dateFrom = "", dateTo = "", category = "", ufParam = "", vinculoParam = "", naturezaParam = "",
   ) => {
     try {
       let url = `${API}/records/grouped?limit=${GROUP_PAGE_SIZE}&offset=${page * GROUP_PAGE_SIZE}`;
@@ -490,6 +492,7 @@ const PublicationsPage = () => {
       if (category) url += `&category=${encodeURIComponent(category)}`;
       if (ufParam) url += `&uf=${encodeURIComponent(ufParam)}`;
       if (vinculoParam) url += `&vinculo=${vinculoParam}`;
+      if (naturezaParam) url += `&natureza=${encodeURIComponent(naturezaParam)}`;
       const res = await apiFetch(url);
       if (res.ok) setGrouped(await res.json());
     } catch { /* ignore */ }
@@ -582,6 +585,7 @@ const PublicationsPage = () => {
         category: filterCategory,
         uf: filterUf,
         vinculo: filterVinculo,
+        natureza: filterNatureza,
       };
       const res = await apiFetch("/api/v1/me/saved-filters", {
         method: "POST",
@@ -609,7 +613,7 @@ const PublicationsPage = () => {
   const handleApplySavedFilter = (filter: any) => {
     try {
       const parsed = typeof filter.filters_json === 'string' ? JSON.parse(filter.filters_json) : filter.filters_json;
-      handleFilterChange(parsed.status || "", parsed.office || "", parsed.dateFrom, parsed.dateTo, parsed.category, parsed.uf || "", parsed.vinculo || "");
+      handleFilterChange(parsed.status || "", parsed.office || "", parsed.dateFrom, parsed.dateTo, parsed.category, parsed.uf || "", parsed.vinculo || "", parsed.natureza || "");
     } catch (err) {
       toast({ title: "Erro", description: "Não foi possível aplicar o filtro.", variant: "destructive" });
     }
@@ -679,7 +683,7 @@ const PublicationsPage = () => {
       clearInterval(t);
       // Quando polling para (busca terminou), recarrega dados
       loadStats();
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza);
     };
   }, [activeSearch?.id]);
 
@@ -709,7 +713,7 @@ const PublicationsPage = () => {
       }
       toast({ title: "Busca iniciada", description: "Acompanhe o progresso no histórico." });
       [3000, 8000, 15000, 30000].forEach((delay) => {
-        setTimeout(() => { loadSearches(); loadStats(); loadGrouped(0, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo); }, delay);
+        setTimeout(() => { loadSearches(); loadStats(); loadGrouped(0, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza); }, delay);
       });
     } catch (err: any) {
       setError(err.message);
@@ -719,7 +723,7 @@ const PublicationsPage = () => {
   };
 
   const handleFilterChange = (
-    status: string, officeId: string, dateFrom?: string, dateTo?: string, category?: string, ufParam?: string, vinculoParam?: string,
+    status: string, officeId: string, dateFrom?: string, dateTo?: string, category?: string, ufParam?: string, vinculoParam?: string, naturezaParam?: string,
   ) => {
     setFilterStatus(status);
     setFilterOffice(officeId);
@@ -728,20 +732,22 @@ const PublicationsPage = () => {
     if (category !== undefined) setFilterCategory(category);
     if (ufParam !== undefined) setFilterUf(ufParam);
     if (vinculoParam !== undefined) setFilterVinculo(vinculoParam);
+    if (naturezaParam !== undefined) setFilterNatureza(naturezaParam);
     const df = dateFrom ?? filterDateFrom;
     const dt = dateTo ?? filterDateTo;
     const cat = category ?? filterCategory;
     const uf = ufParam ?? filterUf;
     const vin = vinculoParam ?? filterVinculo;
+    const nat = naturezaParam ?? filterNatureza;
     setGroupPage(0);
     setSelectedGroupKeys(new Set());
-    loadGrouped(0, status, officeId, df, dt, cat, uf, vin);
+    loadGrouped(0, status, officeId, df, dt, cat, uf, vin, nat);
   };
 
   const handleGroupPageChange = (newPage: number) => {
     setGroupPage(newPage);
     setSelectedGroupKeys(new Set());
-    loadGrouped(newPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo);
+    loadGrouped(newPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza);
   };
 
   const handleIgnoreRecord = async (recordId: number) => {
@@ -752,7 +758,7 @@ const PublicationsPage = () => {
         body: JSON.stringify({ status: "IGNORADO" }),
       });
       toast({ title: "Registro ignorado" });
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza);
       loadStats();
     } catch { /* ignore */ }
   };
@@ -784,7 +790,7 @@ const PublicationsPage = () => {
         title: "Reclassificado",
         description: `${category}${subcategory ? " → " + subcategory : ""} aplicado a ${recordIds.length} publicação(ões). Proposta de tarefa atualizada.`,
       });
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza);
       loadStats();
     } catch (err: any) {
       toast({ title: "Erro", description: err.message, variant: "destructive" });
@@ -832,7 +838,7 @@ const PublicationsPage = () => {
       }
       toast({ title: "Feedback registrado", description: "Obrigado! O classificador vai aprender com essa correção." });
       setFeedbackOpen(false);
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza);
     } catch (err: any) {
       toast({ title: "Erro", description: err.message, variant: "destructive" });
     } finally {
@@ -841,7 +847,7 @@ const PublicationsPage = () => {
   };
 
   const handleRefreshAll = () => {
-    loadStats(); loadSearches(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo); loadBatches();
+    loadStats(); loadSearches(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza); loadBatches();
   };
 
   // ─── Batch classification ────────────────────────────────────────────
@@ -907,7 +913,7 @@ const PublicationsPage = () => {
       });
       // Pequeno polling para refletir o efeito na UI
       [3000, 8000, 20000].forEach((delay) => {
-        setTimeout(() => { loadBatches(); loadStats(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo); }, delay);
+        setTimeout(() => { loadBatches(); loadStats(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza); }, delay);
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -961,7 +967,7 @@ const PublicationsPage = () => {
         description: `Propostas sendo reconstruídas para ${scopeLabel}. Atualize em instantes.`,
       });
       setTimeout(() => {
-        loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo);
+        loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza);
       }, 3000);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1027,7 +1033,7 @@ const PublicationsPage = () => {
       });
       setScheduleOpen(false);
       setRemovedTaskIndices(new Set());
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza);
       loadStats();
     } catch (err: any) {
       toast({ title: "Erro ao agendar", description: err.message, variant: "destructive" });
@@ -1131,7 +1137,7 @@ const PublicationsPage = () => {
 
     clearSelection();
     setBulkProcessing(false);
-    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo);
+    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza);
     loadStats();
   };
 
@@ -1172,7 +1178,7 @@ const PublicationsPage = () => {
 
     clearSelection();
     setBulkProcessing(false);
-    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo);
+    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza);
     loadStats();
   };
 
@@ -1720,110 +1726,159 @@ const PublicationsPage = () => {
               )}
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-              <Filter className="h-4 w-4 text-muted-foreground" />
-              <Select value={filterStatus || "all"}
-                onValueChange={(v) => handleFilterChange(v === "all" ? "" : v, filterOffice)}>
-                <SelectTrigger className="w-[140px]"><SelectValue placeholder="Status" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos</SelectItem>
-                  <SelectItem value="NOVO">Novos</SelectItem>
-                  <SelectItem value="CLASSIFICADO">Classificados</SelectItem>
-                  <SelectItem value="AGENDADO">Agendados</SelectItem>
-                  <SelectItem value="IGNORADO">Ignorados</SelectItem>
-                  <SelectItem value="ERRO">Com erro</SelectItem>
-                  <SelectItem value="DESCARTADO_OBSOLETA">Obsoletas</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select value={filterOffice || "all"}
-                onValueChange={(v) => handleFilterChange(filterStatus, v === "all" ? "" : v)}>
-                <SelectTrigger className="w-[200px]">
-                  <SelectValue placeholder="Todos os escritórios" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos os escritórios</SelectItem>
-                  {offices.map((o) => (
-                    <SelectItem key={o.external_id} value={String(o.external_id)}>{officeLabel(o)}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select value={filterCategory || "all"}
-                onValueChange={(v) => handleFilterChange(filterStatus, filterOffice, undefined, undefined, v === "all" ? "" : v)}>
-                <SelectTrigger className="w-[180px]">
-                  <SelectValue placeholder="Classificação" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todas as classificações</SelectItem>
-                  {Object.entries(taxonomy).map(([cat]) => (
-                    <SelectItem key={cat} value={cat}>{cat}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select value={filterUf || "all"}
-                onValueChange={(v) => handleFilterChange(filterStatus, filterOffice, undefined, undefined, undefined, v === "all" ? "" : v)}>
-                <SelectTrigger className="w-[120px]">
-                  <SelectValue placeholder="UF" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todas UFs</SelectItem>
-                  {availableUfs.map((uf) => (
-                    <SelectItem key={uf} value={uf}>{uf}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select value={filterVinculo || "all"}
-                onValueChange={(v) => handleFilterChange(filterStatus, filterOffice, undefined, undefined, undefined, undefined, v === "all" ? "" : v)}>
-                <SelectTrigger className="w-[160px]">
-                  <SelectValue placeholder="Vínculo" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos os vínculos</SelectItem>
-                  <SelectItem value="com_processo">Com processo</SelectItem>
-                  <SelectItem value="sem_processo">Sem processo</SelectItem>
-                </SelectContent>
-              </Select>
-              <div className="flex items-center gap-1">
-                <div className="relative flex items-center gap-1">
-                  <Input
-                    type="date"
-                    value={filterDateFrom}
-                    onChange={(e) => handleFilterChange(filterStatus, filterOffice, e.target.value, undefined)}
-                    onClick={(e) => (e.currentTarget as HTMLInputElement).showPicker?.()}
-                    onFocus={(e) => (e.currentTarget as HTMLInputElement).showPicker?.()}
-                    className="h-8 w-[130px] text-xs pl-8 cursor-pointer"
-                    title="Data captura (Ajus) — início"
-                  />
-                  <Calendar className="absolute left-2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
-                </div>
-                <span className="text-xs text-muted-foreground">a</span>
-                <div className="relative flex items-center gap-1">
-                  <Input
-                    type="date"
-                    value={filterDateTo}
-                    onChange={(e) => handleFilterChange(filterStatus, filterOffice, undefined, e.target.value)}
-                    onClick={(e) => (e.currentTarget as HTMLInputElement).showPicker?.()}
-                    onFocus={(e) => (e.currentTarget as HTMLInputElement).showPicker?.()}
-                    className="h-8 w-[130px] text-xs pl-8 cursor-pointer"
-                    title="Data captura (Ajus) — fim"
-                  />
-                  <Calendar className="absolute left-2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
-                </div>
-                {(filterDateFrom || filterDateTo) && (
-                  <button
-                    type="button"
-                    onClick={() => handleFilterChange(filterStatus, filterOffice, "", "")}
-                    className="rounded p-0.5 text-muted-foreground hover:text-destructive transition-colors"
-                    title="Limpar filtro de data"
-                  >
-                    <XCircle className="h-3.5 w-3.5" />
-                  </button>
-                )}
+          {/* ─── Filtros ─────────────────────────────────────── */}
+          <div className="space-y-3">
+            {/* Linha 1: filtros principais */}
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="space-y-1">
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Status</Label>
+                <Select value={filterStatus || "all"}
+                  onValueChange={(v) => handleFilterChange(v === "all" ? "" : v, filterOffice)}>
+                  <SelectTrigger className="h-8 w-[140px] text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos</SelectItem>
+                    <SelectItem value="NOVO">Novos</SelectItem>
+                    <SelectItem value="CLASSIFICADO">Classificados</SelectItem>
+                    <SelectItem value="AGENDADO">Agendados</SelectItem>
+                    <SelectItem value="IGNORADO">Ignorados</SelectItem>
+                    <SelectItem value="ERRO">Com erro</SelectItem>
+                    <SelectItem value="DESCARTADO_OBSOLETA">Obsoletas</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
+
+              <div className="space-y-1">
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Escritório</Label>
+                <Select value={filterOffice || "all"}
+                  onValueChange={(v) => handleFilterChange(filterStatus, v === "all" ? "" : v)}>
+                  <SelectTrigger className="h-8 w-[200px] text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos</SelectItem>
+                    {offices.map((o) => (
+                      <SelectItem key={o.external_id} value={String(o.external_id)}>{officeLabel(o)}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1">
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Classificação</Label>
+                <Select value={filterCategory || "all"}
+                  onValueChange={(v) => handleFilterChange(filterStatus, filterOffice, undefined, undefined, v === "all" ? "" : v)}>
+                  <SelectTrigger className="h-8 w-[180px] text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todas</SelectItem>
+                    {Object.entries(taxonomy).map(([cat]) => (
+                      <SelectItem key={cat} value={cat}>{cat}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1">
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Vínculo</Label>
+                <Select value={filterVinculo || "all"}
+                  onValueChange={(v) => handleFilterChange(filterStatus, filterOffice, undefined, undefined, undefined, undefined, v === "all" ? "" : v)}>
+                  <SelectTrigger className="h-8 w-[150px] text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos</SelectItem>
+                    <SelectItem value="com_processo">Com processo</SelectItem>
+                    <SelectItem value="sem_processo">Sem processo</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {stats?.available_naturezas && stats.available_naturezas.length > 0 && (
+                <div className="space-y-1">
+                  <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Natureza</Label>
+                  <Select value={filterNatureza || "all"}
+                    onValueChange={(v) => handleFilterChange(filterStatus, filterOffice, undefined, undefined, undefined, undefined, undefined, v === "all" ? "" : v)}>
+                    <SelectTrigger className="h-8 w-[200px] text-xs"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Todas</SelectItem>
+                      {stats.available_naturezas.map((n) => (
+                        <SelectItem key={n} value={n}>{n}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </div>
+
+            {/* Linha 2: UF, período e ações */}
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="space-y-1">
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">UF</Label>
+                <Select value={filterUf || "all"}
+                  onValueChange={(v) => handleFilterChange(filterStatus, filterOffice, undefined, undefined, undefined, v === "all" ? "" : v)}>
+                  <SelectTrigger className="h-8 w-[100px] text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todas</SelectItem>
+                    {availableUfs.map((uf) => (
+                      <SelectItem key={uf} value={uf}>{uf}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1">
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Período (captura)</Label>
+                <div className="flex items-center gap-1">
+                  <div className="relative">
+                    <Input
+                      type="date"
+                      value={filterDateFrom}
+                      onChange={(e) => handleFilterChange(filterStatus, filterOffice, e.target.value, undefined)}
+                      onClick={(e) => (e.currentTarget as HTMLInputElement).showPicker?.()}
+                      onFocus={(e) => (e.currentTarget as HTMLInputElement).showPicker?.()}
+                      className="h-8 w-[130px] text-xs pl-7 cursor-pointer"
+                    />
+                    <Calendar className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+                  </div>
+                  <span className="text-xs text-muted-foreground">a</span>
+                  <div className="relative">
+                    <Input
+                      type="date"
+                      value={filterDateTo}
+                      onChange={(e) => handleFilterChange(filterStatus, filterOffice, undefined, e.target.value)}
+                      onClick={(e) => (e.currentTarget as HTMLInputElement).showPicker?.()}
+                      onFocus={(e) => (e.currentTarget as HTMLInputElement).showPicker?.()}
+                      className="h-8 w-[130px] text-xs pl-7 cursor-pointer"
+                    />
+                    <Calendar className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+                  </div>
+                  {(filterDateFrom || filterDateTo) && (
+                    <button
+                      type="button"
+                      onClick={() => handleFilterChange(filterStatus, filterOffice, "", "")}
+                      className="rounded p-0.5 text-muted-foreground hover:text-destructive transition-colors"
+                      title="Limpar período"
+                    >
+                      <XCircle className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Botão limpar filtros (aparece quando há filtros ativos) */}
+              {(filterStatus || filterOffice || filterCategory || filterUf || filterVinculo || filterNatureza || filterDateFrom || filterDateTo) && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 text-xs text-muted-foreground"
+                  onClick={() => handleFilterChange("", "", "", "", "", "", "", "")}
+                >
+                  <XCircle className="h-3.5 w-3.5 mr-1" />
+                  Limpar filtros
+                </Button>
+              )}
+
               <div className="ml-auto">
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
+                  className="h-8"
                   onClick={handleExportExcel}
                   disabled={isExporting}
                   title="Exporta as publicações conforme os filtros atuais para um arquivo Excel"
@@ -1833,9 +1888,10 @@ const PublicationsPage = () => {
                   ) : (
                     <FileDown className="h-4 w-4" />
                   )}
-                  <span className="ml-2">Exportar Excel</span>
+                  <span className="ml-2 text-xs">Exportar Excel</span>
                 </Button>
               </div>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -1946,6 +2002,14 @@ const PublicationsPage = () => {
                               <div>
                                 <span className="italic text-orange-600">sem processo</span>
                                 {(() => {
+                                  const cnj = group.records.find((r) => r.linked_lawsuit_cnj)?.linked_lawsuit_cnj;
+                                  return cnj ? (
+                                    <div className="mt-0.5 font-mono text-[10px] text-muted-foreground" title={cnj}>
+                                      {cnj}
+                                    </div>
+                                  ) : null;
+                                })()}
+                                {(() => {
                                   const naturezas = [...new Set(
                                     group.records
                                       .map((r) => r.natureza_processo)
@@ -1961,9 +2025,6 @@ const PublicationsPage = () => {
                                     </div>
                                   ) : null;
                                 })()}
-                                <div className="text-[10px] text-muted-foreground">
-                                  {group.records.length} publicação(ões)
-                                </div>
                               </div>
                             )}
                           </TableCell>
@@ -2087,17 +2148,6 @@ const PublicationsPage = () => {
                                       ))}
                                     </SelectContent>
                                   </Select>
-                                  {categories.length > 0 && (
-                                    <Button
-                                      variant="ghost"
-                                      size="sm"
-                                      className="h-5 w-5 p-0 text-muted-foreground hover:text-red-600"
-                                      title="Reportar classificação errada"
-                                      onClick={() => openFeedback(group.records[0])}
-                                    >
-                                      <ThumbsDown className="h-3 w-3" />
-                                    </Button>
-                                  )}
                                 {polos.length > 0 && (
                                   <div className="flex flex-wrap gap-1 pt-0.5">
                                     {polos.map((p) => {
@@ -2140,7 +2190,20 @@ const PublicationsPage = () => {
                             })()}
                           </TableCell>
                           <TableCell>
-                            <Badge variant={statusColor(status)} className="text-xs">{status}</Badge>
+                            <div className="flex items-center gap-1">
+                              <Badge variant={statusColor(status)} className="text-xs">{status}</Badge>
+                              {categories.length > 0 && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-5 w-5 p-0 text-muted-foreground hover:text-red-600"
+                                  title="Reportar classificação errada"
+                                  onClick={() => openFeedback(group.records[0])}
+                                >
+                                  <ThumbsDown className="h-3 w-3" />
+                                </Button>
+                              )}
+                            </div>
                           </TableCell>
                           <TableCell className="text-xs">
                             {hasProposal ? (
