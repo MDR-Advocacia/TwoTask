@@ -215,11 +215,15 @@ def export_records_grouped_xlsx(
         for col_idx, (key, _title, _width) in enumerate(EXPORT_COLUMNS, start=1):
             cell = ws.cell(row=row_idx, column=col_idx, value=row.get(key))
             cell.alignment = body_align
+        ws.row_dimensions[row_idx].height = 25
 
     # Autofiltro sobre todo o range usado
     if records:
         last_col = get_column_letter(len(EXPORT_COLUMNS))
         ws.auto_filter.ref = f"A1:{last_col}{len(records) + 1}"
+
+    # Oculta linhas além do range preenchido (evita "linhas infinitas em branco")
+    ws.sheet_format.zeroHeight = True
 
     # Aba de metadados — deixa rastreável qual filtro gerou o arquivo.
     meta = wb.create_sheet("Filtros")
