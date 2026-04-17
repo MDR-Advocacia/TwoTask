@@ -1183,11 +1183,7 @@ class PublicationSearchService:
             ),
             else_=(
                 literal_column("'no-lawsuit|'")
-                + sa_func.coalesce(sa_func.cast(PublicationRecord.linked_office_id, sa.String), '0')
-                + literal_column("'|'")
-                + sa_func.coalesce(PublicationRecord.category, 'sem-classificacao')
-                + literal_column("'|'")
-                + sa_func.coalesce(sa_func.left(PublicationRecord.publication_date, 10), '')
+                + sa_func.cast(PublicationRecord.id, sa.String)
             ),
         ).label("group_key")
 
@@ -1265,10 +1261,7 @@ class PublicationSearchService:
             if r.linked_lawsuit_id:
                 key = str(r.linked_lawsuit_id)
             else:
-                office_key = r.linked_office_id or 0
-                cat_key = r.category or "sem-classificacao"
-                pub_date = (r.publication_date or "")[:10]
-                key = f"no-lawsuit|{office_key}|{cat_key}|{pub_date}"
+                key = f"no-lawsuit|{r.id}"
 
             # Só inclui se pertence à página
             if key in page_keys:
