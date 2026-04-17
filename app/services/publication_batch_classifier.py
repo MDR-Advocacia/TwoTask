@@ -52,6 +52,7 @@ from app.services.classifier.ai_client import (
 )
 from app.services.classifier.prompts import (
     SYSTEM_PROMPT,
+    build_feedback_examples,
     build_system_prompt_for_office,
     build_user_message,
     load_office_overrides,
@@ -236,23 +237,42 @@ class PublicationBatchClassifier:
         if not records:
             raise ValueError("Nenhum registro para classificar.")
 
-        # Pré-carrega prompts customizados por escritório (com overrides).
+        # Pré-carrega prompts customizados por escritório (com overrides + feedback).
         # Cache key = (office_id, is_unlinked) pra não misturar prompts.
         office_prompts: dict[tuple, str] = {}
+        feedback_cache: dict[int, str] = {}
         office_ids = {rec.linked_office_id for rec in records if rec.linked_office_id}
+
+        def _feedback_for(oid: int) -> str:
+            if oid not in feedback_cache:
+                try:
+                    feedback_cache[oid] = build_feedback_examples(self.db, oid if oid else None)
+                except Exception as exc:
+                    logger.warning("Falha ao carregar feedbacks do escritório %s: %s", oid, exc)
+                    feedback_cache[oid] = ""
+            return feedback_cache[oid]
+
         for oid in office_ids:
             try:
                 excluded, custom = load_office_overrides(self.db, oid)
+                fb = _feedback_for(oid)
                 for unlinked in (False, True):
-                    if excluded or custom or unlinked:
+                    if excluded or custom or unlinked or fb:
                         office_prompts[(oid, unlinked)] = build_system_prompt_for_office(
-                            excluded or None, custom or None, is_unlinked=unlinked,
+                            excluded or None, custom or None,
+                            is_unlinked=unlinked,
+                            feedback_examples=fb,
                         )
             except Exception as exc:
                 logger.warning("Falha ao carregar overrides do escritório %s: %s", oid, exc)
         # Prompt base para publicações sem escritório
-        office_prompts[(0, False)] = SYSTEM_PROMPT
-        office_prompts[(0, True)] = build_system_prompt_for_office(is_unlinked=True)
+        fb_global = _feedback_for(0)
+        office_prompts[(0, False)] = build_system_prompt_for_office(
+            feedback_examples=fb_global,
+        ) if fb_global else SYSTEM_PROMPT
+        office_prompts[(0, True)] = build_system_prompt_for_office(
+            is_unlinked=True, feedback_examples=fb_global,
+        )
 
         # Monta as requisições do batch
         batch_requests = []

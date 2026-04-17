@@ -601,6 +601,68 @@ def reclassify_records(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+# ─── Feedback de classificação ────────────────────
+
+class ClassificationFeedbackRequest(BaseModel):
+    record_id: int
+    corrected_category: str
+    corrected_subcategory: Optional[str] = None
+    corrected_polo: Optional[str] = None
+    corrected_natureza: Optional[str] = None
+    error_type: Optional[str] = None   # "category" | "subcategory" | "polo" | "natureza" | "multiple"
+    user_note: Optional[str] = None
+
+
+@router.post("/records/feedback")
+def submit_classification_feedback(
+    payload: ClassificationFeedbackRequest,
+    service: PublicationSearchService = Depends(_get_service),
+    current_user=Depends(auth_security.get_current_user),
+):
+    """
+    Registra feedback explícito do operador sobre uma classificação incorreta.
+    O texto da publicação é salvo como excerpt para uso como exemplo no prompt.
+    """
+    from app.models.classification_feedback import ClassificationFeedback
+    from app.models.publication_search import PublicationRecord
+
+    rec = service.db.query(PublicationRecord).filter(PublicationRecord.id == payload.record_id).first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="Registro não encontrado.")
+
+    fb = ClassificationFeedback(
+        record_id=rec.id,
+        feedback_type="explicit",
+        original_category=rec.category,
+        original_subcategory=rec.subcategory,
+        original_polo=rec.polo,
+        original_natureza=rec.natureza_processo,
+        corrected_category=payload.corrected_category,
+        corrected_subcategory=payload.corrected_subcategory,
+        corrected_polo=payload.corrected_polo,
+        corrected_natureza=payload.corrected_natureza,
+        error_type=payload.error_type,
+        user_note=payload.user_note,
+        text_excerpt=(rec.description or "")[:500],
+        office_external_id=rec.linked_office_id,
+        created_by_email=current_user.email if hasattr(current_user, "email") else None,
+    )
+    service.db.add(fb)
+
+    # Aplica a correção ao registro também
+    if payload.corrected_category:
+        rec.category = payload.corrected_category
+    if payload.corrected_subcategory is not None:
+        rec.subcategory = payload.corrected_subcategory
+    if payload.corrected_polo:
+        rec.polo = payload.corrected_polo
+    if payload.corrected_natureza is not None:
+        rec.natureza_processo = payload.corrected_natureza
+
+    service.db.commit()
+    return {"message": "Feedback registrado com sucesso.", "id": fb.id}
+
+
 # ─── Agendamento por grupo (processo) ───────────
 
 @router.post("/groups/{lawsuit_id}/schedule")

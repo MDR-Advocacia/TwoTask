@@ -29,6 +29,7 @@ import {
   Layers,
   Link2,
   Loader2,
+  MessageSquareWarning,
   Newspaper,
   Play,
   RefreshCw,
@@ -37,6 +38,7 @@ import {
   Search,
   Send,
   Settings,
+  ThumbsDown,
   XCircle,
 } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -147,6 +149,7 @@ interface PublicationRecord {
   audiencia_data: string | null;
   audiencia_hora: string | null;
   audiencia_link: string | null;
+  natureza_processo: string | null;
   classifications: Classification[] | null;
   created_at: string | null;
   raw_relationships?: any;
@@ -395,6 +398,17 @@ const PublicationsPage = () => {
   const [retryingBatchId, setRetryingBatchId] = useState<number | null>(null);
   const [errorDetailsBatchId, setErrorDetailsBatchId] = useState<number | null>(null);
   const [removedTaskIndices, setRemovedTaskIndices] = useState<Set<number>>(new Set());
+
+  // Feedback explícito (thumbs-down)
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackRecord, setFeedbackRecord] = useState<PublicationRecord | null>(null);
+  const [feedbackErrorType, setFeedbackErrorType] = useState<string>("category");
+  const [feedbackCategory, setFeedbackCategory] = useState<string>("");
+  const [feedbackSubcategory, setFeedbackSubcategory] = useState<string>("");
+  const [feedbackPolo, setFeedbackPolo] = useState<string>("");
+  const [feedbackNatureza, setFeedbackNatureza] = useState<string>("");
+  const [feedbackNote, setFeedbackNote] = useState<string>("");
+  const [submittingFeedback, setSubmittingFeedback] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
 
@@ -776,6 +790,53 @@ const PublicationsPage = () => {
       toast({ title: "Erro", description: err.message, variant: "destructive" });
     } finally {
       setReclassifyingGroup(null);
+    }
+  };
+
+  // ─── Feedback explícito (thumbs-down) ─────────────────────────────────
+  const openFeedback = (rec: PublicationRecord) => {
+    setFeedbackRecord(rec);
+    setFeedbackErrorType("category");
+    setFeedbackCategory(rec.category || "");
+    setFeedbackSubcategory(rec.subcategory || "");
+    setFeedbackPolo(rec.polo || "");
+    setFeedbackNatureza(rec.natureza_processo || "");
+    setFeedbackNote("");
+    setFeedbackOpen(true);
+  };
+
+  const handleSubmitFeedback = async () => {
+    if (!feedbackRecord) return;
+    if (!feedbackCategory) {
+      toast({ title: "Erro", description: "Selecione a categoria correta.", variant: "destructive" });
+      return;
+    }
+    setSubmittingFeedback(true);
+    try {
+      const res = await apiFetch(`${API}/records/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          record_id: feedbackRecord.id,
+          error_type: feedbackErrorType,
+          corrected_category: feedbackCategory,
+          corrected_subcategory: feedbackSubcategory || null,
+          corrected_polo: feedbackPolo || null,
+          corrected_natureza: feedbackNatureza || null,
+          user_note: feedbackNote || null,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || "Erro ao enviar feedback.");
+      }
+      toast({ title: "Feedback registrado", description: "Obrigado! O classificador vai aprender com essa correção." });
+      setFeedbackOpen(false);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo);
+    } catch (err: any) {
+      toast({ title: "Erro", description: err.message, variant: "destructive" });
+    } finally {
+      setSubmittingFeedback(false);
     }
   };
 
@@ -1887,7 +1948,7 @@ const PublicationsPage = () => {
                                 {(() => {
                                   const naturezas = [...new Set(
                                     group.records
-                                      .map((r: any) => r.natureza_processo)
+                                      .map((r) => r.natureza_processo)
                                       .filter(Boolean)
                                   )];
                                   return naturezas.length > 0 ? (
@@ -2026,6 +2087,17 @@ const PublicationsPage = () => {
                                       ))}
                                     </SelectContent>
                                   </Select>
+                                  {categories.length > 0 && (
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-5 w-5 p-0 text-muted-foreground hover:text-red-600"
+                                      title="Reportar classificação errada"
+                                      onClick={() => openFeedback(group.records[0])}
+                                    >
+                                      <ThumbsDown className="h-3 w-3" />
+                                    </Button>
+                                  )}
                                 {polos.length > 0 && (
                                   <div className="flex flex-wrap gap-1 pt-0.5">
                                     {polos.map((p) => {
@@ -2844,6 +2916,145 @@ const PublicationsPage = () => {
             <Button onClick={handleSaveFilter} disabled={isSavingFilter}>
               {isSavingFilter && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Salvar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ─── Dialog: Feedback explícito (thumbs-down) ─────────────── */}
+      <Dialog open={feedbackOpen} onOpenChange={setFeedbackOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MessageSquareWarning className="h-5 w-5 text-red-500" />
+              Reportar classificação errada
+            </DialogTitle>
+            <DialogDescription>
+              Corrija a classificação e, opcionalmente, adicione uma nota. O classificador aprenderá com esse feedback.
+            </DialogDescription>
+          </DialogHeader>
+
+          {feedbackRecord && (
+            <div className="space-y-4">
+              {/* Classificação atual (errada) */}
+              <div className="rounded-md border border-red-200 bg-red-50 p-3">
+                <p className="text-xs font-medium text-red-700 mb-1">Classificação atual</p>
+                <p className="text-sm font-semibold">
+                  {feedbackRecord.category || "—"}
+                  {feedbackRecord.subcategory && feedbackRecord.subcategory !== "-"
+                    ? ` → ${feedbackRecord.subcategory}`
+                    : ""}
+                </p>
+                {feedbackRecord.polo && (
+                  <p className="text-xs text-red-600">Polo: {feedbackRecord.polo}</p>
+                )}
+              </div>
+
+              {/* Tipo de erro */}
+              <div className="space-y-1">
+                <Label className="text-xs">O que estava errado?</Label>
+                <Select value={feedbackErrorType} onValueChange={setFeedbackErrorType}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="category">Categoria</SelectItem>
+                    <SelectItem value="subcategory">Subcategoria</SelectItem>
+                    <SelectItem value="polo">Polo</SelectItem>
+                    <SelectItem value="natureza">Natureza do processo</SelectItem>
+                    <SelectItem value="multiple">Vários campos</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Classificação correta */}
+              <div className="space-y-1">
+                <Label className="text-xs">Classificação correta</Label>
+                <Select
+                  value={feedbackSubcategory ? `${feedbackCategory}|||${feedbackSubcategory}` : feedbackCategory}
+                  onValueChange={(v) => {
+                    const [cat, sub] = v.split("|||");
+                    setFeedbackCategory(cat);
+                    setFeedbackSubcategory(sub || "");
+                  }}
+                >
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue placeholder="Selecione a classificação correta" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-80">
+                    {Object.entries(taxonomy).map(([cat, subs]) => (
+                      <div key={cat}>
+                        {subs && subs.length > 0 ? (
+                          <>
+                            <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                              {cat}
+                            </div>
+                            {subs.map((sub) => (
+                              <SelectItem key={`${cat}|||${sub}`} value={`${cat}|||${sub}`}>
+                                {sub}
+                              </SelectItem>
+                            ))}
+                          </>
+                        ) : (
+                          <SelectItem value={cat}>{cat}</SelectItem>
+                        )}
+                      </div>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Polo correto */}
+              <div className="space-y-1">
+                <Label className="text-xs">Polo correto</Label>
+                <Select value={feedbackPolo} onValueChange={setFeedbackPolo}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue placeholder="Selecione o polo" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ativo">Ativo</SelectItem>
+                    <SelectItem value="passivo">Passivo</SelectItem>
+                    <SelectItem value="ambos">Ambos</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Natureza (só para sem processo) */}
+              {!feedbackRecord.linked_lawsuit_id && (
+                <div className="space-y-1">
+                  <Label className="text-xs">Natureza do processo</Label>
+                  <Input
+                    className="h-8 text-xs"
+                    placeholder="Ex.: Embargos à Execução, Agravo de Instrumento..."
+                    value={feedbackNatureza}
+                    onChange={(e) => setFeedbackNatureza(e.target.value)}
+                  />
+                </div>
+              )}
+
+              {/* Nota do operador */}
+              <div className="space-y-1">
+                <Label className="text-xs">Nota / regra (opcional)</Label>
+                <Textarea
+                  className="text-xs min-h-[60px]"
+                  placeholder="Ex.: 'Quando menciona embargante, sempre é Embargos à Execução'"
+                  value={feedbackNote}
+                  onChange={(e) => setFeedbackNote(e.target.value)}
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Dica: descreva uma regra geral para que o classificador aprenda com essa correção.
+                </p>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setFeedbackOpen(false)} disabled={submittingFeedback}>
+              Cancelar
+            </Button>
+            <Button onClick={handleSubmitFeedback} disabled={submittingFeedback}>
+              {submittingFeedback && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Enviar feedback
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -184,15 +184,81 @@ IMPORTANTE: o campo "natureza_processo" é OBRIGATÓRIO na resposta para esta pu
 """
 
 
+def build_feedback_examples(db, office_external_id: Optional[int] = None, limit: int = 15) -> str:
+    """
+    Carrega feedbacks de classificação do banco e formata como exemplos
+    adicionais para o prompt (few-shot learning dinâmico).
+
+    Prioriza feedbacks explícitos (com nota do operador) e os mais recentes.
+    Retorna string vazia se não houver feedbacks.
+    """
+    from app.models.classification_feedback import ClassificationFeedback
+
+    query = db.query(ClassificationFeedback).filter(
+        ClassificationFeedback.text_excerpt.isnot(None),
+        ClassificationFeedback.text_excerpt != "",
+    )
+    if office_external_id is not None:
+        # Feedbacks do escritório + feedbacks globais (sem escritório)
+        query = query.filter(
+            (ClassificationFeedback.office_external_id == office_external_id)
+            | (ClassificationFeedback.office_external_id.is_(None))
+        )
+
+    # Prioriza explícitos, depois mais recentes
+    query = query.order_by(
+        # explicit primeiro (0), implicit depois (1)
+        ClassificationFeedback.feedback_type.asc(),
+        ClassificationFeedback.created_at.desc(),
+    ).limit(limit)
+
+    feedbacks = query.all()
+    if not feedbacks:
+        return ""
+
+    lines = [
+        "\n\n# EXEMPLOS DE CORREÇÕES ANTERIORES (aprendizado contínuo)",
+        "",
+        "Os exemplos abaixo são correções feitas por operadores humanos. Use-os",
+        "para calibrar sua classificação — eles representam o padrão esperado.",
+        "",
+    ]
+    for fb in feedbacks:
+        excerpt = (fb.text_excerpt or "")[:300].strip()
+        if not excerpt:
+            continue
+        lines.append(f'Texto: "{excerpt}"')
+        if fb.original_category:
+            lines.append(
+                f"  ❌ Classificação errada: {fb.original_category}"
+                + (f" / {fb.original_subcategory}" if fb.original_subcategory else "")
+            )
+        lines.append(
+            f"  ✅ Classificação correta: {fb.corrected_category}"
+            + (f" / {fb.corrected_subcategory}" if fb.corrected_subcategory else "")
+        )
+        if fb.corrected_polo:
+            lines.append(f"  Polo correto: {fb.corrected_polo}")
+        if fb.corrected_natureza:
+            lines.append(f"  Natureza correta: {fb.corrected_natureza}")
+        if fb.user_note:
+            lines.append(f"  💡 Regra do operador: {fb.user_note}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def build_system_prompt_for_office(
     excluded: set[tuple[str, str | None]] | None = None,
     custom_additions: list[dict[str, str]] | None = None,
     is_unlinked: bool = False,
+    feedback_examples: str = "",
 ) -> str:
     """
     Gera um system prompt customizado com taxonomia filtrada para o escritório.
     Se excluded/custom_additions forem None, retorna o prompt padrão (SYSTEM_PROMPT).
     Se is_unlinked=True, adiciona instrução para detectar natureza do processo.
+    Se feedback_examples não-vazio, injeta exemplos de correções anteriores.
     """
     base = SYSTEM_PROMPT
     if excluded or custom_additions:
@@ -201,6 +267,9 @@ def build_system_prompt_for_office(
 
     if is_unlinked:
         base += NATUREZA_PROCESSO_ADDENDUM
+
+    if feedback_examples:
+        base += feedback_examples
 
     return base
 

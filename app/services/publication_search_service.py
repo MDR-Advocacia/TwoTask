@@ -548,6 +548,7 @@ class PublicationSearchService:
             from app.services.classifier.ai_client import AnthropicClassifierClient
             from app.services.classifier.prompts import (
                 SYSTEM_PROMPT,
+                build_feedback_examples,
                 build_system_prompt_for_office,
                 build_user_message,
                 load_office_overrides,
@@ -582,6 +583,21 @@ class PublicationSearchService:
         # Cache de prompts por escritório (evita recarregar overrides a cada chamada)
         office_prompts: dict[int, str] = {}
 
+        # Pré-carrega exemplos de feedback por escritório
+        feedback_cache: dict[int, str] = {}
+
+        def _feedback_for(office_id: int | None) -> str:
+            oid = office_id or 0
+            if oid not in feedback_cache:
+                try:
+                    feedback_cache[oid] = build_feedback_examples(
+                        self.db, office_id,
+                    )
+                except Exception as exc:
+                    logger.warning("Falha ao carregar feedbacks do escritório %s: %s", oid, exc)
+                    feedback_cache[oid] = ""
+            return feedback_cache[oid]
+
         def _prompt_for(rec: PublicationRecord) -> str:
             is_unlinked = rec.linked_lawsuit_id is None
             oid = rec.linked_office_id
@@ -597,11 +613,13 @@ class PublicationSearchService:
                         excluded or None,
                         custom or None,
                         is_unlinked=is_unlinked,
+                        feedback_examples=_feedback_for(oid),
                     )
                 except Exception as exc:
                     logger.warning("Falha ao carregar overrides do escritório %s: %s", oid, exc)
                     office_prompts[cache_key] = build_system_prompt_for_office(
                         is_unlinked=is_unlinked,
+                        feedback_examples=_feedback_for(oid),
                     )
             return office_prompts[cache_key]
 
@@ -1580,6 +1598,25 @@ class PublicationSearchService:
         )
         if not records:
             raise ValueError("Nenhum registro encontrado.")
+
+        # Captura feedback implícito: se a classificação mudou, registra
+        from app.models.classification_feedback import ClassificationFeedback
+        for rec in records:
+            if rec.category and rec.category != category or (rec.subcategory or None) != subcategory:
+                excerpt = (rec.description or "")[:500]
+                if excerpt:
+                    fb = ClassificationFeedback(
+                        record_id=rec.id,
+                        feedback_type="implicit",
+                        original_category=rec.category,
+                        original_subcategory=rec.subcategory,
+                        corrected_category=category,
+                        corrected_subcategory=subcategory,
+                        corrected_polo=rec.polo,
+                        text_excerpt=excerpt,
+                        office_external_id=rec.linked_office_id,
+                    )
+                    self.db.add(fb)
 
         for rec in records:
             rec.category = category
