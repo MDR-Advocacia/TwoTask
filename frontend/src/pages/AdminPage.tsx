@@ -383,13 +383,15 @@ const SyncManager = () => {
                         <div className="space-y-3">
                             {officeIdx.offices.map((office) => (
                                 <div key={office.office_id} className="rounded-lg border p-3 space-y-2">
-                                    <div className="flex items-center justify-between">
-                                        <div className="flex items-center gap-2">
-                                            <Building2 className="h-4 w-4 text-muted-foreground" />
-                                            <span className="font-medium text-sm">{office.office_name}</span>
-                                            <span className="text-xs text-muted-foreground">({office.total_ids.toLocaleString('pt-BR')} processos)</span>
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="flex items-start gap-2 min-w-0 flex-1">
+                                            <Building2 className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
+                                            <div className="min-w-0 flex-1">
+                                                <span className="font-medium text-sm break-words" title={office.office_name}>{office.office_name}</span>
+                                                <span className="text-xs text-muted-foreground ml-1">({office.total_ids.toLocaleString('pt-BR')} processos)</span>
+                                            </div>
                                         </div>
-                                        <div className="flex items-center gap-2">
+                                        <div className="flex items-center gap-2 shrink-0">
                                             {office.in_progress ? (
                                                 <Badge variant="default" className="bg-blue-600">
                                                     <Loader2 className="mr-1 h-3 w-3 animate-spin" />

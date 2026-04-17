@@ -220,12 +220,13 @@ def get_cache_status(db: Session = Depends(get_db)):
     any_in_progress = False
     total_indexed = 0
 
-    # Nomes dos escritórios
+    # Nomes dos escritórios — prioriza `path` (hierarquia completa) sobre `name`
+    # para que o admin mostre "MDR Advocacia > Contencioso > Autor" em vez de só "Autor".
     office_names: dict[int, str] = {}
     if sync_states:
         oids = [s.office_id for s in sync_states]
         rows = db.query(LegalOneOffice).filter(LegalOneOffice.external_id.in_(oids)).all()
-        office_names = {o.external_id: o.name for o in rows}
+        office_names = {o.external_id: (o.path or o.name) for o in rows}
 
     for s in sync_states:
         last = s.last_full_sync_at
