@@ -124,15 +124,12 @@ export default function Layout({ children }: PropsWithChildren) {
       <div className="hidden border-r bg-muted/40 md:block">
         <div className="flex h-full max-h-screen flex-col gap-2">
           <div className="flex h-14 items-center border-b px-4 lg:h-[60px] lg:px-6">
-            <Link to="/" className="flex items-center gap-2 font-semibold">
+            <Link to="/" className="flex items-center justify-center w-full" title="DunaFlow by DUNATECH">
               <img
                 src="/brand/dunaflow-logo.png"
-                alt="DunaFlow"
-                className="h-9 w-auto"
+                alt="DunaFlow by DUNATECH"
+                className="h-8 w-auto max-w-full object-contain"
               />
-              <span className="text-xl font-bold tracking-tight text-[hsl(var(--dunatech-navy))]">
-                Duna<span className="italic font-semibold text-[hsl(var(--dunatech-blue))]">Flow</span>
-              </span>
             </Link>
           </div>
           <div className="flex-1">
@@ -151,15 +148,13 @@ export default function Layout({ children }: PropsWithChildren) {
               </Button>
             </SheetTrigger>
             <SheetContent side="left" className="flex flex-col">
-              <div className="mb-4 flex items-center gap-2 text-lg font-semibold">
+              <div className="mb-4 flex items-center justify-center">
                 <img
                   src="/brand/dunaflow-logo.png"
-                  alt="DunaFlow"
-                  className="h-8 w-auto"
+                  alt="DunaFlow by DUNATECH"
+                  className="h-8 w-auto max-w-full object-contain"
+                  title="DunaFlow by DUNATECH"
                 />
-                <span className="text-xl font-bold tracking-tight text-[hsl(var(--dunatech-navy))]">
-                  Duna<span className="italic font-semibold text-[hsl(var(--dunatech-blue))]">Flow</span>
-                </span>
               </div>
               <NavContent />
             </SheetContent>
