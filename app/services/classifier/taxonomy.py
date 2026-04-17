@@ -143,6 +143,8 @@ def repair_classification(category: str, subcategory: str) -> tuple[str, str]:
       - category é na verdade uma subcategoria conhecida → inverte
       - subcategory vem vazio/"-" mas category tem subcategorias obrigatórias
         → deixa como está (validate_classification irá rejeitar)
+      - subcategory é válida mas na categoria errada → move pra categoria certa
+      - subcategory = "-" ou "Para Análise" em categoria com subs → fallback genérico
     Retorna o par (possivelmente) corrigido; não altera se já é válido.
     """
     cat = (category or "").strip()
@@ -166,6 +168,27 @@ def repair_classification(category: str, subcategory: str) -> tuple[str, str]:
         # cat pode ser subcategoria de sub
         if cat in CLASSIFICATION_TREE[sub]:
             return sub, cat
+
+    # Caso 3: categoria existe mas subcategoria pertence a outra categoria
+    # Ex: cat="2° Grau - Cível", sub="Sentença Embargos de Declaração" → deveria ser Sentença
+    # Ex: cat="Sentença", sub="Sentença Execução | Obrigação Satisfeita" → deveria ser Execução
+    if cat in CLASSIFICATION_TREE and sub:
+        for parent, subs in CLASSIFICATION_TREE.items():
+            if sub in subs:
+                return parent, sub
+
+    # Caso 4: categoria com subcategorias obrigatórias mas sub veio "-" ou genérica
+    # Ex: cat="1° Grau - Cível / Execução", sub="-" → usa fallback "Execução - Para Análise"
+    # Ex: cat="1° Grau - Cível / Execução", sub="Para Análise" → idem
+    if cat in CLASSIFICATION_TREE:
+        subs = CLASSIFICATION_TREE[cat]
+        if subs and sub in ("-", "", "Para Análise", "Para análise"):
+            # Procura subcategoria fallback (contém "Para Análise" ou "Não definid")
+            for s in subs:
+                if "Para Análise" in s or "Não definid" in s or "Não especificad" in s:
+                    return cat, s
+            # Sem fallback: usa a última subcategoria (geralmente é a genérica)
+            return cat, subs[-1]
 
     return cat, sub
 
