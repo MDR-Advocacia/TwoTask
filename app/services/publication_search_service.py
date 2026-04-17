@@ -13,6 +13,7 @@ Responsabilidades:
 
 import asyncio
 import logging
+import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, List, Optional
@@ -83,6 +84,67 @@ def uf_from_cnj(cnj: Optional[str]) -> Optional[str]:
     if j == "6":
         base = _UF_ESTADUAL.get(tr, tr)
         return f"TRE-{base}"
+    return None
+
+
+# ── Extração de CNJ a partir do texto da publicação ────────────────────
+# Fallback usado quando a publicação não vem com `Litigation` relationship
+# no Legal One (publicações avulsas). O DJE quase sempre imprime o CNJ
+# no cabeçalho ou no corpo — varremos ambos.
+#
+# Formato canônico CNJ: NNNNNNN-DD.AAAA.J.TR.OOOO
+#   N = número sequencial (7)  D = DV (2)  A = ano (4)
+#   J = segmento do Judiciário (1)  T = tribunal (2)  O = origem (4)
+_CNJ_FORMATTED_RE = re.compile(r"\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b")
+_CNJ_DIGITS_RE = re.compile(r"(?<!\d)\d{20}(?!\d)")
+# Aceita variações comuns com espaços estranhos entre os grupos (ex.: PDF mal
+# transcrito). Mantemos separado do canônico pra não encarecer o caso comum.
+_CNJ_LOOSE_RE = re.compile(
+    r"\b\d{7}\s*-\s*\d{2}\s*\.\s*\d{4}\s*\.\s*\d\s*\.\s*\d{2}\s*\.\s*\d{4}\b"
+)
+
+
+def _format_cnj_digits(digits: str) -> str:
+    """Formata 20 dígitos no padrão canônico NNNNNNN-DD.AAAA.J.TR.OOOO."""
+    return (
+        f"{digits[0:7]}-{digits[7:9]}.{digits[9:13]}."
+        f"{digits[13]}.{digits[14:16]}.{digits[16:20]}"
+    )
+
+
+def extract_cnj_from_text(text: Optional[str]) -> Optional[str]:
+    """
+    Tenta extrair um CNJ do texto livre de uma publicação (cabeçalho ou corpo).
+    Retorna o CNJ no formato canônico (NNNNNNN-DD.AAAA.J.TR.OOOO) ou None.
+
+    Estratégia em camadas:
+      1. Match no formato canônico (mais seguro, menos falso positivo).
+      2. Match com whitespace entre os grupos (PDFs com OCR sujo).
+      3. 20 dígitos consecutivos — valida que o 14º dígito (segmento J) é
+         1-9, eliminando sequências numéricas aleatórias.
+
+    Em todos os casos, retorna-se sempre o primeiro match encontrado, que
+    costuma ser o do cabeçalho / referência principal da publicação.
+    """
+    if not text:
+        return None
+
+    m = _CNJ_FORMATTED_RE.search(text)
+    if m:
+        return m.group(0)
+
+    m = _CNJ_LOOSE_RE.search(text)
+    if m:
+        digits = re.sub(r"\D", "", m.group(0))
+        if len(digits) == 20 and digits[13] in "123456789":
+            return _format_cnj_digits(digits)
+
+    m = _CNJ_DIGITS_RE.search(text)
+    if m:
+        digits = m.group(0)
+        if digits[13] in "123456789":
+            return _format_cnj_digits(digits)
+
     return None
 
 
@@ -375,6 +437,20 @@ class PublicationSearchService:
                     record_status = RECORD_STATUS_NEW
 
                 cnj = pub.get("_cnj")
+                # Fallback: se não veio processo vinculado pelo L1, tenta extrair
+                # o CNJ direto do texto da publicação (cabeçalho ou corpo).
+                if not cnj:
+                    fallback_cnj = extract_cnj_from_text(
+                        (pub.get("description") or "")
+                        + "\n"
+                        + (pub.get("notes") or "")
+                    )
+                    if fallback_cnj:
+                        cnj = fallback_cnj
+                        logger.debug(
+                            "CNJ extraído do texto (publicação #%s): %s",
+                            update_id, cnj,
+                        )
                 record = PublicationRecord(
                     search_id=search.id,
                     legal_one_update_id=update_id,
