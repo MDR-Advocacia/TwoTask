@@ -130,9 +130,7 @@ export default function Layout({ children }: PropsWithChildren) {
                 alt="DUNATECH"
                 className="h-6 w-auto object-contain"
               />
-              <span className="text-xl italic font-semibold leading-none text-[hsl(var(--dunatech-blue))]">
-                Flow
-              </span>
+              <span className="flow-neon text-2xl leading-none">Flow</span>
             </Link>
           </div>
           <div className="flex-1">

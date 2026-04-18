@@ -211,4 +211,41 @@
     transform: translateY(-2px);
     box-shadow: 0 4px 20px hsl(var(--glass-primary) / 0.3);
   }
+
+  /* ─── Wordmark "Flow" — efeito neon pulsante sutil ───
+     Gradiente navy→azul no texto + glow azul elétrico que respira.
+     prefers-reduced-motion desativa a pulsação pra acessibilidade. */
+  .flow-neon {
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: hsl(217, 100%, 58%);
+    background: linear-gradient(
+      90deg,
+      hsl(var(--dunatech-navy)) 0%,
+      hsl(var(--dunatech-blue)) 100%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 0 4px hsl(217, 100%, 56% / 0.35))
+            drop-shadow(0 0 10px hsl(217, 100%, 56% / 0.18));
+    animation: flow-neon-pulse 2.6s ease-in-out infinite;
+  }
+
+  @keyframes flow-neon-pulse {
+    0%, 100% {
+      filter: drop-shadow(0 0 3px hsl(217, 100%, 56% / 0.35))
+              drop-shadow(0 0 8px hsl(217, 100%, 56% / 0.18));
+    }
+    50% {
+      filter: drop-shadow(0 0 6px hsl(217, 100%, 56% / 0.6))
+              drop-shadow(0 0 14px hsl(217, 100%, 56% / 0.32));
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .flow-neon {
+      animation: none;
+    }
+  }
 }

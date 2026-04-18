@@ -48,10 +48,8 @@ const LoginPage = () => {
             alt="DunaFlow"
             className="h-16 w-auto"
           />
-          <div className="flex flex-col items-center gap-0.5">
-            <h1 className="text-3xl font-bold tracking-tight text-[hsl(var(--dunatech-navy))]">
-              Duna<span className="italic font-semibold text-[hsl(var(--dunatech-blue))]">Flow</span>
-            </h1>
+          <div className="flex flex-col items-center gap-1">
+            <h1 className="flow-neon text-4xl leading-none">Flow</h1>
             <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
               by DUNATECH
             </p>
