@@ -329,7 +329,7 @@ const SyncManager = () => {
                 </CardHeader>
                 <CardContent className="space-y-4">
                     {meta && (
-                        <div className="grid grid-cols-3 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                             <div className="flex items-center gap-3 rounded-lg border p-3">
                                 <Building2 className="h-5 w-5 text-blue-600" />
                                 <div>
@@ -469,7 +469,7 @@ const SyncManager = () => {
                 <CardContent>
                     {lawCache ? (
                         <div className="space-y-3">
-                            <div className="grid grid-cols-3 gap-4">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                                 <div className="flex items-center gap-3 rounded-lg border p-3">
                                     <Database className="h-5 w-5 text-blue-600" />
                                     <div>

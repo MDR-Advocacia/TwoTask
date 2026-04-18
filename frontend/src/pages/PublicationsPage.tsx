@@ -374,6 +374,8 @@ const PublicationsPage = () => {
   const [filterVinculo, setFilterVinculo] = useState<string>("");
   const [filterNatureza, setFilterNatureza] = useState<string>("");
   const [filterPolo, setFilterPolo] = useState<string>("");
+  // Controla se o painel de filtros está expandido no mobile (no desktop fica sempre visível via md:block)
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [groupPage, setGroupPage] = useState(0);
   const GROUP_PAGE_SIZE = 20;
 
@@ -1791,7 +1793,52 @@ const PublicationsPage = () => {
             </div>
           </div>
           {/* ─── Filtros ─────────────────────────────────────── */}
-          <div className="space-y-3">
+          {/* Toggle mobile — no desktop (md+) o bloco fica sempre visível */}
+          {(() => {
+            const activeFiltersCount = [
+              filterStatus,
+              filterOffice,
+              filterCategory,
+              filterUf,
+              filterVinculo,
+              filterNatureza,
+              filterPolo,
+              filterDateFrom,
+              filterDateTo,
+            ].filter(Boolean).length;
+            return (
+              <div className="md:hidden">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 w-full justify-between text-xs"
+                  onClick={() => setMobileFiltersOpen((v) => !v)}
+                  aria-expanded={mobileFiltersOpen}
+                  aria-controls="publications-filters-panel"
+                >
+                  <span className="flex items-center gap-2">
+                    <Filter className="h-3.5 w-3.5" />
+                    Filtros
+                    {activeFiltersCount > 0 && (
+                      <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
+                        {activeFiltersCount}
+                      </Badge>
+                    )}
+                  </span>
+                  {mobileFiltersOpen ? (
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  ) : (
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  )}
+                </Button>
+              </div>
+            );
+          })()}
+          <div
+            id="publications-filters-panel"
+            className={`space-y-3 ${mobileFiltersOpen ? "" : "hidden md:block"}`}
+          >
             {/* Linha 1: filtros principais */}
             <div className="flex flex-wrap items-end gap-3">
               <div className="space-y-1">
@@ -2001,7 +2048,14 @@ const PublicationsPage = () => {
                   </div>
                 </div>
               )}
-              <ScrollArea className="h-[min(820px,calc(100vh-280px))] rounded border text-[13px]">
+              {/* Hint mobile: indica que a tabela scrolla horizontalmente */}
+              <div className="mb-1 flex items-center gap-1 text-[11px] text-muted-foreground md:hidden">
+                <ChevronLeft className="h-3 w-3" />
+                <span>Arraste para o lado para ver todas as colunas</span>
+                <ChevronRight className="h-3 w-3" />
+              </div>
+              <div className="h-[min(820px,calc(100vh-280px))] overflow-auto rounded border text-[13px]">
+                <div className="min-w-[1100px] md:min-w-0">
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -2341,7 +2395,8 @@ const PublicationsPage = () => {
                     })}
                   </TableBody>
                 </Table>
-              </ScrollArea>
+                </div>
+              </div>
 
               {totalPages > 1 && (
                 <div className="mt-4 flex items-center justify-between">
