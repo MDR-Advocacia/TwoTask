@@ -285,8 +285,6 @@ const DashboardHome = () => {
         </p>
       </div>
 
-      {isAdmin && <CaptureHealthWidget />}
-
       {canUsePublications && (
         <>
           {/* KPIs */}
@@ -581,6 +579,9 @@ const DashboardHome = () => {
           </Card>
         </>
       )}
+
+      {/* Saúde da captura de publicações — no rodapé, só pra admin */}
+      {isAdmin && <CaptureHealthWidget />}
     </div>
   );
 };
