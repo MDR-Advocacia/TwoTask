@@ -216,8 +216,9 @@
      Gradiente navy→azul no texto + glow azul elétrico que respira.
      prefers-reduced-motion desativa a pulsação pra acessibilidade. */
   .flow-neon {
-    font-weight: 700;
-    letter-spacing: -0.02em;
+    font-family: 'Jura', 'Inter', system-ui, sans-serif;
+    font-weight: 500;
+    letter-spacing: 0.02em;
     color: hsl(217, 100%, 58%);
     background: linear-gradient(
       90deg,
