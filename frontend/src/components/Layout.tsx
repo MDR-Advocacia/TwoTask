@@ -130,7 +130,7 @@ export default function Layout({ children }: PropsWithChildren) {
                 alt="DUNATECH"
                 className="h-6 w-auto object-contain"
               />
-              <span className="flow-neon text-2xl leading-none">Flow</span>
+              <span className="flow-neon text-3xl leading-none">Flow</span>
             </Link>
           </div>
           <div className="flex-1">
