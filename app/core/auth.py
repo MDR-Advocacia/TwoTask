@@ -98,7 +98,9 @@ def get_current_user(
     return user
 
 
-def require_permission(permission: Literal["schedule_batch", "publications"]):
+def require_permission(
+    permission: Literal["schedule_batch", "publications", "prazos_iniciais"],
+):
     """
     Dependency factory to check if user has specific permission.
     Usage: Depends(require_permission("schedule_batch"))
@@ -118,6 +120,12 @@ def require_permission(permission: Literal["schedule_batch", "publications"]):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Usuário não tem permissão para usar publicações.",
+                )
+        elif permission == "prazos_iniciais":
+            if not getattr(current_user, "can_use_prazos_iniciais", False):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Usuário não tem permissão para usar Prazos Iniciais.",
                 )
         return current_user
 

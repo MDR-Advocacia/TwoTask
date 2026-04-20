@@ -71,6 +71,26 @@ class Settings(BaseSettings):
     classifier_max_concurrent: int = 5
     classifier_max_tokens: int = 4096
 
+    # ── Prazos Iniciais ───────────────────────────────────────────────
+    # Chave(s) que autenticam a automação externa no endpoint de intake.
+    # Aceita múltiplas chaves separadas por vírgula (rotação sem downtime).
+    prazos_iniciais_api_key: str | None = None
+    # Pasta raiz (dentro do volume persistente) onde os PDFs da habilitação
+    # são guardados até o upload no GED do L1.
+    prazos_iniciais_storage_path: str = "/app/data/prazos_iniciais"
+    prazos_iniciais_max_pdf_mb: int = 20
+    # Quantos dias manter o PDF local após confirmação de upload no GED.
+    prazos_iniciais_retention_days: int = 7
+    # Parâmetros do agregador (janela antes de submeter batch pra Anthropic).
+    prazos_iniciais_batch_window_seconds: int = 600
+    prazos_iniciais_batch_min_size: int = 5
+    prazos_iniciais_batch_max_size: int = 100
+    # typeId usado no L1 para o documento de habilitação (Documento/Habilitação).
+    prazos_iniciais_ged_type_id: str = "2-48"
+    # Modelo Anthropic usado na classificação (Sonnet — mais sensível).
+    prazos_iniciais_classifier_model: str = "claude-sonnet-4-6"
+    prazos_iniciais_classifier_max_tokens: int = 4096
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -93,6 +113,16 @@ class Settings(BaseSettings):
             for content_type in self.spreadsheet_allowed_content_types.split(",")
             if content_type.strip()
         }
+
+    @property
+    def prazos_iniciais_api_keys(self) -> set[str]:
+        """Chaves válidas para autenticar a automação externa (aceita rotação)."""
+        raw = self.prazos_iniciais_api_key or ""
+        return {key.strip() for key in raw.split(",") if key.strip()}
+
+    @property
+    def prazos_iniciais_max_pdf_bytes(self) -> int:
+        return self.prazos_iniciais_max_pdf_mb * 1024 * 1024
 
 
 @lru_cache

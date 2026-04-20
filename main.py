@@ -13,6 +13,7 @@ from app.api.v1.endpoints import (
     classifier,
     dashboard,
     offices,
+    prazos_iniciais,
     publication_treatment,
     publications,
     sectors,
@@ -174,6 +175,10 @@ app.include_router(offices.router, prefix="/api/v1", tags=["Offices"], dependenc
 app.include_router(classifier.router, prefix="/api/v1/classifier", tags=["Classificador"], dependencies=protected_dependencies)
 app.include_router(publications.router, prefix="/api/v1/publications", tags=["Publicações"], dependencies=protected_dependencies)
 app.include_router(publication_treatment.router, prefix="/api/v1/publications", tags=["Publicações"], dependencies=protected_dependencies)
+# Intake externo: autenticado por API key (header X-Intake-Api-Key), SEM JWT.
+app.include_router(prazos_iniciais.intake_router, prefix="/api/v1")
+# Endpoints internos de prazos iniciais (UI do operador): JWT obrigatório.
+app.include_router(prazos_iniciais.router, prefix="/api/v1", dependencies=protected_dependencies)
 app.include_router(task_templates.router, prefix="/api/v1/task-templates", tags=["Templates de Tarefa"], dependencies=protected_dependencies)
 app.include_router(automations.router, prefix="/api/v1/automations", tags=["Automações"], dependencies=protected_dependencies)
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Autenticacao"])
