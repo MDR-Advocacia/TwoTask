@@ -133,6 +133,19 @@ async def lifespan(_: FastAPI):
     except Exception:
         logger.exception("Falha ao reapear syncs órfãs de escritório no startup.")
 
+    # Worker periódico do fluxo "Agendar Prazos Iniciais" — gated pela flag
+    # prazos_iniciais_auto_classification_enabled (default off).
+    try:
+        from app.services.prazos_iniciais.auto_worker import (
+            register_auto_classification_job,
+        )
+
+        register_auto_classification_job(scheduler)
+    except Exception:
+        logger.exception(
+            "Falha ao registrar worker auto de prazos iniciais no startup."
+        )
+
     try:
         yield
     finally:

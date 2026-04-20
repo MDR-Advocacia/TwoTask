@@ -90,6 +90,12 @@ class Settings(BaseSettings):
     # Modelo Anthropic usado na classificação (Sonnet — mais sensível).
     prazos_iniciais_classifier_model: str = "claude-sonnet-4-6"
     prazos_iniciais_classifier_max_tokens: int = 4096
+    # Worker periódico: agrega intakes PRONTO_PARA_CLASSIFICAR e dispara
+    # batch + faz polling/apply dos batches pendentes.
+    # Desligado por padrão em dev pra evitar gasto involuntário com Anthropic.
+    prazos_iniciais_auto_classification_enabled: bool = False
+    # Intervalo entre execuções do worker (segundos).
+    prazos_iniciais_auto_classification_interval_seconds: int = 300
 
     model_config = SettingsConfigDict(
         env_file=".env",

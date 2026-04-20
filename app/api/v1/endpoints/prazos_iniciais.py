@@ -48,6 +48,18 @@ from app.models.prazo_inicial import (
     PrazoInicialIntake,
     PrazoInicialSugestao,
 )
+from app.services.classifier.prazos_iniciais_classifier import (
+    PrazosIniciaisBatchClassifier,
+)
+from app.models.prazo_inicial import (
+    INTAKE_STATUS_READY_TO_CLASSIFY,
+    PIN_BATCH_STATUS_APPLIED,
+    PIN_BATCH_STATUS_FAILED,
+    PIN_BATCH_STATUS_IN_PROGRESS,
+    PIN_BATCH_STATUS_READY,
+    PIN_BATCH_STATUS_SUBMITTED,
+    PrazoInicialBatch,
+)
 from app.services.prazos_iniciais.intake_service import IntakeService
 from app.services.prazos_iniciais.storage import (
     PdfValidationError,
@@ -528,3 +540,175 @@ def cancel_intake(
     db.commit()
     db.refresh(intake)
     return _intake_to_summary(intake)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Trigger e batches de classificação
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class ClassifyPendingResponse(BaseModel):
+    submitted: bool
+    batch_id: Optional[int] = None
+    anthropic_batch_id: Optional[str] = None
+    intakes_count: int = 0
+    message: str
+
+
+class BatchSummary(BaseModel):
+    id: int
+    anthropic_batch_id: Optional[str]
+    status: str
+    anthropic_status: Optional[str]
+    total_records: int
+    succeeded_count: int
+    errored_count: int
+    expired_count: int
+    canceled_count: int
+    model_used: Optional[str]
+    requested_by_email: Optional[str]
+    intake_ids: Optional[list[int]]
+    created_at: Optional[str]
+    submitted_at: Optional[str]
+    ended_at: Optional[str]
+    applied_at: Optional[str]
+
+
+class BatchListResponse(BaseModel):
+    total: int
+    items: list[BatchSummary]
+
+
+class ApplyBatchResponse(BaseModel):
+    succeeded: int
+    failed: int
+    skipped: int
+    total_results: int
+    total_sugestoes: int
+
+
+@router.post(
+    "/classificar-pendentes",
+    response_model=ClassifyPendingResponse,
+    summary="Submete um batch com todos os intakes em PRONTO_PARA_CLASSIFICAR.",
+)
+async def submit_pending_classification(
+    limit: Optional[int] = Query(
+        default=None, ge=1, le=500,
+        description="Limite opcional de intakes nesta submissão.",
+    ),
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(
+        auth_security.require_permission("prazos_iniciais")
+    ),
+):
+    """
+    Coleta intakes em PRONTO_PARA_CLASSIFICAR e dispara um batch da
+    Anthropic. Usa Claude Sonnet (configurável em settings).
+
+    Usado tanto pelo botão da UI quanto pelo worker periódico (via call
+    direto ao service, sem passar por HTTP).
+    """
+    classifier = PrazosIniciaisBatchClassifier(db=db)
+    cap = limit or settings.prazos_iniciais_batch_max_size
+    intakes = classifier.collect_pending_intakes(limit=cap)
+    if not intakes:
+        return ClassifyPendingResponse(
+            submitted=False,
+            intakes_count=0,
+            message="Nenhum intake em PRONTO_PARA_CLASSIFICAR.",
+        )
+
+    try:
+        batch = await classifier.submit_batch(
+            intakes=intakes,
+            requested_by_email=current_user.email,
+        )
+    except Exception as exc:
+        logger.exception("Falha ao submeter batch de prazos iniciais.")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Falha ao enviar batch para Anthropic: {exc}",
+        )
+
+    return ClassifyPendingResponse(
+        submitted=True,
+        batch_id=batch.id,
+        anthropic_batch_id=batch.anthropic_batch_id,
+        intakes_count=len(intakes),
+        message=f"Batch criado com {len(intakes)} intake(s).",
+    )
+
+
+@router.get(
+    "/batches",
+    response_model=BatchListResponse,
+    summary="Lista batches de classificação.",
+)
+def list_classification_batches(
+    limit: int = Query(default=50, ge=1, le=500),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    classifier = PrazosIniciaisBatchClassifier(db=db)
+    batches = classifier.list_batches(limit=limit)
+    return BatchListResponse(
+        total=len(batches),
+        items=[BatchSummary(**classifier.batch_to_dict(b)) for b in batches],
+    )
+
+
+@router.post(
+    "/batches/{batch_id}/refresh",
+    response_model=BatchSummary,
+    summary="Consulta o status de um batch e atualiza contadores.",
+)
+async def refresh_classification_batch(
+    batch_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    classifier = PrazosIniciaisBatchClassifier(db=db)
+    batch = classifier.get_batch(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch não encontrado.")
+    if not batch.anthropic_batch_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Batch não tem anthropic_batch_id (provavelmente falhou no submit).",
+        )
+    try:
+        batch = await classifier.refresh_batch_status(batch)
+    except Exception as exc:
+        logger.exception("Falha ao consultar batch %s", batch_id)
+        raise HTTPException(status_code=502, detail=f"Falha ao consultar batch: {exc}")
+    return BatchSummary(**classifier.batch_to_dict(batch))
+
+
+@router.post(
+    "/batches/{batch_id}/apply",
+    response_model=ApplyBatchResponse,
+    summary="Baixa os resultados do batch e materializa as sugestões.",
+)
+async def apply_classification_batch(
+    batch_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    classifier = PrazosIniciaisBatchClassifier(db=db)
+    batch = classifier.get_batch(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch não encontrado.")
+    if batch.status == PIN_BATCH_STATUS_APPLIED:
+        raise HTTPException(
+            status_code=409,
+            detail="Batch já foi aplicado; reaplicar exigiria limpar sugestões manualmente.",
+        )
+    try:
+        summary = await classifier.apply_batch_results(batch)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Falha ao aplicar batch %s", batch_id)
+        raise HTTPException(status_code=502, detail=f"Falha ao aplicar batch: {exc}")
+    return ApplyBatchResponse(**summary)
