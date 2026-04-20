@@ -5,9 +5,13 @@ Cobrem:
   - Validação de tipo_prazo, subtipo (regras por tipo), priority e
     due_date_reference.
   - Validação de FKs (office / task_subtype / responsible_user).
-  - UniqueConstraint → 409.
+  - **Duplicatas na chave de casamento são permitidas** (pin005) — cada
+    template na mesma combinação (tipo, subtipo, natureza, office) vira uma
+    sugestão separada, igual ao padrão de `task_templates` (publicações).
+  - `due_business_days` aceita negativo (D-N, caso típico), range -365..+30.
   - Soft-delete via DELETE (is_active=False).
-  - PATCH parcial mantendo consistência de chave.
+  - PATCH parcial (sem checagem de unicidade na chave, já que duplicatas
+    são válidas).
   - Listagem com filtros (inclui convenções especiais subtipo='' e
     office_external_id=0 para NULL).
 
@@ -254,13 +258,61 @@ class TestCreateTemplate:
         assert r.status_code == 422
         assert "office_external_id não encontrado" in r.json()["detail"]
 
-    def test_duplicate_key_returns_409(self, auth_client, legal_one_refs):
-        body = _base_body(legal_one_refs)
-        r1 = auth_client.post("/api/v1/prazos-iniciais/templates", json=body)
-        assert r1.status_code == 201
-        r2 = auth_client.post("/api/v1/prazos-iniciais/templates", json=body)
-        assert r2.status_code == 409
-        assert "Já existe template" in r2.json()["detail"]
+    def test_duplicate_combo_is_allowed(self, auth_client, legal_one_refs):
+        """
+        Dois templates na mesma (tipo, subtipo, natureza, office) convivem.
+        Caso real: pra CONTESTAR/global, cadastrar "abrir prazo" e "pedir
+        cópia ao correspondente" — cada um vira uma sugestão separada.
+        Padrão espelha `task_templates` de publicações.
+        """
+        r1 = auth_client.post(
+            "/api/v1/prazos-iniciais/templates",
+            json=_base_body(legal_one_refs, name="abrir prazo"),
+        )
+        assert r1.status_code == 201, r1.text
+        r2 = auth_client.post(
+            "/api/v1/prazos-iniciais/templates",
+            json=_base_body(legal_one_refs, name="pedir cópia correspondente"),
+        )
+        assert r2.status_code == 201, r2.text
+        assert r2.json()["id"] != r1.json()["id"]
+
+        listing = auth_client.get(
+            "/api/v1/prazos-iniciais/templates",
+            params={"tipo_prazo": "CONTESTAR"},
+        ).json()
+        assert listing["total"] == 2
+
+    def test_accepts_negative_due_business_days(self, auth_client, legal_one_refs):
+        """Offset negativo = antes da referência (caso típico: D-2 do fatal)."""
+        r = auth_client.post(
+            "/api/v1/prazos-iniciais/templates",
+            json=_base_body(legal_one_refs, due_business_days=-2),
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["due_business_days"] == -2
+
+    def test_accepts_zero_due_business_days(self, auth_client, legal_one_refs):
+        """Offset 0 = no dia da referência (ex: audiencia_data)."""
+        r = auth_client.post(
+            "/api/v1/prazos-iniciais/templates",
+            json=_base_body(legal_one_refs, due_business_days=0),
+        )
+        assert r.status_code == 201, r.text
+
+    def test_rejects_due_business_days_below_range(self, auth_client, legal_one_refs):
+        r = auth_client.post(
+            "/api/v1/prazos-iniciais/templates",
+            json=_base_body(legal_one_refs, due_business_days=-366),
+        )
+        assert r.status_code == 422
+
+    def test_rejects_due_business_days_above_range(self, auth_client, legal_one_refs):
+        r = auth_client.post(
+            "/api/v1/prazos-iniciais/templates",
+            json=_base_body(legal_one_refs, due_business_days=31),
+        )
+        assert r.status_code == 422
 
 
 # ─── List / Get ──────────────────────────────────────────────────────
@@ -411,9 +463,14 @@ class TestUpdateTemplate:
         assert r.status_code == 422
         assert "subtipo só é permitido" in r.json()["detail"]
 
-    def test_patch_conflicts_with_existing_key(
+    def test_patch_allows_same_key_after_change(
         self, auth_client, legal_one_refs
     ):
+        """
+        PATCH que faz a chave coincidir com outra não é mais rejeitado —
+        duplicatas são válidas (pin005). Caso: mover A de CONTESTAR pra
+        LIMINAR, onde B já mora, é aceito.
+        """
         a = auth_client.post(
             "/api/v1/prazos-iniciais/templates",
             json=_base_body(
@@ -425,13 +482,31 @@ class TestUpdateTemplate:
             json=_base_body(legal_one_refs, name="B", tipo_prazo="LIMINAR"),
         )
 
-        # Muda A pra LIMINAR → colide com B.
         r = auth_client.patch(
             f"/api/v1/prazos-iniciais/templates/{a['id']}",
             json={"tipo_prazo": "LIMINAR"},
         )
-        assert r.status_code == 409
-        assert "Outro template já ocupa" in r.json()["detail"]
+        assert r.status_code == 200, r.text
+        assert r.json()["tipo_prazo"] == "LIMINAR"
+
+        # Agora há dois templates LIMINAR/global.
+        listing = auth_client.get(
+            "/api/v1/prazos-iniciais/templates",
+            params={"tipo_prazo": "LIMINAR"},
+        ).json()
+        assert listing["total"] == 2
+
+    def test_patch_rejects_out_of_range_due_business_days(
+        self, auth_client, legal_one_refs
+    ):
+        created = auth_client.post(
+            "/api/v1/prazos-iniciais/templates", json=_base_body(legal_one_refs)
+        ).json()
+        r = auth_client.patch(
+            f"/api/v1/prazos-iniciais/templates/{created['id']}",
+            json={"due_business_days": 999},
+        )
+        assert r.status_code == 422
 
     def test_patch_not_found(self, auth_client):
         r = auth_client.patch(

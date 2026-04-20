@@ -87,6 +87,7 @@ export default function Layout({ children }: PropsWithChildren) {
       title: "Prazos Iniciais",
       items: [
         { to: "/prazos-iniciais", icon: CalendarClock, label: "Agendar Prazos Iniciais", requirePermission: 'canUsePrazosIniciais' },
+        { to: "/prazos-iniciais/treatment", icon: ListChecks, label: "Tratamento Web Agendamentos Iniciais", requirePermission: 'canUsePrazosIniciais' },
         { to: "/prazos-iniciais/templates", icon: Settings, label: "Templates de Prazos Iniciais", requirePermission: 'isAdmin' },
       ],
     },

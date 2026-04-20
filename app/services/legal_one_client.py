@@ -764,6 +764,94 @@ class LegalOneApiClient:
             self.logger.error("Payload enviado que causou o erro:\n%s", json.dumps(clean_payload, indent=2))
             return None
 
+    def get_task_by_id(self, task_id: int) -> Dict[str, Any]:
+        self.logger.info("Buscando tarefa ID %s.", task_id)
+        endpoint = f"/Tasks/{task_id}"
+        url = f"{self.base_url}{endpoint}"
+        response = self._request_with_retry("GET", url)
+        return response.json()
+
+    def get_task_relationships(self, task_id: int) -> List[Dict[str, Any]]:
+        self.logger.info("Buscando relacionamentos da tarefa ID %s.", task_id)
+        endpoint = f"/tasks/{task_id}/relationships"
+        url = f"{self.base_url}{endpoint}"
+        response = self._request_with_retry("GET", url)
+        data = response.json() or {}
+        return data.get("value", [])
+
+    def search_tasks(
+        self,
+        *,
+        filter_expression: str,
+        top: int = 50,
+        orderby: str = "id desc",
+        select: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Busca tarefas no Legal One via OData.
+
+        O caller monta o filtro para manter o metodo generico e
+        reutilizavel em fluxos diferentes.
+        """
+        params = {
+            "$filter": filter_expression,
+            "$select": (
+                select
+                or (
+                    "id,description,creationDate,statusId,typeId,subTypeId,"
+                    "responsibleOfficeId,originOfficeId,startDateTime,endDateTime,"
+                    "effectiveStartDateTime,effectiveEndDateTime,priority"
+                )
+            ),
+            "$top": max(1, int(top)),
+            "$orderby": orderby,
+        }
+        return self._paginated_catalog_loader("/Tasks", params)
+
+    def find_tasks_for_lawsuit(
+        self,
+        lawsuit_id: int,
+        *,
+        type_id: Optional[int] = None,
+        subtype_id: Optional[int] = None,
+        status_ids: Optional[List[int]] = None,
+        top: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """
+        Retorna tarefas vinculadas ao processo informado.
+
+        O filtro por vinculo usa `relationships/any(...)`, que funciona no
+        tenant atual e evita varrer todas as tarefas localmente.
+        """
+        clauses = [
+            (
+                "relationships/any("
+                f"r: r/linkType eq 'Litigation' and r/linkId eq {int(lawsuit_id)}"
+                ")"
+            )
+        ]
+        if type_id is not None:
+            clauses.append(f"typeId eq {int(type_id)}")
+        if subtype_id is not None:
+            clauses.append(f"subTypeId eq {int(subtype_id)}")
+        if status_ids:
+            normalized_status_ids = [
+                int(status_id)
+                for status_id in status_ids
+                if status_id is not None
+            ]
+            if normalized_status_ids:
+                status_filter = " or ".join(
+                    f"statusId eq {status_id}"
+                    for status_id in normalized_status_ids
+                )
+                clauses.append(f"({status_filter})")
+
+        return self.search_tasks(
+            filter_expression=" and ".join(clauses),
+            top=top,
+        )
+
     def link_task_to_lawsuit(self, task_id: int, link_payload: Dict[str, Any]) -> bool:
         self.logger.info("Vinculando tarefa ID %s com payload: %s", task_id, link_payload)
         endpoint = f"/tasks/{task_id}/relationships"

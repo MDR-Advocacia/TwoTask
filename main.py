@@ -14,6 +14,8 @@ from app.api.v1.endpoints import (
     dashboard,
     offices,
     prazos_iniciais,
+    prazos_iniciais_legacy_tasks,
+    prazos_iniciais_scheduling,
     publication_treatment,
     publications,
     sectors,
@@ -147,6 +149,17 @@ async def lifespan(_: FastAPI):
         )
 
     try:
+        from app.services.prazos_iniciais.legacy_task_queue_worker import (
+            register_legacy_task_cancellation_job,
+        )
+
+        register_legacy_task_cancellation_job(scheduler)
+    except Exception:
+        logger.exception(
+            "Falha ao registrar worker de cancelamento legado de prazos iniciais no startup."
+        )
+
+    try:
         yield
     finally:
         batch_worker.stop()
@@ -192,6 +205,16 @@ app.include_router(publication_treatment.router, prefix="/api/v1/publications", 
 app.include_router(prazos_iniciais.intake_router, prefix="/api/v1")
 # Endpoints internos de prazos iniciais (UI do operador): JWT obrigatório.
 app.include_router(prazos_iniciais.router, prefix="/api/v1", dependencies=protected_dependencies)
+app.include_router(
+    prazos_iniciais_legacy_tasks.router,
+    prefix="/api/v1",
+    dependencies=protected_dependencies,
+)
+app.include_router(
+    prazos_iniciais_scheduling.router,
+    prefix="/api/v1",
+    dependencies=protected_dependencies,
+)
 app.include_router(task_templates.router, prefix="/api/v1/task-templates", tags=["Templates de Tarefa"], dependencies=protected_dependencies)
 app.include_router(automations.router, prefix="/api/v1/automations", tags=["Automações"], dependencies=protected_dependencies)
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Autenticacao"])

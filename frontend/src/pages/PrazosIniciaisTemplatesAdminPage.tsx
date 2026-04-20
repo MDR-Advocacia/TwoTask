@@ -276,6 +276,8 @@ export default function PrazosIniciaisTemplatesAdminPage() {
           <p className="text-muted-foreground text-sm">
             Configure quais tasks o sistema sugere pra cada combinação de{" "}
             <em>tipo de prazo</em>, <em>natureza</em> e <em>escritório</em>.
+            Você pode cadastrar <strong>vários templates</strong> na mesma
+            combinação — cada um vira uma sugestão separada no HITL.
           </p>
         </div>
         <Button

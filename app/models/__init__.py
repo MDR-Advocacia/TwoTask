@@ -23,4 +23,5 @@ from .prazo_inicial import (
     PrazoInicialIntake,
     PrazoInicialSugestao,
 )
+from .prazo_inicial_legacy_task_queue import PrazoInicialLegacyTaskCancellationItem
 from .prazo_inicial_task_template import PrazoInicialTaskTemplate

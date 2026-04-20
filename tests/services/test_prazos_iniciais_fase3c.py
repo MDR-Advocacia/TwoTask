@@ -754,17 +754,21 @@ class TestTemplatesCrudWithNatureza:
         assert r1.status_code == 201, r1.text
         assert r2.status_code == 201, r2.text
 
-    def test_same_key_including_natureza_gets_409(
+    def test_same_key_including_natureza_is_allowed(
         self, auth_client, legal_one_refs
     ):
+        """
+        Pós-pin005: duas entradas com mesma (tipo, subtipo, natureza, office)
+        são permitidas — cada template vira uma sugestão separada no HITL.
+        """
         body = _template_body(
             legal_one_refs, name="dup", natureza_aplicavel="COMUM"
         )
         r1 = auth_client.post("/api/v1/prazos-iniciais/templates", json=body)
         r2 = auth_client.post("/api/v1/prazos-iniciais/templates", json=body)
         assert r1.status_code == 201
-        assert r2.status_code == 409
-        assert "Já existe template" in r2.json()["detail"]
+        assert r2.status_code == 201, r2.text
+        assert r1.json()["id"] != r2.json()["id"]
 
     def test_filter_list_by_natureza(self, auth_client, legal_one_refs):
         auth_client.post(
@@ -816,7 +820,12 @@ class TestTemplatesCrudWithNatureza:
         assert r.status_code == 200, r.text
         assert r.json()["natureza_aplicavel"] == "AGRAVO_INSTRUMENTO"
 
-    def test_patch_natureza_conflict_409(self, auth_client, legal_one_refs):
+    def test_patch_can_share_full_key(self, auth_client, legal_one_refs):
+        """
+        Pós-pin005: PATCH que faz A coincidir com B na chave (tipo, subtipo,
+        natureza, office) é aceito. Dois templates passam a gerar duas
+        sugestões no HITL.
+        """
         a = auth_client.post(
             "/api/v1/prazos-iniciais/templates",
             json=_template_body(
@@ -829,10 +838,9 @@ class TestTemplatesCrudWithNatureza:
                 legal_one_refs, name="b", natureza_aplicavel="JUIZADO"
             ),
         )
-        # Muda A pra JUIZADO → colide com B (mesma chave completa).
         r = auth_client.patch(
             f"/api/v1/prazos-iniciais/templates/{a['id']}",
             json={"natureza_aplicavel": "JUIZADO"},
         )
-        assert r.status_code == 409
-        assert "Outro template já ocupa" in r.json()["detail"]
+        assert r.status_code == 200, r.text
+        assert r.json()["natureza_aplicavel"] == "JUIZADO"

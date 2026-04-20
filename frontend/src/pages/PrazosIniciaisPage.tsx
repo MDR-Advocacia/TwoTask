@@ -1,18 +1,9 @@
-/**
- * PrazosIniciaisPage — Agendar Prazos Iniciais
- *
- * Fase 1 / UI mínima: lista de intakes recebidos pela automação externa
- * + drawer de detalhe + ações básicas (reprocessar CNJ, cancelar, ver PDF).
- *
- * Classificação e revisão de sugestões ficam para a Fase 4, quando a
- * taxonomia do fluxo estiver definida. Esta tela é o "backbone visual"
- * pra operar enquanto o resto do pipeline está em construção.
- */
-
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   AlertCircle,
   CalendarClock,
+  CheckCircle2,
   ExternalLink,
   FileText,
   Filter,
@@ -20,19 +11,15 @@ import {
   RefreshCw,
   Search,
   Undo2,
+  Workflow,
   XCircle,
 } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -52,17 +39,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import {
   cancelarPrazoInicial,
+  confirmarAgendamentoPrazoInicial,
   fetchPrazoInicialDetail,
   fetchPrazosIniciaisIntakes,
   prazoInicialPdfUrl,
@@ -72,37 +53,42 @@ import type {
   PrazoInicialIntakeDetail,
   PrazoInicialIntakeStatus,
   PrazoInicialIntakeSummary,
+  PrazoInicialSugestao,
 } from "@/types/api";
-
-// ─── Constantes de UI ────────────────────────────────────────────────
 
 const PAGE_SIZE = 25;
 
-// Opções do filtro de status — alinhadas com INTAKE_STATUS_* do backend.
 const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "__all__", label: "Todos os status" },
   { value: "RECEBIDO", label: "Recebido" },
-  { value: "PROCESSO_NAO_ENCONTRADO", label: "Processo não encontrado" },
+  { value: "PROCESSO_NAO_ENCONTRADO", label: "Processo nao encontrado" },
   { value: "PRONTO_PARA_CLASSIFICAR", label: "Pronto para classificar" },
-  { value: "EM_CLASSIFICACAO", label: "Em classificação" },
+  { value: "EM_CLASSIFICACAO", label: "Em classificacao" },
   { value: "CLASSIFICADO", label: "Classificado" },
-  { value: "EM_REVISAO", label: "Em revisão" },
+  { value: "EM_REVISAO", label: "Em revisao" },
   { value: "AGENDADO", label: "Agendado" },
   { value: "GED_ENVIADO", label: "GED enviado" },
-  { value: "CONCLUIDO", label: "Concluído" },
-  { value: "ERRO_CLASSIFICACAO", label: "Erro na classificação" },
+  { value: "CONCLUIDO", label: "Concluido" },
+  { value: "ERRO_CLASSIFICACAO", label: "Erro na classificacao" },
   { value: "ERRO_AGENDAMENTO", label: "Erro no agendamento" },
   { value: "ERRO_GED", label: "Erro no GED" },
   { value: "CANCELADO", label: "Cancelado" },
 ];
 
 const STATUS_LABEL: Record<string, string> = Object.fromEntries(
-  STATUS_OPTIONS.filter((o) => o.value !== "__all__").map((o) => [o.value, o.label]),
+  STATUS_OPTIONS.filter((option) => option.value !== "__all__").map((option) => [option.value, option.label]),
 );
 
-type BadgeVariant = "default" | "secondary" | "destructive" | "outline";
+const CONFIRMABLE_STATUSES = new Set(["EM_REVISAO", "CLASSIFICADO", "AGENDADO", "ERRO_AGENDAMENTO"]);
 
-function statusBadgeVariant(status: PrazoInicialIntakeStatus): BadgeVariant {
+const REVIEW_LABEL: Record<string, string> = {
+  pendente: "Pendente",
+  aprovado: "Aprovado",
+  rejeitado: "Rejeitado",
+  editado: "Editado",
+};
+
+function statusBadgeVariant(status: PrazoInicialIntakeStatus): "default" | "secondary" | "destructive" | "outline" {
   if (status.startsWith("ERRO_")) return "destructive";
   if (status === "CANCELADO") return "outline";
   if (status === "CONCLUIDO" || status === "AGENDADO" || status === "GED_ENVIADO") {
@@ -111,181 +97,197 @@ function statusBadgeVariant(status: PrazoInicialIntakeStatus): BadgeVariant {
   return "secondary";
 }
 
-// ─── Helpers de formatação ──────────────────────────────────────────
+function reviewBadgeClass(reviewStatus: string) {
+  const styles: Record<string, string> = {
+    pendente: "bg-amber-100 text-amber-800",
+    aprovado: "bg-green-100 text-green-800",
+    rejeitado: "bg-red-100 text-red-800",
+    editado: "bg-blue-100 text-blue-800",
+  };
+  return styles[reviewStatus] || "bg-slate-100 text-slate-700";
+}
 
 function formatCnj(cnj: string | null | undefined): string {
-  if (!cnj) return "—";
+  if (!cnj) return "-";
   const digits = cnj.replace(/\D/g, "");
-  // CNJ padrão: NNNNNNN-DD.AAAA.J.TR.OOOO (20 dígitos)
   if (digits.length === 20) {
     return `${digits.slice(0, 7)}-${digits.slice(7, 9)}.${digits.slice(9, 13)}.${digits.slice(13, 14)}.${digits.slice(14, 16)}.${digits.slice(16, 20)}`;
   }
   return cnj;
 }
 
-function formatDateTime(iso: string | null | undefined): string {
-  if (!iso) return "—";
+function formatDateTime(value: string | null | undefined): string {
+  if (!value) return "-";
   try {
-    return new Date(iso).toLocaleString("pt-BR", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+    return new Intl.DateTimeFormat("pt-BR", {
+      dateStyle: "short",
+      timeStyle: "short",
+      timeZone: "America/Fortaleza",
+    }).format(new Date(value));
   } catch {
-    return iso;
+    return value;
   }
 }
 
+function formatDate(value: string | null | undefined): string {
+  if (!value) return "-";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [year, month, day] = value.split("-").map(Number);
+    return new Intl.DateTimeFormat("pt-BR", {
+      dateStyle: "short",
+      timeZone: "America/Fortaleza",
+    }).format(new Date(year, month - 1, day, 12, 0, 0));
+  }
+  return formatDateTime(value);
+}
+
 function formatBytes(bytes: number | null | undefined): string {
-  if (!bytes || bytes <= 0) return "—";
+  if (!bytes || bytes <= 0) return "-";
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function primeiroPoloPassivo(
-  detail: Pick<PrazoInicialIntakeSummary, "id"> & {
-    capa_json?: { polo_passivo?: { nome: string }[] };
-  },
-): string {
-  const polos = detail.capa_json?.polo_passivo;
-  if (!polos || polos.length === 0) return "—";
-  const first = polos[0]?.nome;
-  return first || "—";
+function formatSuggestionDeadline(suggestion: PrazoInicialSugestao): string {
+  if (suggestion.data_final_calculada) {
+    const prazoLabel = suggestion.prazo_dias ? `${suggestion.prazo_dias} ${suggestion.prazo_tipo || ""}`.trim() : "-";
+    return `${prazoLabel} ate ${formatDate(suggestion.data_final_calculada)}`;
+  }
+  if (suggestion.audiencia_data) {
+    const hour = suggestion.audiencia_hora ? ` as ${String(suggestion.audiencia_hora).slice(0, 5)}` : "";
+    return `Audiencia em ${formatDate(suggestion.audiencia_data)}${hour}`;
+  }
+  if (suggestion.prazo_dias) {
+    return `${suggestion.prazo_dias} ${suggestion.prazo_tipo || ""}`.trim();
+  }
+  return "-";
 }
 
-// ─── Página ──────────────────────────────────────────────────────────
+function getPrimeiroPoloPassivo(detail: Pick<PrazoInicialIntakeDetail, "capa_json">): string {
+  const polos = detail.capa_json?.polo_passivo || [];
+  return polos[0]?.nome || "-";
+}
+
+function isConfirmableStatus(status: string): boolean {
+  return CONFIRMABLE_STATUSES.has(status);
+}
 
 export default function PrazosIniciaisPage() {
   const { toast } = useToast();
 
-  // Filtros (inputs controlados)
-  const [statusFilter, setStatusFilter] = useState<string>("__all__");
-  const [cnjFilter, setCnjFilter] = useState<string>("");
-  // Filtros efetivamente aplicados (só muda ao clicar em "Aplicar"/"Limpar")
-  const [appliedStatus, setAppliedStatus] = useState<string>("__all__");
-  const [appliedCnj, setAppliedCnj] = useState<string>("");
-  const [offset, setOffset] = useState<number>(0);
+  const [statusFilter, setStatusFilter] = useState("__all__");
+  const [cnjFilter, setCnjFilter] = useState("");
+  const [appliedStatus, setAppliedStatus] = useState("__all__");
+  const [appliedCnj, setAppliedCnj] = useState("");
+  const [offset, setOffset] = useState(0);
 
-  // Dados
   const [items, setItems] = useState<PrazoInicialIntakeSummary[]>([]);
-  const [total, setTotal] = useState<number>(0);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [total, setTotal] = useState(0);
+  const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Drawer de detalhe (Dialog)
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<PrazoInicialIntakeDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState<boolean>(false);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [actionLoading, setActionLoading] = useState<boolean>(false);
+  const [actionLoading, setActionLoading] = useState(false);
 
-  // ── Carrega lista ───────────────────────────────────────────────────
+  const [selectedSuggestions, setSelectedSuggestions] = useState<Record<number, boolean>>({});
+  const [createdTaskIds, setCreatedTaskIds] = useState<Record<number, string>>({});
+
   const loadIntakes = useCallback(
     async (resetPage = false) => {
       setIsLoading(true);
       setLoadError(null);
       try {
         const nextOffset = resetPage ? 0 : offset;
-        const data = await fetchPrazosIniciaisIntakes({
+        const payload = await fetchPrazosIniciaisIntakes({
           status: appliedStatus !== "__all__" ? appliedStatus : undefined,
           cnj_number: appliedCnj || undefined,
           limit: PAGE_SIZE,
           offset: nextOffset,
         });
-        setItems(data.items);
-        setTotal(data.total);
+        setItems(payload.items);
+        setTotal(payload.total);
         if (resetPage) setOffset(0);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : "Erro ao carregar intakes.";
-        setLoadError(msg);
+      } catch (error) {
+        setLoadError(error instanceof Error ? error.message : "Erro ao carregar intakes.");
       } finally {
         setIsLoading(false);
       }
     },
-    [appliedStatus, appliedCnj, offset],
+    [appliedCnj, appliedStatus, offset],
   );
 
-  useEffect(() => {
-    loadIntakes();
-  }, [loadIntakes]);
-
-  // ── Detalhe ─────────────────────────────────────────────────────────
-  const loadDetail = useCallback(async (id: number) => {
+  const loadDetail = useCallback(async (intakeId: number) => {
     setDetailLoading(true);
     setDetailError(null);
     setDetail(null);
     try {
-      const data = await fetchPrazoInicialDetail(id);
-      setDetail(data);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Erro ao carregar detalhe.";
-      setDetailError(msg);
+      const payload = await fetchPrazoInicialDetail(intakeId);
+      setDetail(payload);
+    } catch (error) {
+      setDetailError(error instanceof Error ? error.message : "Erro ao carregar o detalhe do intake.");
     } finally {
       setDetailLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    if (selectedId !== null) {
-      loadDetail(selectedId);
-    } else {
+    loadIntakes();
+  }, [loadIntakes]);
+
+  useEffect(() => {
+    if (selectedId === null) {
       setDetail(null);
       setDetailError(null);
+      return;
     }
-  }, [selectedId, loadDetail]);
+    loadDetail(selectedId);
+  }, [loadDetail, selectedId]);
 
-  // ── Ações ───────────────────────────────────────────────────────────
-  const onReprocessarCnj = useCallback(async () => {
-    if (!selectedId) return;
-    setActionLoading(true);
-    try {
-      await reprocessarPrazoInicialCnj(selectedId);
-      toast({
-        title: "Reprocessamento solicitado",
-        description: "A resolução do CNJ no Legal One foi reiniciada em background.",
-      });
-      await Promise.all([loadDetail(selectedId), loadIntakes()]);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Erro ao reprocessar.";
-      toast({ title: "Erro", description: msg, variant: "destructive" });
-    } finally {
-      setActionLoading(false);
+  useEffect(() => {
+    if (!detail) {
+      setSelectedSuggestions({});
+      setCreatedTaskIds({});
+      return;
     }
-  }, [selectedId, toast, loadDetail, loadIntakes]);
 
-  const onCancelar = useCallback(async () => {
-    if (!selectedId) return;
-    const ok = window.confirm(
-      "Cancelar este intake? A automação não conseguirá mais agendar prazos a partir deste registro.",
-    );
-    if (!ok) return;
-    setActionLoading(true);
-    try {
-      await cancelarPrazoInicial(selectedId);
-      toast({
-        title: "Intake cancelado",
-        description: "O registro foi marcado como CANCELADO.",
-      });
-      await Promise.all([loadDetail(selectedId), loadIntakes()]);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Erro ao cancelar.";
-      toast({ title: "Erro", description: msg, variant: "destructive" });
-    } finally {
-      setActionLoading(false);
-    }
-  }, [selectedId, toast, loadDetail, loadIntakes]);
+    const nextSelection: Record<number, boolean> = {};
+    const nextCreatedTaskIds: Record<number, string> = {};
 
-  // ── Paginação ───────────────────────────────────────────────────────
+    detail.sugestoes.forEach((suggestion) => {
+      nextSelection[suggestion.id] = suggestion.review_status !== "rejeitado";
+      nextCreatedTaskIds[suggestion.id] = suggestion.created_task_id ? String(suggestion.created_task_id) : "";
+    });
+
+    setSelectedSuggestions(nextSelection);
+    setCreatedTaskIds(nextCreatedTaskIds);
+  }, [detail]);
+
   const pageInfo = useMemo(() => {
     const start = total === 0 ? 0 : offset + 1;
     const end = Math.min(offset + PAGE_SIZE, total);
-    const hasPrev = offset > 0;
-    const hasNext = offset + PAGE_SIZE < total;
-    return { start, end, hasPrev, hasNext };
+    return {
+      start,
+      end,
+      hasPrev: offset > 0,
+      hasNext: offset + PAGE_SIZE < total,
+    };
   }, [offset, total]);
+
+  const selectedSuggestionCount = useMemo(() => {
+    if (!detail) return 0;
+    return detail.sugestoes.filter((suggestion) => selectedSuggestions[suggestion.id]).length;
+  }, [detail, selectedSuggestions]);
+
+  const canConfirmScheduling = Boolean(
+    detail &&
+      isConfirmableStatus(detail.status) &&
+      detail.sugestoes.length > 0 &&
+      selectedSuggestionCount > 0 &&
+      !actionLoading,
+  );
 
   const onAplicarFiltros = () => {
     setAppliedStatus(statusFilter);
@@ -301,37 +303,179 @@ export default function PrazosIniciaisPage() {
     setOffset(0);
   };
 
-  // ── Render ──────────────────────────────────────────────────────────
+  const onReprocessarCnj = useCallback(async () => {
+    if (!selectedId) return;
+    setActionLoading(true);
+    try {
+      await reprocessarPrazoInicialCnj(selectedId);
+      toast({
+        title: "Reprocessamento solicitado",
+        description: "A resolucao do CNJ no Legal One foi reiniciada em background.",
+      });
+      await Promise.all([loadDetail(selectedId), loadIntakes()]);
+    } catch (error) {
+      toast({
+        title: "Erro ao reprocessar",
+        description: error instanceof Error ? error.message : "Nao foi possivel reprocessar o intake.",
+        variant: "destructive",
+      });
+    } finally {
+      setActionLoading(false);
+    }
+  }, [loadDetail, loadIntakes, selectedId, toast]);
+
+  const onCancelar = useCallback(async () => {
+    if (!selectedId) return;
+    const confirmed = window.confirm(
+      "Cancelar este intake? A automacao nao podera mais seguir com o fluxo de agendamentos iniciais para esse registro.",
+    );
+    if (!confirmed) return;
+
+    setActionLoading(true);
+    try {
+      await cancelarPrazoInicial(selectedId);
+      toast({
+        title: "Intake cancelado",
+        description: "O registro foi marcado como CANCELADO.",
+      });
+      await Promise.all([loadDetail(selectedId), loadIntakes()]);
+    } catch (error) {
+      toast({
+        title: "Erro ao cancelar",
+        description: error instanceof Error ? error.message : "Nao foi possivel cancelar o intake.",
+        variant: "destructive",
+      });
+    } finally {
+      setActionLoading(false);
+    }
+  }, [loadDetail, loadIntakes, selectedId, toast]);
+
+  const setAllSuggestions = useCallback(
+    (checked: boolean) => {
+      if (!detail) return;
+      const next: Record<number, boolean> = {};
+      detail.sugestoes.forEach((suggestion) => {
+        next[suggestion.id] = checked;
+      });
+      setSelectedSuggestions(next);
+    },
+    [detail],
+  );
+
+  const onConfirmarAgendamentos = useCallback(async () => {
+    if (!selectedId || !detail) return;
+
+    const selectedPayload: Array<{
+      suggestion_id: number;
+      created_task_id: number | null;
+      review_status: string;
+    }> = [];
+
+    for (const suggestion of detail.sugestoes) {
+      if (!selectedSuggestions[suggestion.id]) continue;
+
+      const rawCreatedTaskId = createdTaskIds[suggestion.id]?.trim();
+      let parsedCreatedTaskId: number | null = null;
+
+      if (rawCreatedTaskId) {
+        if (!/^\d+$/.test(rawCreatedTaskId)) {
+          toast({
+            title: "Task criada invalida",
+            description: `A sugestao ${suggestion.id} precisa de um numero inteiro valido em task criada.`,
+            variant: "destructive",
+          });
+          return;
+        }
+        parsedCreatedTaskId = Number.parseInt(rawCreatedTaskId, 10);
+      }
+
+      const reviewStatus =
+        parsedCreatedTaskId !== null && parsedCreatedTaskId !== suggestion.created_task_id
+          ? "editado"
+          : suggestion.review_status === "editado"
+            ? "editado"
+            : "aprovado";
+
+      selectedPayload.push({
+        suggestion_id: suggestion.id,
+        created_task_id: parsedCreatedTaskId,
+        review_status: reviewStatus,
+      });
+    }
+
+    if (selectedPayload.length === 0) {
+      toast({
+        title: "Nenhuma sugestao selecionada",
+        description: "Selecione pelo menos uma sugestao para confirmar os agendamentos do intake.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setActionLoading(true);
+    try {
+      const response = await confirmarAgendamentoPrazoInicial(selectedId, {
+        suggestions: selectedPayload,
+        enqueue_legacy_task_cancellation: true,
+      });
+
+      const queueItem = response.legacy_task_cancellation_item;
+      toast({
+        title: "Agendamentos confirmados",
+        description: queueItem
+          ? `Intake em AGENDADO e item #${queueItem.id} entrou na fila tecnica para cancelar a task legada.`
+          : "Intake atualizado para AGENDADO com sucesso.",
+      });
+
+      await Promise.all([loadDetail(selectedId), loadIntakes()]);
+    } catch (error) {
+      toast({
+        title: "Falha ao confirmar agendamentos",
+        description: error instanceof Error ? error.message : "Nao foi possivel confirmar os agendamentos.",
+        variant: "destructive",
+      });
+    } finally {
+      setActionLoading(false);
+    }
+  }, [createdTaskIds, detail, loadDetail, loadIntakes, selectedId, selectedSuggestions, toast]);
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold flex items-center gap-2">
-          <CalendarClock className="h-6 w-6" />
-          Agendar Prazos Iniciais
-        </h1>
-        <p className="text-muted-foreground">
-          Fila de processos novos recebidos da automação externa para triagem e agendamento no Legal One.
-        </p>
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
+            <CalendarClock className="h-6 w-6" />
+            Agendar Prazos Iniciais
+          </h1>
+          <p className="text-muted-foreground">
+            Recebe os processos do intake externo, mostra as sugestoes de agendamento e agora permite confirmar o
+            fechamento operacional antes de enfileirar o cancelamento da task legada no Legal One.
+          </p>
+        </div>
+
+        <Button asChild variant="outline" className="w-full sm:w-auto">
+          <Link to="/prazos-iniciais/treatment">
+            <Workflow className="mr-2 h-4 w-4" />
+            Tratamento Web Agendamentos Iniciais
+          </Link>
+        </Button>
       </div>
 
-      {loadError && (
+      {loadError ? (
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
           <AlertTitle>Erro ao carregar</AlertTitle>
           <AlertDescription>{loadError}</AlertDescription>
         </Alert>
-      )}
+      ) : null}
 
-      {/* Filtros */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <Filter className="h-4 w-4" />
             Filtros
           </CardTitle>
-          <CardDescription>
-            Refine por status do intake ou por número CNJ (com ou sem máscara).
-          </CardDescription>
+          <CardDescription>Filtre por status do intake ou por numero CNJ, com ou sem mascara.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="grid gap-4 md:grid-cols-[1fr_1fr_auto_auto_auto]">
@@ -342,9 +486,9 @@ export default function PrazosIniciaisPage() {
                   <SelectValue placeholder="Todos os status" />
                 </SelectTrigger>
                 <SelectContent>
-                  {STATUS_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
+                  {STATUS_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -355,32 +499,29 @@ export default function PrazosIniciaisPage() {
               <Label htmlFor="pin-cnj">CNJ</Label>
               <Input
                 id="pin-cnj"
-                placeholder="Ex.: 1000123-45.2026.8.26.0100 ou parte dos dígitos"
+                placeholder="Ex.: 0072837-30.2026.8.05.0001"
                 value={cnjFilter}
-                onChange={(e) => setCnjFilter(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") onAplicarFiltros();
+                onChange={(event) => setCnjFilter(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") onAplicarFiltros();
                 }}
               />
             </div>
 
             <div className="flex items-end">
               <Button type="button" onClick={onAplicarFiltros} disabled={isLoading}>
-                <Search className="h-4 w-4 mr-2" />
+                <Search className="mr-2 h-4 w-4" />
                 Aplicar
               </Button>
             </div>
+
             <div className="flex items-end">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={onLimparFiltros}
-                disabled={isLoading}
-              >
-                <Undo2 className="h-4 w-4 mr-2" />
+              <Button type="button" variant="outline" onClick={onLimparFiltros} disabled={isLoading}>
+                <Undo2 className="mr-2 h-4 w-4" />
                 Limpar
               </Button>
             </div>
+
             <div className="flex items-end">
               <Button
                 type="button"
@@ -396,17 +537,23 @@ export default function PrazosIniciaisPage() {
         </CardContent>
       </Card>
 
-      {/* Lista */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Intakes</CardTitle>
-          <CardDescription>
-            {isLoading
-              ? "Carregando..."
-              : total === 0
-                ? "Nenhum intake encontrado com os filtros atuais."
-                : `Exibindo ${pageInfo.start}–${pageInfo.end} de ${total} registro(s).`}
-          </CardDescription>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <CardTitle className="text-base">Intakes</CardTitle>
+              <CardDescription>
+                {isLoading
+                  ? "Carregando..."
+                  : total === 0
+                    ? "Nenhum intake encontrado com os filtros atuais."
+                    : `Exibindo ${pageInfo.start}-${pageInfo.end} de ${total} registro(s).`}
+              </CardDescription>
+            </div>
+            <div className="text-sm text-muted-foreground">
+              Abra um intake para confirmar as tasks criadas e mandar o cancelamento da task legada para a fila tecnica.
+            </div>
+          </div>
         </CardHeader>
         <CardContent>
           <ScrollArea className="w-full">
@@ -415,59 +562,54 @@ export default function PrazosIniciaisPage() {
                 <TableRow>
                   <TableHead className="w-[160px]">Recebido</TableHead>
                   <TableHead>CNJ</TableHead>
-                  <TableHead>Polo passivo</TableHead>
-                  <TableHead className="w-[200px]">Status</TableHead>
-                  <TableHead className="w-[110px] text-right">Sugestões</TableHead>
-                  <TableHead className="w-[120px] text-right">Ações</TableHead>
+                  <TableHead>Arquivo / origem</TableHead>
+                  <TableHead className="w-[220px]">Status</TableHead>
+                  <TableHead className="w-[120px] text-right">Sugestoes</TableHead>
+                  <TableHead className="w-[120px] text-right">Acoes</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {isLoading && items.length === 0 && (
+                {isLoading && items.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center py-10">
-                      <Loader2 className="h-5 w-5 animate-spin inline-block mr-2" />
-                      Carregando intakes…
+                    <TableCell colSpan={6} className="py-10 text-center">
+                      <Loader2 className="mr-2 inline-block h-5 w-5 animate-spin" />
+                      Carregando intakes...
                     </TableCell>
                   </TableRow>
-                )}
-                {!isLoading && items.length === 0 && !loadError && (
+                ) : null}
+
+                {!isLoading && items.length === 0 && !loadError ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center py-10 text-muted-foreground">
+                    <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
                       Nenhum intake encontrado.
                     </TableCell>
                   </TableRow>
-                )}
-                {items.map((it) => (
-                  <TableRow key={it.id}>
-                    <TableCell className="whitespace-nowrap">
-                      {formatDateTime(it.received_at)}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">
-                      {formatCnj(it.cnj_number)}
-                    </TableCell>
+                ) : null}
+
+                {items.map((item) => (
+                  <TableRow key={item.id}>
+                    <TableCell className="whitespace-nowrap">{formatDateTime(item.received_at)}</TableCell>
+                    <TableCell className="font-mono text-xs">{formatCnj(item.cnj_number)}</TableCell>
                     <TableCell>
-                      {/* O summary não carrega capa_json; fallback para external_id */}
-                      <span className="text-muted-foreground text-sm">
-                        {it.pdf_filename_original || it.external_id}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={statusBadgeVariant(it.status)}>
-                        {STATUS_LABEL[it.status] ?? it.status}
-                      </Badge>
-                      {it.error_message && (
-                        <div className="text-xs text-muted-foreground mt-1 truncate max-w-[200px]" title={it.error_message}>
-                          {it.error_message}
+                      <div className="space-y-1">
+                        <div className="text-sm">{item.pdf_filename_original || item.external_id}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {item.natureza_processo || "Natureza pendente"}
+                          {item.produto ? ` · ${item.produto}` : ""}
                         </div>
-                      )}
+                      </div>
                     </TableCell>
-                    <TableCell className="text-right">{it.sugestoes_count}</TableCell>
+                    <TableCell>
+                      <Badge variant={statusBadgeVariant(item.status)}>{STATUS_LABEL[item.status] ?? item.status}</Badge>
+                      {item.error_message ? (
+                        <div className="mt-1 max-w-[220px] truncate text-xs text-muted-foreground" title={item.error_message}>
+                          {item.error_message}
+                        </div>
+                      ) : null}
+                    </TableCell>
+                    <TableCell className="text-right">{item.sugestoes_count}</TableCell>
                     <TableCell className="text-right">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => setSelectedId(it.id)}
-                      >
+                      <Button size="sm" variant="outline" onClick={() => setSelectedId(item.id)}>
                         Detalhes
                       </Button>
                     </TableCell>
@@ -477,7 +619,6 @@ export default function PrazosIniciaisPage() {
             </Table>
           </ScrollArea>
 
-          {/* Paginação */}
           <div className="flex items-center justify-end gap-2 pt-4">
             <Button
               variant="outline"
@@ -493,119 +634,121 @@ export default function PrazosIniciaisPage() {
               disabled={!pageInfo.hasNext || isLoading}
               onClick={() => setOffset(offset + PAGE_SIZE)}
             >
-              Próxima
+              Proxima
             </Button>
           </div>
         </CardContent>
       </Card>
 
-      {/* Dialog de detalhe */}
       <Dialog
         open={selectedId !== null}
         onOpenChange={(open) => {
           if (!open) setSelectedId(null);
         }}
       >
-        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+        <DialogContent className="max-h-[88vh] max-w-5xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Intake #{selectedId}</DialogTitle>
             <DialogDescription>
-              Detalhes do processo recebido e ações disponíveis.
+              Revise os dados do processo, marque as sugestoes efetivamente agendadas e confirme para disparar a fila
+              de cancelamento da task legada.
             </DialogDescription>
           </DialogHeader>
 
-          {detailLoading && (
+          {detailLoading ? (
             <div className="py-10 text-center">
-              <Loader2 className="h-5 w-5 animate-spin inline-block mr-2" />
-              Carregando…
+              <Loader2 className="mr-2 inline-block h-5 w-5 animate-spin" />
+              Carregando...
             </div>
-          )}
+          ) : null}
 
-          {detailError && (
+          {detailError ? (
             <Alert variant="destructive">
               <AlertCircle className="h-4 w-4" />
-              <AlertTitle>Erro</AlertTitle>
+              <AlertTitle>Erro ao carregar detalhe</AlertTitle>
               <AlertDescription>{detailError}</AlertDescription>
             </Alert>
-          )}
+          ) : null}
 
-          {detail && !detailLoading && (
-            <div className="space-y-4">
-              <div className="grid gap-3 md:grid-cols-2 text-sm">
+          {detail && !detailLoading ? (
+            <div className="space-y-5">
+              <div className="grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-3">
                 <div>
-                  <div className="text-muted-foreground text-xs">External ID</div>
-                  <div className="font-mono break-all">{detail.external_id}</div>
+                  <div className="text-xs text-muted-foreground">External ID</div>
+                  <div className="break-all font-mono">{detail.external_id}</div>
                 </div>
                 <div>
-                  <div className="text-muted-foreground text-xs">Status</div>
+                  <div className="text-xs text-muted-foreground">Status</div>
                   <Badge variant={statusBadgeVariant(detail.status)}>
                     {STATUS_LABEL[detail.status] ?? detail.status}
                   </Badge>
                 </div>
                 <div>
-                  <div className="text-muted-foreground text-xs">CNJ</div>
+                  <div className="text-xs text-muted-foreground">Recebido em</div>
+                  <div>{formatDateTime(detail.received_at)}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">CNJ</div>
                   <div className="font-mono">{formatCnj(detail.cnj_number)}</div>
                 </div>
                 <div>
-                  <div className="text-muted-foreground text-xs">Processo no L1</div>
-                  <div>
-                    {detail.lawsuit_id ? (
-                      <span>lawsuit_id = {detail.lawsuit_id}</span>
-                    ) : (
-                      <span className="text-muted-foreground italic">Não resolvido</span>
-                    )}
-                  </div>
+                  <div className="text-xs text-muted-foreground">Processo no Legal One</div>
+                  <div>{detail.lawsuit_id ? `lawsuit_id = ${detail.lawsuit_id}` : "Nao resolvido"}</div>
                 </div>
                 <div>
-                  <div className="text-muted-foreground text-xs">Escritório</div>
-                  <div>
-                    {detail.office_id ? `office_id = ${detail.office_id}` : (
-                      <span className="text-muted-foreground italic">—</span>
-                    )}
-                  </div>
+                  <div className="text-xs text-muted-foreground">Escritorio</div>
+                  <div>{detail.office_id ? `office_id = ${detail.office_id}` : "-"}</div>
                 </div>
                 <div>
-                  <div className="text-muted-foreground text-xs">Recebido em</div>
-                  <div>{formatDateTime(detail.received_at)}</div>
+                  <div className="text-xs text-muted-foreground">Natureza</div>
+                  <div>{detail.natureza_processo || "-"}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">Produto</div>
+                  <div>{detail.produto || "-"}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">Sugestoes</div>
+                  <div>{detail.sugestoes.length}</div>
                 </div>
               </div>
 
-              {detail.error_message && (
+              {detail.error_message ? (
                 <Alert variant="destructive">
                   <AlertCircle className="h-4 w-4" />
                   <AlertTitle>Mensagem de erro</AlertTitle>
-                  <AlertDescription className="whitespace-pre-wrap">
-                    {detail.error_message}
-                  </AlertDescription>
+                  <AlertDescription className="whitespace-pre-wrap">{detail.error_message}</AlertDescription>
                 </Alert>
-              )}
+              ) : null}
 
               <Separator />
 
               <div>
-                <div className="text-sm font-semibold mb-2">Capa do processo</div>
-                <div className="grid gap-2 md:grid-cols-2 text-sm">
+                <div className="mb-2 text-sm font-semibold">Capa do processo</div>
+                <div className="grid gap-2 text-sm md:grid-cols-2 xl:grid-cols-3">
                   <div>
-                    <div className="text-muted-foreground text-xs">Tribunal / Vara</div>
-                    <div>
-                      {(detail.capa_json.tribunal || "—") + " · " + (detail.capa_json.vara || "—")}
-                    </div>
+                    <div className="text-xs text-muted-foreground">Tribunal / Vara</div>
+                    <div>{`${detail.capa_json.tribunal || "-"} · ${detail.capa_json.vara || "-"}`}</div>
                   </div>
                   <div>
-                    <div className="text-muted-foreground text-xs">Classe</div>
-                    <div>{detail.capa_json.classe || "—"}</div>
+                    <div className="text-xs text-muted-foreground">Classe</div>
+                    <div>{detail.capa_json.classe || "-"}</div>
                   </div>
                   <div>
-                    <div className="text-muted-foreground text-xs">Polo ativo</div>
-                    <div>
-                      {(detail.capa_json.polo_ativo || [])
-                        .map((p) => p.nome)
-                        .join(", ") || "—"}
-                    </div>
+                    <div className="text-xs text-muted-foreground">Assunto</div>
+                    <div>{detail.capa_json.assunto || "-"}</div>
                   </div>
                   <div>
-                    <div className="text-muted-foreground text-xs">Polo passivo</div>
-                    <div>{primeiroPoloPassivo(detail)}</div>
+                    <div className="text-xs text-muted-foreground">Polo ativo</div>
+                    <div>{(detail.capa_json.polo_ativo || []).map((parte) => parte.nome).join(", ") || "-"}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Polo passivo</div>
+                    <div>{getPrimeiroPoloPassivo(detail)}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Distribuicao</div>
+                    <div>{formatDate(detail.capa_json.data_distribuicao as string | null | undefined)}</div>
                   </div>
                 </div>
               </div>
@@ -613,90 +756,154 @@ export default function PrazosIniciaisPage() {
               <Separator />
 
               <div>
-                <div className="text-sm font-semibold mb-2">Habilitação (PDF)</div>
-                <div className="flex items-center gap-3 text-sm">
+                <div className="mb-2 text-sm font-semibold">Habilitacao (PDF)</div>
+                <div className="flex flex-wrap items-center gap-3 text-sm">
                   <FileText className="h-4 w-4" />
                   <span>
                     {detail.pdf_filename_original || "habilitacao.pdf"}
-                    <span className="text-muted-foreground ml-2">
-                      ({formatBytes(detail.pdf_bytes)})
-                    </span>
+                    <span className="ml-2 text-muted-foreground">({formatBytes(detail.pdf_bytes)})</span>
                   </span>
                   {detail.pdf_bytes ? (
-                    <Button
-                      asChild
-                      size="sm"
-                      variant="outline"
-                      className="ml-auto"
-                    >
-                      <a
-                        href={prazoInicialPdfUrl(detail.id)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        <ExternalLink className="h-4 w-4 mr-1" />
+                    <Button asChild size="sm" variant="outline" className="ml-auto">
+                      <a href={prazoInicialPdfUrl(detail.id)} target="_blank" rel="noopener noreferrer">
+                        <ExternalLink className="mr-1 h-4 w-4" />
                         Abrir em nova aba
                       </a>
                     </Button>
                   ) : (
-                    <span className="text-muted-foreground text-xs ml-auto">
-                      Retenção expirada
-                    </span>
+                    <span className="ml-auto text-xs text-muted-foreground">Retencao expirada</span>
                   )}
                 </div>
               </div>
 
-              {detail.sugestoes.length > 0 && (
-                <>
-                  <Separator />
-                  <div>
-                    <div className="text-sm font-semibold mb-2">
-                      Sugestões ({detail.sugestoes.length})
+              <Separator />
+
+              {detail.sugestoes.length > 0 ? (
+                <div className="space-y-3">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                      <div className="text-sm font-semibold">Sugestoes de agendamento ({detail.sugestoes.length})</div>
+                      <div className="text-xs text-muted-foreground">
+                        Marque apenas as tasks realmente criadas no Legal One. Ao confirmar, o intake vai para AGENDADO
+                        e entra na fila tecnica de cancelamento da task "Agendar Prazos".
+                      </div>
                     </div>
-                    <div className="text-xs text-muted-foreground mb-3">
-                      A revisão das sugestões está no pipeline da Fase 4 — por enquanto,
-                      listagem somente-leitura.
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button type="button" size="sm" variant="outline" onClick={() => setAllSuggestions(true)}>
+                        Selecionar todas
+                      </Button>
+                      <Button type="button" size="sm" variant="outline" onClick={() => setAllSuggestions(false)}>
+                        Limpar selecao
+                      </Button>
+                      <Badge variant="secondary">{selectedSuggestionCount} selecionada(s)</Badge>
                     </div>
+                  </div>
+
+                  {!isConfirmableStatus(detail.status) ? (
+                    <Alert>
+                      <AlertCircle className="h-4 w-4" />
+                      <AlertTitle>Confirmacao indisponivel neste status</AlertTitle>
+                      <AlertDescription>
+                        O backend permite confirmar apenas intakes em EM_REVISAO, CLASSIFICADO, AGENDADO ou
+                        ERRO_AGENDAMENTO.
+                      </AlertDescription>
+                    </Alert>
+                  ) : null}
+
+                  <div className="overflow-x-auto rounded-md border">
                     <Table>
                       <TableHeader>
                         <TableRow>
-                          <TableHead>Tipo</TableHead>
+                          <TableHead className="w-[64px]">Ok</TableHead>
+                          <TableHead>Tipo / subtipo</TableHead>
                           <TableHead>Data base</TableHead>
-                          <TableHead>Prazo</TableHead>
-                          <TableHead>Confiança</TableHead>
-                          <TableHead>Revisão</TableHead>
+                          <TableHead>Prazo / audiencia</TableHead>
+                          <TableHead>Confianca</TableHead>
+                          <TableHead>Revisao</TableHead>
+                          <TableHead className="w-[180px]">Task criada</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {detail.sugestoes.map((s) => (
-                          <TableRow key={s.id}>
+                        {detail.sugestoes.map((suggestion) => (
+                          <TableRow key={suggestion.id}>
                             <TableCell>
-                              {s.tipo_prazo}
-                              {s.subtipo ? (
-                                <span className="text-muted-foreground text-xs ml-1">
-                                  / {s.subtipo}
-                                </span>
+                              <Checkbox
+                                checked={Boolean(selectedSuggestions[suggestion.id])}
+                                onCheckedChange={(checked) =>
+                                  setSelectedSuggestions((current) => ({
+                                    ...current,
+                                    [suggestion.id]: checked === true,
+                                  }))
+                                }
+                                aria-label={`Selecionar sugestao ${suggestion.id}`}
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <div className="font-medium">{suggestion.tipo_prazo}</div>
+                              <div className="text-xs text-muted-foreground">
+                                {suggestion.subtipo || "Sem subtipo"} · sugestao #{suggestion.id}
+                              </div>
+                              {suggestion.justificativa ? (
+                                <div className="mt-1 max-w-[360px] text-xs text-muted-foreground">
+                                  {suggestion.justificativa}
+                                </div>
                               ) : null}
                             </TableCell>
-                            <TableCell>{s.data_base || "—"}</TableCell>
+                            <TableCell>{formatDate(suggestion.data_base)}</TableCell>
+                            <TableCell>{formatSuggestionDeadline(suggestion)}</TableCell>
+                            <TableCell>{suggestion.confianca || "-"}</TableCell>
                             <TableCell>
-                              {s.prazo_dias
-                                ? `${s.prazo_dias} ${s.prazo_tipo || ""}`.trim()
-                                : s.audiencia_data
-                                  ? `Audiência ${s.audiencia_data}`
-                                  : "—"}
+                              <Badge className={reviewBadgeClass(suggestion.review_status)}>
+                                {REVIEW_LABEL[suggestion.review_status] || suggestion.review_status}
+                              </Badge>
                             </TableCell>
-                            <TableCell>{s.confianca || "—"}</TableCell>
-                            <TableCell>{s.review_status}</TableCell>
+                            <TableCell>
+                              <Input
+                                inputMode="numeric"
+                                placeholder="Ex.: 191842"
+                                value={createdTaskIds[suggestion.id] || ""}
+                                onChange={(event) =>
+                                  setCreatedTaskIds((current) => ({
+                                    ...current,
+                                    [suggestion.id]: event.target.value,
+                                  }))
+                                }
+                              />
+                            </TableCell>
                           </TableRow>
                         ))}
                       </TableBody>
                     </Table>
                   </div>
-                </>
+                </div>
+              ) : (
+                <Alert>
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertTitle>Sem sugestoes disponiveis</AlertTitle>
+                  <AlertDescription>
+                    Este intake ainda nao gerou sugestoes elegiveis para confirmacao operacional.
+                  </AlertDescription>
+                </Alert>
               )}
+
+              <Alert>
+                <CheckCircle2 className="h-4 w-4" />
+                <AlertTitle>Proximo passo apos a confirmacao</AlertTitle>
+                <AlertDescription className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <span>
+                    Assim que os agendamentos forem confirmados, o processo entra na fila que cancela a task legada
+                    "Agendar Prazos - Banco Master".
+                  </span>
+                  <Button asChild size="sm" variant="outline">
+                    <Link to="/prazos-iniciais/treatment">
+                      <Workflow className="mr-2 h-4 w-4" />
+                      Abrir tratamento web
+                    </Link>
+                  </Button>
+                </AlertDescription>
+              </Alert>
             </div>
-          )}
+          ) : null}
 
           <DialogFooter className="gap-2">
             <Button
@@ -705,35 +912,38 @@ export default function PrazosIniciaisPage() {
               disabled={
                 !detail ||
                 actionLoading ||
-                !(
-                  detail.status === "RECEBIDO" ||
-                  detail.status === "PROCESSO_NAO_ENCONTRADO"
-                )
+                !(detail.status === "RECEBIDO" || detail.status === "PROCESSO_NAO_ENCONTRADO")
               }
-              title="Disponível em RECEBIDO / PROCESSO_NAO_ENCONTRADO"
+              title="Disponivel apenas em RECEBIDO / PROCESSO_NAO_ENCONTRADO"
             >
               {actionLoading ? (
-                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
-                <RefreshCw className="h-4 w-4 mr-2" />
+                <RefreshCw className="mr-2 h-4 w-4" />
               )}
               Reprocessar CNJ
             </Button>
+
             <Button
               variant="destructive"
               onClick={onCancelar}
-              disabled={
-                !detail ||
-                actionLoading ||
-                detail.status === "CANCELADO" ||
-                detail.status === "CONCLUIDO"
-              }
+              disabled={!detail || actionLoading || detail.status === "CANCELADO" || detail.status === "CONCLUIDO"}
             >
-              <XCircle className="h-4 w-4 mr-2" />
+              <XCircle className="mr-2 h-4 w-4" />
               Cancelar intake
             </Button>
+
             <Button variant="secondary" onClick={() => setSelectedId(null)}>
               Fechar
+            </Button>
+
+            <Button onClick={onConfirmarAgendamentos} disabled={!canConfirmScheduling}>
+              {actionLoading ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <CheckCircle2 className="mr-2 h-4 w-4" />
+              )}
+              Confirmar agendamentos
             </Button>
           </DialogFooter>
         </DialogContent>

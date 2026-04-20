@@ -782,21 +782,27 @@ async def apply_classification_batch(
 # CRUD de Templates (prazo_inicial_task_templates)
 # ═══════════════════════════════════════════════════════════════════════
 #
-# Os templates governam o casamento (tipo_prazo, subtipo, office) → tarefa
-# L1. Só admin/operador com permissão `prazos_iniciais` pode tocar. A UI
-# de Fase 3c consome estes endpoints.
+# Os templates governam o casamento (tipo_prazo, subtipo,
+# natureza_aplicavel, office) → tarefa L1. Só admin/operador com permissão
+# `prazos_iniciais` pode tocar. A UI de Fase 4a+ consome estes endpoints.
 #
-# Regras de validação replicadas na camada HTTP (além da UniqueConstraint
-# no banco):
+# IMPORTANTE: múltiplos templates por combinação são permitidos (cada um
+# gera uma sugestão separada, igual `task_templates` das publicações). Não
+# há UniqueConstraint na chave de casamento — ver pin005.
+#
+# Regras de validação replicadas na camada HTTP:
 #   - `tipo_prazo` ∈ TIPOS_PRAZO_VALIDOS
 #   - `subtipo`:
 #       * AUDIENCIA  → {"conciliacao","instrucao","una","outra"} ou None
 #       * JULGAMENTO → {"merito","extincao_sem_merito","outro"} ou None
 #       * demais tipos → obrigatoriamente None (o casamento do classifier
 #         só usa subtipo para AUDIENCIA/JULGAMENTO)
+#   - `natureza_aplicavel` ∈ NATUREZAS_VALIDAS ou None
 #   - `priority` ∈ {"Low","Normal","High"}
 #   - `due_date_reference` ∈ {"data_base","data_final_calculada",
 #                             "today","audiencia_data"}
+#   - `due_business_days` ∈ [-365, 30] (negativo = D-N; ver CheckConstraint
+#     no pin005)
 #   - FKs (office_external_id, task_subtype_external_id,
 #     responsible_user_external_id) validadas com SELECT antes de
 #     persistir, pra devolver 422 com mensagem clara (em vez de deixar
@@ -828,7 +834,10 @@ class TemplateBase(BaseModel):
     task_subtype_external_id: int = Field(..., ge=1)
     responsible_user_external_id: int = Field(..., ge=1)
     priority: str = Field(default="Normal")
-    due_business_days: int = Field(default=3, ge=0, le=365)
+    # Offset em dias úteis a partir da `due_date_reference`. Negativo = antes
+    # (D-N, caso típico em prazos iniciais); 0 = no dia; positivo = depois.
+    # Range -365..+30 replicado na CheckConstraint do banco (pin005).
+    due_business_days: int = Field(default=-3, ge=-365, le=30)
     due_date_reference: str = Field(default="data_base")
     description_template: Optional[str] = None
     notes_template: Optional[str] = None
@@ -989,7 +998,8 @@ class TemplateUpdate(BaseModel):
     task_subtype_external_id: Optional[int] = Field(default=None, ge=1)
     responsible_user_external_id: Optional[int] = Field(default=None, ge=1)
     priority: Optional[str] = None
-    due_business_days: Optional[int] = Field(default=None, ge=0, le=365)
+    # Mesmo range do create; ver TemplateBase.due_business_days.
+    due_business_days: Optional[int] = Field(default=None, ge=-365, le=30)
     due_date_reference: Optional[str] = None
     description_template: Optional[str] = None
     notes_template: Optional[str] = None
@@ -1189,40 +1199,9 @@ def create_template(
         responsible_user_external_id=body.responsible_user_external_id,
     )
 
-    # Checagem explícita da UniqueConstraint pra devolver 409 clean.
-    # Chave: (tipo_prazo, subtipo, natureza_aplicavel, office_external_id).
-    existing = (
-        db.query(PrazoInicialTaskTemplate.id)
-        .filter(
-            PrazoInicialTaskTemplate.tipo_prazo == body.tipo_prazo,
-            (
-                PrazoInicialTaskTemplate.subtipo == body.subtipo
-                if body.subtipo is not None
-                else PrazoInicialTaskTemplate.subtipo.is_(None)
-            ),
-            (
-                PrazoInicialTaskTemplate.natureza_aplicavel == body.natureza_aplicavel
-                if body.natureza_aplicavel is not None
-                else PrazoInicialTaskTemplate.natureza_aplicavel.is_(None)
-            ),
-            (
-                PrazoInicialTaskTemplate.office_external_id == body.office_external_id
-                if body.office_external_id is not None
-                else PrazoInicialTaskTemplate.office_external_id.is_(None)
-            ),
-        )
-        .first()
-    )
-    if existing:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Já existe template com (tipo_prazo={body.tipo_prazo}, "
-                f"subtipo={body.subtipo}, natureza_aplicavel="
-                f"{body.natureza_aplicavel}, office_external_id="
-                f"{body.office_external_id}). id existente: {existing[0]}."
-            ),
-        )
+    # Múltiplos templates na MESMA combinação (tipo, subtipo, natureza,
+    # office) são permitidos — cada um gera uma sugestão separada. Não há
+    # checagem de unicidade aqui (ver pin005 e docstring do model).
 
     template = PrazoInicialTaskTemplate(
         name=body.name,
@@ -1323,50 +1302,8 @@ def update_template(
         responsible_user_external_id=eff_resp,
     )
 
-    # Conflito de unicidade se a chave
-    # (tipo, subtipo, natureza_aplicavel, office) mudou.
-    key_changed = any(
-        k in fields_set
-        for k in (
-            "tipo_prazo",
-            "subtipo",
-            "natureza_aplicavel",
-            "office_external_id",
-        )
-    )
-    if key_changed:
-        conflict = (
-            db.query(PrazoInicialTaskTemplate.id)
-            .filter(
-                PrazoInicialTaskTemplate.id != template_id,
-                PrazoInicialTaskTemplate.tipo_prazo == eff_tipo,
-                (
-                    PrazoInicialTaskTemplate.subtipo == eff_subtipo
-                    if eff_subtipo is not None
-                    else PrazoInicialTaskTemplate.subtipo.is_(None)
-                ),
-                (
-                    PrazoInicialTaskTemplate.natureza_aplicavel == eff_natureza
-                    if eff_natureza is not None
-                    else PrazoInicialTaskTemplate.natureza_aplicavel.is_(None)
-                ),
-                (
-                    PrazoInicialTaskTemplate.office_external_id == eff_office
-                    if eff_office is not None
-                    else PrazoInicialTaskTemplate.office_external_id.is_(None)
-                ),
-            )
-            .first()
-        )
-        if conflict:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    f"Outro template já ocupa (tipo_prazo={eff_tipo}, "
-                    f"subtipo={eff_subtipo}, natureza_aplicavel={eff_natureza}, "
-                    f"office_external_id={eff_office}): id={conflict[0]}."
-                ),
-            )
+    # Sem checagem de unicidade na chave de casamento — múltiplos templates
+    # na mesma combinação são válidos (ver pin005).
 
     # Aplica as mudanças.
     for fname in fields_set:

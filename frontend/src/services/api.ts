@@ -8,6 +8,10 @@ import {
   PrazoInicialIntakeFilters,
   PrazoInicialIntakeListResponse,
   PrazoInicialIntakeSummary,
+  PrazoInicialLegacyTaskCancelQueueListResponse,
+  PrazoInicialLegacyTaskQueueProcessResponse,
+  PrazoInicialSchedulingConfirmationPayload,
+  PrazoInicialSchedulingConfirmationResponse,
   PrazoInicialTaskTemplate,
   PrazoInicialTaskTemplateCreatePayload,
   PrazoInicialTaskTemplateFilters,
@@ -215,6 +219,50 @@ export async function cancelarPrazoInicial(
  * autenticado; caso contrário baixa o JSON de erro. Para preview confiável, usar
  * `fetchPrazoInicialPdfBlob` + object URL.
  */
+export async function confirmarAgendamentoPrazoInicial(
+  intakeId: number,
+  payload: PrazoInicialSchedulingConfirmationPayload,
+): Promise<PrazoInicialSchedulingConfirmationResponse> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/intakes/${intakeId}/confirmar-agendamento`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    },
+  );
+  return expectJson<PrazoInicialSchedulingConfirmationResponse>(response);
+}
+
+
+export async function fetchPrazosIniciaisLegacyTaskCancelQueue(
+  filters: { queue_status?: string; limit?: number } = {},
+): Promise<PrazoInicialLegacyTaskCancelQueueListResponse> {
+  const params = new URLSearchParams();
+  if (filters.queue_status) params.set("queue_status", filters.queue_status);
+  if (typeof filters.limit === "number") params.set("limit", String(filters.limit));
+
+  const qs = params.toString();
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/legacy-task-cancel-queue${qs ? `?${qs}` : ""}`,
+  );
+  return expectJson<PrazoInicialLegacyTaskCancelQueueListResponse>(response);
+}
+
+
+export async function processPrazosIniciaisLegacyTaskCancelQueue(
+  limit = 20,
+): Promise<PrazoInicialLegacyTaskQueueProcessResponse> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/legacy-task-cancel-queue/process-pending?limit=${limit}`,
+    { method: "POST" },
+  );
+  return expectJson<PrazoInicialLegacyTaskQueueProcessResponse>(response);
+}
+
+
 export function prazoInicialPdfUrl(intakeId: number): string {
   return `/api/v1/prazos-iniciais/intakes/${intakeId}/pdf`;
 }

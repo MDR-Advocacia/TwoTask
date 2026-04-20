@@ -127,7 +127,7 @@ function templateToForm(
       ? String(t.responsible_user_external_id)
       : "",
     priority: t?.priority || "Normal",
-    due_business_days: t ? String(t.due_business_days) : "3",
+    due_business_days: t ? String(t.due_business_days) : "-3",
     due_date_reference: t?.due_date_reference || "data_base",
     description_template: t?.description_template || "",
     notes_template: t?.notes_template || "",
@@ -216,8 +216,8 @@ export function TemplateFormDialog({
     if (!form.task_subtype_external_id) return "Selecione a task do Legal One.";
     if (!form.responsible_user_external_id) return "Selecione o responsável.";
     const days = Number(form.due_business_days);
-    if (!Number.isFinite(days) || days < 0 || days > 365) {
-      return "Prazo em dias úteis precisa estar entre 0 e 365.";
+    if (!Number.isFinite(days) || !Number.isInteger(days) || days < -365 || days > 30) {
+      return "Offset em dias úteis precisa ser inteiro entre -365 e 30.";
     }
     if (form.tipo_prazo === "CONTRARRAZOES") {
       // Guard-rail de negócio: CONTRARRAZOES só faz sentido com natureza
@@ -293,7 +293,9 @@ export function TemplateFormDialog({
           <DialogDescription>
             Defina qual task do Legal One será sugerida quando o classifier
             encontrar este tipo de prazo, e pra qual escritório/natureza ela se
-            aplica.
+            aplica. Você pode ter <strong>vários templates</strong> pra mesma
+            combinação — cada um vira uma sugestão separada (ex: abrir prazo +
+            pedir cópia ao correspondente).
           </DialogDescription>
         </DialogHeader>
 
@@ -519,16 +521,22 @@ export function TemplateFormDialog({
                 </Select>
               </div>
               <div className="space-y-1">
-                <Label>Dias úteis</Label>
+                <Label>Offset (dias úteis)</Label>
                 <Input
                   type="number"
-                  min={0}
-                  max={365}
+                  min={-365}
+                  max={30}
+                  step={1}
                   value={form.due_business_days}
                   onChange={(e) =>
                     setForm({ ...form, due_business_days: e.target.value })
                   }
                 />
+                <p className="text-xs text-muted-foreground">
+                  Negativo = antes da referência (D-N). Ex: fatal 12/05 com{" "}
+                  <code>-2</code> → tarefa em 10/05. <code>0</code> = no dia.
+                  Positivo = depois.
+                </p>
               </div>
               <div className="space-y-1">
                 <Label>Referência da data</Label>

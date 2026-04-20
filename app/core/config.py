@@ -96,6 +96,12 @@ class Settings(BaseSettings):
     prazos_iniciais_auto_classification_enabled: bool = False
     # Intervalo entre execuções do worker (segundos).
     prazos_iniciais_auto_classification_interval_seconds: int = 300
+    # Fila de cancelamento da task legada "Agendar Prazos". Só consome
+    # itens que já foram explicitamente enfileirados ao final do fluxo de
+    # confirmação, então pode ficar ligada por padrão sem efeitos colaterais.
+    prazos_iniciais_legacy_task_cancellation_enabled: bool = True
+    prazos_iniciais_legacy_task_cancellation_interval_seconds: int = 60
+    prazos_iniciais_legacy_task_cancellation_batch_size: int = 10
 
     model_config = SettingsConfigDict(
         env_file=".env",

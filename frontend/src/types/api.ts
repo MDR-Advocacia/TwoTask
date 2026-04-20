@@ -205,6 +205,8 @@ export interface PrazoInicialIntakeSummary {
   lawsuit_id: number | null;
   office_id: number | null;
   status: PrazoInicialIntakeStatus;
+  natureza_processo?: string | null;
+  produto?: string | null;
   error_message: string | null;
   pdf_filename_original: string | null;
   pdf_bytes: number | null;
@@ -274,6 +276,70 @@ export interface PrazoInicialIntakeFilters {
   office_id?: number;
   limit?: number;
   offset?: number;
+}
+
+export type PrazoInicialLegacyTaskCancelQueueStatus =
+  | "PENDENTE"
+  | "PROCESSANDO"
+  | "CONCLUIDO"
+  | "FALHA"
+  | "CANCELADO"
+  | string;
+
+export interface PrazoInicialLegacyTaskCancelQueueItem {
+  id: number;
+  intake_id: number;
+  lawsuit_id: number | null;
+  cnj_number: string | null;
+  office_id: number | null;
+  legacy_task_type_external_id: number;
+  legacy_task_subtype_external_id: number;
+  queue_status: PrazoInicialLegacyTaskCancelQueueStatus;
+  attempt_count: number;
+  selected_task_id: number | null;
+  cancelled_task_id: number | null;
+  last_reason: string | null;
+  last_attempt_at: string | null;
+  completed_at: string | null;
+  last_error: string | null;
+  last_result: any;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface PrazoInicialLegacyTaskCancelQueueListResponse {
+  total: number;
+  items: PrazoInicialLegacyTaskCancelQueueItem[];
+}
+
+export interface PrazoInicialConfirmSchedulingSuggestion {
+  suggestion_id: number;
+  created_task_id?: number | null;
+  review_status?: string | null;
+}
+
+export interface PrazoInicialSchedulingConfirmationPayload {
+  suggestions?: PrazoInicialConfirmSchedulingSuggestion[];
+  enqueue_legacy_task_cancellation?: boolean;
+  legacy_task_type_external_id?: number;
+  legacy_task_subtype_external_id?: number;
+}
+
+export interface PrazoInicialSchedulingConfirmationResponse {
+  intake: PrazoInicialIntakeSummary;
+  confirmed_suggestion_ids: number[];
+  created_task_ids: number[];
+  legacy_task_cancellation_item: PrazoInicialLegacyTaskCancelQueueItem | null;
+}
+
+export interface PrazoInicialLegacyTaskQueueProcessResult {
+  item: PrazoInicialLegacyTaskCancelQueueItem;
+  result: any;
+}
+
+export interface PrazoInicialLegacyTaskQueueProcessResponse {
+  processed_count: number;
+  items: PrazoInicialLegacyTaskQueueProcessResult[];
 }
 
 
