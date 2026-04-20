@@ -288,18 +288,61 @@ def list_users(db: Session = Depends(get_db)):
 
 
 @router.get("/meta/categories")
-def list_categories():
-    """Lista as categorias e subcategorias disponíveis (da taxonomia do classificador)."""
+def list_categories(
+    office_external_id: Optional[int] = Query(
+        None,
+        description="Se informado, aplica os overrides (excluir / adicionar customizada) do escritório.",
+    ),
+    db: Session = Depends(get_db),
+):
+    """Lista as categorias e subcategorias disponíveis.
+
+    - Sem `office_external_id`: retorna a taxonomia base do classificador.
+    - Com `office_external_id`: retorna a taxonomia **efetiva** do escritório,
+      ou seja, já com exclusões removidas e include_custom adicionados.
+    """
     try:
         from app.services.classifier.taxonomy import CLASSIFICATION_TREE  # noqa: WPS433
     except Exception:
         return {"categories": []}
 
     try:
+        tree: dict[str, list[str]] = {k: list(v) for k, v in CLASSIFICATION_TREE.items()}
+
+        if office_external_id is not None:
+            try:
+                from app.services.classifier.prompts import load_office_overrides  # noqa: WPS433
+
+                excluded, custom_additions = load_office_overrides(db, office_external_id)
+
+                # Exclusões: subcategory=None remove a categoria inteira
+                cats_to_remove: set[str] = set()
+                for cat, sub in excluded:
+                    if sub is None:
+                        cats_to_remove.add(cat)
+                    elif cat in tree and sub in tree[cat]:
+                        tree[cat].remove(sub)
+                for cat in cats_to_remove:
+                    tree.pop(cat, None)
+
+                # Adições customizadas
+                for item in custom_additions:
+                    cat = item.get("category", "")
+                    sub = item.get("subcategory")
+                    if not cat:
+                        continue
+                    if cat not in tree:
+                        tree[cat] = []
+                    if sub and sub not in tree[cat]:
+                        tree[cat].append(sub)
+            except Exception:
+                # Falha ao aplicar overrides: cai para a árvore base, sem quebrar a página.
+                tree = {k: list(v) for k, v in CLASSIFICATION_TREE.items()}
+
         return {
             "categories": [
                 {"category": cat, "subcategories": list(subs) if subs else []}
-                for cat, subs in CLASSIFICATION_TREE.items()
+                for cat, subs in tree.items()
             ]
         }
     except Exception:

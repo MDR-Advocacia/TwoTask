@@ -259,17 +259,15 @@ const TaskTemplatesPage = () => {
   }, []);
 
   /**
-   * Carrega overrides. Se `officeId` for vazio/"all", busca de todos os escritórios
-   * (sem filtro). Caso contrário filtra pelo escritório específico.
+   * Carrega SEMPRE todos os overrides. O filtro por escritório é aplicado
+   * na exibição da tabela (client-side). Isso garante que o grid de cobertura
+   * por escritório possa aplicar os overrides certos de cada escritório sem
+   * depender do filtro da tabela.
    */
-  const loadOverrides = async (officeId?: string) => {
+  const loadOverrides = async (_officeId?: string) => {
     setLoadingOverrides(true);
     try {
-      const url =
-        officeId && officeId !== "all"
-          ? `/api/v1/publications/classification-overrides?office_external_id=${officeId}`
-          : `/api/v1/publications/classification-overrides`;
-      const res = await apiFetch(url);
+      const res = await apiFetch(`/api/v1/publications/classification-overrides`);
       if (!res.ok) throw new Error("Falha ao carregar overrides.");
       setOverrides(await res.json());
     } catch (err: any) {
@@ -312,25 +310,60 @@ const TaskTemplatesPage = () => {
   }, [overrideForm.category, categories]);
 
   /**
+   * Aplica os overrides ATIVOS de um escritório específico sobre a taxonomia
+   * base, devolvendo a "taxonomia efetiva" daquele escritório.
+   *
+   * - exclude com subcategory=null → remove a categoria inteira
+   * - exclude com subcategory preenchida → remove só aquela subcategoria
+   * - include_custom → adiciona categoria (se nova) e/ou subcategoria
+   */
+  const getEffectiveCategoriesForOffice = (officeId: number): CategoryEntry[] => {
+    const tree: Record<string, string[]> = {};
+    categories.forEach((c) => {
+      tree[c.category] = [...c.subcategories];
+    });
+
+    const relevant = overrides.filter(
+      (o) => o.office_external_id === officeId && o.is_active
+    );
+
+    // Exclusões
+    relevant
+      .filter((o) => o.action === "exclude")
+      .forEach((o) => {
+        if (o.subcategory == null || o.subcategory === "") {
+          delete tree[o.category];
+        } else if (tree[o.category]) {
+          tree[o.category] = tree[o.category].filter((s) => s !== o.subcategory);
+        }
+      });
+
+    // Adições customizadas
+    relevant
+      .filter((o) => o.action === "include_custom")
+      .forEach((o) => {
+        if (!tree[o.category]) tree[o.category] = [];
+        if (o.subcategory && !tree[o.category].includes(o.subcategory)) {
+          tree[o.category].push(o.subcategory);
+        }
+      });
+
+    return Object.entries(tree).map(([cat, subs]) => ({
+      category: cat,
+      subcategories: subs,
+    }));
+  };
+
+  /**
    * Cobertura por escritório: para cada escritório, quantas combinações
    * categoria/subcategoria já têm template ativo e quais estão faltando.
    *
-   * Cada "slot" é uma combinação (categoria, subcategoria ou "-"). O "expected"
-   * vem da taxonomia retornada pelo endpoint /meta/categories.
+   * Cada "slot" é uma combinação (categoria, subcategoria ou "-"). A taxonomia
+   * esperada é a **efetiva daquele escritório** — já com os overrides
+   * (excluir / adicionar customizada) aplicados.
    */
   const coverageByOffice = useMemo(() => {
-    // Slots esperados (um por categoria/subcategoria)
     type Slot = { category: string; subcategory: string };
-    const expectedSlots: Slot[] = [];
-    categories.forEach((entry) => {
-      if (entry.subcategories.length > 0) {
-        entry.subcategories.forEach((sub) => {
-          expectedSlots.push({ category: entry.category, subcategory: sub });
-        });
-      } else {
-        expectedSlots.push({ category: entry.category, subcategory: "-" });
-      }
-    });
 
     // Agrupa templates por escritório (somente ativos contam como coberto)
     // Ignora templates globais (office_external_id === null) na cobertura por escritório
@@ -348,6 +381,19 @@ const TaskTemplatesPage = () => {
     );
 
     return relevantOffices.map((office) => {
+      // Taxonomia efetiva DESTE escritório (base + overrides ativos).
+      const effective = getEffectiveCategoriesForOffice(office.external_id);
+      const expectedSlots: Slot[] = [];
+      effective.forEach((entry) => {
+        if (entry.subcategories.length > 0) {
+          entry.subcategories.forEach((sub) => {
+            expectedSlots.push({ category: entry.category, subcategory: sub });
+          });
+        } else {
+          expectedSlots.push({ category: entry.category, subcategory: "-" });
+        }
+      });
+
       const officeTemplates = templatesByOffice.get(office.external_id) || [];
       // Normaliza subcategory "" / null para "-"
       const coveredKeys = new Set(
@@ -388,7 +434,7 @@ const TaskTemplatesPage = () => {
         total: slots.length,
       };
     });
-  }, [templates, offices, categories, filterOffice, filterCategory]);
+  }, [templates, offices, categories, overrides, filterOffice, filterCategory]);
 
   // ─── Form helpers ──────────────────────────────────────────────────────
 
@@ -513,18 +559,45 @@ const TaskTemplatesPage = () => {
 
     try {
       if (editingId) {
-        // Edição: sempre atualiza o template único
-        const payload = buildPayload(form.taskBlocks[0], 0);
-        const res = await apiFetch(`${API}/${editingId}`, {
+        // Edição:
+        //  - bloco 0 → PUT no registro existente (editingId)
+        //  - blocos 1..N (adicionados via "Adicionar tarefa") → POST como
+        //    novos registros compartilhando categoria + subcategoria + escritório.
+        const firstPayload = buildPayload(form.taskBlocks[0], 0);
+        const putRes = await apiFetch(`${API}/${editingId}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+          body: JSON.stringify(firstPayload),
         });
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
+        if (!putRes.ok) {
+          const data = await putRes.json().catch(() => ({}));
           throw new Error(data.detail || "Erro ao atualizar template.");
         }
-        toast({ title: "Template atualizado", description: `"${payload.name}" salvo com sucesso.` });
+
+        const addedNames: string[] = [];
+        for (let idx = 1; idx < form.taskBlocks.length; idx++) {
+          const payload = buildPayload(form.taskBlocks[idx], idx);
+          const res = await apiFetch(`${API}/`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.detail || `Erro ao criar tarefa ${idx + 1}.`);
+          }
+          const created_item = await res.json();
+          addedNames.push(created_item.name ?? payload.name);
+        }
+
+        if (addedNames.length > 0) {
+          toast({
+            title: `Template atualizado e ${addedNames.length} tarefa${addedNames.length > 1 ? "s" : ""} adicionada${addedNames.length > 1 ? "s" : ""}`,
+            description: `Atualizada: "${firstPayload.name}" • Novas: ${addedNames.join(" • ")}`,
+          });
+        } else {
+          toast({ title: "Template atualizado", description: `"${firstPayload.name}" salvo com sucesso.` });
+        }
       } else {
         // Criação: cria um registro por bloco (cada bloco gera uma tarefa
         // distinta no agendamento, mas o usuário enxerga como "1 template
@@ -1327,9 +1400,7 @@ const TaskTemplatesPage = () => {
           <Select
             value={overrideFilterOffice || "all"}
             onValueChange={(v) => {
-              const next = v === "all" ? "" : v;
-              setOverrideFilterOffice(next);
-              loadOverrides(next);
+              setOverrideFilterOffice(v === "all" ? "" : v);
             }}
           >
             <SelectTrigger className="w-[320px]">
@@ -1354,11 +1425,27 @@ const TaskTemplatesPage = () => {
                 <Loader2 className="h-4 w-4 animate-spin" />
                 Carregando...
               </div>
-            ) : overrides.length === 0 ? (
-              <div className="flex h-24 flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
-                <p>Nenhum ajuste configurado.</p>
-              </div>
-            ) : (
+            ) : (() => {
+              // Filtro client-side pelo escritório escolhido na Select acima.
+              const visibleOverrides = overrideFilterOffice
+                ? overrides.filter(
+                    (o) => String(o.office_external_id) === overrideFilterOffice
+                  )
+                : overrides;
+
+              if (visibleOverrides.length === 0) {
+                return (
+                  <div className="flex h-24 flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+                    <p>
+                      {overrideFilterOffice
+                        ? "Nenhum ajuste configurado para este escritório."
+                        : "Nenhum ajuste configurado."}
+                    </p>
+                  </div>
+                );
+              }
+
+              return (
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -1372,7 +1459,7 @@ const TaskTemplatesPage = () => {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {overrides.map((ov) => {
+                  {visibleOverrides.map((ov) => {
                     const office = offices.find((o) => o.external_id === ov.office_external_id);
                     return (
                       <TableRow key={ov.id} className={!ov.is_active ? "opacity-50" : ""}>
@@ -1431,7 +1518,8 @@ const TaskTemplatesPage = () => {
                   })}
                 </TableBody>
               </Table>
-            )}
+              );
+            })()}
           </CardContent>
         </Card>
       </div>
@@ -1833,18 +1921,16 @@ const TaskTemplatesPage = () => {
                     ({form.taskBlocks.length})
                   </span>
                 </p>
-                {!editingId && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={addTaskBlock}
-                    className="h-7 px-2 text-xs"
-                  >
-                    <Plus className="mr-1 h-3 w-3" />
-                    Adicionar tarefa
-                  </Button>
-                )}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={addTaskBlock}
+                  className="h-7 px-2 text-xs"
+                >
+                  <Plus className="mr-1 h-3 w-3" />
+                  Adicionar tarefa
+                </Button>
               </div>
 
               {form.taskBlocks.map((block, idx) => {
@@ -1856,10 +1942,24 @@ const TaskTemplatesPage = () => {
                   >
                     {/* Block header */}
                     <div className="flex items-center justify-between">
-                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                        Tarefa {idx + 1}
-                      </p>
-                      {form.taskBlocks.length > 1 && (
+                      <div className="flex items-center gap-2">
+                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                          Tarefa {idx + 1}
+                        </p>
+                        {editingId && idx === 0 && (
+                          <Badge variant="outline" className="text-[10px] h-4 px-1.5">
+                            Editando existente
+                          </Badge>
+                        )}
+                        {editingId && idx > 0 && (
+                          <Badge variant="secondary" className="text-[10px] h-4 px-1.5">
+                            Nova
+                          </Badge>
+                        )}
+                      </div>
+                      {/* Em edição, não deixa remover o bloco original — use o
+                          botão de excluir na lista principal para isso. */}
+                      {form.taskBlocks.length > 1 && !(editingId && idx === 0) && (
                         <button
                           type="button"
                           onClick={() => removeTaskBlock(idx)}
@@ -2020,16 +2120,14 @@ const TaskTemplatesPage = () => {
               })}
 
               {/* Add another task (bottom shortcut) */}
-              {!editingId && (
-                <button
-                  type="button"
-                  onClick={addTaskBlock}
-                  className="w-full rounded-lg border border-dashed border-muted-foreground/30 py-2 text-xs text-muted-foreground hover:border-primary/50 hover:text-primary transition-colors flex items-center justify-center gap-1.5"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  Adicionar outra tarefa para esta classificação
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={addTaskBlock}
+                className="w-full rounded-lg border border-dashed border-muted-foreground/30 py-2 text-xs text-muted-foreground hover:border-primary/50 hover:text-primary transition-colors flex items-center justify-center gap-1.5"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Adicionar outra tarefa para esta classificação
+              </button>
             </div>
           </div>
 
@@ -2049,7 +2147,9 @@ const TaskTemplatesPage = () => {
                 <Check className="mr-2 h-4 w-4" />
               )}
               {editingId
-                ? "Salvar alterações"
+                ? form.taskBlocks.length > 1
+                  ? `Salvar alterações + criar ${form.taskBlocks.length - 1} nova${form.taskBlocks.length - 1 > 1 ? "s" : ""}`
+                  : "Salvar alterações"
                 : `Criar template (${form.taskBlocks.length} tarefa${form.taskBlocks.length > 1 ? "s" : ""})`}
             </Button>
           </div>
