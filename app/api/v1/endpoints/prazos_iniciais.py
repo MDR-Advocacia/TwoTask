@@ -62,6 +62,8 @@ from app.models.prazo_inicial import (
     PrazoInicialBatch,
 )
 from app.services.classifier.prazos_iniciais_schema import (
+    NATUREZAS_VALIDAS,
+    PRODUTOS_VALIDOS,
     TIPO_PRAZO_AUDIENCIA,
     TIPO_PRAZO_JULGAMENTO,
     TIPOS_PRAZO_VALIDOS,
@@ -158,6 +160,10 @@ class IntakeSummary(BaseModel):
     lawsuit_id: Optional[int]
     office_id: Optional[int]
     status: str
+    # Classificação preliminar (Fase 3c). None enquanto o intake não foi
+    # classificado ou veio de um fluxo pré-3c.
+    natureza_processo: Optional[str] = None
+    produto: Optional[str] = None
     error_message: Optional[str]
     pdf_filename_original: Optional[str]
     pdf_bytes: Optional[int]
@@ -345,6 +351,8 @@ def _intake_to_summary(intake: PrazoInicialIntake) -> IntakeSummary:
         lawsuit_id=intake.lawsuit_id,
         office_id=intake.office_id,
         status=intake.status,
+        natureza_processo=intake.natureza_processo,
+        produto=intake.produto,
         error_message=intake.error_message,
         pdf_filename_original=intake.pdf_filename_original,
         pdf_bytes=intake.pdf_bytes,
@@ -386,6 +394,48 @@ def _sugestao_to_out(sugestao: PrazoInicialSugestao) -> SugestaoOut:
     )
 
 
+class EnumsResponse(BaseModel):
+    """
+    Dicionário de valores válidos pros selects da UI (CRUD de templates,
+    filtros de intakes, etc). Público dentro do router protegido; a UI
+    carrega uma vez e cacheia.
+    """
+
+    tipos_prazo: list[str]
+    naturezas: list[str]
+    produtos: list[str]
+    subtipos_audiencia: list[str]
+    subtipos_julgamento: list[str]
+    priorities: list[str]
+    due_date_references: list[str]
+
+
+@router.get(
+    "/enums",
+    response_model=EnumsResponse,
+    summary="Enumerações válidas do fluxo (para popular selects da UI).",
+)
+def get_enums(
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    """
+    Retorna as enumerações usadas pelos formulários de CRUD de templates
+    e filtros de intakes. Evita espalhar as listas hardcoded no frontend.
+
+    Convenção: listas ordenadas alfabeticamente; strings vazias NÃO são
+    incluídas (a UI usa `null` pra "qualquer"/"global").
+    """
+    return EnumsResponse(
+        tipos_prazo=sorted(TIPOS_PRAZO_VALIDOS),
+        naturezas=sorted(NATUREZAS_VALIDAS),
+        produtos=sorted(PRODUTOS_VALIDOS),
+        subtipos_audiencia=sorted(SUBTIPOS_AUDIENCIA),
+        subtipos_julgamento=sorted(SUBTIPOS_JULGAMENTO),
+        priorities=sorted(PRIORIDADES_VALIDAS),
+        due_date_references=sorted(DUE_DATE_REFERENCES_VALIDAS),
+    )
+
+
 @router.get(
     "/intakes",
     response_model=IntakeListResponse,
@@ -395,6 +445,8 @@ def list_intakes(
     status_filter: Optional[str] = Query(default=None, alias="status"),
     office_id: Optional[int] = Query(default=None),
     cnj_number: Optional[str] = Query(default=None),
+    natureza_processo: Optional[str] = Query(default=None),
+    produto: Optional[str] = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -412,6 +464,12 @@ def list_intakes(
             query = query.filter(
                 PrazoInicialIntake.cnj_number.like(f"%{normalized}%")
             )
+    if natureza_processo:
+        query = query.filter(
+            PrazoInicialIntake.natureza_processo == natureza_processo
+        )
+    if produto:
+        query = query.filter(PrazoInicialIntake.produto == produto)
 
     total = query.count()
     items = (
@@ -762,6 +820,10 @@ class TemplateBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     tipo_prazo: str = Field(..., max_length=64)
     subtipo: Optional[str] = Field(default=None, max_length=128)
+    # NULL = template casa em qualquer natureza. NOT NULL = só casa em
+    # intakes daquela natureza específica. Diferente de office, não há
+    # regra de override nessa dimensão (ver template_matching_service).
+    natureza_aplicavel: Optional[str] = Field(default=None, max_length=64)
     office_external_id: Optional[int] = Field(default=None, ge=1)
     task_subtype_external_id: int = Field(..., ge=1)
     responsible_user_external_id: int = Field(..., ge=1)
@@ -774,7 +836,15 @@ class TemplateBase(BaseModel):
 
 
 def _validate_tipo_subtipo(tipo_prazo: str, subtipo: Optional[str]) -> None:
-    """Validação cruzada de tipo_prazo × subtipo. Levanta HTTPException 422."""
+    """
+    Validação cruzada de tipo_prazo × subtipo. Levanta HTTPException 422.
+
+    - AUDIENCIA e JULGAMENTO aceitam um dos subtipos categorizados ou NULL.
+    - Demais tipos (CONTESTAR, LIMINAR, MANIFESTACAO_AVULSA,
+      SEM_DETERMINACAO, CONTRARRAZOES) exigem subtipo=NULL. O matching
+      desses tipos no classifier só usa o `tipo_prazo` (ver
+      `_derive_subtipo_for_matching`).
+    """
     if tipo_prazo not in TIPOS_PRAZO_VALIDOS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -810,6 +880,24 @@ def _validate_tipo_subtipo(tipo_prazo: str, subtipo: Optional[str]) -> None:
                     f"(tipo_prazo atual: {tipo_prazo}). Envie subtipo=null."
                 ),
             )
+
+
+def _validate_natureza_aplicavel(natureza: Optional[str]) -> None:
+    """
+    Valida o campo `natureza_aplicavel`. NULL é aceito (template genérico
+    — casa em qualquer natureza). Se vier valor, precisa estar em
+    NATUREZAS_VALIDAS (COMUM / JUIZADO / AGRAVO_INSTRUMENTO / OUTRO).
+    """
+    if natureza is None:
+        return
+    if natureza not in NATUREZAS_VALIDAS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"natureza_aplicavel inválida: {natureza!r}. "
+                f"Válidas: {sorted(NATUREZAS_VALIDAS)} ou null."
+            ),
+        )
 
 
 def _validate_priority_and_due_ref(priority: str, due_ref: str) -> None:
@@ -896,6 +984,7 @@ class TemplateUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     tipo_prazo: Optional[str] = Field(default=None, max_length=64)
     subtipo: Optional[str] = Field(default=None, max_length=128)
+    natureza_aplicavel: Optional[str] = Field(default=None, max_length=64)
     office_external_id: Optional[int] = Field(default=None, ge=1)
     task_subtype_external_id: Optional[int] = Field(default=None, ge=1)
     responsible_user_external_id: Optional[int] = Field(default=None, ge=1)
@@ -919,6 +1008,7 @@ class TemplateResponse(BaseModel):
     name: str
     tipo_prazo: str
     subtipo: Optional[str]
+    natureza_aplicavel: Optional[str]
     office_external_id: Optional[int]
     office_name: Optional[str] = None
     task_subtype_external_id: int
@@ -952,6 +1042,7 @@ def _template_to_response(
         name=t.name,
         tipo_prazo=t.tipo_prazo,
         subtipo=t.subtipo,
+        natureza_aplicavel=t.natureza_aplicavel,
         office_external_id=t.office_external_id,
         office_name=office_name,
         task_subtype_external_id=t.task_subtype_external_id,
@@ -1011,6 +1102,13 @@ def _enrich_template_response(
 def list_templates(
     tipo_prazo: Optional[str] = Query(default=None),
     subtipo: Optional[str] = Query(default=None),
+    natureza_aplicavel: Optional[str] = Query(
+        default=None,
+        description=(
+            "Filtra por natureza. Use string vazia ('') pra pegar apenas "
+            "templates genéricos (natureza NULL)."
+        ),
+    ),
     office_external_id: Optional[int] = Query(default=None),
     is_active: Optional[bool] = Query(default=None),
     limit: int = Query(default=200, ge=1, le=1000),
@@ -1020,8 +1118,8 @@ def list_templates(
 ):
     """
     Lista templates. Filtros opcionais combinam com AND. Ordenação estável
-    por (tipo_prazo, subtipo NULLs first, office NULLs last, id) pra
-    facilitar leitura na UI de admin.
+    por (tipo_prazo, subtipo NULLs first, natureza NULLs first,
+    office NULLs last, id) pra facilitar leitura na UI de admin.
     """
     q = db.query(PrazoInicialTaskTemplate)
     if tipo_prazo:
@@ -1032,6 +1130,14 @@ def list_templates(
             q = q.filter(PrazoInicialTaskTemplate.subtipo.is_(None))
         else:
             q = q.filter(PrazoInicialTaskTemplate.subtipo == subtipo)
+    if natureza_aplicavel is not None:
+        # Cliente mandou string vazia → filtra por natureza NULL (genérico).
+        if natureza_aplicavel == "":
+            q = q.filter(PrazoInicialTaskTemplate.natureza_aplicavel.is_(None))
+        else:
+            q = q.filter(
+                PrazoInicialTaskTemplate.natureza_aplicavel == natureza_aplicavel
+            )
     if office_external_id is not None:
         if office_external_id == 0:
             # Convenção: office_external_id=0 → global (NULL).
@@ -1048,6 +1154,7 @@ def list_templates(
         q.order_by(
             PrazoInicialTaskTemplate.tipo_prazo.asc(),
             PrazoInicialTaskTemplate.subtipo.asc().nullsfirst(),
+            PrazoInicialTaskTemplate.natureza_aplicavel.asc().nullsfirst(),
             PrazoInicialTaskTemplate.office_external_id.asc().nullslast(),
             PrazoInicialTaskTemplate.id.asc(),
         )
@@ -1073,6 +1180,7 @@ def create_template(
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
     _validate_tipo_subtipo(body.tipo_prazo, body.subtipo)
+    _validate_natureza_aplicavel(body.natureza_aplicavel)
     _validate_priority_and_due_ref(body.priority, body.due_date_reference)
     _validate_foreign_keys(
         db,
@@ -1082,6 +1190,7 @@ def create_template(
     )
 
     # Checagem explícita da UniqueConstraint pra devolver 409 clean.
+    # Chave: (tipo_prazo, subtipo, natureza_aplicavel, office_external_id).
     existing = (
         db.query(PrazoInicialTaskTemplate.id)
         .filter(
@@ -1090,6 +1199,11 @@ def create_template(
                 PrazoInicialTaskTemplate.subtipo == body.subtipo
                 if body.subtipo is not None
                 else PrazoInicialTaskTemplate.subtipo.is_(None)
+            ),
+            (
+                PrazoInicialTaskTemplate.natureza_aplicavel == body.natureza_aplicavel
+                if body.natureza_aplicavel is not None
+                else PrazoInicialTaskTemplate.natureza_aplicavel.is_(None)
             ),
             (
                 PrazoInicialTaskTemplate.office_external_id == body.office_external_id
@@ -1104,7 +1218,8 @@ def create_template(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 f"Já existe template com (tipo_prazo={body.tipo_prazo}, "
-                f"subtipo={body.subtipo}, office_external_id="
+                f"subtipo={body.subtipo}, natureza_aplicavel="
+                f"{body.natureza_aplicavel}, office_external_id="
                 f"{body.office_external_id}). id existente: {existing[0]}."
             ),
         )
@@ -1113,6 +1228,7 @@ def create_template(
         name=body.name,
         tipo_prazo=body.tipo_prazo,
         subtipo=body.subtipo,
+        natureza_aplicavel=body.natureza_aplicavel,
         office_external_id=body.office_external_id,
         task_subtype_external_id=body.task_subtype_external_id,
         responsible_user_external_id=body.responsible_user_external_id,
@@ -1165,6 +1281,11 @@ def update_template(
     # ── Resolve valores efetivos (merge do que veio com o atual) ─────
     eff_tipo = body.tipo_prazo if "tipo_prazo" in fields_set else template.tipo_prazo
     eff_subtipo = body.subtipo if "subtipo" in fields_set else template.subtipo
+    eff_natureza = (
+        body.natureza_aplicavel
+        if "natureza_aplicavel" in fields_set
+        else template.natureza_aplicavel
+    )
     eff_office = (
         body.office_external_id
         if "office_external_id" in fields_set
@@ -1188,6 +1309,7 @@ def update_template(
     )
 
     _validate_tipo_subtipo(eff_tipo, eff_subtipo)
+    _validate_natureza_aplicavel(eff_natureza)
     _validate_priority_and_due_ref(eff_priority, eff_due_ref)
     # FKs: só valida o que mudou (reduz queries).
     _validate_foreign_keys(
@@ -1201,9 +1323,16 @@ def update_template(
         responsible_user_external_id=eff_resp,
     )
 
-    # Conflito de unicidade se a chave (tipo, subtipo, office) mudou.
+    # Conflito de unicidade se a chave
+    # (tipo, subtipo, natureza_aplicavel, office) mudou.
     key_changed = any(
-        k in fields_set for k in ("tipo_prazo", "subtipo", "office_external_id")
+        k in fields_set
+        for k in (
+            "tipo_prazo",
+            "subtipo",
+            "natureza_aplicavel",
+            "office_external_id",
+        )
     )
     if key_changed:
         conflict = (
@@ -1215,6 +1344,11 @@ def update_template(
                     PrazoInicialTaskTemplate.subtipo == eff_subtipo
                     if eff_subtipo is not None
                     else PrazoInicialTaskTemplate.subtipo.is_(None)
+                ),
+                (
+                    PrazoInicialTaskTemplate.natureza_aplicavel == eff_natureza
+                    if eff_natureza is not None
+                    else PrazoInicialTaskTemplate.natureza_aplicavel.is_(None)
                 ),
                 (
                     PrazoInicialTaskTemplate.office_external_id == eff_office
@@ -1229,8 +1363,8 @@ def update_template(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
                     f"Outro template já ocupa (tipo_prazo={eff_tipo}, "
-                    f"subtipo={eff_subtipo}, office_external_id={eff_office}): "
-                    f"id={conflict[0]}."
+                    f"subtipo={eff_subtipo}, natureza_aplicavel={eff_natureza}, "
+                    f"office_external_id={eff_office}): id={conflict[0]}."
                 ),
             )
 

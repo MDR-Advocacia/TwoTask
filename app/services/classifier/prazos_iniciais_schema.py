@@ -2,24 +2,33 @@
 Schema Pydantic da resposta da IA no fluxo "Agendar Prazos Iniciais".
 
 A IA (Claude Sonnet) recebe a capa + íntegra de um processo e precisa
-responder 6 perguntas. Cada resposta vira uma ou mais sugestões em
-`prazo_inicial_sugestao`. A taxonomia que mapeia `tipo_prazo` →
-`task_type_id`/`task_subtype_id` do Legal One está *deliberadamente fora*
-deste módulo — será definida em sessão dedicada. Aqui só garantimos que
-o JSON retornado pelo modelo seja válido e navegável.
+responder a um conjunto de perguntas roteado pela `natureza_processo`.
 
-As 6 perguntas:
+Estrutura da resposta:
 
-1. Determinação para CONTESTAR  → `contestar`
-2. Determinação para CUMPRIR LIMINAR → `liminar`
-3. Determinação para MANIFESTAÇÃO AVULSA → `manifestacao_avulsa`
-4. AUDIÊNCIA marcada → `audiencia`
-5. NENHUMA determinação para a Ré → `sem_determinacao` (bool)
-6. Já existe JULGAMENTO → `julgamento`
+- `produto` (INFORMATIVO APENAS): qual produto está sendo discutido na
+  petição inicial. Não afeta matching de template nem branching.
+- `natureza_processo` (ROUTER): Procedimento Comum / Juizado / Agravo
+  de Instrumento / Outro. Determina o conjunto de perguntas aplicáveis.
 
-Convenção: quando `sem_determinacao=True`, espera-se que os blocos 1-4 e
-o bloco 6 tenham `aplica=False`. Se vierem divergentes, `sem_determinacao`
-tem precedência (o modelo pode errar; a revisão humana ajusta).
+Perguntas por ramo:
+
+**COMUM / JUIZADO / OUTRO** — mesmas 6 perguntas:
+  1. Determinação para CONTESTAR  → `contestar`
+  2. Determinação para CUMPRIR LIMINAR → `liminar`
+  3. Determinação para MANIFESTAÇÃO AVULSA → `manifestacao_avulsa`
+  4. AUDIÊNCIA marcada → `audiencia`
+  5. NENHUMA determinação para a Ré → `sem_determinacao` (bool)
+  6. Já existe JULGAMENTO → `julgamento`
+
+**AGRAVO_INSTRUMENTO** — só:
+  7. Determinação para apresentar CONTRARRAZÕES → `contrarrazoes`
+  (+ `sem_determinacao` como fallback; audiência e demais blocos são
+  ignorados nesse ramo.)
+
+Convenção: quando `sem_determinacao=True`, espera-se que todos os blocos
+específicos tenham `aplica=False`. Se vierem divergentes, o conteúdo dos
+blocos prevalece e `sem_determinacao` vira False.
 """
 
 from __future__ import annotations
@@ -41,6 +50,7 @@ TIPO_PRAZO_MANIFESTACAO_AVULSA = "MANIFESTACAO_AVULSA"
 TIPO_PRAZO_AUDIENCIA = "AUDIENCIA"
 TIPO_PRAZO_JULGAMENTO = "JULGAMENTO"
 TIPO_PRAZO_SEM_DETERMINACAO = "SEM_DETERMINACAO"
+TIPO_PRAZO_CONTRARRAZOES = "CONTRARRAZOES"
 
 TIPOS_PRAZO_VALIDOS = frozenset({
     TIPO_PRAZO_CONTESTAR,
@@ -49,6 +59,59 @@ TIPOS_PRAZO_VALIDOS = frozenset({
     TIPO_PRAZO_AUDIENCIA,
     TIPO_PRAZO_JULGAMENTO,
     TIPO_PRAZO_SEM_DETERMINACAO,
+    TIPO_PRAZO_CONTRARRAZOES,
+})
+
+
+# ─── Natureza do processo (router) ───────────────────────────────────
+# Determina o conjunto de perguntas aplicáveis (ver docstring).
+# COMUM/JUIZADO/OUTRO compartilham as 6 perguntas clássicas.
+# AGRAVO_INSTRUMENTO usa só CONTRARRAZOES (+ SEM_DETERMINACAO fallback).
+
+NATUREZA_COMUM = "COMUM"
+NATUREZA_JUIZADO = "JUIZADO"
+NATUREZA_AGRAVO_INSTRUMENTO = "AGRAVO_INSTRUMENTO"
+NATUREZA_OUTRO = "OUTRO"
+
+NATUREZAS_VALIDAS = frozenset({
+    NATUREZA_COMUM,
+    NATUREZA_JUIZADO,
+    NATUREZA_AGRAVO_INSTRUMENTO,
+    NATUREZA_OUTRO,
+})
+
+# Ramos que usam as 6 perguntas clássicas.
+NATUREZAS_SEIS_PERGUNTAS = frozenset({
+    NATUREZA_COMUM,
+    NATUREZA_JUIZADO,
+    NATUREZA_OUTRO,
+})
+
+
+# ─── Produtos (informativo apenas — não afeta matching) ──────────────
+
+PRODUTO_SUPERENDIVIDAMENTO = "SUPERENDIVIDAMENTO"
+PRODUTO_CREDCESTA = "CREDCESTA"
+PRODUTO_EMPRESTIMO_CONSIGNADO = "EMPRESTIMO_CONSIGNADO"
+PRODUTO_CARTAO_CREDITO_CONSIGNADO = "CARTAO_CREDITO_CONSIGNADO"
+PRODUTO_EXIBICAO_DOCUMENTOS = "EXIBICAO_DOCUMENTOS"
+PRODUTO_ANULACAO_REVISAO_CONTRATUAL = "ANULACAO_REVISAO_CONTRATUAL"
+PRODUTO_NEGATIVACAO_INDEVIDA = "NEGATIVACAO_INDEVIDA"
+PRODUTO_LIMITACAO_30 = "LIMITACAO_30"
+PRODUTO_GOLPE_FRAUDE = "GOLPE_FRAUDE"
+PRODUTO_OUTRO = "OUTRO"
+
+PRODUTOS_VALIDOS = frozenset({
+    PRODUTO_SUPERENDIVIDAMENTO,
+    PRODUTO_CREDCESTA,
+    PRODUTO_EMPRESTIMO_CONSIGNADO,
+    PRODUTO_CARTAO_CREDITO_CONSIGNADO,
+    PRODUTO_EXIBICAO_DOCUMENTOS,
+    PRODUTO_ANULACAO_REVISAO_CONTRATUAL,
+    PRODUTO_NEGATIVACAO_INDEVIDA,
+    PRODUTO_LIMITACAO_30,
+    PRODUTO_GOLPE_FRAUDE,
+    PRODUTO_OUTRO,
 })
 
 
@@ -125,6 +188,24 @@ class BlocoManifestacaoAvulsa(BlocoPrazoBase):
         return self
 
 
+class BlocoContrarrazoes(BlocoPrazoBase):
+    """Pergunta 7 (ramo AGRAVO_INSTRUMENTO): determinação para
+    apresentar contrarrazões.
+
+    Estrutura idêntica à de CONTESTAR/LIMINAR: prazo textual, sem subtipo.
+    `recurso` guarda o nome do recurso agravado (ex.: "agravo de
+    instrumento nº ..."), só pra contextualização do payload da tarefa.
+    """
+
+    recurso: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _clear_recurso(self) -> "BlocoContrarrazoes":
+        if not self.aplica:
+            self.recurso = None
+        return self
+
+
 class BlocoAudiencia(BaseModel):
     """Pergunta 4: audiência marcada.
 
@@ -184,19 +265,63 @@ class PrazoInicialClassificationResponse(BaseModel):
     """
     Estrutura completa do JSON que a IA deve retornar por intake.
 
-    Uma única intake gera N sugestões: uma por bloco com `aplica=True`,
-    ou uma sugestão do tipo SEM_DETERMINACAO quando `sem_determinacao=True`.
+    Classificação preliminar:
+    - `produto`: INFORMATIVO APENAS (não afeta matching nem branching).
+      Aceita NULL quando o modelo não conseguir inferir com segurança.
+    - `natureza_processo`: ROUTER. Determina quais perguntas são
+      consideradas. Obrigatório — se o modelo não identificar, retorna
+      "OUTRO" (cai no ramo genérico de 6 perguntas).
+
+    Blocos:
+    - Ramos COMUM/JUIZADO/OUTRO usam contestar/liminar/manifestacao_avulsa/
+      audiencia/julgamento + sem_determinacao. Contrarrazoes vem com
+      aplica=False.
+    - Ramo AGRAVO_INSTRUMENTO usa só contrarrazoes + sem_determinacao.
+      Os demais blocos vêm com aplica=False (o prompt instrui o modelo;
+      quaisquer aplica=True em blocos não pertinentes são ignorados em
+      `blocos_aplicaveis()`).
+
+    Uma única intake gera N sugestões: uma por bloco `aplica=True`, ou
+    uma única SEM_DETERMINACAO quando `sem_determinacao=True`.
     """
+
+    # Classificação preliminar.
+    produto: Optional[
+        Literal[
+            "SUPERENDIVIDAMENTO",
+            "CREDCESTA",
+            "EMPRESTIMO_CONSIGNADO",
+            "CARTAO_CREDITO_CONSIGNADO",
+            "EXIBICAO_DOCUMENTOS",
+            "ANULACAO_REVISAO_CONTRATUAL",
+            "NEGATIVACAO_INDEVIDA",
+            "LIMITACAO_30",
+            "GOLPE_FRAUDE",
+            "OUTRO",
+        ]
+    ] = None
+    natureza_processo: Literal[
+        "COMUM", "JUIZADO", "AGRAVO_INSTRUMENTO", "OUTRO"
+    ] = "COMUM"
+    # COMUM é o default defensivo: se o modelo esquecer o campo, cai no
+    # ramo das 6 perguntas clássicas (mais conservador que pular para
+    # AGRAVO, onde só CONTRARRAZOES é considerada).
 
     # Pergunta 5 (flag guarda-chuva).
     sem_determinacao: bool = False
 
-    # Perguntas 1-4, 6.
+    # Perguntas 1-4, 6 (ramos COMUM/JUIZADO/OUTRO).
     contestar: BlocoContestar
     liminar: BlocoLiminar
     manifestacao_avulsa: BlocoManifestacaoAvulsa
     audiencia: BlocoAudiencia
     julgamento: BlocoJulgamento
+
+    # Pergunta 7 (ramo AGRAVO_INSTRUMENTO). Default aplica=False preserva
+    # compatibilidade com testes/fixtures que não conhecem o bloco.
+    contrarrazoes: BlocoContrarrazoes = Field(
+        default_factory=lambda: BlocoContrarrazoes(aplica=False)
+    )
 
     # Meta.
     confianca_geral: Confianca = "baixa"
@@ -227,6 +352,7 @@ class PrazoInicialClassificationResponse(BaseModel):
             or self.manifestacao_avulsa.aplica
             or self.audiencia.aplica
             or self.julgamento.aplica
+            or self.contrarrazoes.aplica
         )
         if self.sem_determinacao and qualquer_bloco_aplica:
             # Conflito: prioriza os blocos específicos.
@@ -235,23 +361,35 @@ class PrazoInicialClassificationResponse(BaseModel):
 
     def blocos_aplicaveis(self) -> list[tuple[str, BaseModel]]:
         """
-        Retorna (tipo_prazo, bloco) para cada bloco com `aplica=True`.
-        Se `sem_determinacao=True` (e nenhum bloco aplica), retorna um
-        único item com tipo SEM_DETERMINACAO (bloco = None-ish via instância
-        vazia do BaseModel). O chamador é quem materializa em
-        `PrazoInicialSugestao`.
+        Retorna (tipo_prazo, bloco) para cada bloco com `aplica=True`,
+        respeitando o branching por `natureza_processo`:
+
+        - AGRAVO_INSTRUMENTO: só considera `contrarrazoes`. Os demais
+          blocos são ignorados (defensivo — o prompt já instrui, mas se
+          o modelo errar, a gente filtra aqui).
+        - Demais naturezas (COMUM/JUIZADO/OUTRO): considera os 5 blocos
+          clássicos; `contrarrazoes` é ignorado se vier True.
+
+        Se nenhum bloco aplicar e `sem_determinacao=True`, retorna um
+        único item com tipo SEM_DETERMINACAO.
         """
         pares: list[tuple[str, BaseModel]] = []
-        if self.contestar.aplica:
-            pares.append((TIPO_PRAZO_CONTESTAR, self.contestar))
-        if self.liminar.aplica:
-            pares.append((TIPO_PRAZO_LIMINAR, self.liminar))
-        if self.manifestacao_avulsa.aplica:
-            pares.append((TIPO_PRAZO_MANIFESTACAO_AVULSA, self.manifestacao_avulsa))
-        if self.audiencia.aplica:
-            pares.append((TIPO_PRAZO_AUDIENCIA, self.audiencia))
-        if self.julgamento.aplica:
-            pares.append((TIPO_PRAZO_JULGAMENTO, self.julgamento))
+        if self.natureza_processo == "AGRAVO_INSTRUMENTO":
+            if self.contrarrazoes.aplica:
+                pares.append((TIPO_PRAZO_CONTRARRAZOES, self.contrarrazoes))
+        else:
+            if self.contestar.aplica:
+                pares.append((TIPO_PRAZO_CONTESTAR, self.contestar))
+            if self.liminar.aplica:
+                pares.append((TIPO_PRAZO_LIMINAR, self.liminar))
+            if self.manifestacao_avulsa.aplica:
+                pares.append(
+                    (TIPO_PRAZO_MANIFESTACAO_AVULSA, self.manifestacao_avulsa)
+                )
+            if self.audiencia.aplica:
+                pares.append((TIPO_PRAZO_AUDIENCIA, self.audiencia))
+            if self.julgamento.aplica:
+                pares.append((TIPO_PRAZO_JULGAMENTO, self.julgamento))
         if not pares and self.sem_determinacao:
             pares.append((TIPO_PRAZO_SEM_DETERMINACAO, self))
         return pares

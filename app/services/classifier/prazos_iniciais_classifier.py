@@ -58,12 +58,14 @@ from app.services.classifier.prazos_iniciais_prompts import (
 from app.services.classifier.prazos_iniciais_schema import (
     TIPO_PRAZO_AUDIENCIA,
     TIPO_PRAZO_CONTESTAR,
+    TIPO_PRAZO_CONTRARRAZOES,
     TIPO_PRAZO_JULGAMENTO,
     TIPO_PRAZO_LIMINAR,
     TIPO_PRAZO_MANIFESTACAO_AVULSA,
     TIPO_PRAZO_SEM_DETERMINACAO,
     BlocoAudiencia,
     BlocoContestar,
+    BlocoContrarrazoes,
     BlocoJulgamento,
     BlocoLiminar,
     BlocoManifestacaoAvulsa,
@@ -321,6 +323,12 @@ class PrazosIniciaisBatchClassifier:
             for old in list(intake.sugestoes):
                 self.db.delete(old)
 
+            # Fase 3c — persiste classificação preliminar no intake.
+            # `natureza_processo` entra como filtro no template matching
+            # (mais abaixo); `produto` é puramente informativo.
+            intake.natureza_processo = response_obj.natureza_processo
+            intake.produto = response_obj.produto
+
             # Materializa novas sugestões.
             try:
                 mat = self._materialize_sugestoes(intake, response_obj)
@@ -492,6 +500,7 @@ class PrazosIniciaisBatchClassifier:
                 tipo_prazo=tipo_prazo,
                 subtipo=subtipo_match,
                 office_external_id=intake.office_id,
+                natureza_processo=intake.natureza_processo,
             )
 
             if templates:
@@ -591,6 +600,11 @@ class PrazosIniciaisBatchClassifier:
         elif isinstance(bloco, BlocoManifestacaoAvulsa) and bloco.assunto:
             payload["assunto"] = bloco.assunto
             sugestao.subtipo = (bloco.assunto or "")[:128] or None
+        elif isinstance(bloco, BlocoContrarrazoes):
+            # CONTRARRAZOES não tem subtipo categorizado. `recurso` entra
+            # no payload só pra contextualização na UI de revisão.
+            if bloco.recurso:
+                payload["recurso"] = bloco.recurso
         elif isinstance(bloco, BlocoContestar):
             pass
 
@@ -759,6 +773,8 @@ def _build_render_context(
     if isinstance(bloco, BlocoJulgamento):
         ctx["julgamento_tipo"] = bloco.tipo or ""
         ctx["julgamento_data"] = _iso(bloco.data)
+    if isinstance(bloco, BlocoContrarrazoes):
+        ctx["recurso"] = bloco.recurso or ""
     return ctx
 
 

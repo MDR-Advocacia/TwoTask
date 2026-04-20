@@ -1,9 +1,9 @@
 """
 Matching de templates do fluxo "Agendar Prazos Iniciais".
 
-Dada a tripla (tipo_prazo, subtipo, office_external_id) derivada da
-classificação da IA, retorna os templates ativos que devem gerar
-sugestões de tarefa.
+Dada a quádrupla (tipo_prazo, subtipo, natureza_processo,
+office_external_id) derivada da classificação da IA, retorna os
+templates ativos que devem gerar sugestões de tarefa.
 
 Regras (fechadas com o usuário em 2026-04-20):
 
@@ -14,13 +14,24 @@ Regras (fechadas com o usuário em 2026-04-20):
      o subtipo do template OU com `subtipo=NULL` (wildcard do template).
    - Se o intake não tem subtipo (demais tipos): casa apenas templates
      com `subtipo=NULL`.
-4. `office_external_id` — regra de **sobreposição** (específico vence
-   global no MESMO `(tipo_prazo, subtipo_resolvido)`):
+4. `natureza_aplicavel` (Fase 3c):
+   - Template com `natureza_aplicavel=NULL` casa em qualquer natureza.
+   - Template com `natureza_aplicavel=X` casa apenas em intakes cuja
+     `natureza_processo` é exatamente X.
+   - **Não há regra de override** nessa dimensão: se existir um template
+     genérico (natureza=NULL) e um específico (natureza=COMUM) para a
+     mesma (tipo, subtipo, office), ambos casam. Operador filtra na
+     HITL ou desativa o genérico.
+   - Quando o intake chega sem `natureza_processo` (intakes pré-3c),
+     apenas templates genéricos (natureza_aplicavel=NULL) casam.
+5. `office_external_id` — regra de **sobreposição** (específico vence
+   global no MESMO `(tipo_prazo, subtipo_resolvido, natureza_aplicavel)`):
    - Se existem templates específicos ativos (office = office_do_intake)
      para aquela combinação, os globais (office=NULL) daquela MESMA
      combinação são descartados.
    - Caso contrário, os globais valem.
-   - Combinações `(tipo, subtipo)` diferentes coexistem livremente.
+   - Combinações `(tipo, subtipo, natureza)` diferentes coexistem
+     livremente.
 
 Não faz I/O além do SELECT. Não altera o banco. O `classifier` que
 chama é responsável por materializar as sugestões.
@@ -42,6 +53,7 @@ def match_templates(
     tipo_prazo: str,
     subtipo: Optional[str],
     office_external_id: Optional[int],
+    natureza_processo: Optional[str] = None,
 ) -> list[PrazoInicialTaskTemplate]:
     """
     Retorna os templates ativos que devem gerar sugestões para um bloco
@@ -51,17 +63,21 @@ def match_templates(
         db: sessão do SQLAlchemy.
         tipo_prazo: valor exato do `tipo_prazo` do bloco
             (CONTESTAR / LIMINAR / MANIFESTACAO_AVULSA / AUDIENCIA /
-             JULGAMENTO / SEM_DETERMINACAO).
+             JULGAMENTO / SEM_DETERMINACAO / CONTRARRAZOES).
         subtipo: valor do subtipo do bloco, ou None se o tipo não tem
             subtipo categorizado.
         office_external_id: external_id do escritório responsável pelo
             processo no L1. None se o intake não pôde ser associado a um
             escritório — nesse caso, só templates globais valem.
+        natureza_processo: natureza do intake (COMUM / JUIZADO /
+            AGRAVO_INSTRUMENTO / OUTRO). None para intakes pré-3c; nesse
+            caso, apenas templates genéricos (natureza_aplicavel=NULL)
+            casam.
 
     Returns:
         Lista (possivelmente vazia) de PrazoInicialTaskTemplate. Os
         itens já estão filtrados pela regra de sobreposição
-        específico>global.
+        específico>global por office.
     """
     q = db.query(PrazoInicialTaskTemplate).filter(
         PrazoInicialTaskTemplate.is_active.is_(True),
@@ -78,6 +94,19 @@ def match_templates(
         )
     else:
         q = q.filter(PrazoInicialTaskTemplate.subtipo.is_(None))
+
+    # Casamento de natureza_aplicavel.
+    #   - intake com natureza X: templates com natureza=X ou natureza=NULL.
+    #   - intake sem natureza:   templates com natureza=NULL.
+    # Diferente do office, não há regra de override nessa dimensão —
+    # genérico e específico coexistem.
+    if natureza_processo is not None:
+        q = q.filter(
+            (PrazoInicialTaskTemplate.natureza_aplicavel == natureza_processo)
+            | (PrazoInicialTaskTemplate.natureza_aplicavel.is_(None))
+        )
+    else:
+        q = q.filter(PrazoInicialTaskTemplate.natureza_aplicavel.is_(None))
 
     # Casamento de office — específico OU global. O filtro na regra de
     # sobreposição acontece depois, em memória.
@@ -101,7 +130,7 @@ def _apply_specific_over_global(
 ) -> list[PrazoInicialTaskTemplate]:
     """
     Implementa a sobreposição específico>global POR combinação
-    (tipo_prazo, subtipo_normalizado).
+    (tipo_prazo, subtipo, natureza_aplicavel).
 
     Dentro de cada combinação:
       - Se houver pelo menos um template com office != NULL, descarta os
@@ -109,13 +138,17 @@ def _apply_specific_over_global(
       - Senão mantém todos.
 
     Templates específicos e globais de COMBINAÇÕES diferentes coexistem
-    sem interferir um no outro.
+    sem interferir um no outro. Em particular, um template
+    natureza_aplicavel=NULL e outro natureza_aplicavel=COMUM vão cair em
+    buckets separados (o eixo de natureza NÃO usa override) — ambos
+    sobrevivem ao filtro.
     """
-    buckets: dict[tuple[str, Optional[str]], list[PrazoInicialTaskTemplate]] = (
-        defaultdict(list)
-    )
+    buckets: dict[
+        tuple[str, Optional[str], Optional[str]],
+        list[PrazoInicialTaskTemplate],
+    ] = defaultdict(list)
     for t in templates:
-        buckets[(t.tipo_prazo, t.subtipo)].append(t)
+        buckets[(t.tipo_prazo, t.subtipo, t.natureza_aplicavel)].append(t)
 
     kept: list[PrazoInicialTaskTemplate] = []
     for bucket in buckets.values():

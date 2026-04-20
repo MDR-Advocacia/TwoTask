@@ -52,8 +52,9 @@ class PrazoInicialTaskTemplate(Base):
         UniqueConstraint(
             "tipo_prazo",
             "subtipo",
+            "natureza_aplicavel",
             "office_external_id",
-            name="uq_pin_task_templates_tipo_subtipo_office",
+            name="uq_pin_task_templates_tipo_subtipo_natureza_office",
         ),
     )
 
@@ -63,8 +64,14 @@ class PrazoInicialTaskTemplate(Base):
     # ── Chave de casamento ────────────────────────────────────────────
     tipo_prazo = Column(String(64), nullable=False, index=True)
     # NULL = template cobre todos os subtipos daquele tipo_prazo (regra
-    # típica para CONTESTAR/LIMINAR/MANIFESTACAO_AVULSA/SEM_DETERMINACAO).
+    # típica para CONTESTAR/LIMINAR/MANIFESTACAO_AVULSA/SEM_DETERMINACAO/
+    # CONTRARRAZOES).
     subtipo = Column(String(128), nullable=True, index=True)
+    # NULL = template casa em qualquer natureza. NOT NULL = só casa em
+    # intakes dessa natureza exata. Diferente de office, NÃO há regra de
+    # override entre genérico e específico — ambos casam se compatíveis
+    # (operador filtra na HITL ou desativa o genérico).
+    natureza_aplicavel = Column(String(64), nullable=True, index=True)
     # NULL = template global. NOT NULL = template específico de escritório.
     office_external_id = Column(
         Integer,

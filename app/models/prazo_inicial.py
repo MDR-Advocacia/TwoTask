@@ -134,6 +134,16 @@ class PrazoInicialIntake(Base):
     # Última mensagem de erro (pra exibir na UI quando em estado ERRO_*).
     error_message = Column(Text, nullable=True)
 
+    # Classificação preliminar feita pela IA (Fase 3c).
+    # natureza_processo: COMUM | JUIZADO | AGRAVO_INSTRUMENTO | OUTRO.
+    # Roteia o conjunto de perguntas aplicáveis e entra como filtro no
+    # template matching (ver template_matching_service).
+    natureza_processo = Column(String(64), nullable=True, index=True)
+    # produto: SUPERENDIVIDAMENTO | CREDCESTA | ... | OUTRO. INFORMATIVO
+    # apenas — não afeta classificação nem matching de templates. Usado
+    # em relatórios e filtros da UI.
+    produto = Column(String(64), nullable=True, index=True)
+
     received_at = Column(
         DateTime(timezone=True),
         server_default=func.now(),
