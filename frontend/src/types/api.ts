@@ -275,3 +275,76 @@ export interface PrazoInicialIntakeFilters {
   limit?: number;
   offset?: number;
 }
+
+
+// ─── Templates de Prazos Iniciais ─────────────────────────────────────
+
+export interface PrazoInicialTaskTemplate {
+  id: number;
+  name: string;
+  tipo_prazo: string;
+  subtipo: string | null;
+  natureza_aplicavel: string | null;
+  office_external_id: number | null;
+  office_name: string | null;
+  task_subtype_external_id: number;
+  task_subtype_name: string | null;
+  responsible_user_external_id: number;
+  responsible_user_name: string | null;
+  priority: string;
+  due_business_days: number;
+  due_date_reference: string;
+  description_template: string | null;
+  notes_template: string | null;
+  is_active: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface PrazoInicialTaskTemplateListResponse {
+  total: number;
+  items: PrazoInicialTaskTemplate[];
+}
+
+export interface PrazoInicialTaskTemplateCreatePayload {
+  name: string;
+  tipo_prazo: string;
+  subtipo?: string | null;
+  natureza_aplicavel?: string | null;
+  office_external_id?: number | null;
+  task_subtype_external_id: number;
+  responsible_user_external_id: number;
+  priority?: string;
+  due_business_days?: number;
+  due_date_reference?: string;
+  description_template?: string | null;
+  notes_template?: string | null;
+  is_active?: boolean;
+}
+
+// Update aceita qualquer subconjunto dos campos do Create.
+export type PrazoInicialTaskTemplateUpdatePayload =
+  Partial<PrazoInicialTaskTemplateCreatePayload>;
+
+export interface PrazoInicialTaskTemplateFilters {
+  tipo_prazo?: string;
+  /** "" (string vazia) = filtra por NULL (genérico); undefined = sem filtro */
+  subtipo?: string;
+  /** "" (string vazia) = filtra por NULL (genérico); undefined = sem filtro */
+  natureza_aplicavel?: string;
+  /** 0 = filtra por NULL (global); undefined = sem filtro */
+  office_external_id?: number;
+  is_active?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export interface PrazoInicialEnums {
+  tipos_prazo: string[];
+  naturezas: string[];
+  produtos: string[];
+  subtipos_audiencia: string[];
+  subtipos_julgamento: string[];
+  priorities: string[];
+  due_date_references: string[];
+}

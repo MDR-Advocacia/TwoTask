@@ -23,6 +23,7 @@ import BatchExecutionsPage from './pages/BatchExecutionsPage';
 import PublicationTreatmentPage from './pages/PublicationTreatmentPage';
 import LookupByCnjPage from './pages/LookupByCnjPage';
 import PrazosIniciaisPage from './pages/PrazosIniciaisPage';
+import PrazosIniciaisTemplatesAdminPage from './pages/PrazosIniciaisTemplatesAdminPage';
 
 // Contexto de Autenticação
 import { AuthProvider, AuthContext } from './contexts/AuthContext';
@@ -61,6 +62,10 @@ function AppContent() {
             <Route path="/automations" element={<AutomationsPage />} />
             <Route path="/batches" element={<BatchExecutionsPage />} />
             <Route path="/prazos-iniciais" element={<PrazosIniciaisPage />} />
+            <Route
+              path="/admin/prazos-iniciais/templates"
+              element={<PrazosIniciaisTemplatesAdminPage />}
+            />
           </Route>
 
           {/* Rota para página não encontrada */}

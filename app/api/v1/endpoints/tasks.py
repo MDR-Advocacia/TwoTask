@@ -105,6 +105,7 @@ class SpreadsheetPreviewResponse(BaseModel):
 
 class SubTypeSchema(BaseModel):
     id: int
+    external_id: int
     name: str
 
     class Config:
@@ -413,7 +414,7 @@ def get_data_for_task_form(db: Session = Depends(get_db)):
             id=parent.id,
             name=parent.name,
             sub_types=[
-                SubTypeSchema(id=sub.id, name=sub.name)
+                SubTypeSchema(id=sub.id, external_id=sub.external_id, name=sub.name)
                 for sub in sorted(parent.subtypes, key=lambda item: item.name)
             ],
         )

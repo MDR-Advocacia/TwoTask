@@ -3,10 +3,16 @@ import {
   BatchExecution,
   LegalOnePositionFixControlResponse,
   LegalOnePositionFixStatus,
+  PrazoInicialEnums,
   PrazoInicialIntakeDetail,
   PrazoInicialIntakeFilters,
   PrazoInicialIntakeListResponse,
   PrazoInicialIntakeSummary,
+  PrazoInicialTaskTemplate,
+  PrazoInicialTaskTemplateCreatePayload,
+  PrazoInicialTaskTemplateFilters,
+  PrazoInicialTaskTemplateListResponse,
+  PrazoInicialTaskTemplateUpdatePayload,
   PublicationTreatmentControlResponse,
   PublicationTreatmentMonitor,
   PublicationTreatmentRun,
@@ -221,4 +227,104 @@ export async function fetchPrazoInicialPdfBlob(intakeId: number): Promise<Blob> 
     throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
   }
   return response.blob();
+}
+
+
+// ─── Templates de Prazos Iniciais ─────────────────────────────────────
+
+/**
+ * Retorna os enums que populam os selects do admin de templates (tipos de
+ * prazo, naturezas, produtos, subtipos, prioridades, referências de data).
+ */
+export async function fetchPrazosIniciaisEnums(): Promise<PrazoInicialEnums> {
+  const response = await apiFetch("/api/v1/prazos-iniciais/enums");
+  return expectJson<PrazoInicialEnums>(response);
+}
+
+
+/**
+ * Lista templates com filtros opcionais.
+ *
+ * Convenção pra "valor nulo":
+ *   - `subtipo: ""`             → filtra templates com subtipo NULL (genéricos)
+ *   - `natureza_aplicavel: ""`  → filtra templates com natureza NULL (genéricos)
+ *   - `office_external_id: 0`   → filtra templates com office NULL (globais)
+ *
+ * Passar `undefined` omite o filtro (não é enviado no querystring).
+ */
+export async function listPrazosIniciaisTemplates(
+  filters: PrazoInicialTaskTemplateFilters = {},
+): Promise<PrazoInicialTaskTemplateListResponse> {
+  const params = new URLSearchParams();
+  if (filters.tipo_prazo !== undefined) params.set("tipo_prazo", filters.tipo_prazo);
+  if (filters.subtipo !== undefined) params.set("subtipo", filters.subtipo);
+  if (filters.natureza_aplicavel !== undefined) {
+    params.set("natureza_aplicavel", filters.natureza_aplicavel);
+  }
+  if (typeof filters.office_external_id === "number") {
+    params.set("office_external_id", String(filters.office_external_id));
+  }
+  if (typeof filters.is_active === "boolean") {
+    params.set("is_active", String(filters.is_active));
+  }
+  if (typeof filters.limit === "number") params.set("limit", String(filters.limit));
+  if (typeof filters.offset === "number") params.set("offset", String(filters.offset));
+
+  const qs = params.toString();
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/templates${qs ? `?${qs}` : ""}`,
+  );
+  return expectJson<PrazoInicialTaskTemplateListResponse>(response);
+}
+
+
+export async function getPrazosIniciaisTemplate(
+  templateId: number,
+): Promise<PrazoInicialTaskTemplate> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/templates/${templateId}`,
+  );
+  return expectJson<PrazoInicialTaskTemplate>(response);
+}
+
+
+export async function createPrazosIniciaisTemplate(
+  payload: PrazoInicialTaskTemplateCreatePayload,
+): Promise<PrazoInicialTaskTemplate> {
+  const response = await apiFetch("/api/v1/prazos-iniciais/templates", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return expectJson<PrazoInicialTaskTemplate>(response);
+}
+
+
+export async function updatePrazosIniciaisTemplate(
+  templateId: number,
+  payload: PrazoInicialTaskTemplateUpdatePayload,
+): Promise<PrazoInicialTaskTemplate> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/templates/${templateId}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+  return expectJson<PrazoInicialTaskTemplate>(response);
+}
+
+
+/**
+ * Soft-delete: marca is_active=False no backend. Retorna o template atualizado.
+ */
+export async function deletePrazosIniciaisTemplate(
+  templateId: number,
+): Promise<PrazoInicialTaskTemplate> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/templates/${templateId}`,
+    { method: "DELETE" },
+  );
+  return expectJson<PrazoInicialTaskTemplate>(response);
 }

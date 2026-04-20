@@ -1,6 +1,7 @@
 // frontend/src/pages/AdminPage.tsx
 
 import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -9,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Loader2, Save, Pencil, RefreshCw, AlertCircle, Copy, Shield, ShieldCheck, CheckCircle2, XCircle, Clock, Database, Building2, FileText } from "lucide-react";
+import { Loader2, Save, Pencil, RefreshCw, AlertCircle, Copy, Shield, ShieldCheck, CheckCircle2, XCircle, Clock, Database, Building2, FileText, CalendarClock, ArrowRight } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -875,6 +876,7 @@ const AdminPage = () => {
                     <TabsTrigger value="sync">Sincronização</TabsTrigger>
                     <TabsTrigger value="tasks">Tipos de Tarefa</TabsTrigger>
                     <TabsTrigger value="users">Usuários & Permissões</TabsTrigger>
+                    <TabsTrigger value="prazos">Prazos Iniciais</TabsTrigger>
                 </TabsList>
                 <TabsContent value="sync" className="space-y-6">
                     <SyncManager />
@@ -884,6 +886,29 @@ const AdminPage = () => {
                 </TabsContent>
                 <TabsContent value="users" className="space-y-6">
                     <UsersAndPermissions />
+                </TabsContent>
+                <TabsContent value="prazos" className="space-y-6">
+                    <Card>
+                        <CardHeader>
+                            <CardTitle className="flex items-center gap-2">
+                                <CalendarClock className="h-5 w-5" />
+                                Templates de Prazos Iniciais
+                            </CardTitle>
+                            <CardDescription>
+                                Configure as regras de agendamento automático de prazos: tipo de tarefa,
+                                responsável, prioridade e prazo em dias úteis para cada combinação de
+                                tipo de prazo, subtipo, natureza e escritório.
+                            </CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                            <Button asChild>
+                                <Link to="/admin/prazos-iniciais/templates">
+                                    Gerenciar Templates
+                                    <ArrowRight className="ml-2 h-4 w-4" />
+                                </Link>
+                            </Button>
+                        </CardContent>
+                    </Card>
                 </TabsContent>
             </Tabs>
         </div>
