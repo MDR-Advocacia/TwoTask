@@ -35,12 +35,19 @@ from app.db.session import Base
 # Ciclo de vida do registro principal. Ordem típica (feliz):
 #   RECEBIDO → PRONTO_PARA_CLASSIFICAR → EM_CLASSIFICACAO → CLASSIFICADO
 #          → EM_REVISAO → AGENDADO → GED_ENVIADO → CONCLUIDO
+#
+# Ramo "sem template cadastrado":
+#   EM_CLASSIFICACAO → AGUARDANDO_CONFIG_TEMPLATE (fica travado até que o
+#                     operador cadastre template para o (tipo_prazo, subtipo,
+#                     office) daquela sugestão, ou agende manualmente pela
+#                     tela de revisão — ver `template_matching_service`).
 
 INTAKE_STATUS_RECEIVED = "RECEBIDO"
 INTAKE_STATUS_LAWSUIT_NOT_FOUND = "PROCESSO_NAO_ENCONTRADO"
 INTAKE_STATUS_READY_TO_CLASSIFY = "PRONTO_PARA_CLASSIFICAR"
 INTAKE_STATUS_IN_CLASSIFICATION = "EM_CLASSIFICACAO"
 INTAKE_STATUS_CLASSIFIED = "CLASSIFICADO"
+INTAKE_STATUS_AWAITING_TEMPLATE_CONFIG = "AGUARDANDO_CONFIG_TEMPLATE"
 INTAKE_STATUS_IN_REVIEW = "EM_REVISAO"
 INTAKE_STATUS_SCHEDULED = "AGENDADO"
 INTAKE_STATUS_GED_SENT = "GED_ENVIADO"

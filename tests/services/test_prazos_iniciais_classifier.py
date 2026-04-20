@@ -24,6 +24,7 @@ import pytest
 
 from app.core.config import settings
 from app.models.prazo_inicial import (
+    INTAKE_STATUS_AWAITING_TEMPLATE_CONFIG,
     INTAKE_STATUS_CLASSIFICATION_ERROR,
     INTAKE_STATUS_CLASSIFIED,
     INTAKE_STATUS_IN_CLASSIFICATION,
@@ -33,6 +34,7 @@ from app.models.prazo_inicial import (
     PrazoInicialIntake,
     PrazoInicialSugestao,
 )
+from app.models.prazo_inicial_task_template import PrazoInicialTaskTemplate
 from app.services.classifier.ai_client import AnthropicClassifierClient
 from app.services.classifier.prazos_iniciais_classifier import (
     PrazosIniciaisBatchClassifier,
@@ -354,10 +356,13 @@ class TestMaterializeSugestoes:
         }
         response = PrazoInicialClassificationResponse.model_validate(payload)
 
-        criadas = classifier._materialize_sugestoes(intake, response)
+        # Sem templates cadastrados → fallback: 1 sugestão "not_found".
+        metrics = classifier._materialize_sugestoes(intake, response)
         db_session.commit()
 
-        assert criadas == 1
+        assert metrics["created"] == 1
+        assert metrics["blocks_with_templates"] == 0
+        assert metrics["blocks_without_templates"] == 1
         sugestoes = (
             db_session.query(PrazoInicialSugestao)
             .filter(PrazoInicialSugestao.intake_id == intake.id)
@@ -372,8 +377,9 @@ class TestMaterializeSugestoes:
         # Verifica que a calculadora foi acionada.
         assert s.data_final_calculada is not None
         assert s.data_final_calculada > s.data_base
-        assert s.task_type_id is None  # ainda sem taxonomia
+        # Sem template casado → task_subtype_id fica NULL e payload marca o fallback.
         assert s.task_subtype_id is None
+        assert s.payload_proposto.get("template_match") == "not_found"
         assert s.confianca == "alta"
 
     def test_multiple_applicable_blocks_create_multiple_sugestoes(
@@ -529,7 +535,10 @@ class TestApplyBatchResults:
 
         db_session.refresh(intake)
         db_session.refresh(batch)
-        assert intake.status == INTAKE_STATUS_CLASSIFIED
+        # Sem templates cadastrados, o intake trava em
+        # AGUARDANDO_CONFIG_TEMPLATE — o operador cadastra template e
+        # reprocessa (ou resolve manualmente pela UI de revisão).
+        assert intake.status == INTAKE_STATUS_AWAITING_TEMPLATE_CONFIG
         assert batch.status == PIN_BATCH_STATUS_APPLIED
 
     def test_apply_marks_intake_error_when_json_invalid(
@@ -568,3 +577,347 @@ class TestApplyBatchResults:
         assert intake.status == INTAKE_STATUS_CLASSIFICATION_ERROR
         assert intake.error_message
         assert "JSON" in intake.error_message
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Fase 3b — integração Classifier × Templates
+# ═════════════════════════════════════════════════════════════════════
+
+
+def _mk_template(
+    db,
+    *,
+    tipo_prazo: str,
+    subtipo: str | None = None,
+    office_external_id: int | None = None,
+    task_subtype_external_id: int = 9001,
+    responsible_user_external_id: int = 8001,
+    name: str | None = None,
+    description_template: str | None = None,
+    notes_template: str | None = None,
+    priority: str = "Normal",
+    is_active: bool = True,
+) -> PrazoInicialTaskTemplate:
+    t = PrazoInicialTaskTemplate(
+        name=name or f"tpl-{tipo_prazo}-{subtipo}-{office_external_id}",
+        tipo_prazo=tipo_prazo,
+        subtipo=subtipo,
+        office_external_id=office_external_id,
+        task_subtype_external_id=task_subtype_external_id,
+        responsible_user_external_id=responsible_user_external_id,
+        priority=priority,
+        due_business_days=3,
+        due_date_reference="data_base",
+        description_template=description_template,
+        notes_template=notes_template,
+        is_active=is_active,
+    )
+    db.add(t)
+    db.flush()
+    return t
+
+
+class TestClassifierTemplateIntegration:
+    """Fase 3b: classifier deve clonar sugestão por template casado."""
+
+    def test_contestar_with_one_global_template_creates_one_sugestao_with_l1_ids(
+        self, db_session, classifier_factory
+    ):
+        intake = _persist_intake(db_session, external_id="tpl-contestar")
+        tpl = _mk_template(
+            db_session,
+            tipo_prazo=TIPO_PRAZO_CONTESTAR,
+            subtipo=None,
+            office_external_id=None,
+            task_subtype_external_id=12345,
+            responsible_user_external_id=678,
+            description_template="Contestar {cnj} — prazo {data_final}",
+        )
+        db_session.commit()
+
+        payload = _empty_response_dict()
+        payload["contestar"] = {
+            "aplica": True,
+            "prazo_dias": 15,
+            "prazo_tipo": "util",
+            "data_base": "2026-04-22",
+            "justificativa": "Cite-se",
+        }
+        resp = PrazoInicialClassificationResponse.model_validate(payload)
+
+        metrics = classifier_factory(db_session)._materialize_sugestoes(intake, resp)
+        db_session.commit()
+
+        assert metrics == {
+            "created": 1,
+            "blocks_with_templates": 1,
+            "blocks_without_templates": 0,
+        }
+        sug = (
+            db_session.query(PrazoInicialSugestao)
+            .filter(PrazoInicialSugestao.intake_id == intake.id)
+            .one()
+        )
+        assert sug.task_subtype_id == 12345
+        assert sug.responsavel_sugerido_id == 678
+        assert sug.payload_proposto["template_id"] == tpl.id
+        assert sug.payload_proposto["template_match"] == "global"
+        # Placeholder {cnj} e {data_final} foram renderizados.
+        assert intake.cnj_number in sug.payload_proposto["description"]
+        assert sug.data_final_calculada.isoformat() in sug.payload_proposto[
+            "description"
+        ]
+
+    def test_two_active_templates_create_two_sugestoes_per_block(
+        self, db_session, classifier_factory
+    ):
+        intake = _persist_intake(db_session, external_id="tpl-duplo")
+        _mk_template(
+            db_session,
+            tipo_prazo=TIPO_PRAZO_CONTESTAR,
+            subtipo=None,
+            task_subtype_external_id=1001,
+            name="abrir prazo",
+        )
+        _mk_template(
+            db_session,
+            tipo_prazo=TIPO_PRAZO_CONTESTAR,
+            subtipo=None,
+            task_subtype_external_id=1002,
+            name="pedir copia",
+        )
+        db_session.commit()
+
+        payload = _empty_response_dict()
+        payload["contestar"] = {
+            "aplica": True,
+            "prazo_dias": 15,
+            "prazo_tipo": "util",
+            "data_base": "2026-04-22",
+            "justificativa": "Cite-se",
+        }
+        resp = PrazoInicialClassificationResponse.model_validate(payload)
+        metrics = classifier_factory(db_session)._materialize_sugestoes(intake, resp)
+        db_session.commit()
+
+        assert metrics["created"] == 2
+        assert metrics["blocks_with_templates"] == 1
+
+        sugs = (
+            db_session.query(PrazoInicialSugestao)
+            .filter(PrazoInicialSugestao.intake_id == intake.id)
+            .all()
+        )
+        sub_ids = {s.task_subtype_id for s in sugs}
+        assert sub_ids == {1001, 1002}
+
+    def test_specific_office_template_overrides_global_in_intake_flow(
+        self, db_session, classifier_factory
+    ):
+        intake = _persist_intake(db_session, external_id="tpl-office")
+        intake.office_id = 42  # office_external_id do escritório do intake
+        db_session.commit()
+
+        _mk_template(
+            db_session,
+            tipo_prazo=TIPO_PRAZO_CONTESTAR,
+            subtipo=None,
+            office_external_id=None,
+            task_subtype_external_id=777,
+            name="global",
+        )
+        _mk_template(
+            db_session,
+            tipo_prazo=TIPO_PRAZO_CONTESTAR,
+            subtipo=None,
+            office_external_id=42,
+            task_subtype_external_id=999,
+            name="especifico",
+        )
+        db_session.commit()
+
+        payload = _empty_response_dict()
+        payload["contestar"] = {
+            "aplica": True,
+            "prazo_dias": 15,
+            "prazo_tipo": "util",
+            "data_base": "2026-04-22",
+            "justificativa": "Cite-se",
+        }
+        resp = PrazoInicialClassificationResponse.model_validate(payload)
+        classifier_factory(db_session)._materialize_sugestoes(intake, resp)
+        db_session.commit()
+
+        sugs = (
+            db_session.query(PrazoInicialSugestao)
+            .filter(PrazoInicialSugestao.intake_id == intake.id)
+            .all()
+        )
+        assert len(sugs) == 1
+        assert sugs[0].task_subtype_id == 999
+        assert sugs[0].payload_proposto["template_match"] == "specific"
+
+    def test_audiencia_subtipo_drives_matching(self, db_session, classifier_factory):
+        """
+        AUDIENCIA/conciliacao deve casar tanto template exato quanto
+        wildcard (subtipo=NULL). Instrução não.
+        """
+        intake = _persist_intake(db_session, external_id="tpl-aud")
+        t_exact = _mk_template(
+            db_session,
+            tipo_prazo=TIPO_PRAZO_AUDIENCIA,
+            subtipo="conciliacao",
+            task_subtype_external_id=5001,
+            name="exact",
+        )
+        t_wild = _mk_template(
+            db_session,
+            tipo_prazo=TIPO_PRAZO_AUDIENCIA,
+            subtipo=None,
+            task_subtype_external_id=5002,
+            name="wildcard",
+        )
+        _mk_template(
+            db_session,
+            tipo_prazo=TIPO_PRAZO_AUDIENCIA,
+            subtipo="instrucao",
+            task_subtype_external_id=5003,
+            name="outro",
+        )
+        db_session.commit()
+
+        payload = _empty_response_dict()
+        payload["audiencia"] = {
+            "aplica": True,
+            "data": "2026-05-12",
+            "hora": "14:00",
+            "tipo": "conciliacao",
+            "link": None,
+            "endereco": None,
+            "justificativa": "designada",
+        }
+        resp = PrazoInicialClassificationResponse.model_validate(payload)
+        classifier_factory(db_session)._materialize_sugestoes(intake, resp)
+        db_session.commit()
+
+        sugs = (
+            db_session.query(PrazoInicialSugestao)
+            .filter(PrazoInicialSugestao.intake_id == intake.id)
+            .all()
+        )
+        sub_ids = {s.task_subtype_id for s in sugs}
+        assert sub_ids == {5001, 5002}
+
+    def test_mixed_covered_and_uncovered_blocks_marks_classified(
+        self, db_session, classifier_factory, fake_ai_client
+    ):
+        """
+        Contestar tem template, audiência não. Intake deve ir para
+        CLASSIFICADO (e não AGUARDANDO_CONFIG_TEMPLATE), porque existe
+        pelo menos 1 bloco com template.
+        """
+        intake = _persist_intake(db_session, external_id="tpl-mix")
+        intake.status = INTAKE_STATUS_IN_CLASSIFICATION
+        _mk_template(
+            db_session,
+            tipo_prazo=TIPO_PRAZO_CONTESTAR,
+            task_subtype_external_id=1001,
+        )
+        db_session.commit()
+
+        batch = PrazoInicialBatch(
+            anthropic_batch_id="msgbatch_mix",
+            status="PRONTO",
+            total_records=1,
+            intake_ids=[intake.id],
+            results_url="https://example.com/results",
+            model_used="claude-sonnet-4-6",
+        )
+        db_session.add(batch)
+        db_session.commit()
+
+        payload = _empty_response_dict()
+        payload["contestar"] = {
+            "aplica": True,
+            "prazo_dias": 15,
+            "prazo_tipo": "util",
+            "data_base": "2026-04-22",
+            "justificativa": "cite-se",
+        }
+        payload["audiencia"] = {
+            "aplica": True,
+            "data": "2026-06-10",
+            "hora": "10:00",
+            "tipo": "conciliacao",
+            "link": None,
+            "endereco": None,
+            "justificativa": "designada",
+        }
+
+        fake_results = [_wrap_in_batch_result(f"intake-{intake.id}", payload)]
+
+        async def _fake_get(_url):
+            return fake_results
+
+        fake_ai_client.get_batch_results = _fake_get
+
+        classifier = classifier_factory(db_session)
+        summary = asyncio.run(classifier.apply_batch_results(batch))
+
+        assert summary["succeeded"] == 1
+        # 1 sugestão do template de contestar + 1 fallback da audiência.
+        assert summary["total_sugestoes"] == 2
+
+        db_session.refresh(intake)
+        assert intake.status == INTAKE_STATUS_CLASSIFIED
+
+        sugs = (
+            db_session.query(PrazoInicialSugestao)
+            .filter(PrazoInicialSugestao.intake_id == intake.id)
+            .order_by(PrazoInicialSugestao.id)
+            .all()
+        )
+        # contestar tem task_subtype_id, audiência ficou NULL.
+        by_tipo = {s.tipo_prazo: s for s in sugs}
+        assert by_tipo[TIPO_PRAZO_CONTESTAR].task_subtype_id == 1001
+        assert by_tipo[TIPO_PRAZO_AUDIENCIA].task_subtype_id is None
+        assert by_tipo[TIPO_PRAZO_AUDIENCIA].payload_proposto.get(
+            "template_match"
+        ) == "not_found"
+
+    def test_notes_template_renders_with_missing_placeholders_as_empty(
+        self, db_session, classifier_factory
+    ):
+        """
+        Placeholder ausente do ctx vira string vazia em vez de KeyError
+        (via defaultdict em _render_template).
+        """
+        intake = _persist_intake(db_session, external_id="tpl-notes")
+        _mk_template(
+            db_session,
+            tipo_prazo=TIPO_PRAZO_CONTESTAR,
+            task_subtype_external_id=42,
+            notes_template="cnj={cnj}; naoexiste={chave_inexistente}",
+        )
+        db_session.commit()
+
+        payload = _empty_response_dict()
+        payload["contestar"] = {
+            "aplica": True,
+            "prazo_dias": 15,
+            "prazo_tipo": "util",
+            "data_base": "2026-04-22",
+            "justificativa": "cite-se",
+        }
+        resp = PrazoInicialClassificationResponse.model_validate(payload)
+        classifier_factory(db_session)._materialize_sugestoes(intake, resp)
+        db_session.commit()
+
+        sug = (
+            db_session.query(PrazoInicialSugestao)
+            .filter(PrazoInicialSugestao.intake_id == intake.id)
+            .one()
+        )
+        notes = sug.payload_proposto["notes"]
+        assert f"cnj={intake.cnj_number}" in notes
+        assert "naoexiste=" in notes  # chave ausente colapsa pra vazio

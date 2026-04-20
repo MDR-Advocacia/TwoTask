@@ -40,7 +40,7 @@ from sqlalchemy.orm import Session
 from app.core import auth as auth_security
 from app.core.config import settings
 from app.core.dependencies import get_db
-from app.models.legal_one import LegalOneUser
+from app.models.legal_one import LegalOneOffice, LegalOneTaskSubType, LegalOneUser
 from app.models.prazo_inicial import (
     INTAKE_STATUS_CANCELLED,
     INTAKE_STATUS_LAWSUIT_NOT_FOUND,
@@ -48,6 +48,7 @@ from app.models.prazo_inicial import (
     PrazoInicialIntake,
     PrazoInicialSugestao,
 )
+from app.models.prazo_inicial_task_template import PrazoInicialTaskTemplate
 from app.services.classifier.prazos_iniciais_classifier import (
     PrazosIniciaisBatchClassifier,
 )
@@ -59,6 +60,11 @@ from app.models.prazo_inicial import (
     PIN_BATCH_STATUS_READY,
     PIN_BATCH_STATUS_SUBMITTED,
     PrazoInicialBatch,
+)
+from app.services.classifier.prazos_iniciais_schema import (
+    TIPO_PRAZO_AUDIENCIA,
+    TIPO_PRAZO_JULGAMENTO,
+    TIPOS_PRAZO_VALIDOS,
 )
 from app.services.prazos_iniciais.intake_service import IntakeService
 from app.services.prazos_iniciais.storage import (
@@ -712,3 +718,551 @@ async def apply_classification_batch(
         logger.exception("Falha ao aplicar batch %s", batch_id)
         raise HTTPException(status_code=502, detail=f"Falha ao aplicar batch: {exc}")
     return ApplyBatchResponse(**summary)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# CRUD de Templates (prazo_inicial_task_templates)
+# ═══════════════════════════════════════════════════════════════════════
+#
+# Os templates governam o casamento (tipo_prazo, subtipo, office) → tarefa
+# L1. Só admin/operador com permissão `prazos_iniciais` pode tocar. A UI
+# de Fase 3c consome estes endpoints.
+#
+# Regras de validação replicadas na camada HTTP (além da UniqueConstraint
+# no banco):
+#   - `tipo_prazo` ∈ TIPOS_PRAZO_VALIDOS
+#   - `subtipo`:
+#       * AUDIENCIA  → {"conciliacao","instrucao","una","outra"} ou None
+#       * JULGAMENTO → {"merito","extincao_sem_merito","outro"} ou None
+#       * demais tipos → obrigatoriamente None (o casamento do classifier
+#         só usa subtipo para AUDIENCIA/JULGAMENTO)
+#   - `priority` ∈ {"Low","Normal","High"}
+#   - `due_date_reference` ∈ {"data_base","data_final_calculada",
+#                             "today","audiencia_data"}
+#   - FKs (office_external_id, task_subtype_external_id,
+#     responsible_user_external_id) validadas com SELECT antes de
+#     persistir, pra devolver 422 com mensagem clara (em vez de deixar
+#     estourar IntegrityError no commit).
+
+
+SUBTIPOS_AUDIENCIA = frozenset({"conciliacao", "instrucao", "una", "outra"})
+SUBTIPOS_JULGAMENTO = frozenset({"merito", "extincao_sem_merito", "outro"})
+PRIORIDADES_VALIDAS = frozenset({"Low", "Normal", "High"})
+DUE_DATE_REFERENCES_VALIDAS = frozenset({
+    "data_base",
+    "data_final_calculada",
+    "today",
+    "audiencia_data",
+})
+
+
+class TemplateBase(BaseModel):
+    """Campos comuns a create/update — toda validação cruzada vive aqui."""
+
+    name: str = Field(..., min_length=1, max_length=255)
+    tipo_prazo: str = Field(..., max_length=64)
+    subtipo: Optional[str] = Field(default=None, max_length=128)
+    office_external_id: Optional[int] = Field(default=None, ge=1)
+    task_subtype_external_id: int = Field(..., ge=1)
+    responsible_user_external_id: int = Field(..., ge=1)
+    priority: str = Field(default="Normal")
+    due_business_days: int = Field(default=3, ge=0, le=365)
+    due_date_reference: str = Field(default="data_base")
+    description_template: Optional[str] = None
+    notes_template: Optional[str] = None
+    is_active: bool = True
+
+
+def _validate_tipo_subtipo(tipo_prazo: str, subtipo: Optional[str]) -> None:
+    """Validação cruzada de tipo_prazo × subtipo. Levanta HTTPException 422."""
+    if tipo_prazo not in TIPOS_PRAZO_VALIDOS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"tipo_prazo inválido: {tipo_prazo!r}. "
+                f"Válidos: {sorted(TIPOS_PRAZO_VALIDOS)}."
+            ),
+        )
+    if tipo_prazo == TIPO_PRAZO_AUDIENCIA:
+        if subtipo is not None and subtipo not in SUBTIPOS_AUDIENCIA:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"subtipo inválido para AUDIENCIA: {subtipo!r}. "
+                    f"Válidos: {sorted(SUBTIPOS_AUDIENCIA)} ou null."
+                ),
+            )
+    elif tipo_prazo == TIPO_PRAZO_JULGAMENTO:
+        if subtipo is not None and subtipo not in SUBTIPOS_JULGAMENTO:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"subtipo inválido para JULGAMENTO: {subtipo!r}. "
+                    f"Válidos: {sorted(SUBTIPOS_JULGAMENTO)} ou null."
+                ),
+            )
+    else:
+        if subtipo is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"subtipo só é permitido para AUDIENCIA ou JULGAMENTO "
+                    f"(tipo_prazo atual: {tipo_prazo}). Envie subtipo=null."
+                ),
+            )
+
+
+def _validate_priority_and_due_ref(priority: str, due_ref: str) -> None:
+    if priority not in PRIORIDADES_VALIDAS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"priority inválida: {priority!r}. "
+                f"Válidas: {sorted(PRIORIDADES_VALIDAS)}."
+            ),
+        )
+    if due_ref not in DUE_DATE_REFERENCES_VALIDAS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"due_date_reference inválida: {due_ref!r}. "
+                f"Válidas: {sorted(DUE_DATE_REFERENCES_VALIDAS)}."
+            ),
+        )
+
+
+def _validate_foreign_keys(
+    db: Session,
+    *,
+    office_external_id: Optional[int],
+    task_subtype_external_id: int,
+    responsible_user_external_id: int,
+) -> None:
+    """Confirma que os external_ids existem nas tabelas do L1. 422 em caso de ausência."""
+    if office_external_id is not None:
+        exists = (
+            db.query(LegalOneOffice.id)
+            .filter(LegalOneOffice.external_id == office_external_id)
+            .first()
+        )
+        if not exists:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"office_external_id não encontrado: {office_external_id}.",
+            )
+
+    exists = (
+        db.query(LegalOneTaskSubType.id)
+        .filter(LegalOneTaskSubType.external_id == task_subtype_external_id)
+        .first()
+    )
+    if not exists:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"task_subtype_external_id não encontrado: "
+                f"{task_subtype_external_id}."
+            ),
+        )
+
+    exists = (
+        db.query(LegalOneUser.id)
+        .filter(LegalOneUser.external_id == responsible_user_external_id)
+        .first()
+    )
+    if not exists:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"responsible_user_external_id não encontrado: "
+                f"{responsible_user_external_id}."
+            ),
+        )
+
+
+class TemplateCreate(TemplateBase):
+    """Body do POST /prazos-iniciais/templates."""
+
+
+class TemplateUpdate(BaseModel):
+    """
+    Body do PATCH /prazos-iniciais/templates/{id}.
+
+    Todos os campos são opcionais — só o que vier é atualizado. Validações
+    de tipo/subtipo são re-executadas considerando os valores resultantes
+    (os que vieram + os atuais do registro) pra garantir consistência.
+    """
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    tipo_prazo: Optional[str] = Field(default=None, max_length=64)
+    subtipo: Optional[str] = Field(default=None, max_length=128)
+    office_external_id: Optional[int] = Field(default=None, ge=1)
+    task_subtype_external_id: Optional[int] = Field(default=None, ge=1)
+    responsible_user_external_id: Optional[int] = Field(default=None, ge=1)
+    priority: Optional[str] = None
+    due_business_days: Optional[int] = Field(default=None, ge=0, le=365)
+    due_date_reference: Optional[str] = None
+    description_template: Optional[str] = None
+    notes_template: Optional[str] = None
+    is_active: Optional[bool] = None
+    # Sentinelas pra permitir explicitamente "setar para NULL" em PATCH.
+    # Na prática os campos acima já são Optional; se o cliente quer zerar,
+    # manda null. Pra diferenciar "não mexer" de "zerar" usamos
+    # `model_fields_set` (Pydantic v2) no handler.
+
+    class Config:
+        extra = "forbid"
+
+
+class TemplateResponse(BaseModel):
+    id: int
+    name: str
+    tipo_prazo: str
+    subtipo: Optional[str]
+    office_external_id: Optional[int]
+    office_name: Optional[str] = None
+    task_subtype_external_id: int
+    task_subtype_name: Optional[str] = None
+    responsible_user_external_id: int
+    responsible_user_name: Optional[str] = None
+    priority: str
+    due_business_days: int
+    due_date_reference: str
+    description_template: Optional[str]
+    notes_template: Optional[str]
+    is_active: bool
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+
+
+class TemplateListResponse(BaseModel):
+    total: int
+    items: list[TemplateResponse]
+
+
+def _template_to_response(
+    t: PrazoInicialTaskTemplate,
+    *,
+    office_name: Optional[str] = None,
+    task_subtype_name: Optional[str] = None,
+    responsible_user_name: Optional[str] = None,
+) -> TemplateResponse:
+    return TemplateResponse(
+        id=t.id,
+        name=t.name,
+        tipo_prazo=t.tipo_prazo,
+        subtipo=t.subtipo,
+        office_external_id=t.office_external_id,
+        office_name=office_name,
+        task_subtype_external_id=t.task_subtype_external_id,
+        task_subtype_name=task_subtype_name,
+        responsible_user_external_id=t.responsible_user_external_id,
+        responsible_user_name=responsible_user_name,
+        priority=t.priority,
+        due_business_days=t.due_business_days,
+        due_date_reference=t.due_date_reference,
+        description_template=t.description_template,
+        notes_template=t.notes_template,
+        is_active=t.is_active,
+        created_at=t.created_at,
+        updated_at=t.updated_at,
+    )
+
+
+def _enrich_template_response(
+    db: Session, t: PrazoInicialTaskTemplate
+) -> TemplateResponse:
+    """
+    Resolve os nomes legíveis de office / task_subtype / responsável pra
+    exibir na UI sem forçar join. Um SELECT por campo (3 queries no pior
+    caso) — trivial pra um CRUD de baixa frequência.
+    """
+    office_name = None
+    if t.office_external_id is not None:
+        office = (
+            db.query(LegalOneOffice.name)
+            .filter(LegalOneOffice.external_id == t.office_external_id)
+            .first()
+        )
+        office_name = office[0] if office else None
+    sub = (
+        db.query(LegalOneTaskSubType.name)
+        .filter(LegalOneTaskSubType.external_id == t.task_subtype_external_id)
+        .first()
+    )
+    user = (
+        db.query(LegalOneUser.name)
+        .filter(LegalOneUser.external_id == t.responsible_user_external_id)
+        .first()
+    )
+    return _template_to_response(
+        t,
+        office_name=office_name,
+        task_subtype_name=sub[0] if sub else None,
+        responsible_user_name=user[0] if user else None,
+    )
+
+
+@router.get(
+    "/templates",
+    response_model=TemplateListResponse,
+    summary="Lista templates de tarefa (prazos iniciais), com filtros.",
+)
+def list_templates(
+    tipo_prazo: Optional[str] = Query(default=None),
+    subtipo: Optional[str] = Query(default=None),
+    office_external_id: Optional[int] = Query(default=None),
+    is_active: Optional[bool] = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    """
+    Lista templates. Filtros opcionais combinam com AND. Ordenação estável
+    por (tipo_prazo, subtipo NULLs first, office NULLs last, id) pra
+    facilitar leitura na UI de admin.
+    """
+    q = db.query(PrazoInicialTaskTemplate)
+    if tipo_prazo:
+        q = q.filter(PrazoInicialTaskTemplate.tipo_prazo == tipo_prazo)
+    if subtipo is not None:
+        # Cliente mandou string vazia → filtra por subtipo NULL.
+        if subtipo == "":
+            q = q.filter(PrazoInicialTaskTemplate.subtipo.is_(None))
+        else:
+            q = q.filter(PrazoInicialTaskTemplate.subtipo == subtipo)
+    if office_external_id is not None:
+        if office_external_id == 0:
+            # Convenção: office_external_id=0 → global (NULL).
+            q = q.filter(PrazoInicialTaskTemplate.office_external_id.is_(None))
+        else:
+            q = q.filter(
+                PrazoInicialTaskTemplate.office_external_id == office_external_id
+            )
+    if is_active is not None:
+        q = q.filter(PrazoInicialTaskTemplate.is_active.is_(is_active))
+
+    total = q.count()
+    items = (
+        q.order_by(
+            PrazoInicialTaskTemplate.tipo_prazo.asc(),
+            PrazoInicialTaskTemplate.subtipo.asc().nullsfirst(),
+            PrazoInicialTaskTemplate.office_external_id.asc().nullslast(),
+            PrazoInicialTaskTemplate.id.asc(),
+        )
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return TemplateListResponse(
+        total=total,
+        items=[_enrich_template_response(db, t) for t in items],
+    )
+
+
+@router.post(
+    "/templates",
+    response_model=TemplateResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Cria um template de tarefa (prazos iniciais).",
+)
+def create_template(
+    body: TemplateCreate,
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    _validate_tipo_subtipo(body.tipo_prazo, body.subtipo)
+    _validate_priority_and_due_ref(body.priority, body.due_date_reference)
+    _validate_foreign_keys(
+        db,
+        office_external_id=body.office_external_id,
+        task_subtype_external_id=body.task_subtype_external_id,
+        responsible_user_external_id=body.responsible_user_external_id,
+    )
+
+    # Checagem explícita da UniqueConstraint pra devolver 409 clean.
+    existing = (
+        db.query(PrazoInicialTaskTemplate.id)
+        .filter(
+            PrazoInicialTaskTemplate.tipo_prazo == body.tipo_prazo,
+            (
+                PrazoInicialTaskTemplate.subtipo == body.subtipo
+                if body.subtipo is not None
+                else PrazoInicialTaskTemplate.subtipo.is_(None)
+            ),
+            (
+                PrazoInicialTaskTemplate.office_external_id == body.office_external_id
+                if body.office_external_id is not None
+                else PrazoInicialTaskTemplate.office_external_id.is_(None)
+            ),
+        )
+        .first()
+    )
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Já existe template com (tipo_prazo={body.tipo_prazo}, "
+                f"subtipo={body.subtipo}, office_external_id="
+                f"{body.office_external_id}). id existente: {existing[0]}."
+            ),
+        )
+
+    template = PrazoInicialTaskTemplate(
+        name=body.name,
+        tipo_prazo=body.tipo_prazo,
+        subtipo=body.subtipo,
+        office_external_id=body.office_external_id,
+        task_subtype_external_id=body.task_subtype_external_id,
+        responsible_user_external_id=body.responsible_user_external_id,
+        priority=body.priority,
+        due_business_days=body.due_business_days,
+        due_date_reference=body.due_date_reference,
+        description_template=body.description_template,
+        notes_template=body.notes_template,
+        is_active=body.is_active,
+    )
+    db.add(template)
+    db.commit()
+    db.refresh(template)
+    return _enrich_template_response(db, template)
+
+
+@router.get(
+    "/templates/{template_id}",
+    response_model=TemplateResponse,
+    summary="Detalhe de um template.",
+)
+def get_template(
+    template_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    template = db.get(PrazoInicialTaskTemplate, template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="Template não encontrado.")
+    return _enrich_template_response(db, template)
+
+
+@router.patch(
+    "/templates/{template_id}",
+    response_model=TemplateResponse,
+    summary="Atualiza parcialmente um template (campos omitidos ficam como estão).",
+)
+def update_template(
+    body: TemplateUpdate,
+    template_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    template = db.get(PrazoInicialTaskTemplate, template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="Template não encontrado.")
+
+    fields_set = body.model_fields_set  # campos realmente enviados
+
+    # ── Resolve valores efetivos (merge do que veio com o atual) ─────
+    eff_tipo = body.tipo_prazo if "tipo_prazo" in fields_set else template.tipo_prazo
+    eff_subtipo = body.subtipo if "subtipo" in fields_set else template.subtipo
+    eff_office = (
+        body.office_external_id
+        if "office_external_id" in fields_set
+        else template.office_external_id
+    )
+    eff_task_sub = (
+        body.task_subtype_external_id
+        if "task_subtype_external_id" in fields_set
+        else template.task_subtype_external_id
+    )
+    eff_resp = (
+        body.responsible_user_external_id
+        if "responsible_user_external_id" in fields_set
+        else template.responsible_user_external_id
+    )
+    eff_priority = body.priority if "priority" in fields_set else template.priority
+    eff_due_ref = (
+        body.due_date_reference
+        if "due_date_reference" in fields_set
+        else template.due_date_reference
+    )
+
+    _validate_tipo_subtipo(eff_tipo, eff_subtipo)
+    _validate_priority_and_due_ref(eff_priority, eff_due_ref)
+    # FKs: só valida o que mudou (reduz queries).
+    _validate_foreign_keys(
+        db,
+        office_external_id=(
+            eff_office
+            if "office_external_id" in fields_set
+            else None  # None aqui = não re-valida
+        ),
+        task_subtype_external_id=eff_task_sub,
+        responsible_user_external_id=eff_resp,
+    )
+
+    # Conflito de unicidade se a chave (tipo, subtipo, office) mudou.
+    key_changed = any(
+        k in fields_set for k in ("tipo_prazo", "subtipo", "office_external_id")
+    )
+    if key_changed:
+        conflict = (
+            db.query(PrazoInicialTaskTemplate.id)
+            .filter(
+                PrazoInicialTaskTemplate.id != template_id,
+                PrazoInicialTaskTemplate.tipo_prazo == eff_tipo,
+                (
+                    PrazoInicialTaskTemplate.subtipo == eff_subtipo
+                    if eff_subtipo is not None
+                    else PrazoInicialTaskTemplate.subtipo.is_(None)
+                ),
+                (
+                    PrazoInicialTaskTemplate.office_external_id == eff_office
+                    if eff_office is not None
+                    else PrazoInicialTaskTemplate.office_external_id.is_(None)
+                ),
+            )
+            .first()
+        )
+        if conflict:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Outro template já ocupa (tipo_prazo={eff_tipo}, "
+                    f"subtipo={eff_subtipo}, office_external_id={eff_office}): "
+                    f"id={conflict[0]}."
+                ),
+            )
+
+    # Aplica as mudanças.
+    for fname in fields_set:
+        setattr(template, fname, getattr(body, fname))
+
+    db.commit()
+    db.refresh(template)
+    return _enrich_template_response(db, template)
+
+
+@router.delete(
+    "/templates/{template_id}",
+    response_model=TemplateResponse,
+    summary="Soft-delete de um template (is_active=False).",
+)
+def delete_template(
+    template_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    """
+    Soft-delete: marca `is_active=False` em vez de apagar. Templates
+    inativos não casam mais sugestões novas, mas permanecem disponíveis
+    para auditoria das sugestões antigas que apontam para eles via
+    `payload_proposto.template_id`.
+    """
+    template = db.get(PrazoInicialTaskTemplate, template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="Template não encontrado.")
+    template.is_active = False
+    db.commit()
+    db.refresh(template)
+    return _enrich_template_response(db, template)

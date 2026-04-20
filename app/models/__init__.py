@@ -23,3 +23,4 @@ from .prazo_inicial import (
     PrazoInicialIntake,
     PrazoInicialSugestao,
 )
+from .prazo_inicial_task_template import PrazoInicialTaskTemplate

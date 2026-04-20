@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.prazo_inicial import (
+    INTAKE_STATUS_AWAITING_TEMPLATE_CONFIG,
     INTAKE_STATUS_CLASSIFICATION_ERROR,
     INTAKE_STATUS_CLASSIFIED,
     INTAKE_STATUS_IN_CLASSIFICATION,
@@ -48,6 +49,7 @@ from app.models.prazo_inicial import (
     PrazoInicialIntake,
     PrazoInicialSugestao,
 )
+from app.models.prazo_inicial_task_template import PrazoInicialTaskTemplate
 from app.services.classifier.ai_client import AnthropicClassifierClient
 from app.services.classifier.prazos_iniciais_prompts import (
     SYSTEM_PROMPT,
@@ -68,6 +70,7 @@ from app.services.classifier.prazos_iniciais_schema import (
     PrazoInicialClassificationResponse,
 )
 from app.services.prazos_iniciais.prazo_calculator import calcular_prazo_seguro
+from app.services.prazos_iniciais.template_matching_service import match_templates
 
 logger = logging.getLogger(__name__)
 
@@ -320,7 +323,7 @@ class PrazosIniciaisBatchClassifier:
 
             # Materializa novas sugestões.
             try:
-                created = self._materialize_sugestoes(intake, response_obj)
+                mat = self._materialize_sugestoes(intake, response_obj)
             except Exception as exc:
                 err_msg = f"Falha ao materializar sugestões: {exc}"[:1000]
                 logger.exception("Erro materializando intake %s: %s", intake_id, exc)
@@ -329,13 +332,25 @@ class PrazosIniciaisBatchClassifier:
                 failed += 1
                 continue
 
-            intake.status = INTAKE_STATUS_CLASSIFIED
+            created = mat["created"]
+            # Se NENHUM bloco casou template (todas as sugestões ficaram
+            # com task_subtype_id NULL), trava o intake em
+            # AGUARDANDO_CONFIG_TEMPLATE até o operador cadastrar
+            # template ou resolver manualmente.
+            if mat["blocks_with_templates"] == 0 and created > 0:
+                intake.status = INTAKE_STATUS_AWAITING_TEMPLATE_CONFIG
+            else:
+                intake.status = INTAKE_STATUS_CLASSIFIED
             intake.error_message = None
             total_sugestoes += created
             succeeded += 1
             logger.debug(
-                "Intake %s classificado → %d sugestão(ões) criadas.",
-                intake_id, created,
+                "Intake %s %s → %d sugestão(ões) criadas (%d com template, %d sem).",
+                intake_id,
+                intake.status,
+                created,
+                mat["blocks_with_templates"],
+                mat["blocks_without_templates"],
             )
 
         self.db.commit()
@@ -429,35 +444,87 @@ class PrazosIniciaisBatchClassifier:
         self,
         intake: PrazoInicialIntake,
         response: PrazoInicialClassificationResponse,
-    ) -> int:
+    ) -> dict[str, int]:
         """
         Cria as N sugestões na tabela `prazo_inicial_sugestoes` a partir
-        da resposta da IA. Retorna a quantidade criada.
+        da resposta da IA.
 
-        `task_type_id` / `task_subtype_id` ficam NULL — serão preenchidos
-        em sessão dedicada à taxonomia.
-        `data_final_calculada` também fica NULL — preenchida pelo
-        calculador de prazo (módulo separado).
+        Para cada bloco com `aplica=True`:
+          1. Monta uma sugestão "base" com dados vindos da IA (prazo,
+             data_base, data_final_calculada, audiência, etc.).
+          2. Deriva `subtipo` a partir do bloco (AUDIENCIA.tipo |
+             JULGAMENTO.tipo | None para os demais).
+          3. Casa templates ativos em `prazo_inicial_task_templates` via
+             `match_templates(tipo_prazo, subtipo, intake.office_id)`.
+          4. Se N templates casaram → cria N sugestões, cada uma com
+             task_subtype_id / responsavel_sugerido_id / priority /
+             due_business_days vindos do template e os templates de
+             descrição/notas renderizados em `payload_proposto`.
+          5. Se zero casou → cria UMA sugestão "fallback" com
+             task_subtype_id NULL.
+
+        Retorna um dict de métricas:
+            {
+              "created": total de sugestões persistidas,
+              "blocks_with_templates": quantos blocos tiveram ao menos 1
+                  template casando,
+              "blocks_without_templates": quantos blocos ficaram no
+                  fallback (NULL).
+            }
         """
         confianca = response.confianca_geral
         observacoes = response.observacoes
         criadas = 0
+        blocks_with = 0
+        blocks_without = 0
 
         for tipo_prazo, bloco in response.blocos_aplicaveis():
-            sugestao = self._build_sugestao(
+            base = self._build_sugestao_base(
                 intake_id=intake.id,
                 tipo_prazo=tipo_prazo,
                 bloco=bloco,
                 confianca_geral=confianca,
                 observacoes=observacoes,
             )
-            self.db.add(sugestao)
-            criadas += 1
+            subtipo_match = _derive_subtipo_for_matching(tipo_prazo, bloco)
+            templates = match_templates(
+                self.db,
+                tipo_prazo=tipo_prazo,
+                subtipo=subtipo_match,
+                office_external_id=intake.office_id,
+            )
 
-        return criadas
+            if templates:
+                blocks_with += 1
+                for template in templates:
+                    sugestao = _clone_sugestao(base)
+                    _apply_template_to_sugestao(
+                        sugestao=sugestao,
+                        template=template,
+                        intake=intake,
+                        tipo_prazo=tipo_prazo,
+                        bloco=bloco,
+                    )
+                    self.db.add(sugestao)
+                    criadas += 1
+            else:
+                blocks_without += 1
+                # Fallback sem template — marca o payload pra UI de revisão
+                # saber que ainda precisa de configuração.
+                payload = dict(base.payload_proposto or {})
+                payload["template_match"] = "not_found"
+                base.payload_proposto = payload or None
+                self.db.add(base)
+                criadas += 1
+
+        return {
+            "created": criadas,
+            "blocks_with_templates": blocks_with,
+            "blocks_without_templates": blocks_without,
+        }
 
     @staticmethod
-    def _build_sugestao(
+    def _build_sugestao_base(
         intake_id: int,
         tipo_prazo: str,
         bloco: Any,
@@ -465,10 +532,13 @@ class PrazosIniciaisBatchClassifier:
         observacoes: Optional[str],
     ) -> PrazoInicialSugestao:
         """
-        Mapeia um bloco da resposta da IA para uma linha de
-        `prazo_inicial_sugestao`. Cada tipo tem campos extras próprios
-        (objeto, assunto, audiência) — guardados em `payload_proposto`
-        pra revisão humana.
+        Mapeia um bloco da resposta da IA para uma linha "base" de
+        `prazo_inicial_sugestao`, SEM aplicar template. Cada tipo tem
+        campos extras próprios (objeto, assunto, audiência) guardados em
+        `payload_proposto`.
+
+        O chamador (`_materialize_sugestoes`) depois clona essa base por
+        template casado e aplica o mapeamento L1 em cima.
         """
         sugestao = PrazoInicialSugestao(
             intake_id=intake_id,
@@ -482,7 +552,6 @@ class PrazosIniciaisBatchClassifier:
             payload["observacoes_ia"] = observacoes
 
         if tipo_prazo == TIPO_PRAZO_SEM_DETERMINACAO:
-            # Bloco aqui é a própria response — só registra a flag.
             payload["sem_determinacao"] = True
             sugestao.payload_proposto = payload
             return sugestao
@@ -499,8 +568,6 @@ class PrazosIniciaisBatchClassifier:
             return sugestao
 
         if tipo_prazo == TIPO_PRAZO_JULGAMENTO and isinstance(bloco, BlocoJulgamento):
-            # Julgamento não tem prazo no sentido contagem; usamos `data_base`
-            # pra registrar a data da sentença/acórdão.
             sugestao.data_base = bloco.data
             sugestao.subtipo = bloco.tipo
             payload["tipo_julgamento"] = bloco.tipo
@@ -525,7 +592,6 @@ class PrazosIniciaisBatchClassifier:
             payload["assunto"] = bloco.assunto
             sugestao.subtipo = (bloco.assunto or "")[:128] or None
         elif isinstance(bloco, BlocoContestar):
-            # Sem campos extras específicos — payload vazio é ok.
             pass
 
         sugestao.payload_proposto = payload or None
@@ -570,3 +636,144 @@ class PrazosIniciaisBatchClassifier:
             "ended_at": batch.ended_at.isoformat() if batch.ended_at else None,
             "applied_at": batch.applied_at.isoformat() if batch.applied_at else None,
         }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Helpers de materialização (casamento de template → sugestão)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _derive_subtipo_for_matching(tipo_prazo: str, bloco: Any) -> Optional[str]:
+    """
+    Subtipo usado no `match_templates`. Só AUDIENCIA e JULGAMENTO têm
+    subtipo categorizado no schema — os demais casam apenas pelo
+    `tipo_prazo`, então retornam None (template com subtipo=NULL).
+    """
+    if tipo_prazo == TIPO_PRAZO_AUDIENCIA and isinstance(bloco, BlocoAudiencia):
+        return bloco.tipo
+    if tipo_prazo == TIPO_PRAZO_JULGAMENTO and isinstance(bloco, BlocoJulgamento):
+        return bloco.tipo
+    return None
+
+
+def _clone_sugestao(base: PrazoInicialSugestao) -> PrazoInicialSugestao:
+    """
+    Clona os campos da sugestão "base" (vindos da IA) para uma nova
+    instância — uma por template casado. Campos de mapeamento L1 ficam
+    em branco para serem preenchidos por `_apply_template_to_sugestao`.
+    """
+    payload = dict(base.payload_proposto) if base.payload_proposto else None
+    return PrazoInicialSugestao(
+        intake_id=base.intake_id,
+        tipo_prazo=base.tipo_prazo,
+        subtipo=base.subtipo,
+        data_base=base.data_base,
+        prazo_dias=base.prazo_dias,
+        prazo_tipo=base.prazo_tipo,
+        data_final_calculada=base.data_final_calculada,
+        audiencia_data=base.audiencia_data,
+        audiencia_hora=base.audiencia_hora,
+        audiencia_link=base.audiencia_link,
+        confianca=base.confianca,
+        justificativa=base.justificativa,
+        payload_proposto=payload,
+    )
+
+
+def _apply_template_to_sugestao(
+    *,
+    sugestao: PrazoInicialSugestao,
+    template: PrazoInicialTaskTemplate,
+    intake: PrazoInicialIntake,
+    tipo_prazo: str,
+    bloco: Any,
+) -> None:
+    """
+    Preenche os campos L1 da sugestão com dados do template e renderiza
+    os placeholders dos campos `description_template` / `notes_template`.
+    """
+    sugestao.task_subtype_id = template.task_subtype_external_id
+    sugestao.responsavel_sugerido_id = template.responsible_user_external_id
+
+    payload: dict[str, Any] = dict(sugestao.payload_proposto or {})
+    payload["template_id"] = template.id
+    payload["template_name"] = template.name
+    payload["priority"] = template.priority
+    payload["due_business_days"] = template.due_business_days
+    payload["due_date_reference"] = template.due_date_reference
+    payload["template_match"] = (
+        "specific" if template.office_external_id is not None else "global"
+    )
+
+    render_ctx = _build_render_context(
+        intake=intake,
+        sugestao=sugestao,
+        tipo_prazo=tipo_prazo,
+        bloco=bloco,
+    )
+    if template.description_template:
+        payload["description"] = _render_template(
+            template.description_template, render_ctx
+        )
+    if template.notes_template:
+        payload["notes"] = _render_template(template.notes_template, render_ctx)
+
+    sugestao.payload_proposto = payload or None
+
+
+def _build_render_context(
+    *,
+    intake: PrazoInicialIntake,
+    sugestao: PrazoInicialSugestao,
+    tipo_prazo: str,
+    bloco: Any,
+) -> dict[str, str]:
+    """
+    Monta o dict de placeholders para substituição em description_template
+    e notes_template. Todos os valores são string (ISO p/ datas), e valores
+    ausentes caem em string vazia via `defaultdict` no `_render_template`.
+    """
+    def _iso(value: Any) -> str:
+        return value.isoformat() if value is not None else ""
+
+    ctx: dict[str, str] = {
+        "cnj": intake.cnj_number or "",
+        "tipo_prazo": tipo_prazo or "",
+        "subtipo": sugestao.subtipo or "",
+        "data_base": _iso(sugestao.data_base),
+        "data_final": _iso(sugestao.data_final_calculada),
+        "prazo_dias": str(sugestao.prazo_dias) if sugestao.prazo_dias is not None else "",
+        "prazo_tipo": sugestao.prazo_tipo or "",
+        "audiencia_data": _iso(sugestao.audiencia_data),
+        "audiencia_hora": _iso(sugestao.audiencia_hora),
+        "audiencia_link": sugestao.audiencia_link or "",
+    }
+
+    if isinstance(bloco, BlocoLiminar):
+        ctx["objeto"] = bloco.objeto or ""
+    if isinstance(bloco, BlocoManifestacaoAvulsa):
+        ctx["assunto"] = bloco.assunto or ""
+    if isinstance(bloco, BlocoAudiencia):
+        ctx["audiencia_tipo"] = bloco.tipo or ""
+        ctx["audiencia_endereco"] = bloco.endereco or ""
+    if isinstance(bloco, BlocoJulgamento):
+        ctx["julgamento_tipo"] = bloco.tipo or ""
+        ctx["julgamento_data"] = _iso(bloco.data)
+    return ctx
+
+
+def _render_template(text: str, ctx: dict[str, str]) -> str:
+    """
+    Renderiza `text` com placeholders `{nome}` usando `ctx`. Placeholders
+    ausentes viram string vazia (via defaultdict) em vez de levantar
+    KeyError — operador ajusta depois na tela de revisão.
+    """
+    from collections import defaultdict
+
+    safe = defaultdict(str, ctx)
+    try:
+        return text.format_map(safe)
+    except (IndexError, ValueError):
+        # format_map cospe erro quando o texto tem chaves malformadas
+        # (ex: "{" sozinho). Retorna como está — melhor do que quebrar.
+        return text
