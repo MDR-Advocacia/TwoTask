@@ -82,14 +82,14 @@ class UserWithSquads(BaseModel):
     def squads(self) -> List[UserSquadInfo]:
         """
         Calcula a lista de squads únicos aos quais o usuário pertence.
-        A propriedade 'members' é carregada via joinedload na query da API.
+        A propriedade 'squad_members' é carregada via joinedload na query da API.
         """
-        if not hasattr(self, 'members') or not self.members:
+        if not hasattr(self, 'squad_members') or not self.squad_members:
             return []
-        
-        squad_dict = {member.squad.id: member.squad for member in self.members if member.squad}
+
+        squad_dict = {member.squad.id: member.squad for member in self.squad_members if member.squad}
         sorted_squads = sorted(squad_dict.values(), key=lambda s: s.name)
-        
+
         return [UserSquadInfo.from_orm(s) for s in sorted_squads]
 
     model_config = ConfigDict(from_attributes=True, arbitrary_types_allowed=True)

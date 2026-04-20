@@ -63,7 +63,7 @@ function AppContent() {
             <Route path="/batches" element={<BatchExecutionsPage />} />
             <Route path="/prazos-iniciais" element={<PrazosIniciaisPage />} />
             <Route
-              path="/admin/prazos-iniciais/templates"
+              path="/prazos-iniciais/templates"
               element={<PrazosIniciaisTemplatesAdminPage />}
             />
           </Route>

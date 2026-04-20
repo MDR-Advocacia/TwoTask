@@ -7,6 +7,7 @@ from typing import List
 from app.core.dependencies import get_db
 from app.core import auth
 from app.models import legal_one as legal_one_models
+from app.models import rules as rules_models
 from app.api.v1 import schemas
 
 router = APIRouter()
@@ -28,7 +29,10 @@ def get_users_with_squads(db: Session = Depends(get_db)):
     """
     users = (
         db.query(legal_one_models.LegalOneUser)
-        .options(joinedload(legal_one_models.LegalOneUser.members).joinedload(legal_one_models.SquadMember.squad))
+        .options(
+            joinedload(legal_one_models.LegalOneUser.squad_members)
+            .joinedload(rules_models.SquadMember.squad)
+        )
         .filter(legal_one_models.LegalOneUser.is_active == True)
         .order_by(legal_one_models.LegalOneUser.name)
         .all()

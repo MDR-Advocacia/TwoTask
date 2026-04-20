@@ -265,12 +265,12 @@ export default function PrazosIniciaisTemplatesAdminPage() {
       <div className="flex items-center justify-between">
         <div>
           <div className="flex items-center gap-2 text-sm text-muted-foreground mb-1">
-            <Link to="/admin" className="hover:underline inline-flex items-center gap-1">
+            <Link to="/prazos-iniciais" className="hover:underline inline-flex items-center gap-1">
               <ArrowLeft className="h-3 w-3" />
-              Admin
+              Prazos Iniciais
             </Link>
             <span>/</span>
-            <span>Templates de Prazos Iniciais</span>
+            <span>Templates</span>
           </div>
           <h1 className="text-2xl font-bold">Templates de Prazos Iniciais</h1>
           <p className="text-muted-foreground text-sm">
