@@ -40,6 +40,7 @@ def login_for_access_token(
         role=user.role,
         can_schedule_batch=user.can_schedule_batch,
         can_use_publications=user.can_use_publications,
+        can_use_prazos_iniciais=getattr(user, "can_use_prazos_iniciais", False),
         must_change_password=user.must_change_password,
     )
 

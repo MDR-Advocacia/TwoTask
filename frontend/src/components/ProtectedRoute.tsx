@@ -8,7 +8,14 @@ import { useEffect, useState } from 'react';
 import { useToast } from '@/hooks/use-toast';
 
 const ProtectedRoute = () => {
-  const { isAuthenticated, isLoading, canScheduleBatch, canUsePublications, isAdmin } = useAuth();
+  const {
+    isAuthenticated,
+    isLoading,
+    canScheduleBatch,
+    canUsePublications,
+    canUsePrazosIniciais,
+    isAdmin,
+  } = useAuth();
   const { pathname } = useLocation();
   const { toast } = useToast();
   const [permissionDenied, setPermissionDenied] = useState(false);
@@ -37,6 +44,13 @@ const ProtectedRoute = () => {
           variant: 'destructive',
         });
         setPermissionDenied(true);
+      } else if (pathname.startsWith('/prazos-iniciais') && !canUsePrazosIniciais && !isAdmin) {
+        toast({
+          title: 'Acesso Negado',
+          description: 'Você não tem permissão para acessar Prazos Iniciais.',
+          variant: 'destructive',
+        });
+        setPermissionDenied(true);
       } else if (pathname.startsWith('/admin') && !isAdmin) {
         toast({
           title: 'Acesso Negado',
@@ -48,7 +62,7 @@ const ProtectedRoute = () => {
         setPermissionDenied(false);
       }
     }
-  }, [pathname, isLoading, isAuthenticated, canScheduleBatch, canUsePublications, isAdmin, toast]);
+  }, [pathname, isLoading, isAuthenticated, canScheduleBatch, canUsePublications, canUsePrazosIniciais, isAdmin, toast]);
 
   // Se ainda estivermos verificando a autenticação (ex: ao recarregar a página),
   // mostramos um indicador de carregamento.

@@ -10,6 +10,7 @@ interface User {
   role?: string;
   can_schedule_batch?: boolean;
   can_use_publications?: boolean;
+  can_use_prazos_iniciais?: boolean;
   must_change_password?: boolean;
 }
 
@@ -18,6 +19,7 @@ interface TokenData {
   role: string;
   can_schedule_batch: boolean;
   can_use_publications: boolean;
+  can_use_prazos_iniciais?: boolean;
   must_change_password: boolean;
   exp: number;
 }
@@ -33,6 +35,7 @@ interface AuthContextType {
   isLoading: boolean;
   canScheduleBatch: boolean;
   canUsePublications: boolean;
+  canUsePrazosIniciais: boolean;
   isAdmin: boolean;
   refreshMe: () => Promise<void>;
 }
@@ -170,6 +173,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     isLoading,
     canScheduleBatch: tokenData?.can_schedule_batch ?? false,
     canUsePublications: tokenData?.can_use_publications ?? true,
+    // Nova permissão — default false pra JWTs antigos que não carregam a claim.
+    // Usa o /me (banco) como fallback pra não exigir re-login após toggle no admin.
+    canUsePrazosIniciais:
+      user?.can_use_prazos_iniciais ?? tokenData?.can_use_prazos_iniciais ?? false,
     isAdmin: tokenData?.role === 'admin',
     refreshMe,
   };

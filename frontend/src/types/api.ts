@@ -176,3 +176,102 @@ export interface PublicationTreatmentControlResponse {
   control_file: string;
   run: PublicationTreatmentRun;
 }
+
+// ─── Prazos Iniciais ──────────────────────────────────────────────────
+
+// Mantido em sincronia com as constantes INTAKE_STATUS_* do backend
+// (app/models/prazo_inicial.py). Deixamos como string pra não quebrar
+// quando o backend adicionar novos estados durante a evolução do fluxo.
+export type PrazoInicialIntakeStatus =
+  | "RECEBIDO"
+  | "PROCESSO_NAO_ENCONTRADO"
+  | "PRONTO_PARA_CLASSIFICAR"
+  | "EM_CLASSIFICACAO"
+  | "CLASSIFICADO"
+  | "EM_REVISAO"
+  | "AGENDADO"
+  | "GED_ENVIADO"
+  | "CONCLUIDO"
+  | "ERRO_CLASSIFICACAO"
+  | "ERRO_AGENDAMENTO"
+  | "ERRO_GED"
+  | "CANCELADO"
+  | string;
+
+export interface PrazoInicialIntakeSummary {
+  id: number;
+  external_id: string;
+  cnj_number: string;
+  lawsuit_id: number | null;
+  office_id: number | null;
+  status: PrazoInicialIntakeStatus;
+  error_message: string | null;
+  pdf_filename_original: string | null;
+  pdf_bytes: number | null;
+  ged_document_id: number | null;
+  ged_uploaded_at: string | null;
+  received_at: string;
+  updated_at: string;
+  sugestoes_count: number;
+}
+
+export interface PrazoInicialParteProcessual {
+  nome: string;
+  documento?: string | null;
+}
+
+export interface PrazoInicialCapaProcesso {
+  tribunal?: string | null;
+  vara?: string | null;
+  classe?: string | null;
+  assunto?: string | null;
+  valor_causa?: number | null;
+  data_distribuicao?: string | null;
+  polo_ativo?: PrazoInicialParteProcessual[];
+  polo_passivo?: PrazoInicialParteProcessual[];
+  segredo_justica?: boolean;
+  [extra: string]: unknown;
+}
+
+export interface PrazoInicialSugestao {
+  id: number;
+  tipo_prazo: string;
+  subtipo: string | null;
+  data_base: string | null;
+  prazo_dias: number | null;
+  prazo_tipo: string | null;
+  data_final_calculada: string | null;
+  audiencia_data: string | null;
+  audiencia_hora: string | null;
+  audiencia_link: string | null;
+  confianca: string | null;
+  justificativa: string | null;
+  responsavel_sugerido_id: number | null;
+  task_type_id: number | null;
+  task_subtype_id: number | null;
+  payload_proposto: Record<string, unknown> | null;
+  review_status: string;
+  reviewed_by_email: string | null;
+  reviewed_at: string | null;
+  created_task_id: number | null;
+  created_at: string;
+}
+
+export interface PrazoInicialIntakeDetail extends PrazoInicialIntakeSummary {
+  capa_json: PrazoInicialCapaProcesso;
+  metadata_json: Record<string, unknown> | null;
+  sugestoes: PrazoInicialSugestao[];
+}
+
+export interface PrazoInicialIntakeListResponse {
+  total: number;
+  items: PrazoInicialIntakeSummary[];
+}
+
+export interface PrazoInicialIntakeFilters {
+  status?: string;
+  cnj_number?: string;
+  office_id?: number;
+  limit?: number;
+  offset?: number;
+}

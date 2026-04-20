@@ -55,6 +55,7 @@ def create_access_token(
     role: str = "user",
     can_schedule_batch: bool = False,
     can_use_publications: bool = True,
+    can_use_prazos_iniciais: bool = False,
     must_change_password: bool = False,
     expires_delta: Optional[timedelta] = None
 ) -> str:
@@ -67,6 +68,7 @@ def create_access_token(
         "role": role,
         "can_schedule_batch": can_schedule_batch,
         "can_use_publications": can_use_publications,
+        "can_use_prazos_iniciais": can_use_prazos_iniciais,
         "must_change_password": must_change_password,
     })
     return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)

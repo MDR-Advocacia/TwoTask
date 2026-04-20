@@ -1,6 +1,7 @@
 import { PropsWithChildren, useMemo } from "react";
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import {
+  CalendarClock,
   CircleUser,
   Clock,
   FileUp,
@@ -25,7 +26,7 @@ import {
 } from "./ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTrigger } from "./ui/sheet";
 
-type Permission = 'canScheduleBatch' | 'canUsePublications' | 'isAdmin';
+type Permission = 'canScheduleBatch' | 'canUsePublications' | 'canUsePrazosIniciais' | 'isAdmin';
 
 interface NavItem {
   to: string;
@@ -40,13 +41,22 @@ interface NavSection {
 }
 
 export default function Layout({ children }: PropsWithChildren) {
-  const { user, logout, canScheduleBatch, canUsePublications, isAdmin } = useAuth();
+  const {
+    user,
+    logout,
+    canScheduleBatch,
+    canUsePublications,
+    canUsePrazosIniciais,
+    isAdmin,
+  } = useAuth();
   const navigate = useNavigate();
 
   const hasPermission = (perm?: Permission) => {
     if (!perm) return true;
     if (perm === 'canScheduleBatch') return canScheduleBatch;
     if (perm === 'canUsePublications') return canUsePublications;
+    // Admin vê o item mesmo sem a flag explícita (bypass alinhado com o backend).
+    if (perm === 'canUsePrazosIniciais') return canUsePrazosIniciais || isAdmin;
     if (perm === 'isAdmin') return isAdmin;
     return false;
   };
@@ -74,6 +84,12 @@ export default function Layout({ children }: PropsWithChildren) {
       ],
     },
     {
+      title: "Prazos Iniciais",
+      items: [
+        { to: "/prazos-iniciais", icon: CalendarClock, label: "Agendar Prazos Iniciais", requirePermission: 'canUsePrazosIniciais' },
+      ],
+    },
+    {
       items: [
         { to: "/admin", icon: Users, label: "Administração", requirePermission: 'isAdmin' },
       ],
@@ -84,7 +100,7 @@ export default function Layout({ children }: PropsWithChildren) {
     return baseSections
       .map(sec => ({ ...sec, items: sec.items.filter(it => hasPermission(it.requirePermission)) }))
       .filter(sec => sec.items.length > 0);
-  }, [canScheduleBatch, canUsePublications, isAdmin]);
+  }, [canScheduleBatch, canUsePublications, canUsePrazosIniciais, isAdmin]);
 
   const handleLogout = () => {
     logout();

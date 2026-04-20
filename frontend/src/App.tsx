@@ -22,6 +22,7 @@ import ProfilePage from './pages/ProfilePage';
 import BatchExecutionsPage from './pages/BatchExecutionsPage';
 import PublicationTreatmentPage from './pages/PublicationTreatmentPage';
 import LookupByCnjPage from './pages/LookupByCnjPage';
+import PrazosIniciaisPage from './pages/PrazosIniciaisPage';
 
 // Contexto de Autenticação
 import { AuthProvider, AuthContext } from './contexts/AuthContext';
@@ -59,6 +60,7 @@ function AppContent() {
             <Route path="/publications/templates" element={<TaskTemplatesPage />} />
             <Route path="/automations" element={<AutomationsPage />} />
             <Route path="/batches" element={<BatchExecutionsPage />} />
+            <Route path="/prazos-iniciais" element={<PrazosIniciaisPage />} />
           </Route>
 
           {/* Rota para página não encontrada */}

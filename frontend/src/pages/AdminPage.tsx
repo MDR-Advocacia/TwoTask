@@ -34,6 +34,7 @@ interface AdminUser {
   role: string;
   can_schedule_batch: boolean;
   can_use_publications: boolean;
+  can_use_prazos_iniciais: boolean;
   default_office_id: number | null;
   has_password: boolean;
   must_change_password: boolean;
@@ -664,6 +665,7 @@ const UsersAndPermissions = () => {
                                 <TableHead>Papel</TableHead>
                                 <TableHead>Agendar</TableHead>
                                 <TableHead>Publicações</TableHead>
+                                <TableHead>Prazos Iniciais</TableHead>
                                 <TableHead>Escritório</TableHead>
                                 <TableHead>Ações</TableHead>
                             </TableRow>
@@ -714,6 +716,16 @@ const UsersAndPermissions = () => {
                                             />
                                         ) : (
                                             <Checkbox checked={user.can_use_publications} disabled />
+                                        )}
+                                    </TableCell>
+                                    <TableCell>
+                                        {editingUserId === user.id ? (
+                                            <Checkbox
+                                                checked={editingData.can_use_prazos_iniciais ?? false}
+                                                onCheckedChange={(c) => setEditingData({ ...editingData, can_use_prazos_iniciais: !!c })}
+                                            />
+                                        ) : (
+                                            <Checkbox checked={user.can_use_prazos_iniciais} disabled />
                                         )}
                                     </TableCell>
                                     <TableCell>

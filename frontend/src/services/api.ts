@@ -3,6 +3,10 @@ import {
   BatchExecution,
   LegalOnePositionFixControlResponse,
   LegalOnePositionFixStatus,
+  PrazoInicialIntakeDetail,
+  PrazoInicialIntakeFilters,
+  PrazoInicialIntakeListResponse,
+  PrazoInicialIntakeSummary,
   PublicationTreatmentControlResponse,
   PublicationTreatmentMonitor,
   PublicationTreatmentRun,
@@ -143,4 +147,78 @@ export async function updatePublicationTreatmentRunControl(
     body: JSON.stringify({ action }),
   });
   return expectJson<PublicationTreatmentControlResponse>(response);
+}
+
+
+// ─── Prazos Iniciais ──────────────────────────────────────────────────
+
+export async function fetchPrazosIniciaisIntakes(
+  filters: PrazoInicialIntakeFilters = {},
+): Promise<PrazoInicialIntakeListResponse> {
+  const params = new URLSearchParams();
+  if (filters.status) params.set("status", filters.status);
+  if (filters.cnj_number) params.set("cnj_number", filters.cnj_number);
+  if (typeof filters.office_id === "number") {
+    params.set("office_id", String(filters.office_id));
+  }
+  if (typeof filters.limit === "number") params.set("limit", String(filters.limit));
+  if (typeof filters.offset === "number") params.set("offset", String(filters.offset));
+
+  const qs = params.toString();
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/intakes${qs ? `?${qs}` : ""}`,
+  );
+  return expectJson<PrazoInicialIntakeListResponse>(response);
+}
+
+
+export async function fetchPrazoInicialDetail(
+  intakeId: number,
+): Promise<PrazoInicialIntakeDetail> {
+  const response = await apiFetch(`/api/v1/prazos-iniciais/intakes/${intakeId}`);
+  return expectJson<PrazoInicialIntakeDetail>(response);
+}
+
+
+export async function reprocessarPrazoInicialCnj(
+  intakeId: number,
+): Promise<PrazoInicialIntakeSummary> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/intakes/${intakeId}/reprocessar-cnj`,
+    { method: "POST" },
+  );
+  return expectJson<PrazoInicialIntakeSummary>(response);
+}
+
+
+export async function cancelarPrazoInicial(
+  intakeId: number,
+): Promise<PrazoInicialIntakeSummary> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/intakes/${intakeId}/cancelar`,
+    { method: "POST" },
+  );
+  return expectJson<PrazoInicialIntakeSummary>(response);
+}
+
+
+/**
+ * Constrói a URL absoluta do PDF do intake (usada como `href` do link "Ver PDF").
+ * O browser inclui o cookie/sessão via padrão fetch — mas neste app a auth é por
+ * Bearer em header, então o link abre numa nova aba *apenas* se o usuário estiver
+ * autenticado; caso contrário baixa o JSON de erro. Para preview confiável, usar
+ * `fetchPrazoInicialPdfBlob` + object URL.
+ */
+export function prazoInicialPdfUrl(intakeId: number): string {
+  return `/api/v1/prazos-iniciais/intakes/${intakeId}/pdf`;
+}
+
+
+export async function fetchPrazoInicialPdfBlob(intakeId: number): Promise<Blob> {
+  const response = await apiFetch(prazoInicialPdfUrl(intakeId));
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+  }
+  return response.blob();
 }
