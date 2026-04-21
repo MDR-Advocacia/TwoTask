@@ -28,6 +28,66 @@ DEFAULT_LEGAL_ONE_WEB_BASE_URL = "https://mdradvocacia.novajus.com.br"
 
 RUNNER_SUCCESS_STATUSES = {"cancelled", "already_cancelled"}
 
+# Substrings (lowercase) que classificam falhas do runner para alimentar
+# o circuit breaker e a UI:
+#  - layout_drift     → tela do L1 mudou (campo/seletor não encontrado)
+#  - auth_failure     → não autenticou (signon/login/senha/redirecionado)
+#  - timeout          → playwright/HTTP estourou timeout
+#  - verification_failed → POST passou mas o status final não bateu com o alvo
+# Falhas de dado (task_not_found, lawsuit_not_found) já vêm com `reason`
+# explícito do _resolve_target_task e não passam por aqui.
+LAYOUT_DRIFT_HINTS = (
+    "selector",
+    "selectorerror",
+    "locator",
+    "waiting for selector",
+    "no element found",
+    "element is not attached",
+    "element is not visible",
+    "element is not enabled",
+    "expected to find",
+    "form not found",
+    "not visible",
+    "not editable",
+    "cannot click",
+    "is not clickable",
+    "campo não encontrado",
+    "campo nao encontrado",
+)
+AUTH_FAILURE_HINTS = (
+    "signon",
+    "sign-on",
+    "/login",
+    "logon",
+    "credenciais",
+    "credentials",
+    "invalid credentials",
+    "unauthorized",
+    "401",
+    "403",
+    "redirected to login",
+    "redirected to /login",
+    "password",
+    "senha",
+    "autenticacao",
+    "autenticação",
+)
+TIMEOUT_HINTS = (
+    "timeout",
+    "timed out",
+    "etimedout",
+    "page.waitfor",
+    "navigation timeout",
+)
+VERIFICATION_HINTS = (
+    "verifiedstatus",
+    "status verification",
+    "verifica status",
+    "expected status",
+    "status esperado",
+    "status final diferente",
+)
+
 
 @dataclass(frozen=True)
 class LegacyTaskRunnerPaths:
@@ -72,6 +132,48 @@ class LegacyTaskCancellationService:
             return json.loads(raw)
         except (OSError, ValueError, json.JSONDecodeError):
             return fallback
+
+    @staticmethod
+    def _classify_runner_error(
+        *,
+        runner_state: Optional[str],
+        runner_item_status: Optional[str],
+        runner_error: Optional[str],
+    ) -> str:
+        """
+        Resolve uma categoria estável a partir do erro do runner Playwright.
+
+        Uso a jusante: alimentar o circuit breaker (auth_failure/timeout
+        contam, layout_drift/verification_failed não) e a UI (badge por
+        categoria em vez de stack trace cru).
+
+        Categorias:
+          - auth_failure        → infra (login OnePass falhou/redirecionou)
+          - timeout             → infra (Playwright/HTTP estourou)
+          - layout_drift        → dado/L1 mudou (seletor/elemento sumiu)
+          - verification_failed → dado (status final não bateu com o alvo)
+          - runner_error        → fallback genérico
+        """
+        if runner_item_status in {"cancelled", "already_cancelled"}:
+            return runner_item_status
+
+        text = " ".join(
+            part.lower()
+            for part in (runner_state or "", runner_item_status or "", runner_error or "")
+            if part
+        )
+        if not text.strip():
+            return "runner_error"
+
+        if any(hint in text for hint in AUTH_FAILURE_HINTS):
+            return "auth_failure"
+        if any(hint in text for hint in TIMEOUT_HINTS):
+            return "timeout"
+        if any(hint in text for hint in LAYOUT_DRIFT_HINTS):
+            return "layout_drift"
+        if any(hint in text for hint in VERIFICATION_HINTS):
+            return "verification_failed"
+        return "runner_error"
 
     @staticmethod
     def _normalize_cnj(cnj_number: Optional[str]) -> Optional[str]:
@@ -509,18 +611,30 @@ class LegacyTaskCancellationService:
         item_payload = items[0] if items else {}
         runner_item_status = item_payload.get("status")
         runner_state = payload.get("state")
+        runner_error = item_payload.get("error") or payload.get("error")
 
         success = (
             runner_state == "completed"
             and runner_item_status in RUNNER_SUCCESS_STATUSES
         )
 
+        # Em sucesso mantemos o status do runner como reason (cancelled/
+        # already_cancelled — entram em QUEUE_SUCCESS_REASONS). Em falha,
+        # classificamos a categoria do erro pra alimentar o circuit breaker
+        # (auth_failure/timeout contam, layout_drift/verification_failed não)
+        # e pra UI exibir um badge estável.
+        if success:
+            reason = runner_item_status
+        else:
+            reason = self._classify_runner_error(
+                runner_state=runner_state,
+                runner_item_status=runner_item_status,
+                runner_error=runner_error,
+            )
+
         return {
             "success": success,
-            "reason": (
-                runner_item_status
-                or ("runner_completed" if runner_state == "completed" else "runner_failed")
-            ),
+            "reason": reason,
             "cnj_number": normalized_cnj,
             "lawsuit_id": resolved_lawsuit_id,
             "task_id": resolved_task_id,
@@ -532,7 +646,7 @@ class LegacyTaskCancellationService:
             "runner_state": runner_state,
             "runner_item_status": runner_item_status,
             "runner_response": item_payload.get("response"),
-            "runner_error": item_payload.get("error"),
+            "runner_error": runner_error,
             "process_exit_code": payload.get("process_exit_code"),
             "status_file_path": str(paths.status),
             "log_file_path": str(paths.log),

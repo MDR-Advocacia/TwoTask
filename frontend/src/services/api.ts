@@ -9,6 +9,9 @@ import {
   PrazoInicialIntakeListResponse,
   PrazoInicialIntakeSummary,
   PrazoInicialLegacyTaskCancelQueueListResponse,
+  PrazoInicialLegacyTaskQueueFilters,
+  PrazoInicialLegacyTaskQueueItemActionResponse,
+  PrazoInicialLegacyTaskQueueMetrics,
   PrazoInicialLegacyTaskQueueProcessResponse,
   PrazoInicialSchedulingConfirmationPayload,
   PrazoInicialSchedulingConfirmationResponse,
@@ -237,14 +240,26 @@ export async function confirmarAgendamentoPrazoInicial(
 }
 
 
-export async function fetchPrazosIniciaisLegacyTaskCancelQueue(
-  filters: { queue_status?: string; limit?: number } = {},
-): Promise<PrazoInicialLegacyTaskCancelQueueListResponse> {
+function _buildLegacyQueueParams(
+  filters: PrazoInicialLegacyTaskQueueFilters,
+): URLSearchParams {
   const params = new URLSearchParams();
   if (filters.queue_status) params.set("queue_status", filters.queue_status);
   if (typeof filters.limit === "number") params.set("limit", String(filters.limit));
+  if (typeof filters.intake_id === "number") {
+    params.set("intake_id", String(filters.intake_id));
+  }
+  if (filters.cnj_number) params.set("cnj_number", filters.cnj_number);
+  if (filters.since) params.set("since", filters.since);
+  if (filters.until) params.set("until", filters.until);
+  return params;
+}
 
-  const qs = params.toString();
+
+export async function fetchPrazosIniciaisLegacyTaskCancelQueue(
+  filters: PrazoInicialLegacyTaskQueueFilters = {},
+): Promise<PrazoInicialLegacyTaskCancelQueueListResponse> {
+  const qs = _buildLegacyQueueParams(filters).toString();
   const response = await apiFetch(
     `/api/v1/prazos-iniciais/legacy-task-cancel-queue${qs ? `?${qs}` : ""}`,
   );
@@ -260,6 +275,59 @@ export async function processPrazosIniciaisLegacyTaskCancelQueue(
     { method: "POST" },
   );
   return expectJson<PrazoInicialLegacyTaskQueueProcessResponse>(response);
+}
+
+
+export async function fetchPrazosIniciaisLegacyTaskCancelQueueMetrics(
+  hours = 24,
+): Promise<PrazoInicialLegacyTaskQueueMetrics> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/legacy-task-cancel-queue/metrics?hours=${hours}`,
+  );
+  return expectJson<PrazoInicialLegacyTaskQueueMetrics>(response);
+}
+
+
+export async function reprocessPrazosIniciaisLegacyTaskCancelItem(
+  itemId: number,
+): Promise<PrazoInicialLegacyTaskQueueItemActionResponse> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/legacy-task-cancel-queue/items/${itemId}/reprocessar`,
+    { method: "POST" },
+  );
+  return expectJson<PrazoInicialLegacyTaskQueueItemActionResponse>(response);
+}
+
+
+export async function cancelPrazosIniciaisLegacyTaskCancelItem(
+  itemId: number,
+): Promise<PrazoInicialLegacyTaskQueueItemActionResponse> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/legacy-task-cancel-queue/items/${itemId}/cancelar`,
+    { method: "POST" },
+  );
+  return expectJson<PrazoInicialLegacyTaskQueueItemActionResponse>(response);
+}
+
+
+/**
+ * Faz download do CSV da fila respeitando os mesmos filtros do GET.
+ * Retorna o Blob pra o caller transformar em download via URL.createObjectURL.
+ */
+export async function downloadPrazosIniciaisLegacyTaskCancelQueueCsv(
+  filters: PrazoInicialLegacyTaskQueueFilters = {},
+): Promise<Blob> {
+  const qs = _buildLegacyQueueParams(filters).toString();
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/legacy-task-cancel-queue/export.csv${
+      qs ? `?${qs}` : ""
+    }`,
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+  }
+  return response.blob();
 }
 
 

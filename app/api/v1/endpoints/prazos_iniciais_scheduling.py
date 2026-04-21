@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import csv
+import io
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -17,6 +21,9 @@ from app.services.prazos_iniciais.legacy_task_cancellation_service import (
 )
 from app.services.prazos_iniciais.legacy_task_queue_service import (
     PrazosIniciaisLegacyTaskQueueService,
+)
+from app.services.prazos_iniciais.legacy_task_queue_worker import (
+    get_last_tick_state,
 )
 from app.services.prazos_iniciais.scheduling_service import (
     ConfirmedSuggestionInput,
@@ -84,6 +91,10 @@ class QueueProcessResponse(BaseModel):
     items: list[dict]
 
 
+class QueueItemActionResponse(BaseModel):
+    item: dict
+
+
 @router.post(
     "/intakes/{intake_id}/confirmar-agendamento",
     response_model=ConfirmSchedulingResponse,
@@ -144,11 +155,28 @@ def confirm_intake_scheduling(
 def list_legacy_task_cancel_queue(
     queue_status: Optional[str] = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
+    intake_id: Optional[int] = Query(default=None, ge=1),
+    cnj_number: Optional[str] = Query(default=None),
+    since: Optional[datetime] = Query(
+        default=None,
+        description="Filtra itens com updated_at >= since (ISO 8601).",
+    ),
+    until: Optional[datetime] = Query(
+        default=None,
+        description="Filtra itens com updated_at <= until (ISO 8601).",
+    ),
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
     service = PrazosIniciaisLegacyTaskQueueService(db)
-    items = service.list_items(queue_status=queue_status, limit=limit)
+    items = service.list_items(
+        queue_status=queue_status,
+        limit=limit,
+        intake_id=intake_id,
+        cnj_number=cnj_number,
+        since=since,
+        until=until,
+    )
     return {
         "total": len(items),
         "items": items,
@@ -167,4 +195,120 @@ def process_legacy_task_cancel_queue(
 ):
     service = PrazosIniciaisLegacyTaskQueueService(db)
     summary = service.process_pending_items(limit=limit)
-    return QueueProcessResponse(**summary)
+    return QueueProcessResponse(
+        processed_count=summary["processed_count"], items=summary["items"]
+    )
+
+
+@router.get(
+    "/legacy-task-cancel-queue/metrics",
+    summary="Métricas agregadas da fila de cancelamento + estado do circuit breaker.",
+)
+def legacy_task_cancel_queue_metrics(
+    hours: int = Query(default=24, ge=1, le=168),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    service = PrazosIniciaisLegacyTaskQueueService(db)
+    payload = service.aggregate_metrics(hours=hours)
+    payload["last_tick"] = get_last_tick_state()
+    return payload
+
+
+@router.post(
+    "/legacy-task-cancel-queue/items/{item_id}/reprocessar",
+    response_model=QueueItemActionResponse,
+    summary="Marca um item da fila como PENDENTE pra ser reprocessado pelo worker.",
+)
+def reprocess_legacy_task_cancel_item(
+    item_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    service = PrazosIniciaisLegacyTaskQueueService(db)
+    item = service.reprocess_item(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Item não encontrado.")
+    return QueueItemActionResponse(item=item)
+
+
+@router.post(
+    "/legacy-task-cancel-queue/items/{item_id}/cancelar",
+    response_model=QueueItemActionResponse,
+    summary="Cancela manualmente um item da fila (não tenta mais reprocessar).",
+)
+def cancel_legacy_task_cancel_item(
+    item_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    service = PrazosIniciaisLegacyTaskQueueService(db)
+    item = service.cancel_item(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Item não encontrado.")
+    return QueueItemActionResponse(item=item)
+
+
+_CSV_COLUMNS = [
+    "id",
+    "intake_id",
+    "queue_status",
+    "cnj_number",
+    "lawsuit_id",
+    "office_id",
+    "legacy_task_type_external_id",
+    "legacy_task_subtype_external_id",
+    "selected_task_id",
+    "cancelled_task_id",
+    "attempt_count",
+    "last_reason",
+    "last_attempt_at",
+    "completed_at",
+    "last_error",
+    "created_at",
+    "updated_at",
+]
+
+
+@router.get(
+    "/legacy-task-cancel-queue/export.csv",
+    summary="Exporta itens da fila de cancelamento como CSV (mesmos filtros do GET).",
+)
+def export_legacy_task_cancel_queue(
+    queue_status: Optional[str] = Query(default=None),
+    limit: int = Query(default=1000, ge=1, le=5000),
+    intake_id: Optional[int] = Query(default=None, ge=1),
+    cnj_number: Optional[str] = Query(default=None),
+    since: Optional[datetime] = Query(default=None),
+    until: Optional[datetime] = Query(default=None),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    service = PrazosIniciaisLegacyTaskQueueService(db)
+    items = service.list_items(
+        queue_status=queue_status,
+        limit=limit,
+        intake_id=intake_id,
+        cnj_number=cnj_number,
+        since=since,
+        until=until,
+    )
+
+    buffer = io.StringIO()
+    # BOM pra Excel reconhecer UTF-8 corretamente.
+    buffer.write("\ufeff")
+    writer = csv.DictWriter(buffer, fieldnames=_CSV_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    for row in items:
+        writer.writerow({col: row.get(col, "") for col in _CSV_COLUMNS})
+    buffer.seek(0)
+
+    filename = (
+        f"legacy-task-cancel-queue-"
+        f"{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.csv"
+    )
+    return StreamingResponse(
+        iter([buffer.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

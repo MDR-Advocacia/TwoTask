@@ -1,10 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
+  AlertTriangle,
+  Ban,
+  Download,
   ExternalLink,
   Loader2,
   RefreshCw,
+  RotateCcw,
   Rocket,
+  ShieldAlert,
+  ShieldCheck,
   Workflow,
 } from "lucide-react";
 
@@ -12,6 +18,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import {
   Select,
@@ -23,12 +30,18 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import {
+  cancelPrazosIniciaisLegacyTaskCancelItem,
+  downloadPrazosIniciaisLegacyTaskCancelQueueCsv,
   fetchPrazosIniciaisLegacyTaskCancelQueue,
+  fetchPrazosIniciaisLegacyTaskCancelQueueMetrics,
   processPrazosIniciaisLegacyTaskCancelQueue,
+  reprocessPrazosIniciaisLegacyTaskCancelItem,
 } from "@/services/api";
 import type {
   PrazoInicialLegacyTaskCancelQueueItem,
   PrazoInicialLegacyTaskCancelQueueStatus,
+  PrazoInicialLegacyTaskQueueFilters,
+  PrazoInicialLegacyTaskQueueMetrics,
 } from "@/types/api";
 
 const STATUS_OPTIONS: { value: string; label: string }[] = [
@@ -80,9 +93,37 @@ function queueStatusClass(status: PrazoInicialLegacyTaskCancelQueueStatus) {
   return styles[status] || "bg-slate-100 text-slate-700";
 }
 
+function reasonLabel(reason: string | null | undefined) {
+  if (!reason) return "-";
+  const labels: Record<string, string> = {
+    cancelled: "Cancelada",
+    already_cancelled: "Já cancelada",
+    already_in_target_status: "Já no status alvo",
+    auth_failure: "Falha de autenticação",
+    timeout: "Timeout",
+    layout_drift: "Tela do L1 mudou",
+    verification_failed: "Verificação pós-edição falhou",
+    runner_error: "Erro do runner",
+    task_not_found: "Task não encontrada",
+    lawsuit_not_found: "Processo não encontrado",
+    exception: "Exceção Python",
+    intake_not_eligible: "Intake fora do estado AGENDADO",
+    manually_cancelled: "Cancelado manualmente",
+  };
+  return labels[reason] || reason;
+}
+
 function resolveTaskLink(item: PrazoInicialLegacyTaskCancelQueueItem): string | null {
   const lastResult = item.last_result || {};
   return lastResult.details_url || lastResult.edit_url || null;
+}
+
+function isItemReprocessable(item: PrazoInicialLegacyTaskCancelQueueItem) {
+  return item.queue_status === "FALHA" || item.queue_status === "CANCELADO";
+}
+
+function isItemCancellable(item: PrazoInicialLegacyTaskCancelQueueItem) {
+  return item.queue_status === "PENDENTE" || item.queue_status === "FALHA";
 }
 
 export default function PrazosIniciaisTreatmentPage() {
@@ -90,15 +131,41 @@ export default function PrazosIniciaisTreatmentPage() {
   const [items, setItems] = useState<PrazoInicialLegacyTaskCancelQueueItem[]>([]);
   const [total, setTotal] = useState(0);
   const [statusFilter, setStatusFilter] = useState("__all__");
+  const [cnjFilter, setCnjFilter] = useState("");
+  const [intakeFilter, setIntakeFilter] = useState("");
+  const [sinceFilter, setSinceFilter] = useState(""); // datetime-local
+  const [untilFilter, setUntilFilter] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [actionItemId, setActionItemId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [metrics, setMetrics] = useState<PrazoInicialLegacyTaskQueueMetrics | null>(null);
+  const [isCsvDownloading, setIsCsvDownloading] = useState(false);
+
+  const buildFilters = (): PrazoInicialLegacyTaskQueueFilters => {
+    const filters: PrazoInicialLegacyTaskQueueFilters = { limit: 500 };
+    if (statusFilter !== "__all__") filters.queue_status = statusFilter;
+    const trimmedCnj = cnjFilter.trim();
+    if (trimmedCnj) filters.cnj_number = trimmedCnj;
+    const trimmedIntake = intakeFilter.trim();
+    if (trimmedIntake && /^\d+$/.test(trimmedIntake)) {
+      filters.intake_id = Number(trimmedIntake);
+    }
+    if (sinceFilter) filters.since = new Date(sinceFilter).toISOString();
+    if (untilFilter) filters.until = new Date(untilFilter).toISOString();
+    return filters;
+  };
 
   const loadData = async (showToast = false) => {
     try {
-      const payload = await fetchPrazosIniciaisLegacyTaskCancelQueue({ limit: 500 });
+      const filters = buildFilters();
+      const [payload, metricsPayload] = await Promise.all([
+        fetchPrazosIniciaisLegacyTaskCancelQueue(filters),
+        fetchPrazosIniciaisLegacyTaskCancelQueueMetrics(24).catch(() => null),
+      ]);
       setItems(payload.items);
       setTotal(payload.total);
+      setMetrics(metricsPayload);
       setError(null);
       if (showToast) {
         const pendingCount = payload.items.filter((item) => item.queue_status === "PENDENTE").length;
@@ -122,16 +189,17 @@ export default function PrazosIniciaisTreatmentPage() {
     }
   };
 
+  // Reload on filter change (debounced via effect dependency).
   useEffect(() => {
     loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusFilter, cnjFilter, intakeFilter, sinceFilter, untilFilter]);
+
+  useEffect(() => {
     const intervalId = setInterval(() => loadData(), 5000);
     return () => clearInterval(intervalId);
-  }, []);
-
-  const visibleItems = useMemo(() => {
-    if (statusFilter === "__all__") return items;
-    return items.filter((item) => item.queue_status === statusFilter);
-  }, [items, statusFilter]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusFilter, cnjFilter, intakeFilter, sinceFilter, untilFilter]);
 
   const summary = useMemo(() => {
     const pending = items.filter((item) => item.queue_status === "PENDENTE").length;
@@ -140,9 +208,10 @@ export default function PrazosIniciaisTreatmentPage() {
     const failed = items.filter((item) => item.queue_status === "FALHA").length;
     const cancelled = items.filter((item) => item.queue_status === "CANCELADO").length;
     const actionable = pending + processing + failed;
-    const progress = total > 0 ? Math.round((completed / total) * 100) : 0;
+    const denom = items.length;
+    const progress = denom > 0 ? Math.round((completed / denom) * 100) : 0;
     return { pending, processing, completed, failed, cancelled, actionable, progress };
-  }, [items, total]);
+  }, [items]);
 
   const recentFailures = useMemo(
     () => items.filter((item) => item.queue_status === "FALHA").slice(0, 6),
@@ -173,8 +242,80 @@ export default function PrazosIniciaisTreatmentPage() {
     }
   };
 
+  const handleReprocessItem = async (itemId: number) => {
+    try {
+      setActionItemId(itemId);
+      await reprocessPrazosIniciaisLegacyTaskCancelItem(itemId);
+      await loadData();
+      toast({
+        title: "Item reenviado para a fila",
+        description: `Item #${itemId} voltou para o status PENDENTE; o worker vai pegá-lo no próximo tick.`,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Não foi possível reprocessar o item.";
+      toast({
+        title: "Falha ao reprocessar",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setActionItemId(null);
+    }
+  };
+
+  const handleCancelItem = async (itemId: number) => {
+    try {
+      setActionItemId(itemId);
+      await cancelPrazosIniciaisLegacyTaskCancelItem(itemId);
+      await loadData();
+      toast({
+        title: "Item cancelado",
+        description: `Item #${itemId} marcado como CANCELADO; não será mais reprocessado pelo worker.`,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Não foi possível cancelar o item.";
+      toast({
+        title: "Falha ao cancelar",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setActionItemId(null);
+    }
+  };
+
+  const handleDownloadCsv = async () => {
+    try {
+      setIsCsvDownloading(true);
+      const filters = buildFilters();
+      const blob = await downloadPrazosIniciaisLegacyTaskCancelQueueCsv({
+        ...filters,
+        limit: 5000,
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `legacy-task-cancel-queue-${new Date()
+        .toISOString()
+        .replace(/[:.]/g, "-")}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Falha ao baixar CSV.";
+      toast({
+        title: "Falha ao exportar",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsCsvDownloading(false);
+    }
+  };
+
   const summaryCards = [
-    { title: "Itens na fila", value: total },
+    { title: "Itens visíveis", value: total },
     { title: "Pendentes", value: summary.pending },
     { title: "Processando", value: summary.processing },
     { title: "Concluídos", value: summary.completed },
@@ -182,11 +323,27 @@ export default function PrazosIniciaisTreatmentPage() {
     { title: "Cancelados", value: summary.cancelled },
   ];
 
+  const cb = metrics?.circuit_breaker;
+  const cbBadge = cb ? (
+    cb.tripped ? (
+      <Badge className="gap-1 bg-red-100 text-red-800">
+        <ShieldAlert className="h-3.5 w-3.5" />
+        Circuit breaker aberto
+        {cb.tripped_until ? ` (até ${formatDateTime(cb.tripped_until)})` : ""}
+      </Badge>
+    ) : (
+      <Badge className="gap-1 bg-green-100 text-green-800">
+        <ShieldCheck className="h-3.5 w-3.5" />
+        Circuit breaker fechado ({cb.consecutive_failures}/{cb.threshold})
+      </Badge>
+    )
+  ) : null;
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
               <Workflow className="h-6 w-6" />
               Tratamento Web Agendamentos Iniciais
@@ -194,6 +351,7 @@ export default function PrazosIniciaisTreatmentPage() {
             <Badge className={summary.actionable > 0 ? "bg-amber-100 text-amber-800" : "bg-green-100 text-green-800"}>
               {summary.actionable > 0 ? `${summary.actionable} aguardando tratamento` : "Fila estabilizada"}
             </Badge>
+            {cbBadge}
           </div>
           <p className="text-muted-foreground">
             Monitora o cancelamento da task legada de Agendar Prazos depois que o operador confirma os agendamentos iniciais do processo.
@@ -208,6 +366,20 @@ export default function PrazosIniciaisTreatmentPage() {
               <Rocket className="mr-2 h-4 w-4" />
             )}
             Processar pendentes
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleDownloadCsv}
+            disabled={isCsvDownloading}
+            title="Exporta os itens com os filtros atuais (até 5.000 linhas)"
+          >
+            {isCsvDownloading ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Download className="mr-2 h-4 w-4" />
+            )}
+            Exportar CSV
           </Button>
           <Button variant="outline" size="sm" onClick={() => loadData(true)} disabled={isLoading || isSubmitting}>
             <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
@@ -224,6 +396,22 @@ export default function PrazosIniciaisTreatmentPage() {
         </Alert>
       ) : null}
 
+      {cb?.tripped ? (
+        <Alert variant="destructive">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle>Circuit breaker do worker aberto</AlertTitle>
+          <AlertDescription>
+            O worker periódico vai pular ticks
+            {cb.tripped_until ? ` até ${formatDateTime(cb.tripped_until)}` : ""}.
+            Última causa: {reasonLabel(cb.last_trip_reason)}
+            {" "}({cb.consecutive_failures} falha(s) consecutiva(s) de infraestrutura).
+            Você ainda pode processar a fila manualmente pelo botão acima — chamadas
+            iniciadas por confirmação de agendamento também passam pelo bloqueio,
+            então confira primeiro se Legal One está respondendo.
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {summaryCards.map((card) => (
           <Card key={card.title} className="border-0 shadow-sm">
@@ -236,6 +424,100 @@ export default function PrazosIniciaisTreatmentPage() {
           </Card>
         ))}
       </div>
+
+      {metrics ? (
+        <Card className="border-0 shadow-sm">
+          <CardHeader>
+            <CardTitle>Saúde do worker (últimas {metrics.window_hours}h)</CardTitle>
+            <CardDescription>
+              Snapshot agregado do circuit breaker, último tick do worker e contadores
+              da janela.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4 text-sm">
+              <div>
+                <div className="text-muted-foreground">Concluídos na janela</div>
+                <div className="text-xl font-semibold">{metrics.completed_in_window}</div>
+              </div>
+              <div>
+                <div className="text-muted-foreground">Falhas na janela</div>
+                <div className="text-xl font-semibold">{metrics.failures_in_window}</div>
+              </div>
+              <div>
+                <div className="text-muted-foreground">Latência média</div>
+                <div className="text-xl font-semibold">
+                  {metrics.avg_latency_ms_in_window != null
+                    ? `${(metrics.avg_latency_ms_in_window / 1000).toFixed(1)} s`
+                    : "—"}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  ({metrics.latency_samples_in_window} amostras)
+                </div>
+              </div>
+              <div>
+                <div className="text-muted-foreground">Rate limit configurado</div>
+                <div className="text-xl font-semibold">
+                  {metrics.rate_limit_seconds.toFixed(1)} s
+                </div>
+                <div className="text-xs text-muted-foreground">entre items</div>
+              </div>
+              <div className="md:col-span-2">
+                <div className="text-muted-foreground">Falhas por motivo (janela)</div>
+                {Object.keys(metrics.failures_by_reason_in_window).length === 0 ? (
+                  <div className="text-sm text-muted-foreground">Sem falhas no período.</div>
+                ) : (
+                  <ul className="mt-1 space-y-1">
+                    {Object.entries(metrics.failures_by_reason_in_window).map(
+                      ([reason, count]) => (
+                        <li key={reason} className="flex items-center justify-between gap-3">
+                          <span>{reasonLabel(reason)}</span>
+                          <Badge variant="outline">{count}</Badge>
+                        </li>
+                      ),
+                    )}
+                  </ul>
+                )}
+              </div>
+              <div className="md:col-span-2">
+                <div className="text-muted-foreground">Último tick do worker</div>
+                <div className="text-sm">
+                  {metrics.last_tick.tick_id ? (
+                    <>
+                      <div>
+                        Início: {formatDateTime(metrics.last_tick.started_at)} · Fim:{" "}
+                        {formatDateTime(metrics.last_tick.finished_at)}
+                      </div>
+                      <div>
+                        Processados: {metrics.last_tick.processed_count} (
+                        {metrics.last_tick.success_count} sucesso ·{" "}
+                        {metrics.last_tick.failure_count} falha) · Duração:{" "}
+                        {metrics.last_tick.duration_ms != null
+                          ? `${metrics.last_tick.duration_ms} ms`
+                          : "—"}
+                      </div>
+                      {metrics.last_tick.circuit_breaker_tripped ? (
+                        <div className="text-amber-700">
+                          Tick pulado pelo circuit breaker.
+                        </div>
+                      ) : null}
+                      {metrics.last_tick.error ? (
+                        <div className="text-red-700">
+                          Erro: {metrics.last_tick.error}
+                        </div>
+                      ) : null}
+                    </>
+                  ) : (
+                    <div className="text-muted-foreground">
+                      Worker ainda não rodou nenhum tick neste processo.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card className="border-0 shadow-sm">
         <CardHeader>
@@ -254,13 +536,75 @@ export default function PrazosIniciaisTreatmentPage() {
             <>
               <Progress value={summary.progress} className="h-3" />
               <div className="grid gap-2 text-sm text-muted-foreground md:grid-cols-2 xl:grid-cols-4">
-                <span>Progresso concluído: {summary.progress}%</span>
+                <span>Progresso (visíveis): {summary.progress}%</span>
                 <span>Com pendência: {summary.actionable}</span>
-                <span>Última carga: {formatDateTime(items[0]?.updated_at || items[0]?.created_at)}</span>
+                <span>Última atualização: {formatDateTime(items[0]?.updated_at || items[0]?.created_at)}</span>
                 <span>Execução manual disponível a qualquer momento</span>
               </div>
             </>
           )}
+        </CardContent>
+      </Card>
+
+      <Card className="border-0 shadow-sm">
+        <CardHeader>
+          <CardTitle>Filtros</CardTitle>
+          <CardDescription>
+            Os filtros são aplicados no servidor — a exportação CSV usa exatamente o mesmo
+            recorte exibido aqui.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Status</label>
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Filtrar status" />
+                </SelectTrigger>
+                <SelectContent>
+                  {STATUS_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">CNJ</label>
+              <Input
+                placeholder="Trecho do CNJ"
+                value={cnjFilter}
+                onChange={(event) => setCnjFilter(event.target.value)}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Intake ID</label>
+              <Input
+                placeholder="ex.: 1234"
+                value={intakeFilter}
+                onChange={(event) => setIntakeFilter(event.target.value)}
+                inputMode="numeric"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Atualizado desde</label>
+              <Input
+                type="datetime-local"
+                value={sinceFilter}
+                onChange={(event) => setSinceFilter(event.target.value)}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Atualizado até</label>
+              <Input
+                type="datetime-local"
+                value={untilFilter}
+                onChange={(event) => setUntilFilter(event.target.value)}
+              />
+            </div>
+          </div>
         </CardContent>
       </Card>
 
@@ -289,7 +633,7 @@ export default function PrazosIniciaisTreatmentPage() {
                       <TableRow key={`failure-${item.id}`}>
                         <TableCell className="font-mono text-xs">{formatCnj(item.cnj_number)}</TableCell>
                         <TableCell>#{item.intake_id}</TableCell>
-                        <TableCell>{item.last_reason || "-"}</TableCell>
+                        <TableCell>{reasonLabel(item.last_reason)}</TableCell>
                         <TableCell className="max-w-[280px] truncate" title={item.last_error || ""}>
                           {item.last_error || "-"}
                         </TableCell>
@@ -312,28 +656,10 @@ export default function PrazosIniciaisTreatmentPage() {
 
         <Card className="border-0 shadow-sm">
           <CardHeader>
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <CardTitle>Fila técnica</CardTitle>
-                <CardDescription>
-                  Visualização operacional dos itens gerados a partir da confirmação do agendamento.
-                </CardDescription>
-              </div>
-              <div className="w-full max-w-[220px]">
-                <Select value={statusFilter} onValueChange={setStatusFilter}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Filtrar status" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {STATUS_OPTIONS.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
+            <CardTitle>Fila técnica</CardTitle>
+            <CardDescription>
+              Visualização operacional dos itens gerados a partir da confirmação do agendamento.
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="overflow-x-auto">
@@ -349,19 +675,20 @@ export default function PrazosIniciaisTreatmentPage() {
                     <TableHead>Task cancelada</TableHead>
                     <TableHead>Último motivo</TableHead>
                     <TableHead>Atualizado</TableHead>
-                    <TableHead></TableHead>
+                    <TableHead>Ações</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {visibleItems.length === 0 ? (
+                  {items.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
                         {isLoading ? "Carregando..." : "Nenhum item encontrado para o filtro atual."}
                       </TableCell>
                     </TableRow>
                   ) : (
-                    visibleItems.map((item) => {
+                    items.map((item) => {
                       const taskLink = resolveTaskLink(item);
+                      const acting = actionItemId === item.id;
                       return (
                         <TableRow key={item.id}>
                           <TableCell className="font-mono text-xs">{formatCnj(item.cnj_number)}</TableCell>
@@ -375,22 +702,54 @@ export default function PrazosIniciaisTreatmentPage() {
                           <TableCell>{item.attempt_count}</TableCell>
                           <TableCell>{item.selected_task_id || "-"}</TableCell>
                           <TableCell>{item.cancelled_task_id || "-"}</TableCell>
-                          <TableCell>{item.last_reason || "-"}</TableCell>
+                          <TableCell>{reasonLabel(item.last_reason)}</TableCell>
                           <TableCell>{formatDateTime(item.updated_at || item.created_at)}</TableCell>
                           <TableCell>
-                            {taskLink ? (
-                              <a
-                                href={taskLink}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="inline-flex items-center gap-1 text-primary hover:underline"
-                              >
-                                Abrir
-                                <ExternalLink className="h-3.5 w-3.5" />
-                              </a>
-                            ) : (
-                              <span className="text-muted-foreground">-</span>
-                            )}
+                            <div className="flex flex-wrap items-center gap-2">
+                              {taskLink ? (
+                                <a
+                                  href={taskLink}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-1 text-primary hover:underline"
+                                  title="Abrir a task no Legal One"
+                                >
+                                  <ExternalLink className="h-3.5 w-3.5" />
+                                </a>
+                              ) : null}
+                              {isItemReprocessable(item) ? (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 px-2"
+                                  disabled={acting}
+                                  onClick={() => handleReprocessItem(item.id)}
+                                  title="Voltar item para PENDENTE para o worker reprocessar"
+                                >
+                                  {acting ? (
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  ) : (
+                                    <RotateCcw className="h-3.5 w-3.5" />
+                                  )}
+                                </Button>
+                              ) : null}
+                              {isItemCancellable(item) ? (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-7 px-2 text-red-700 hover:bg-red-50"
+                                  disabled={acting}
+                                  onClick={() => handleCancelItem(item.id)}
+                                  title="Cancelar manualmente este item (não será mais reprocessado)"
+                                >
+                                  {acting ? (
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  ) : (
+                                    <Ban className="h-3.5 w-3.5" />
+                                  )}
+                                </Button>
+                              ) : null}
+                            </div>
                           </TableCell>
                         </TableRow>
                       );

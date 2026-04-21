@@ -102,6 +102,15 @@ class Settings(BaseSettings):
     prazos_iniciais_legacy_task_cancellation_enabled: bool = True
     prazos_iniciais_legacy_task_cancellation_interval_seconds: int = 60
     prazos_iniciais_legacy_task_cancellation_batch_size: int = 10
+    # Rate limit entre items consecutivos na fila (evita martelar o Legal One
+    # quando há muitos itens pendentes). Aceita fracionário.
+    prazos_iniciais_legacy_task_cancel_rate_limit_seconds: float = 2.0
+    # Circuit breaker: após N falhas de infraestrutura (auth/timeout/exception)
+    # consecutivas, o worker pula ticks por cooldown_minutes minutos. Sucesso
+    # zera o contador; falhas de negócio (task_not_found, layout_drift) não
+    # contam porque sinalizam problemas de dado, não de conexão.
+    prazos_iniciais_legacy_task_circuit_breaker_threshold: int = 3
+    prazos_iniciais_legacy_task_circuit_breaker_cooldown_minutes: int = 10
 
     model_config = SettingsConfigDict(
         env_file=".env",

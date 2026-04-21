@@ -197,3 +197,123 @@ def test_cancel_task_short_circuits_when_task_is_already_cancelled(monkeypatch):
     assert result["runner_item_status"] == "already_cancelled"
     assert result["process_exit_code"] == 0
     assert client.last_get_task_id == task_id
+
+
+def test_cancel_task_classifies_runner_failure_as_layout_drift(monkeypatch):
+    client = DummyLegalOneClient(
+        lawsuit={"id": 68506, "identifierNumber": "0072837-30.2026.8.05.0001"},
+        tasks=[
+            {
+                "id": 279829,
+                "statusId": 0,
+                "description": "TESTE ROBO - AGENDAR PRAZOS",
+                "creationDate": "2026-04-20T16:17:31.0713039-03:00",
+                "typeId": 33,
+                "subTypeId": 1283,
+            }
+        ],
+    )
+    service = LegacyTaskCancellationService(client=client)
+
+    def fake_run_runner(self, *, paths, runner_items, max_attempts):
+        return {
+            "state": "failed",
+            "process_exit_code": 1,
+            "items": [
+                {
+                    "status": "error",
+                    "error": "Timeout 30000ms exceeded waiting for selector \"#Status\"",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        LegacyTaskCancellationService,
+        "_run_runner",
+        fake_run_runner,
+    )
+
+    result = service.cancel_task(cnj_number="0072837-30.2026.8.05.0001")
+
+    # "timeout" vence "layout_drift" na classificação (ordem das categorias):
+    # infra > dado, pro circuit breaker acionar primeiro.
+    assert result["success"] is False
+    assert result["reason"] == "timeout"
+
+
+def test_cancel_task_classifies_runner_failure_as_auth_when_redirected(monkeypatch):
+    client = DummyLegalOneClient(
+        lawsuit={"id": 68506, "identifierNumber": "0072837-30.2026.8.05.0001"},
+        tasks=[
+            {
+                "id": 279829,
+                "statusId": 0,
+                "description": "TESTE ROBO - AGENDAR PRAZOS",
+                "creationDate": "2026-04-20T16:17:31.0713039-03:00",
+                "typeId": 33,
+                "subTypeId": 1283,
+            }
+        ],
+    )
+    service = LegacyTaskCancellationService(client=client)
+
+    def fake_run_runner(self, *, paths, runner_items, max_attempts):
+        return {
+            "state": "failed",
+            "items": [
+                {
+                    "status": "error",
+                    "error": "Redirected to /signon after navigation (session expired).",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        LegacyTaskCancellationService,
+        "_run_runner",
+        fake_run_runner,
+    )
+
+    result = service.cancel_task(cnj_number="0072837-30.2026.8.05.0001")
+
+    assert result["success"] is False
+    assert result["reason"] == "auth_failure"
+
+
+def test_cancel_task_classifies_pure_layout_drift_without_timeout(monkeypatch):
+    client = DummyLegalOneClient(
+        lawsuit={"id": 68506, "identifierNumber": "0072837-30.2026.8.05.0001"},
+        tasks=[
+            {
+                "id": 279829,
+                "statusId": 0,
+                "description": "TESTE ROBO - AGENDAR PRAZOS",
+                "creationDate": "2026-04-20T16:17:31.0713039-03:00",
+                "typeId": 33,
+                "subTypeId": 1283,
+            }
+        ],
+    )
+    service = LegacyTaskCancellationService(client=client)
+
+    def fake_run_runner(self, *, paths, runner_items, max_attempts):
+        return {
+            "state": "failed",
+            "items": [
+                {
+                    "status": "error",
+                    "error": "Campo não encontrado: select#StatusId element is not visible",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        LegacyTaskCancellationService,
+        "_run_runner",
+        fake_run_runner,
+    )
+
+    result = service.cancel_task(cnj_number="0072837-30.2026.8.05.0001")
+
+    assert result["success"] is False
+    assert result["reason"] == "layout_drift"

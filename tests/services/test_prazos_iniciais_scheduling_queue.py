@@ -213,3 +213,278 @@ def test_queue_service_processes_pending_item_and_marks_it_completed(db_session:
     assert item_db is not None
     assert item_db.queue_status == QUEUE_STATUS_COMPLETED
     assert item_db.cancelled_task_id == 279829
+
+
+# ── Onda B/A: circuit breaker, métricas, ações operadoras ──────────────
+
+
+from app.services.prazos_iniciais.legacy_task_circuit_breaker import (
+    get_circuit_breaker,
+)
+from app.models.prazo_inicial_legacy_task_queue import (
+    QUEUE_STATUS_FAILED,
+)
+
+
+@pytest.fixture(autouse=True)
+def _reset_circuit_breaker():
+    get_circuit_breaker().reset()
+    yield
+    get_circuit_breaker().reset()
+
+
+_enqueue_counter = {"n": 0}
+
+
+def _enqueue_pending_item(db_session: Session) -> PrazoInicialLegacyTaskCancellationItem:
+    _enqueue_counter["n"] += 1
+    n = _enqueue_counter["n"]
+    intake = PrazoInicialIntake(
+        external_id=f"pin-queue-cb-{n}",
+        cnj_number=f"0072837302026805{n:04d}",
+        lawsuit_id=68506 + n,
+        office_id=61,
+        capa_json={"tribunal": "TJBA"},
+        integra_json={"blocos": []},
+        status=INTAKE_STATUS_SCHEDULED,
+    )
+    db_session.add(intake)
+    db_session.commit()
+    db_session.refresh(intake)
+
+    queue_service = PrazosIniciaisLegacyTaskQueueService(db_session)
+    item = queue_service.sync_item_from_intake(intake)
+    assert item is not None
+    return item
+
+
+def test_circuit_breaker_trips_after_repeated_auth_failures(
+    db_session: Session, monkeypatch
+):
+    # Cria 3 itens pendentes pra alimentar o breaker até estourar o threshold (=3).
+    items = [_enqueue_pending_item(db_session) for _ in range(3)]
+    assert len(items) == 3
+
+    monkeypatch.setattr(
+        "app.core.config.settings.prazos_iniciais_legacy_task_cancel_rate_limit_seconds",
+        0.0,
+    )
+
+    fake_cancellation_service = MagicMock()
+    fake_cancellation_service.cancel_task.return_value = {
+        "success": False,
+        "reason": "auth_failure",
+        "task_id": None,
+        "runner_state": "failed",
+        "runner_item_status": "error",
+        "runner_error": "Redirected to /signon",
+    }
+
+    queue_service = PrazosIniciaisLegacyTaskQueueService(
+        db_session,
+        cancellation_service=fake_cancellation_service,
+    )
+    summary = queue_service.process_pending_items(limit=10)
+
+    # Deve ter processado pelo menos 1 item antes de tripar (não exigimos
+    # exatamente 3 — o breaker pode tripar e quebrar o loop).
+    assert summary["circuit_breaker_tripped"] is False
+    assert summary["circuit_breaker_tripped_during_tick"] is True
+    assert summary["failure_count"] >= 1
+
+    # Próximo tick (sem intake_id) deve ser pulado pelo breaker.
+    summary2 = queue_service.process_pending_items(limit=10)
+    assert summary2["circuit_breaker_tripped"] is True
+    assert summary2["processed_count"] == 0
+
+
+def test_circuit_breaker_does_not_trip_for_business_failures(
+    db_session: Session, monkeypatch
+):
+    items = [_enqueue_pending_item(db_session) for _ in range(3)]
+    assert len(items) == 3
+
+    monkeypatch.setattr(
+        "app.core.config.settings.prazos_iniciais_legacy_task_cancel_rate_limit_seconds",
+        0.0,
+    )
+
+    fake_cancellation_service = MagicMock()
+    # task_not_found = falha de dado — não deve alimentar o breaker.
+    fake_cancellation_service.cancel_task.return_value = {
+        "success": False,
+        "reason": "task_not_found",
+        "task_id": None,
+        "runner_state": None,
+        "runner_item_status": None,
+        "runner_error": None,
+    }
+
+    queue_service = PrazosIniciaisLegacyTaskQueueService(
+        db_session,
+        cancellation_service=fake_cancellation_service,
+    )
+    summary = queue_service.process_pending_items(limit=10)
+
+    assert summary["circuit_breaker_tripped"] is False
+    assert summary["circuit_breaker_tripped_during_tick"] is False
+    assert summary["failure_count"] == 3
+    assert get_circuit_breaker().is_tripped() is False
+
+
+def test_intake_scoped_calls_bypass_circuit_breaker(db_session: Session, monkeypatch):
+    item = _enqueue_pending_item(db_session)
+
+    # Tripa o breaker manualmente.
+    cb = get_circuit_breaker()
+    for _ in range(10):
+        cb.record_failure("auth_failure")
+    assert cb.is_tripped() is True
+
+    fake_cancellation_service = MagicMock()
+    fake_cancellation_service.cancel_task.return_value = {
+        "success": True,
+        "reason": "cancelled",
+        "task_id": 279829,
+        "runner_state": "completed",
+        "runner_item_status": "cancelled",
+    }
+
+    monkeypatch.setattr(
+        "app.core.config.settings.prazos_iniciais_legacy_task_cancel_rate_limit_seconds",
+        0.0,
+    )
+
+    queue_service = PrazosIniciaisLegacyTaskQueueService(
+        db_session,
+        cancellation_service=fake_cancellation_service,
+    )
+    # Chamada com intake_id (background task pós-confirmação) deve ignorar
+    # o breaker e processar o item mesmo assim.
+    summary = queue_service.process_pending_items(limit=1, intake_id=item.intake_id)
+    assert summary["processed_count"] == 1
+
+
+def test_reprocess_item_resets_failed_to_pending(db_session: Session):
+    item = _enqueue_pending_item(db_session)
+    item.queue_status = QUEUE_STATUS_FAILED
+    item.last_error = "boom"
+    item.last_reason = "auth_failure"
+    db_session.commit()
+
+    queue_service = PrazosIniciaisLegacyTaskQueueService(db_session)
+    payload = queue_service.reprocess_item(item.id)
+
+    assert payload is not None
+    assert payload["queue_status"] == QUEUE_STATUS_PENDING
+    assert payload["last_error"] is None
+    assert payload["last_reason"] is None
+
+
+def test_cancel_item_marks_status_as_cancelled(db_session: Session):
+    item = _enqueue_pending_item(db_session)
+    queue_service = PrazosIniciaisLegacyTaskQueueService(db_session)
+    payload = queue_service.cancel_item(item.id)
+
+    assert payload is not None
+    assert payload["queue_status"] == "CANCELADO"
+    assert payload["last_reason"] == "manually_cancelled"
+
+
+def test_aggregate_metrics_returns_status_totals_and_circuit_breaker(
+    db_session: Session,
+):
+    items = [_enqueue_pending_item(db_session) for _ in range(2)]
+    assert len(items) == 2
+
+    queue_service = PrazosIniciaisLegacyTaskQueueService(db_session)
+    metrics = queue_service.aggregate_metrics(hours=24)
+
+    assert metrics["window_hours"] == 24
+    assert metrics["totals_by_status"].get(QUEUE_STATUS_PENDING) == 2
+    assert metrics["circuit_breaker"]["tripped"] is False
+    assert metrics["circuit_breaker"]["threshold"] >= 1
+    assert metrics["circuit_breaker"]["counted_reasons"]
+
+
+def test_metrics_endpoint_returns_payload(
+    auth_client: TestClient,
+    db_session: Session,
+):
+    _enqueue_pending_item(db_session)
+
+    response = auth_client.get(
+        "/api/v1/prazos-iniciais/legacy-task-cancel-queue/metrics"
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert "totals_by_status" in body
+    assert "circuit_breaker" in body
+    assert "last_tick" in body
+
+
+def test_reprocess_endpoint_resets_failed_item(
+    auth_client: TestClient, db_session: Session
+):
+    item = _enqueue_pending_item(db_session)
+    item.queue_status = QUEUE_STATUS_FAILED
+    item.last_error = "boom"
+    db_session.commit()
+
+    response = auth_client.post(
+        f"/api/v1/prazos-iniciais/legacy-task-cancel-queue/items/{item.id}/reprocessar"
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["item"]["queue_status"] == QUEUE_STATUS_PENDING
+
+
+def test_cancel_endpoint_marks_pending_item_as_cancelled(
+    auth_client: TestClient, db_session: Session
+):
+    item = _enqueue_pending_item(db_session)
+    response = auth_client.post(
+        f"/api/v1/prazos-iniciais/legacy-task-cancel-queue/items/{item.id}/cancelar"
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["item"]["queue_status"] == "CANCELADO"
+    assert body["item"]["last_reason"] == "manually_cancelled"
+
+
+def test_csv_export_returns_csv_with_header(
+    auth_client: TestClient, db_session: Session
+):
+    _enqueue_pending_item(db_session)
+
+    response = auth_client.get(
+        "/api/v1/prazos-iniciais/legacy-task-cancel-queue/export.csv"
+    )
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("text/csv")
+    body = response.text.lstrip("\ufeff")
+    first_line = body.splitlines()[0]
+    assert "id" in first_line
+    assert "queue_status" in first_line
+    assert "cnj_number" in first_line
+
+
+def test_list_endpoint_supports_intake_id_and_cnj_filters(
+    auth_client: TestClient, db_session: Session
+):
+    item = _enqueue_pending_item(db_session)
+    # Garante que tem CNJ pra testar o filtro substring.
+    assert item.cnj_number
+
+    response_intake = auth_client.get(
+        f"/api/v1/prazos-iniciais/legacy-task-cancel-queue?intake_id={item.intake_id}"
+    )
+    assert response_intake.status_code == 200, response_intake.text
+    body_intake = response_intake.json()
+    assert body_intake["total"] == 1
+
+    cnj_fragment = item.cnj_number[:8]
+    response_cnj = auth_client.get(
+        f"/api/v1/prazos-iniciais/legacy-task-cancel-queue?cnj_number={cnj_fragment}"
+    )
+    assert response_cnj.status_code == 200, response_cnj.text
+    assert response_cnj.json()["total"] >= 1

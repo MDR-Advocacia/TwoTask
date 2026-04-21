@@ -342,6 +342,60 @@ export interface PrazoInicialLegacyTaskQueueProcessResponse {
   items: PrazoInicialLegacyTaskQueueProcessResult[];
 }
 
+export interface PrazoInicialLegacyTaskQueueFilters {
+  queue_status?: string;
+  intake_id?: number;
+  cnj_number?: string;
+  since?: string; // ISO 8601
+  until?: string; // ISO 8601
+  limit?: number;
+}
+
+export interface PrazoInicialLegacyTaskCircuitBreakerSnapshot {
+  tripped: boolean;
+  tripped_until: string | null;
+  consecutive_failures: number;
+  threshold: number;
+  cooldown_minutes: number;
+  last_trip_reason: string | null;
+  last_trip_at: string | null;
+  last_reset_at: string | null;
+  counted_reasons: string[];
+}
+
+export interface PrazoInicialLegacyTaskLastTickState {
+  tick_id: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+  eligible_count: number;
+  processed_count: number;
+  success_count: number;
+  failure_count: number;
+  circuit_breaker_tripped: boolean;
+  circuit_breaker_tripped_during_tick: boolean;
+  error: string | null;
+}
+
+export interface PrazoInicialLegacyTaskQueueMetrics {
+  window_hours: number;
+  window_start: string;
+  now: string;
+  totals_by_status: Record<string, number>;
+  completed_in_window: number;
+  failures_in_window: number;
+  failures_by_reason_in_window: Record<string, number>;
+  avg_latency_ms_in_window: number | null;
+  latency_samples_in_window: number;
+  circuit_breaker: PrazoInicialLegacyTaskCircuitBreakerSnapshot;
+  rate_limit_seconds: number;
+  last_tick: PrazoInicialLegacyTaskLastTickState;
+}
+
+export interface PrazoInicialLegacyTaskQueueItemActionResponse {
+  item: PrazoInicialLegacyTaskCancelQueueItem;
+}
+
 
 // ─── Templates de Prazos Iniciais ─────────────────────────────────────
 
