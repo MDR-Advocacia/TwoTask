@@ -85,12 +85,9 @@ def _run_tick() -> None:
             limit=max(1, settings.prazos_iniciais_legacy_task_cancellation_batch_size)
         )
         state.tick_id = summary.get("tick_id")
-        state.eligible_count = summary.get("processed_count", 0) + (
-            # `processed_count` pode ser menor que `eligible_count` se o
-            # circuit breaker tripar no meio do tick — service não devolve
-            # eligible_count cru, então usamos processed como proxy.
-            0
-        )
+        # eligible_count vem do service: itens elegíveis encontrados na query
+        # (pode ser maior que processed_count se o CB tripar no meio do tick).
+        state.eligible_count = int(summary.get("eligible_count", 0) or 0)
         state.processed_count = int(summary.get("processed_count", 0) or 0)
         state.success_count = int(summary.get("success_count", 0) or 0)
         state.failure_count = int(summary.get("failure_count", 0) or 0)

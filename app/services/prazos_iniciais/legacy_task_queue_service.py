@@ -330,8 +330,13 @@ class PrazosIniciaisLegacyTaskQueueService:
             )
             return {
                 "processed_count": 0,
+                "eligible_count": 0,
                 "items": [],
                 "circuit_breaker_tripped": True,
+                "circuit_breaker_tripped_during_tick": False,
+                "success_count": 0,
+                "failure_count": 0,
+                "duration_ms": 0,
                 "tick_id": tick_id,
             }
 
@@ -362,6 +367,11 @@ class PrazosIniciaisLegacyTaskQueueService:
             },
         )
 
+        # Guarda porque depois usamos o valor no summary devolvido — o loop
+        # pode pular itens que mudaram de status entre o SELECT e o refresh,
+        # então processed_count != eligible_count é o caso geral.
+        snapshot_eligible_count = eligible_count
+
         rate_limit_seconds = max(
             0.0,
             float(settings.prazos_iniciais_legacy_task_cancel_rate_limit_seconds or 0.0),
@@ -381,11 +391,7 @@ class PrazosIniciaisLegacyTaskQueueService:
             outcome = self.process_item(item, commit=True)
             processed.append(outcome)
 
-            reason = None
-            try:
-                reason = outcome["item"].get("last_reason")
-            except AttributeError:
-                reason = None
+            reason = outcome["item"].get("last_reason")
 
             if reason in QUEUE_SUCCESS_REASONS:
                 success_count += 1
@@ -394,7 +400,8 @@ class PrazosIniciaisLegacyTaskQueueService:
                 failure_count += 1
                 # Apenas falhas de infraestrutura (auth/timeout/exception)
                 # alimentam o breaker. Falhas de dado (task_not_found, etc.)
-                # não contam.
+                # não contam — são incrementadas em failure_count mas saem do
+                # branch aqui sem tocar no breaker.
                 if intake_id is None and reason in INFRASTRUCTURE_FAILURE_REASONS:
                     tripped_now = cb.record_failure(reason)
                     if tripped_now:
@@ -418,10 +425,6 @@ class PrazosIniciaisLegacyTaskQueueService:
                             },
                         )
                         break  # deixa o próximo tick decidir
-                elif intake_id is None:
-                    # Falha de negócio — não conta pro breaker, mas ainda
-                    # incrementa o failure_count do tick.
-                    pass
 
         duration_ms = int((time.monotonic() - tick_start) * 1000)
         logger.info(
@@ -441,6 +444,7 @@ class PrazosIniciaisLegacyTaskQueueService:
 
         return {
             "processed_count": len(processed),
+            "eligible_count": snapshot_eligible_count,
             "items": processed,
             "circuit_breaker_tripped": False,
             "circuit_breaker_tripped_during_tick": circuit_breaker_tripped_during_tick,

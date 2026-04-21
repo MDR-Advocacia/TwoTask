@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Query
@@ -18,6 +18,9 @@ from app.models.prazo_inicial import PrazoInicialIntake
 from app.services.prazos_iniciais.legacy_task_cancellation_service import (
     DEFAULT_LEGACY_TASK_SUBTYPE_EXTERNAL_ID,
     DEFAULT_LEGACY_TASK_TYPE_EXTERNAL_ID,
+)
+from app.services.prazos_iniciais.legacy_task_circuit_breaker import (
+    get_circuit_breaker,
 )
 from app.services.prazos_iniciais.legacy_task_queue_service import (
     PrazosIniciaisLegacyTaskQueueService,
@@ -88,11 +91,22 @@ class ConfirmSchedulingResponse(BaseModel):
 
 class QueueProcessResponse(BaseModel):
     processed_count: int
+    eligible_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    circuit_breaker_tripped: bool = False
+    circuit_breaker_tripped_during_tick: bool = False
+    tick_id: Optional[str] = None
     items: list[dict]
 
 
 class QueueItemActionResponse(BaseModel):
     item: dict
+
+
+class CircuitBreakerResetResponse(BaseModel):
+    success: bool = True
+    circuit_breaker: dict
 
 
 @router.post(
@@ -196,7 +210,55 @@ def process_legacy_task_cancel_queue(
     service = PrazosIniciaisLegacyTaskQueueService(db)
     summary = service.process_pending_items(limit=limit)
     return QueueProcessResponse(
-        processed_count=summary["processed_count"], items=summary["items"]
+        processed_count=summary.get("processed_count", 0),
+        eligible_count=summary.get("eligible_count", 0),
+        success_count=summary.get("success_count", 0),
+        failure_count=summary.get("failure_count", 0),
+        circuit_breaker_tripped=summary.get("circuit_breaker_tripped", False),
+        circuit_breaker_tripped_during_tick=summary.get(
+            "circuit_breaker_tripped_during_tick", False
+        ),
+        tick_id=summary.get("tick_id"),
+        items=summary.get("items", []),
+    )
+
+
+@router.post(
+    "/legacy-task-cancel-queue/circuit-breaker/reset",
+    response_model=CircuitBreakerResetResponse,
+    summary="Reseta manualmente o circuit breaker do worker (libera o cooldown).",
+)
+def reset_legacy_task_cancel_circuit_breaker(
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    """
+    Zera contador de falhas e libera o cooldown do circuit breaker. Útil quando
+    o operador sabe que o Legal One voltou mas o cooldown ainda não venceu — em
+    vez de esperar, ele força a próxima execução a rodar normalmente.
+    """
+    cb = get_circuit_breaker()
+    cb.reset()
+    snapshot = cb.snapshot()
+    return CircuitBreakerResetResponse(
+        success=True,
+        circuit_breaker={
+            "tripped": snapshot.tripped,
+            "tripped_until": (
+                snapshot.tripped_until.isoformat() if snapshot.tripped_until else None
+            ),
+            "consecutive_failures": snapshot.consecutive_failures,
+            "threshold": snapshot.threshold,
+            "cooldown_minutes": snapshot.cooldown_minutes,
+            "last_trip_reason": snapshot.last_trip_reason,
+            "last_trip_at": (
+                snapshot.last_trip_at.isoformat() if snapshot.last_trip_at else None
+            ),
+            "last_reset_at": (
+                snapshot.last_reset_at.isoformat() if snapshot.last_reset_at else None
+            ),
+            "counted_reasons": list(snapshot.counted_reasons),
+        },
     )
 
 
@@ -305,7 +367,7 @@ def export_legacy_task_cancel_queue(
 
     filename = (
         f"legacy-task-cancel-queue-"
-        f"{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.csv"
+        f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.csv"
     )
     return StreamingResponse(
         iter([buffer.getvalue()]),

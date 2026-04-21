@@ -339,7 +339,18 @@ export interface PrazoInicialLegacyTaskQueueProcessResult {
 
 export interface PrazoInicialLegacyTaskQueueProcessResponse {
   processed_count: number;
+  eligible_count?: number;
+  success_count?: number;
+  failure_count?: number;
+  circuit_breaker_tripped?: boolean;
+  circuit_breaker_tripped_during_tick?: boolean;
+  tick_id?: string | null;
   items: PrazoInicialLegacyTaskQueueProcessResult[];
+}
+
+export interface PrazoInicialLegacyTaskCircuitBreakerResetResponse {
+  success: boolean;
+  circuit_breaker: PrazoInicialLegacyTaskCircuitBreakerSnapshot;
 }
 
 export interface PrazoInicialLegacyTaskQueueFilters {

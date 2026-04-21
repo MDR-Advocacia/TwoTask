@@ -1,16 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   AlertCircle,
   AlertTriangle,
   Ban,
   Download,
   ExternalLink,
+  Eraser,
   Loader2,
   RefreshCw,
   RotateCcw,
   Rocket,
   ShieldAlert,
   ShieldCheck,
+  Unlock,
   Workflow,
 } from "lucide-react";
 
@@ -36,6 +39,7 @@ import {
   fetchPrazosIniciaisLegacyTaskCancelQueueMetrics,
   processPrazosIniciaisLegacyTaskCancelQueue,
   reprocessPrazosIniciaisLegacyTaskCancelItem,
+  resetPrazosIniciaisLegacyTaskCancelCircuitBreaker,
 } from "@/services/api";
 import type {
   PrazoInicialLegacyTaskCancelQueueItem,
@@ -126,6 +130,32 @@ function isItemCancellable(item: PrazoInicialLegacyTaskCancelQueueItem) {
   return item.queue_status === "PENDENTE" || item.queue_status === "FALHA";
 }
 
+/**
+ * Debounce de valor em memória. Usado pros filtros de CNJ/intake que
+ * disparam uma chamada ao servidor a cada keystroke — com 400ms de debounce
+ * o painel para de refetchar o tempo inteiro enquanto o operador digita.
+ */
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const handle = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(handle);
+  }, [value, delayMs]);
+  return debounced;
+}
+
+/**
+ * Formata latência de forma amigável:
+ *   - valores <1s viram "850 ms"
+ *   - valores ≥1s viram "1.3 s"
+ * O backend reporta sempre em ms.
+ */
+function formatLatencyMs(ms: number | null | undefined): string {
+  if (ms == null) return "—";
+  if (ms < 1000) return `${ms} ms`;
+  return `${(ms / 1000).toFixed(1)} s`;
+}
+
 export default function PrazosIniciaisTreatmentPage() {
   const { toast } = useToast();
   const [items, setItems] = useState<PrazoInicialLegacyTaskCancelQueueItem[]>([]);
@@ -141,19 +171,41 @@ export default function PrazosIniciaisTreatmentPage() {
   const [error, setError] = useState<string | null>(null);
   const [metrics, setMetrics] = useState<PrazoInicialLegacyTaskQueueMetrics | null>(null);
   const [isCsvDownloading, setIsCsvDownloading] = useState(false);
+  const [isResettingCircuitBreaker, setIsResettingCircuitBreaker] = useState(false);
+
+  // Debounce dos filtros de texto pra evitar refetch a cada keystroke. Os
+  // filtros de Select / datetime-local ficam síncronos porque são cliques
+  // pontuais e não sequências de caracteres.
+  const debouncedCnjFilter = useDebouncedValue(cnjFilter, 400);
+  const debouncedIntakeFilter = useDebouncedValue(intakeFilter, 400);
 
   const buildFilters = (): PrazoInicialLegacyTaskQueueFilters => {
     const filters: PrazoInicialLegacyTaskQueueFilters = { limit: 500 };
     if (statusFilter !== "__all__") filters.queue_status = statusFilter;
-    const trimmedCnj = cnjFilter.trim();
+    const trimmedCnj = debouncedCnjFilter.trim();
     if (trimmedCnj) filters.cnj_number = trimmedCnj;
-    const trimmedIntake = intakeFilter.trim();
+    const trimmedIntake = debouncedIntakeFilter.trim();
     if (trimmedIntake && /^\d+$/.test(trimmedIntake)) {
       filters.intake_id = Number(trimmedIntake);
     }
     if (sinceFilter) filters.since = new Date(sinceFilter).toISOString();
     if (untilFilter) filters.until = new Date(untilFilter).toISOString();
     return filters;
+  };
+
+  const hasActiveFilters =
+    statusFilter !== "__all__" ||
+    cnjFilter.trim() !== "" ||
+    intakeFilter.trim() !== "" ||
+    sinceFilter !== "" ||
+    untilFilter !== "";
+
+  const handleClearFilters = () => {
+    setStatusFilter("__all__");
+    setCnjFilter("");
+    setIntakeFilter("");
+    setSinceFilter("");
+    setUntilFilter("");
   };
 
   const loadData = async (showToast = false) => {
@@ -189,19 +241,38 @@ export default function PrazosIniciaisTreatmentPage() {
     }
   };
 
-  // Reload on filter change (debounced via effect dependency).
+  // Reload sempre que mudar um filtro. Os textos passam por debounce — então
+  // este effect só dispara depois que o usuário para de digitar por 400ms.
   useEffect(() => {
     loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statusFilter, cnjFilter, intakeFilter, sinceFilter, untilFilter]);
+  }, [statusFilter, debouncedCnjFilter, debouncedIntakeFilter, sinceFilter, untilFilter]);
 
   useEffect(() => {
     const intervalId = setInterval(() => loadData(), 5000);
     return () => clearInterval(intervalId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statusFilter, cnjFilter, intakeFilter, sinceFilter, untilFilter]);
+  }, [statusFilter, debouncedCnjFilter, debouncedIntakeFilter, sinceFilter, untilFilter]);
 
+  // Totais globais vêm do endpoint /metrics (totals_by_status), pra os cards
+  // de resumo não dependerem do recorte do filtro — se o usuário filtra por
+  // "Falhas" o card "Pendentes" ainda mostra o total real do sistema.
+  // Fallback: se ainda não carregou métricas (primeira render), usa a lista
+  // visível, mas mostra um aviso discreto.
   const summary = useMemo(() => {
+    const totals = metrics?.totals_by_status ?? null;
+    const fromTotals = (status: string) => Number(totals?.[status] ?? 0);
+    if (totals) {
+      const pending = fromTotals("PENDENTE");
+      const processing = fromTotals("PROCESSANDO");
+      const completed = fromTotals("CONCLUIDO");
+      const failed = fromTotals("FALHA");
+      const cancelled = fromTotals("CANCELADO");
+      const actionable = pending + processing + failed;
+      const denom = pending + processing + completed + failed + cancelled;
+      const progress = denom > 0 ? Math.round((completed / denom) * 100) : 0;
+      return { pending, processing, completed, failed, cancelled, actionable, progress, source: "global" as const };
+    }
     const pending = items.filter((item) => item.queue_status === "PENDENTE").length;
     const processing = items.filter((item) => item.queue_status === "PROCESSANDO").length;
     const completed = items.filter((item) => item.queue_status === "CONCLUIDO").length;
@@ -210,8 +281,8 @@ export default function PrazosIniciaisTreatmentPage() {
     const actionable = pending + processing + failed;
     const denom = items.length;
     const progress = denom > 0 ? Math.round((completed / denom) * 100) : 0;
-    return { pending, processing, completed, failed, cancelled, actionable, progress };
-  }, [items]);
+    return { pending, processing, completed, failed, cancelled, actionable, progress, source: "visible" as const };
+  }, [items, metrics]);
 
   const recentFailures = useMemo(
     () => items.filter((item) => item.queue_status === "FALHA").slice(0, 6),
@@ -223,13 +294,26 @@ export default function PrazosIniciaisTreatmentPage() {
       setIsSubmitting(true);
       const response = await processPrazosIniciaisLegacyTaskCancelQueue(20);
       await loadData();
-      toast({
-        title: response.processed_count > 0 ? "Fila processada" : "Nenhum item elegível",
-        description:
-          response.processed_count > 0
-            ? `${response.processed_count} item(ns) processado(s) nesta execução manual.`
-            : "Não havia itens pendentes ou falhos para processar agora.",
-      });
+      if (response.circuit_breaker_tripped) {
+        // Backend não processou nada porque o breaker está aberto. Isso é
+        // diferente de "nenhum item elegível" — informa o operador que a
+        // ação dele foi NO-OP e aponta pro botão de reset (se ele tiver
+        // evidência de que o L1 voltou).
+        toast({
+          title: "Circuit breaker aberto — nada processado",
+          description:
+            "O worker está em cooldown por falhas consecutivas de infraestrutura. Confira se o Legal One respondeu e, se estiver estável, clique em \"Resetar breaker\" pra liberar a fila.",
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: response.processed_count > 0 ? "Fila processada" : "Nenhum item elegível",
+          description:
+            response.processed_count > 0
+              ? `${response.processed_count} item(ns) processado(s) (${response.success_count ?? 0} sucesso / ${response.failure_count ?? 0} falha).`
+              : "Não havia itens pendentes ou falhos para processar agora.",
+        });
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Não foi possível processar a fila.";
       toast({
@@ -239,6 +323,28 @@ export default function PrazosIniciaisTreatmentPage() {
       });
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleResetCircuitBreaker = async () => {
+    try {
+      setIsResettingCircuitBreaker(true);
+      await resetPrazosIniciaisLegacyTaskCancelCircuitBreaker();
+      await loadData();
+      toast({
+        title: "Circuit breaker resetado",
+        description:
+          "O worker volta a processar no próximo tick. Se a causa-raiz persistir, o breaker vai abrir de novo.",
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Não foi possível resetar o circuit breaker.";
+      toast({
+        title: "Falha ao resetar breaker",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsResettingCircuitBreaker(false);
     }
   };
 
@@ -314,13 +420,17 @@ export default function PrazosIniciaisTreatmentPage() {
     }
   };
 
+  // Os cards de "status" mostram totais globais do sistema (via metrics).
+  // "Itens no filtro" fica separado pra o operador diferenciar o recorte
+  // atual do estado geral da fila.
+  const totalsSuffix = summary.source === "global" ? " (global)" : " (visível)";
   const summaryCards = [
-    { title: "Itens visíveis", value: total },
-    { title: "Pendentes", value: summary.pending },
-    { title: "Processando", value: summary.processing },
-    { title: "Concluídos", value: summary.completed },
-    { title: "Falhas", value: summary.failed },
-    { title: "Cancelados", value: summary.cancelled },
+    { title: "Itens no filtro", value: total },
+    { title: `Pendentes${totalsSuffix}`, value: summary.pending },
+    { title: `Processando${totalsSuffix}`, value: summary.processing },
+    { title: `Concluídos${totalsSuffix}`, value: summary.completed },
+    { title: `Falhas${totalsSuffix}`, value: summary.failed },
+    { title: `Cancelados${totalsSuffix}`, value: summary.cancelled },
   ];
 
   const cb = metrics?.circuit_breaker;
@@ -401,13 +511,31 @@ export default function PrazosIniciaisTreatmentPage() {
           <AlertTriangle className="h-4 w-4" />
           <AlertTitle>Circuit breaker do worker aberto</AlertTitle>
           <AlertDescription>
-            O worker periódico vai pular ticks
-            {cb.tripped_until ? ` até ${formatDateTime(cb.tripped_until)}` : ""}.
-            Última causa: {reasonLabel(cb.last_trip_reason)}
-            {" "}({cb.consecutive_failures} falha(s) consecutiva(s) de infraestrutura).
-            Você ainda pode processar a fila manualmente pelo botão acima — chamadas
-            iniciadas por confirmação de agendamento também passam pelo bloqueio,
-            então confira primeiro se Legal One está respondendo.
+            <p>
+              O worker periódico vai pular ticks
+              {cb.tripped_until ? ` até ${formatDateTime(cb.tripped_until)}` : ""}.
+              Última causa: {reasonLabel(cb.last_trip_reason)}
+              {" "}({cb.consecutive_failures} falha(s) consecutiva(s) de infraestrutura).
+              Chamadas iniciadas por confirmação de agendamento também passam pelo
+              bloqueio — confira primeiro se o Legal One está respondendo e só então
+              libere o breaker.
+            </p>
+            <div className="mt-3">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleResetCircuitBreaker}
+                disabled={isResettingCircuitBreaker}
+                title="Zera o contador e reabilita o worker no próximo tick"
+              >
+                {isResettingCircuitBreaker ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Unlock className="mr-2 h-4 w-4" />
+                )}
+                Resetar breaker
+              </Button>
+            </div>
           </AlertDescription>
         </Alert>
       ) : null}
@@ -447,9 +575,7 @@ export default function PrazosIniciaisTreatmentPage() {
               <div>
                 <div className="text-muted-foreground">Latência média</div>
                 <div className="text-xl font-semibold">
-                  {metrics.avg_latency_ms_in_window != null
-                    ? `${(metrics.avg_latency_ms_in_window / 1000).toFixed(1)} s`
-                    : "—"}
+                  {formatLatencyMs(metrics.avg_latency_ms_in_window)}
                 </div>
                 <div className="text-xs text-muted-foreground">
                   ({metrics.latency_samples_in_window} amostras)
@@ -492,9 +618,7 @@ export default function PrazosIniciaisTreatmentPage() {
                         Processados: {metrics.last_tick.processed_count} (
                         {metrics.last_tick.success_count} sucesso ·{" "}
                         {metrics.last_tick.failure_count} falha) · Duração:{" "}
-                        {metrics.last_tick.duration_ms != null
-                          ? `${metrics.last_tick.duration_ms} ms`
-                          : "—"}
+                        {formatLatencyMs(metrics.last_tick.duration_ms)}
                       </div>
                       {metrics.last_tick.circuit_breaker_tripped ? (
                         <div className="text-amber-700">
@@ -536,7 +660,9 @@ export default function PrazosIniciaisTreatmentPage() {
             <>
               <Progress value={summary.progress} className="h-3" />
               <div className="grid gap-2 text-sm text-muted-foreground md:grid-cols-2 xl:grid-cols-4">
-                <span>Progresso (visíveis): {summary.progress}%</span>
+                <span>
+                  Progresso ({summary.source === "global" ? "global" : "visível"}): {summary.progress}%
+                </span>
                 <span>Com pendência: {summary.actionable}</span>
                 <span>Última atualização: {formatDateTime(items[0]?.updated_at || items[0]?.created_at)}</span>
                 <span>Execução manual disponível a qualquer momento</span>
@@ -547,12 +673,25 @@ export default function PrazosIniciaisTreatmentPage() {
       </Card>
 
       <Card className="border-0 shadow-sm">
-        <CardHeader>
-          <CardTitle>Filtros</CardTitle>
-          <CardDescription>
-            Os filtros são aplicados no servidor — a exportação CSV usa exatamente o mesmo
-            recorte exibido aqui.
-          </CardDescription>
+        <CardHeader className="flex flex-row items-start justify-between gap-4">
+          <div>
+            <CardTitle>Filtros</CardTitle>
+            <CardDescription>
+              Os filtros são aplicados no servidor — a exportação CSV usa exatamente o mesmo
+              recorte exibido aqui. Textos têm debounce de 400ms pra evitar flicker enquanto
+              você digita.
+            </CardDescription>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleClearFilters}
+            disabled={!hasActiveFilters}
+            title="Restaura status=Todos, limpa CNJ/Intake e intervalo de datas"
+          >
+            <Eraser className="mr-2 h-4 w-4" />
+            Limpar filtros
+          </Button>
         </CardHeader>
         <CardContent>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
@@ -632,7 +771,15 @@ export default function PrazosIniciaisTreatmentPage() {
                     {recentFailures.map((item) => (
                       <TableRow key={`failure-${item.id}`}>
                         <TableCell className="font-mono text-xs">{formatCnj(item.cnj_number)}</TableCell>
-                        <TableCell>#{item.intake_id}</TableCell>
+                        <TableCell>
+                          <Link
+                            to={`/prazos-iniciais?intake=${item.intake_id}`}
+                            className="text-primary hover:underline"
+                            title="Abrir detalhes do intake"
+                          >
+                            #{item.intake_id}
+                          </Link>
+                        </TableCell>
                         <TableCell>{reasonLabel(item.last_reason)}</TableCell>
                         <TableCell className="max-w-[280px] truncate" title={item.last_error || ""}>
                           {item.last_error || "-"}
@@ -692,7 +839,15 @@ export default function PrazosIniciaisTreatmentPage() {
                       return (
                         <TableRow key={item.id}>
                           <TableCell className="font-mono text-xs">{formatCnj(item.cnj_number)}</TableCell>
-                          <TableCell>#{item.intake_id}</TableCell>
+                          <TableCell>
+                            <Link
+                              to={`/prazos-iniciais?intake=${item.intake_id}`}
+                              className="text-primary hover:underline"
+                              title="Abrir detalhes do intake"
+                            >
+                              #{item.intake_id}
+                            </Link>
+                          </TableCell>
                           <TableCell>{item.lawsuit_id || "-"}</TableCell>
                           <TableCell>
                             <Badge className={queueStatusClass(item.queue_status)}>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   AlertCircle,
   CalendarClock,
@@ -174,6 +174,7 @@ function isConfirmableStatus(status: string): boolean {
 
 export default function PrazosIniciaisPage() {
   const { toast } = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [statusFilter, setStatusFilter] = useState("__all__");
   const [cnjFilter, setCnjFilter] = useState("");
@@ -245,6 +246,21 @@ export default function PrazosIniciaisPage() {
     }
     loadDetail(selectedId);
   }, [loadDetail, selectedId]);
+
+  // Deep-link: ?intake=<id> abre o dialog do intake direto. Útil pros links
+  // vindos da Treatment Page ou de logs/Slack — não precisa o usuário caçar
+  // o item na lista paginada.
+  useEffect(() => {
+    const raw = searchParams.get("intake");
+    if (!raw) return;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) return;
+    setSelectedId(parsed);
+    // Limpa o param da URL pra não reabrir ao fechar o dialog ou em re-renders.
+    const next = new URLSearchParams(searchParams);
+    next.delete("intake");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   useEffect(() => {
     if (!detail) {

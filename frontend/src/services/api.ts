@@ -9,6 +9,7 @@ import {
   PrazoInicialIntakeListResponse,
   PrazoInicialIntakeSummary,
   PrazoInicialLegacyTaskCancelQueueListResponse,
+  PrazoInicialLegacyTaskCircuitBreakerResetResponse,
   PrazoInicialLegacyTaskQueueFilters,
   PrazoInicialLegacyTaskQueueItemActionResponse,
   PrazoInicialLegacyTaskQueueMetrics,
@@ -307,6 +308,15 @@ export async function cancelPrazosIniciaisLegacyTaskCancelItem(
     { method: "POST" },
   );
   return expectJson<PrazoInicialLegacyTaskQueueItemActionResponse>(response);
+}
+
+
+export async function resetPrazosIniciaisLegacyTaskCancelCircuitBreaker(): Promise<PrazoInicialLegacyTaskCircuitBreakerResetResponse> {
+  const response = await apiFetch(
+    "/api/v1/prazos-iniciais/legacy-task-cancel-queue/circuit-breaker/reset",
+    { method: "POST" },
+  );
+  return expectJson<PrazoInicialLegacyTaskCircuitBreakerResetResponse>(response);
 }
 
 

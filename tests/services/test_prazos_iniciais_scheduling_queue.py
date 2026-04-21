@@ -488,3 +488,158 @@ def test_list_endpoint_supports_intake_id_and_cnj_filters(
     )
     assert response_cnj.status_code == 200, response_cnj.text
     assert response_cnj.json()["total"] >= 1
+
+
+# ── Onda D: reset CB, /process-pending sinalizando CB, eligible_count ──
+
+
+def test_process_pending_endpoint_returns_eligible_count_and_summary_fields(
+    auth_client: TestClient, db_session: Session, monkeypatch
+):
+    """O endpoint deve repassar eligible_count, success/failure_count e tick_id
+    pra o frontend conseguir tomar decisões sem precisar refazer a contagem."""
+    items = [_enqueue_pending_item(db_session) for _ in range(2)]
+    assert len(items) == 2
+
+    monkeypatch.setattr(
+        "app.core.config.settings.prazos_iniciais_legacy_task_cancel_rate_limit_seconds",
+        0.0,
+    )
+
+    fake_cancellation_service = MagicMock()
+    fake_cancellation_service.cancel_task.return_value = {
+        "success": True,
+        "reason": "cancelled",
+        "task_id": 12345,
+        "runner_state": "completed",
+        "runner_item_status": "cancelled",
+    }
+
+    monkeypatch.setattr(
+        "app.api.v1.endpoints.prazos_iniciais_scheduling.PrazosIniciaisLegacyTaskQueueService",
+        lambda db: PrazosIniciaisLegacyTaskQueueService(
+            db, cancellation_service=fake_cancellation_service
+        ),
+    )
+
+    response = auth_client.post(
+        "/api/v1/prazos-iniciais/legacy-task-cancel-queue/process-pending?limit=10"
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["processed_count"] == 2
+    assert body["eligible_count"] == 2
+    assert body["success_count"] == 2
+    assert body["failure_count"] == 0
+    assert body["circuit_breaker_tripped"] is False
+    assert body["circuit_breaker_tripped_during_tick"] is False
+    assert body["tick_id"]  # uuid não-vazio
+    assert len(body["items"]) == 2
+
+
+def test_process_pending_endpoint_signals_circuit_breaker_tripped(
+    auth_client: TestClient, db_session: Session
+):
+    """Quando o CB está aberto e a chamada não tem intake_id (ou seja: foi
+    o operador clicando em 'Processar pendentes'), o endpoint deve devolver
+    circuit_breaker_tripped=True e processed_count=0 — pra UI emitir um toast
+    explicativo em vez de 'nenhum item elegível'."""
+    _enqueue_pending_item(db_session)
+
+    cb = get_circuit_breaker()
+    for _ in range(10):
+        cb.record_failure("auth_failure")
+    assert cb.is_tripped() is True
+
+    response = auth_client.post(
+        "/api/v1/prazos-iniciais/legacy-task-cancel-queue/process-pending?limit=10"
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["circuit_breaker_tripped"] is True
+    assert body["processed_count"] == 0
+    assert body["eligible_count"] == 0
+    assert body["items"] == []
+
+
+def test_circuit_breaker_reset_endpoint_clears_state(
+    auth_client: TestClient,
+):
+    """POST /circuit-breaker/reset deve zerar o contador, fechar o breaker
+    e devolver o snapshot atualizado pro frontend renderizar imediatamente."""
+    cb = get_circuit_breaker()
+    for _ in range(10):
+        cb.record_failure("auth_failure")
+    assert cb.is_tripped() is True
+
+    response = auth_client.post(
+        "/api/v1/prazos-iniciais/legacy-task-cancel-queue/circuit-breaker/reset"
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["success"] is True
+    snapshot = body["circuit_breaker"]
+    assert snapshot["tripped"] is False
+    assert snapshot["consecutive_failures"] == 0
+    assert snapshot["tripped_until"] is None
+    # last_reset_at deve ter sido populado pelo reset.
+    assert snapshot["last_reset_at"] is not None
+    # Estado in-memory também deve refletir o reset.
+    assert get_circuit_breaker().is_tripped() is False
+
+
+def test_circuit_breaker_reset_endpoint_idempotent_when_already_closed(
+    auth_client: TestClient,
+):
+    """Resetar um breaker já fechado deve continuar retornando 200 sem
+    quebrar nada — o operador pode clicar várias vezes sem consequência."""
+    response = auth_client.post(
+        "/api/v1/prazos-iniciais/legacy-task-cancel-queue/circuit-breaker/reset"
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["success"] is True
+    assert body["circuit_breaker"]["tripped"] is False
+    assert body["circuit_breaker"]["consecutive_failures"] == 0
+
+
+def test_queue_service_summary_includes_eligible_count(db_session: Session, monkeypatch):
+    """Garante que o service expõe eligible_count tanto no caminho normal
+    quanto no caminho onde o CB está aberto desde o início (early return)."""
+    items = [_enqueue_pending_item(db_session) for _ in range(3)]
+    assert len(items) == 3
+
+    monkeypatch.setattr(
+        "app.core.config.settings.prazos_iniciais_legacy_task_cancel_rate_limit_seconds",
+        0.0,
+    )
+
+    fake = MagicMock()
+    fake.cancel_task.return_value = {
+        "success": True,
+        "reason": "cancelled",
+        "task_id": 1,
+        "runner_state": "completed",
+        "runner_item_status": "cancelled",
+    }
+
+    queue_service = PrazosIniciaisLegacyTaskQueueService(db_session, cancellation_service=fake)
+    summary_normal = queue_service.process_pending_items(limit=10)
+    assert summary_normal["eligible_count"] == 3
+    assert summary_normal["processed_count"] == 3
+
+    # Re-enfileira e abre o CB pra forçar o early return.
+    [_enqueue_pending_item(db_session) for _ in range(2)]
+    cb = get_circuit_breaker()
+    for _ in range(10):
+        cb.record_failure("auth_failure")
+    assert cb.is_tripped() is True
+
+    summary_blocked = queue_service.process_pending_items(limit=10)
+    assert summary_blocked["circuit_breaker_tripped"] is True
+    assert summary_blocked["processed_count"] == 0
+    assert summary_blocked["eligible_count"] == 0
+    assert summary_blocked["success_count"] == 0
+    assert summary_blocked["failure_count"] == 0
+    assert summary_blocked["items"] == []
+    assert "tick_id" in summary_blocked
