@@ -86,29 +86,119 @@ function isClosedContextErrorMessage(message) {
   return /Target page, context or browser has been closed/i.test(String(message || ''));
 }
 
-async function login(page, { username, password, keyLabel, returnUrl }) {
-  const startUrl =
-    `https://signon.thomsonreuters.com/?productId=L1NJ&returnto=https%3a%2f%2flogin.novajus.com.br%2fOnePass%2fLoginOnePass%2f%3freturnUrl%3d${encodeURIComponent(returnUrl)}&bhcp=1`;
-
-  await page.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
-  await page.fill('#Username', username);
-  await page.fill('#Password', password);
-  await page.click('#SignIn');
+async function waitForPageSettle(page, delayMs = 0) {
   await page.waitForLoadState('domcontentloaded', { timeout: 120000 }).catch(() => {});
-  await page.waitForTimeout(7000);
+  if (delayMs > 0) {
+    await page.waitForTimeout(delayMs);
+  }
+  await page.waitForLoadState('networkidle', { timeout: 45000 }).catch(() => {});
+}
 
+async function firstExistingSelector(page, selectors) {
+  for (const selector of selectors) {
+    const handle = await page.$(selector).catch(() => null);
+    if (handle) {
+      return selector;
+    }
+  }
+  return null;
+}
+
+async function clickFirstAvailable(page, selectors) {
+  const selector = await firstExistingSelector(page, selectors);
+  if (!selector) {
+    return false;
+  }
+  await page.click(selector, { timeout: 30000 });
+  return true;
+}
+
+async function fillFirstAvailable(page, selectors, value) {
+  const selector = await firstExistingSelector(page, selectors);
+  if (!selector) {
+    return false;
+  }
+  await page.fill(selector, value, { timeout: 30000 });
+  return true;
+}
+
+async function completeKeySelectionIfPresent(page, keyLabel) {
   const body = await page.locator('body').innerText().catch(() => '');
-  if (/Selecione uma chave de registro/i.test(body) || body.includes(keyLabel)) {
-    await page.getByText(keyLabel, { exact: false }).first().click({ timeout: 30000 });
-    await page.getByRole('button', { name: /Continuar/i }).click({ timeout: 30000 });
+  if (!body || (!/Selecione uma chave de registro/i.test(body) && !body.includes(keyLabel))) {
+    return false;
   }
 
-  await page.waitForLoadState('domcontentloaded', { timeout: 120000 }).catch(() => {});
-  await page.waitForTimeout(12000);
-  await page.waitForLoadState('networkidle', { timeout: 45000 }).catch(() => {});
+  await page.getByText(keyLabel, { exact: false }).first().click({ timeout: 30000 });
+  await page.getByRole('button', { name: /Continuar/i }).click({ timeout: 30000 });
+  return true;
+}
+
+async function login(page, { username, password, keyLabel, returnUrl }) {
+  // The destination page carries the correct return context for the current
+  // Thomson Reuters auth flow, including the OIDC handoff back to Novajus.
   await page.goto(returnUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
-  await page.waitForTimeout(5000);
-  await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+  await waitForPageSettle(page, 4000);
+
+  for (let attempt = 1; attempt <= 8; attempt += 1) {
+    if (await completeKeySelectionIfPresent(page, keyLabel)) {
+      await waitForPageSettle(page, 8000);
+      continue;
+    }
+
+    if (await firstExistingSelector(page, ['#btn-login-onepass'])) {
+      await clickFirstAvailable(page, ['#btn-login-onepass']);
+      await waitForPageSettle(page, 4000);
+      continue;
+    }
+
+    if (await firstExistingSelector(page, ['#Username'])) {
+      await page.fill('#Username', username, { timeout: 30000 });
+      if (await firstExistingSelector(page, ['#Password'])) {
+        await page.fill('#Password', password, { timeout: 30000 });
+      }
+      await page.click('#SignIn', { timeout: 30000 });
+      await waitForPageSettle(page, 4000);
+      continue;
+    }
+
+    if (page.url().includes('/u/login/identifier')) {
+      const filled = await fillFirstAvailable(
+        page,
+        ['input[name="username"]', 'input[name="email"]', 'input[type="email"]'],
+        username,
+      );
+      if (filled) {
+        await clickFirstAvailable(page, ['button[name="action"]', 'button[type="submit"]']);
+        await waitForPageSettle(page, 4000);
+        continue;
+      }
+    }
+
+    if (page.url().includes('/u/login/password')) {
+      const filled = await fillFirstAvailable(
+        page,
+        ['#password', 'input[name="password"]', '#Password'],
+        password,
+      );
+      if (filled) {
+        await clickFirstAvailable(page, ['button[name="action"]', 'button[type="submit"]', '#SignIn']);
+        await waitForPageSettle(page, 6000);
+        continue;
+      }
+    }
+
+    const context = await capturePageContext(page);
+    if (!isAuthenticationPage(context)) {
+      return;
+    }
+  }
+
+  const finalContext = await capturePageContext(page);
+  if (isAuthenticationPage(finalContext)) {
+    throw new Error(
+      `Authentication flow did not finish | url=${finalContext.url} | title=${finalContext.title || ''} | body=${(finalContext.bodyStart || '').slice(0, 400)}`,
+    );
+  }
 }
 
 async function capturePageContext(page) {
@@ -205,7 +295,10 @@ function isAuthenticationPage(context) {
   const text = `${context.url}\n${context.title}\n${context.bodyStart}`.toLowerCase();
   return (
     text.includes('signon.thomsonreuters.com') ||
+    text.includes('auth.thomsonreuters.com') ||
+    text.includes('novajus.com.br/conta/login') ||
     text.includes('loginonepass') ||
+    text.includes('onepass') ||
     text.includes('username') ||
     text.includes('password') ||
     text.includes('entrar') ||
