@@ -15,8 +15,9 @@ import asyncio
 import logging
 import re
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional
+from zoneinfo import ZoneInfo
 
 import sqlalchemy as sa
 from sqlalchemy import func as sa_func, literal_column, case, or_
@@ -41,6 +42,13 @@ from app.models.publication_search import (
 from app.services.legal_one_client import LegalOneApiClient
 
 logger = logging.getLogger(__name__)
+
+_METRICS_TZ = ZoneInfo("America/Fortaleza")
+_WITHOUT_PROVIDENCE_STATUSES = (
+    RECORD_STATUS_IGNORED,
+    RECORD_STATUS_DISCARDED_DUPLICATE,
+    RECORD_STATUS_OBSOLETE,
+)
 
 
 # ── UF derivation from CNJ ──────────────────────────────────────────────
@@ -1982,16 +1990,45 @@ class PublicationSearchService:
     # Contagens para o dashboard
     # ──────────────────────────────────────────────
 
-    def get_statistics(self) -> dict[str, Any]:
-        base = self.db.query(PublicationRecord).filter(PublicationRecord.is_duplicate == False)
-
-        total = base.count()
-        by_status = dict(
-            self.db.query(PublicationRecord.status, sa_func.count(PublicationRecord.id))
+    def _status_counts(self) -> dict[str, int]:
+        rows = (
+            self.db.query(
+                PublicationRecord.status,
+                sa_func.count(PublicationRecord.id),
+            )
             .filter(PublicationRecord.is_duplicate == False)
             .group_by(PublicationRecord.status)
             .all()
         )
+        return {str(row[0]): int(row[1]) for row in rows}
+
+    @staticmethod
+    def _operational_snapshot(status_counts: dict[str, int]) -> dict[str, int]:
+        without_providence = sum(
+            status_counts.get(status, 0) for status in _WITHOUT_PROVIDENCE_STATUSES
+        )
+        return {
+            "pendentes": status_counts.get(RECORD_STATUS_NEW, 0),
+            "aguardando_confirmacao": status_counts.get(RECORD_STATUS_CLASSIFIED, 0),
+            "agendadas": status_counts.get(RECORD_STATUS_SCHEDULED, 0),
+            "sem_providencia": without_providence,
+            "erros": status_counts.get(RECORD_STATUS_ERROR, 0),
+        }
+
+    @staticmethod
+    def _localize_datetime(value: Optional[datetime]) -> Optional[datetime]:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(_METRICS_TZ)
+
+    def get_statistics(self) -> dict[str, Any]:
+        base = self.db.query(PublicationRecord).filter(PublicationRecord.is_duplicate == False)
+
+        total = base.count()
+        by_status = self._status_counts()
+        operational = self._operational_snapshot(by_status)
 
         total_searches = self.db.query(PublicationSearch).count()
         last_search = (
@@ -2020,10 +2057,169 @@ class PublicationSearchService:
                 "agendado": by_status.get(RECORD_STATUS_SCHEDULED, 0),
                 "ignorado": by_status.get(RECORD_STATUS_IGNORED, 0),
                 "erro": by_status.get(RECORD_STATUS_ERROR, 0),
+                "descartado_duplicada": by_status.get(RECORD_STATUS_DISCARDED_DUPLICATE, 0),
+                "descartado_obsoleta": by_status.get(RECORD_STATUS_OBSOLETE, 0),
+                "sem_providencia": operational["sem_providencia"],
             },
+            "operational": operational,
             "total_searches": total_searches,
             "last_search": self._search_to_dict(last_search) if last_search else None,
             "available_naturezas": naturezas,
+        }
+
+    def get_operational_insights(self, period: str = "week") -> dict[str, Any]:
+        normalized_period = (period or "week").strip().lower()
+        now_local = datetime.now(_METRICS_TZ)
+        bucket_kind = "day"
+        period_label = "Semana"
+
+        if normalized_period == "day":
+            window_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+            bucket_kind = "hour"
+            period_label = "Hoje"
+        elif normalized_period == "week":
+            window_start = (now_local - timedelta(days=6)).replace(
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+            period_label = "Semana"
+        elif normalized_period == "month":
+            window_start = now_local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            period_label = "Mês"
+        elif normalized_period == "all":
+            window_start = None
+            bucket_kind = "month"
+            period_label = "Tudo"
+        else:
+            raise ValueError("period deve ser day, week, month ou all")
+
+        status_counts = self._status_counts()
+        current = self._operational_snapshot(status_counts)
+
+        window_query = self.db.query(PublicationRecord).filter(PublicationRecord.is_duplicate == False)
+        searches_query = self.db.query(PublicationSearch)
+        if window_start is not None:
+            window_query = window_query.filter(PublicationRecord.created_at >= window_start)
+            searches_query = searches_query.filter(PublicationSearch.created_at >= window_start)
+
+        window_rows = (
+            window_query.with_entities(
+                PublicationRecord.created_at,
+                PublicationRecord.status,
+            )
+            .order_by(PublicationRecord.created_at.asc())
+            .all()
+        )
+
+        summary_status_counts: dict[str, int] = defaultdict(int)
+        for created_at, status in window_rows:
+            summary_status_counts[str(status)] += 1
+
+        summary = self._operational_snapshot(summary_status_counts)
+        summary["recebidas"] = len(window_rows)
+        summary["buscas"] = searches_query.count()
+
+        if bucket_kind == "month":
+            first_bucket = (
+                self._localize_datetime(window_rows[0][0]).replace(
+                    day=1,
+                    hour=0,
+                    minute=0,
+                    second=0,
+                    microsecond=0,
+                )
+                if window_rows
+                else now_local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            )
+        else:
+            first_bucket = window_start or now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        bucket_map: dict[datetime, dict[str, int]] = {}
+
+        def _next_bucket(current_bucket: datetime) -> datetime:
+            if bucket_kind == "hour":
+                return current_bucket + timedelta(hours=1)
+            if bucket_kind == "day":
+                return current_bucket + timedelta(days=1)
+            month_anchor = current_bucket.replace(day=28) + timedelta(days=4)
+            return month_anchor.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        def _bucket_start(value: datetime) -> datetime:
+            local_value = self._localize_datetime(value) or now_local
+            if bucket_kind == "hour":
+                return local_value.replace(minute=0, second=0, microsecond=0)
+            if bucket_kind == "day":
+                return local_value.replace(hour=0, minute=0, second=0, microsecond=0)
+            return local_value.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        bucket_cursor = first_bucket
+        bucket_end = now_local.replace(minute=0, second=0, microsecond=0)
+        while bucket_cursor <= bucket_end:
+            bucket_map[bucket_cursor] = {
+                "received": 0,
+                "pending": 0,
+                "awaiting_confirmation": 0,
+                "scheduled": 0,
+                "without_providence": 0,
+                "errors": 0,
+            }
+            bucket_cursor = _next_bucket(bucket_cursor)
+
+        for created_at, status in window_rows:
+            if created_at is None:
+                continue
+            bucket = _bucket_start(created_at)
+            counters = bucket_map.setdefault(
+                bucket,
+                {
+                    "received": 0,
+                    "pending": 0,
+                    "awaiting_confirmation": 0,
+                    "scheduled": 0,
+                    "without_providence": 0,
+                    "errors": 0,
+                },
+            )
+            counters["received"] += 1
+            if status == RECORD_STATUS_NEW:
+                counters["pending"] += 1
+            elif status == RECORD_STATUS_CLASSIFIED:
+                counters["awaiting_confirmation"] += 1
+            elif status == RECORD_STATUS_SCHEDULED:
+                counters["scheduled"] += 1
+            elif status in _WITHOUT_PROVIDENCE_STATUSES:
+                counters["without_providence"] += 1
+            elif status == RECORD_STATUS_ERROR:
+                counters["errors"] += 1
+
+        series = [
+            {
+                "bucket_start": bucket.isoformat(),
+                "received": metrics["received"],
+                "pending": metrics["pending"],
+                "awaiting_confirmation": metrics["awaiting_confirmation"],
+                "scheduled": metrics["scheduled"],
+                "without_providence": metrics["without_providence"],
+                "errors": metrics["errors"],
+            }
+            for bucket, metrics in sorted(bucket_map.items(), key=lambda item: item[0])
+        ]
+
+        return {
+            "period": normalized_period,
+            "period_label": period_label,
+            "bucket_kind": bucket_kind,
+            "generated_at": now_local.isoformat(),
+            "window_start": window_start.isoformat() if window_start else None,
+            "window_end": now_local.isoformat(),
+            "current": {
+                **current,
+                "total_monitorado": sum(status_counts.values()),
+            },
+            "summary": summary,
+            "series": series,
         }
 
     # ──────────────────────────────────────────────

@@ -92,6 +92,18 @@ def get_statistics(
     return service.get_statistics()
 
 
+@router.get("/insights")
+def get_operational_insights(
+    period: str = Query("week", pattern="^(day|week|month|all)$"),
+    service: PublicationSearchService = Depends(_get_service),
+):
+    """Retorna indicadores históricos leves para o drawer lateral da operação."""
+    try:
+        return service.get_operational_insights(period=period)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 # ─── Buscas ─────────────────────────────────────
 
 @router.post("/search")
@@ -1016,4 +1028,3 @@ def get_classification_taxonomy(
         return {"office_external_id": office_external_id, "taxonomy": tree}
 
     return {"office_external_id": None, "taxonomy": CLASSIFICATION_TREE}
-

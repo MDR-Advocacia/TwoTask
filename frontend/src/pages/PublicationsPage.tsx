@@ -8,10 +8,10 @@
  *   4. Ao confirmar → tarefa criada no Legal One
  */
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, type ComponentType } from "react";
 import {
   AlertCircle,
-  BarChart3,
+  BarChart as BarChartIcon,
   BookOpen,
   Building2,
   Calendar,
@@ -40,9 +40,20 @@ import {
   Send,
   Settings,
   ThumbsDown,
+  TrendingUp,
   XCircle,
 } from "lucide-react";
 import { Link } from "react-router-dom";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  ResponsiveContainer,
+  Tooltip as RTooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -58,6 +69,13 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import {
   Select,
   SelectContent,
@@ -94,10 +112,63 @@ const API_V1 = "/api/v1";
 
 interface Statistics {
   total_records: number;
-  by_status: { novo: number; classificado: number; agendado: number; ignorado: number; erro: number };
+  by_status: {
+    novo: number;
+    classificado: number;
+    agendado: number;
+    ignorado: number;
+    erro: number;
+    descartado_duplicada: number;
+    descartado_obsoleta: number;
+    sem_providencia: number;
+  };
+  operational: {
+    pendentes: number;
+    aguardando_confirmacao: number;
+    agendadas: number;
+    sem_providencia: number;
+    erros: number;
+  };
   total_searches: number;
   last_search: SearchItem | null;
   available_naturezas: string[];
+}
+
+type InsightPeriod = "day" | "week" | "month" | "all";
+
+interface OperationalInsights {
+  period: InsightPeriod;
+  period_label: string;
+  bucket_kind: "hour" | "day" | "month";
+  generated_at: string;
+  window_start: string | null;
+  window_end: string;
+  current: {
+    pendentes: number;
+    aguardando_confirmacao: number;
+    agendadas: number;
+    sem_providencia: number;
+    erros: number;
+    total_monitorado: number;
+  };
+  summary: {
+    recebidas: number;
+    pendentes: number;
+    aguardando_confirmacao: number;
+    agendadas: number;
+    sem_providencia: number;
+    erros: number;
+    buscas: number;
+  };
+  series: Array<{
+    bucket_start: string;
+    received: number;
+    pending: number;
+    awaiting_confirmation: number;
+    scheduled: number;
+    without_providence: number;
+    errors: number;
+  }>;
 }
 
 interface SearchItem {
@@ -267,6 +338,25 @@ const formatDateShort = (iso: string | null) => {
   catch { return iso; }
 };
 
+const INSIGHT_PERIOD_OPTIONS: Array<{ value: InsightPeriod; label: string }> = [
+  { value: "day", label: "Hoje" },
+  { value: "week", label: "Semana" },
+  { value: "month", label: "Mês" },
+  { value: "all", label: "Tudo" },
+];
+
+const formatInsightBucketLabel = (iso: string, bucketKind: OperationalInsights["bucket_kind"]) => {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  if (bucketKind === "hour") {
+    return date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  }
+  if (bucketKind === "month") {
+    return date.toLocaleDateString("pt-BR", { month: "short", year: "2-digit" });
+  }
+  return date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+};
+
 /** Badge label/color for the polo tag (ativo/passivo/ambos). */
 const poloLabel = (polo: string | null | undefined) => {
   if (!polo) return null;
@@ -331,6 +421,33 @@ const batchStatusLabel = (status: string): string => {
   return map[status] || status;
 };
 
+const OperationalStatCard = ({
+  title,
+  value,
+  hint,
+  tone,
+  icon: Icon,
+}: {
+  title: string;
+  value: number;
+  hint?: string;
+  tone: string;
+  icon: ComponentType<{ className?: string }>;
+}) => (
+  <Card>
+    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+      <CardTitle className="text-sm font-medium">{title}</CardTitle>
+      <div className={`rounded-lg p-2 ${tone}`}>
+        <Icon className="h-4 w-4" />
+      </div>
+    </CardHeader>
+    <CardContent>
+      <div className="text-2xl font-bold">{value}</div>
+      {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
+    </CardContent>
+  </Card>
+);
+
 // ─── Component ──────────────────────────────────────────────────────────────
 
 const PublicationsPage = () => {
@@ -342,6 +459,10 @@ const PublicationsPage = () => {
   const [taxonomy, setTaxonomy] = useState<Record<string, string[]>>({});
   const [reclassifyingGroup, setReclassifyingGroup] = useState<string | null>(null);
   const [stats, setStats] = useState<Statistics | null>(null);
+  const [insightsOpen, setInsightsOpen] = useState(false);
+  const [insightsLoading, setInsightsLoading] = useState(false);
+  const [insightPeriod, setInsightPeriod] = useState<InsightPeriod>("week");
+  const [insights, setInsights] = useState<OperationalInsights | null>(null);
 
   // Search form
   const [dateFrom, setDateFrom] = useState("");
@@ -468,6 +589,20 @@ const PublicationsPage = () => {
       if (res.ok) setStats(await res.json());
     } catch { /* ignore */ }
   }, []);
+
+  const loadInsights = useCallback(async (period: InsightPeriod) => {
+    setInsightsLoading(true);
+    try {
+      const res = await apiFetch(`${API}/insights?period=${period}`);
+      if (!res.ok) throw new Error("Falha ao carregar indicadores.");
+      setInsights(await res.json());
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Falha ao carregar indicadores.";
+      toast({ title: "Erro", description: msg, variant: "destructive" });
+    } finally {
+      setInsightsLoading(false);
+    }
+  }, [toast]);
 
   const loadSearches = useCallback(async () => {
     try {
@@ -672,6 +807,11 @@ const PublicationsPage = () => {
     loadBatches();
     loadSavedFilters();
   }, []);
+
+  useEffect(() => {
+    if (!insightsOpen) return;
+    loadInsights(insightPeriod);
+  }, [insightsOpen, insightPeriod, loadInsights]);
 
   // ─── Office Lawsuit Index ─────────────────────────────────────────────
   const loadIndexStatus = useCallback(async (officeId: string) => {
@@ -883,6 +1023,7 @@ const PublicationsPage = () => {
 
   const handleRefreshAll = () => {
     loadStats(); loadSearches(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo); loadBatches();
+    if (insightsOpen) loadInsights(insightPeriod);
   };
 
   // ─── Batch classification ────────────────────────────────────────────
@@ -1312,10 +1453,16 @@ const PublicationsPage = () => {
 
   // ─── Render ──────────────────────────────────────────────────────────
 
+  const operationalStats = stats?.operational;
+  const insightSeries = (insights?.series || []).map((item) => ({
+    ...item,
+    label: formatInsightBucketLabel(item.bucket_start, insights?.bucket_kind || "day"),
+  }));
+
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
             <Newspaper className="h-6 w-6" />
@@ -1325,7 +1472,11 @@ const PublicationsPage = () => {
             Busque, classifique e agende tarefas a partir de publicações judiciais.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" size="sm" onClick={() => setInsightsOpen(true)}>
+            <BarChartIcon className="mr-2 h-4 w-4" />
+            Indicadores
+          </Button>
           <Button variant="outline" size="sm" asChild>
             <Link to="/publications/templates">
               <Settings className="mr-2 h-4 w-4" />
@@ -1358,60 +1509,254 @@ const PublicationsPage = () => {
       )}
 
       {/* Stats */}
-      {stats && (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
+      {stats && operationalStats && (
+        <div className="space-y-3">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+            <OperationalStatCard
+              title="Pendentes"
+              value={operationalStats.pendentes}
+              hint="Aguardando classificação"
+              tone="bg-blue-50 text-blue-700"
+              icon={Clock}
+            />
+            <OperationalStatCard
+              title="Aguardando confirmação"
+              value={operationalStats.aguardando_confirmacao}
+              hint="Já classificadas"
+              tone="bg-amber-50 text-amber-700"
+              icon={CheckCircle2}
+            />
+            <OperationalStatCard
+              title="Agendadas"
+              value={operationalStats.agendadas}
+              hint="Prontas no Legal One"
+              tone="bg-emerald-50 text-emerald-700"
+              icon={Calendar}
+            />
+            <OperationalStatCard
+              title="Sem providência"
+              value={operationalStats.sem_providencia}
+              hint="Ignoradas, descartadas e obsoletas"
+              tone="bg-slate-100 text-slate-700"
+              icon={ThumbsDown}
+            />
+            <OperationalStatCard
+              title="Erros"
+              value={operationalStats.erros}
+              hint="Itens que exigem revisão"
+              tone="bg-rose-50 text-rose-700"
+              icon={XCircle}
+            />
+            <div className="hidden">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Total</CardTitle>
-              <BarChart3 className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-sm font-medium">Aguardando confirmação</CardTitle>
+              <CheckCircle2 className="h-4 w-4 text-amber-500" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{stats.total_records}</div>
-              <p className="text-xs text-muted-foreground">{stats.total_searches} buscas</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Novas</CardTitle>
-              <Clock className="h-4 w-4 text-blue-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-blue-600">{stats.by_status.novo}</div>
+              <div className="text-2xl font-bold text-amber-600">{operationalStats.aguardando_confirmacao}</div>
               <p className="text-xs text-muted-foreground">Aguardando classificação</p>
             </CardContent>
           </Card>
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Classificadas</CardTitle>
-              <CheckCircle2 className="h-4 w-4 text-amber-500" />
+              <CardTitle className="text-sm font-medium">Sem providência</CardTitle>
+              <Calendar className="h-4 w-4 text-green-500" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-amber-600">{stats.by_status.classificado}</div>
+              <div className="text-2xl font-bold text-green-600">{operationalStats.agendadas}</div>
               <p className="text-xs text-muted-foreground">Aguardando confirmação</p>
             </CardContent>
           </Card>
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Agendadas</CardTitle>
-              <Calendar className="h-4 w-4 text-green-500" />
+              <CardTitle className="text-sm font-medium">Sem providência</CardTitle>
+              <ThumbsDown className="h-4 w-4 text-slate-500" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-green-600">{stats.by_status.agendado}</div>
+              <div className="text-2xl font-bold text-slate-700">{operationalStats.sem_providencia}</div>
             </CardContent>
           </Card>
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Erros/Ignoradas</CardTitle>
+              <CardTitle className="text-sm font-medium">Erros</CardTitle>
               <XCircle className="h-4 w-4 text-red-500" />
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-red-600">
-                {stats.by_status.erro + stats.by_status.ignorado}
+                {operationalStats.erros}
               </div>
             </CardContent>
           </Card>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">Contexto rápido</span>
+            <Badge variant="secondary">Total monitorado: {stats.total_records}</Badge>
+            <Badge variant="secondary">Buscas: {stats.total_searches}</Badge>
+            {stats.last_search?.created_at ? (
+              <span>Última busca em {formatDate(stats.last_search.created_at)}</span>
+            ) : (
+              <span>Nenhuma busca recente registrada.</span>
+            )}
+          </div>
         </div>
       )}
+
+      <Sheet open={insightsOpen} onOpenChange={setInsightsOpen}>
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-2xl">
+          <SheetHeader>
+            <SheetTitle className="flex items-center gap-2">
+              <TrendingUp className="h-5 w-5" />
+              Indicadores operacionais
+            </SheetTitle>
+            <SheetDescription>
+              Recortes leves para leitura diária, sem tirar o foco da esteira de tratamento.
+            </SheetDescription>
+          </SheetHeader>
+
+          <div className="mt-6 space-y-6">
+            <div className="flex flex-wrap gap-2">
+              {INSIGHT_PERIOD_OPTIONS.map((option) => (
+                <Button
+                  key={option.value}
+                  size="sm"
+                  variant={insightPeriod === option.value ? "default" : "outline"}
+                  onClick={() => setInsightPeriod(option.value)}
+                  disabled={insightsLoading && insightPeriod === option.value}
+                >
+                  {option.label}
+                </Button>
+              ))}
+            </div>
+
+            {insightsLoading && !insights ? (
+              <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Carregando indicadores...
+              </div>
+            ) : null}
+
+            {insights ? (
+              <>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  <OperationalStatCard
+                    title={`Recebidas no ${insights.period_label.toLowerCase()}`}
+                    value={insights.summary.recebidas}
+                    hint={`${insights.summary.buscas} busca(s) no recorte`}
+                    tone="bg-blue-50 text-blue-700"
+                    icon={BarChartIcon}
+                  />
+                  <OperationalStatCard
+                    title="Agendadas no recorte"
+                    value={insights.summary.agendadas}
+                    hint="Publicações que já saíram para tarefa"
+                    tone="bg-emerald-50 text-emerald-700"
+                    icon={Calendar}
+                  />
+                  <OperationalStatCard
+                    title="Sem providência no recorte"
+                    value={insights.summary.sem_providencia}
+                    hint="Ignoradas, descartadas e obsoletas"
+                    tone="bg-slate-100 text-slate-700"
+                    icon={ThumbsDown}
+                  />
+                  <OperationalStatCard
+                    title="Pendentes no recorte"
+                    value={insights.summary.pendentes}
+                    hint="Ainda aguardando classificação"
+                    tone="bg-blue-50 text-blue-700"
+                    icon={Clock}
+                  />
+                  <OperationalStatCard
+                    title="Confirmação no recorte"
+                    value={insights.summary.aguardando_confirmacao}
+                    hint="Classificadas aguardando revisão"
+                    tone="bg-amber-50 text-amber-700"
+                    icon={CheckCircle2}
+                  />
+                  <OperationalStatCard
+                    title="Erros no recorte"
+                    value={insights.summary.erros}
+                    hint="Itens que precisam de atenção"
+                    tone="bg-rose-50 text-rose-700"
+                    icon={XCircle}
+                  />
+                </div>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <TrendingUp className="h-4 w-4" />
+                      Evolução do recorte
+                    </CardTitle>
+                    <CardDescription>
+                      Recebidas vs saídas úteis no período {insights.period_label.toLowerCase()}.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="h-[280px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={insightSeries}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                          <XAxis dataKey="label" tickLine={false} axisLine={false} minTickGap={16} />
+                          <YAxis allowDecimals={false} tickLine={false} axisLine={false} />
+                          <RTooltip />
+                          <Legend />
+                          <Bar dataKey="received" name="Recebidas" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                          <Bar dataKey="scheduled" name="Agendadas" fill="#10b981" radius={[4, 4, 0, 0]} />
+                          <Bar dataKey="without_providence" name="Sem providência" fill="#64748b" radius={[4, 4, 0, 0]} />
+                          <Bar dataKey="errors" name="Erros" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">Snapshot atual</CardTitle>
+                    <CardDescription>
+                      Estoque vivo do módulo para comparação rápida com o recorte.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-lg border p-3">
+                      <p className="text-xs text-muted-foreground">Total monitorado</p>
+                      <p className="mt-1 text-2xl font-bold">{insights.current.total_monitorado}</p>
+                    </div>
+                    <div className="rounded-lg border p-3">
+                      <p className="text-xs text-muted-foreground">Pendentes agora</p>
+                      <p className="mt-1 text-2xl font-bold text-blue-600">{insights.current.pendentes}</p>
+                    </div>
+                    <div className="rounded-lg border p-3">
+                      <p className="text-xs text-muted-foreground">Aguardando confirmação</p>
+                      <p className="mt-1 text-2xl font-bold text-amber-600">{insights.current.aguardando_confirmacao}</p>
+                    </div>
+                    <div className="rounded-lg border p-3">
+                      <p className="text-xs text-muted-foreground">Agendadas</p>
+                      <p className="mt-1 text-2xl font-bold text-emerald-600">{insights.current.agendadas}</p>
+                    </div>
+                    <div className="rounded-lg border p-3">
+                      <p className="text-xs text-muted-foreground">Sem providência</p>
+                      <p className="mt-1 text-2xl font-bold text-slate-700">{insights.current.sem_providencia}</p>
+                    </div>
+                    <div className="rounded-lg border p-3">
+                      <p className="text-xs text-muted-foreground">Erros</p>
+                      <p className="mt-1 text-2xl font-bold text-rose-600">{insights.current.erros}</p>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <p className="text-xs text-muted-foreground">
+                  Atualizado em {formatDate(insights.generated_at)}.
+                </p>
+              </>
+            ) : null}
+          </div>
+        </SheetContent>
+      </Sheet>
 
       {/* Search Panel */}
       <Card>
