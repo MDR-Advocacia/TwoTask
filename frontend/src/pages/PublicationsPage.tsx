@@ -2260,59 +2260,59 @@ const PublicationsPage = () => {
 
               <div className="space-y-1">
                 <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Classificação</Label>
-                <Select value={filterCategory || "all"}
-                  onValueChange={(v) => handleFilterChange(filterStatus, filterOffice, undefined, undefined, v === "all" ? "" : v)}>
-                  <SelectTrigger className="h-8 w-[180px] text-xs"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todas</SelectItem>
-                    {Object.entries(taxonomy).map(([cat]) => (
-                      <SelectItem key={cat} value={cat}>{cat}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <MultiSelect
+                  options={Object.entries(taxonomy).map(([cat]) => ({ value: cat, label: cat }))}
+                  defaultValue={filterCategory ? filterCategory.split(",").filter(Boolean) : []}
+                  onValueChange={(vals) => handleFilterChange(filterStatus, filterOffice, undefined, undefined, vals.join(","))}
+                  placeholder="Todas"
+                  className="h-8 min-w-[200px] text-xs"
+                  maxCount={2}
+                />
               </div>
 
               <div className="space-y-1">
                 <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Vínculo</Label>
-                <Select value={filterVinculo || "all"}
-                  onValueChange={(v) => handleFilterChange(filterStatus, filterOffice, undefined, undefined, undefined, undefined, v === "all" ? "" : v)}>
-                  <SelectTrigger className="h-8 w-[150px] text-xs"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todos</SelectItem>
-                    <SelectItem value="com_processo">Com processo</SelectItem>
-                    <SelectItem value="sem_processo">Sem processo</SelectItem>
-                  </SelectContent>
-                </Select>
+                <MultiSelect
+                  options={[
+                    { value: "com_processo", label: "Com processo" },
+                    { value: "sem_processo", label: "Sem processo" },
+                  ]}
+                  defaultValue={filterVinculo ? filterVinculo.split(",").filter(Boolean) : []}
+                  onValueChange={(vals) => handleFilterChange(filterStatus, filterOffice, undefined, undefined, undefined, undefined, vals.join(","))}
+                  placeholder="Todos"
+                  className="h-8 min-w-[170px] text-xs"
+                  maxCount={2}
+                />
               </div>
 
               {stats?.available_naturezas && stats.available_naturezas.length > 0 && (
                 <div className="space-y-1">
                   <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Natureza</Label>
-                  <Select value={filterNatureza || "all"}
-                    onValueChange={(v) => handleFilterChange(filterStatus, filterOffice, undefined, undefined, undefined, undefined, undefined, v === "all" ? "" : v)}>
-                    <SelectTrigger className="h-8 w-[200px] text-xs"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">Todas</SelectItem>
-                      {stats.available_naturezas.map((n) => (
-                        <SelectItem key={n} value={n}>{n}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <MultiSelect
+                    options={stats.available_naturezas.map((n) => ({ value: n, label: n }))}
+                    defaultValue={filterNatureza ? filterNatureza.split(",").filter(Boolean) : []}
+                    onValueChange={(vals) => handleFilterChange(filterStatus, filterOffice, undefined, undefined, undefined, undefined, undefined, vals.join(","))}
+                    placeholder="Todas"
+                    className="h-8 min-w-[220px] text-xs"
+                    maxCount={2}
+                  />
                 </div>
               )}
 
               <div className="space-y-1">
                 <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Polo</Label>
-                <Select value={filterPolo || "all"}
-                  onValueChange={(v) => handleFilterChange(filterStatus, filterOffice, undefined, undefined, undefined, undefined, undefined, undefined, v === "all" ? "" : v)}>
-                  <SelectTrigger className="h-8 w-[160px] text-xs"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todos</SelectItem>
-                    <SelectItem value="ativo">Polo Ativo</SelectItem>
-                    <SelectItem value="passivo">Polo Passivo</SelectItem>
-                    <SelectItem value="ambos">Ambos os Polos</SelectItem>
-                  </SelectContent>
-                </Select>
+                <MultiSelect
+                  options={[
+                    { value: "ativo", label: "Polo Ativo" },
+                    { value: "passivo", label: "Polo Passivo" },
+                    { value: "ambos", label: "Ambos os Polos" },
+                  ]}
+                  defaultValue={filterPolo ? filterPolo.split(",").filter(Boolean) : []}
+                  onValueChange={(vals) => handleFilterChange(filterStatus, filterOffice, undefined, undefined, undefined, undefined, undefined, undefined, vals.join(","))}
+                  placeholder="Todos"
+                  className="h-8 min-w-[180px] text-xs"
+                  maxCount={2}
+                />
               </div>
             </div>
 
@@ -2320,16 +2320,14 @@ const PublicationsPage = () => {
             <div className="flex flex-wrap items-end gap-3">
               <div className="space-y-1">
                 <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">UF</Label>
-                <Select value={filterUf || "all"}
-                  onValueChange={(v) => handleFilterChange(filterStatus, filterOffice, undefined, undefined, undefined, v === "all" ? "" : v)}>
-                  <SelectTrigger className="h-8 w-[100px] text-xs"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todas</SelectItem>
-                    {availableUfs.map((uf) => (
-                      <SelectItem key={uf} value={uf}>{uf}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <MultiSelect
+                  options={availableUfs.map((uf) => ({ value: uf, label: uf }))}
+                  defaultValue={filterUf ? filterUf.split(",").filter(Boolean) : []}
+                  onValueChange={(vals) => handleFilterChange(filterStatus, filterOffice, undefined, undefined, undefined, vals.join(","))}
+                  placeholder="Todas"
+                  className="h-8 min-w-[120px] text-xs"
+                  maxCount={3}
+                />
               </div>
 
               <div className="space-y-1">

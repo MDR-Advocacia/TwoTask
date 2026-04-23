@@ -1302,19 +1302,41 @@ class PublicationSearchService:
             query = query.filter(PublicationRecord.creation_date >= date_from)
         if date_to:
             query = query.filter(PublicationRecord.creation_date < date_to + "T99")
-        if category:
-            query = query.filter(PublicationRecord.category == category)
-        if uf:
-            query = query.filter(PublicationRecord.uf == uf.strip().upper())
-        # Filtro de vínculo: com_processo / sem_processo
-        if vinculo == "sem_processo":
-            query = query.filter(PublicationRecord.linked_lawsuit_id.is_(None))
-        elif vinculo == "com_processo":
-            query = query.filter(PublicationRecord.linked_lawsuit_id.isnot(None))
-        if natureza:
-            query = query.filter(PublicationRecord.natureza_processo == natureza)
-        if polo:
-            query = query.filter(PublicationRecord.polo == polo.strip().lower())
+        # Todos os filtros abaixo aceitam CSV ("ativo,passivo") ou lista.
+        # Usa .in_(list) quando >1 valor, == quando 1 (preserva plan do query).
+        category_list = _parse_csv_strs(category)
+        if category_list:
+            if len(category_list) == 1:
+                query = query.filter(PublicationRecord.category == category_list[0])
+            else:
+                query = query.filter(PublicationRecord.category.in_(category_list))
+        uf_list = [u.strip().upper() for u in _parse_csv_strs(uf)]
+        if uf_list:
+            if len(uf_list) == 1:
+                query = query.filter(PublicationRecord.uf == uf_list[0])
+            else:
+                query = query.filter(PublicationRecord.uf.in_(uf_list))
+        # Vínculo: com_processo / sem_processo. Se ambos vierem juntos
+        # equivale a nenhum filtro (todos os registros cabem).
+        vinculo_list = _parse_csv_strs(vinculo)
+        if vinculo_list and len(vinculo_list) < 2:
+            v = vinculo_list[0]
+            if v == "sem_processo":
+                query = query.filter(PublicationRecord.linked_lawsuit_id.is_(None))
+            elif v == "com_processo":
+                query = query.filter(PublicationRecord.linked_lawsuit_id.isnot(None))
+        natureza_list = _parse_csv_strs(natureza)
+        if natureza_list:
+            if len(natureza_list) == 1:
+                query = query.filter(PublicationRecord.natureza_processo == natureza_list[0])
+            else:
+                query = query.filter(PublicationRecord.natureza_processo.in_(natureza_list))
+        polo_list = [p.strip().lower() for p in _parse_csv_strs(polo)]
+        if polo_list:
+            if len(polo_list) == 1:
+                query = query.filter(PublicationRecord.polo == polo_list[0])
+            else:
+                query = query.filter(PublicationRecord.polo.in_(polo_list))
         return query
 
     @staticmethod
