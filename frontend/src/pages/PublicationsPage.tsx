@@ -2148,7 +2148,22 @@ const PublicationsPage = () => {
                   {typeof grouped.total_records === "number" && (
                     <Badge variant="outline">{grouped.total_records} publicações</Badge>
                   )}
-                  {filterUf && <Badge variant="default">UF: {filterUf}</Badge>}
+                  {(() => {
+                    const active = [
+                      filterStatus, filterOffice, filterCategory, filterUf,
+                      filterVinculo, filterNatureza, filterPolo,
+                      filterDateFrom, filterDateTo,
+                    ].filter(Boolean).length;
+                    return active > 0 ? (
+                      <Badge
+                        variant="default"
+                        className="bg-blue-600 hover:bg-blue-700 cursor-help"
+                        title="Quantidade de filtros aplicados agora — Reaplicar Templates e Exportar Excel respeitam esse escopo"
+                      >
+                        {active} filtro{active > 1 ? "s" : ""} ativo{active > 1 ? "s" : ""}
+                      </Badge>
+                    ) : null;
+                  })()}
                 </>
               )}
             </CardTitle>
@@ -2807,7 +2822,11 @@ const PublicationsPage = () => {
                       (groupPage + 1) * GROUP_PAGE_SIZE,
                       grouped.total_groups,
                     )}{" "}
-                    de {grouped.total_groups} grupos • Página {groupPage + 1} de {totalPages}
+                    de {grouped.total_groups} grupos
+                    {typeof grouped.total_records === "number" && (
+                      <> · {grouped.total_records} publicações</>
+                    )}{" "}
+                    · Página {groupPage + 1} de {totalPages}
                   </span>
                   <div className="flex gap-2">
                     <Button variant="outline" size="sm" disabled={groupPage === 0}
