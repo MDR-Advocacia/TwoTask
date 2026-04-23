@@ -220,16 +220,38 @@ async function login(page, { username, password, keyLabel, returnUrl }) {
       }
     }
 
-    // Novajus antigo single-page: exige AMBOS #Username E #Password na mesma
-    // tela. Sem esse guard, essa rota matchava a tela nova de identifier-only
-    // (que tem #Username mas nao #Password) e travava no click do #SignIn.
+    // Novajus antigo single-page: tela com #Username + #Password + #SignIn
+    // juntos. Hoje alguns tenants usam OnePass/SSO: ao preencher o username,
+    // o front detecta conta SSO e redireciona sozinho pra Thomson Reuters
+    // (auth.thomsonreuters.com/u/login/password) ANTES de habilitar o #SignIn.
+    // Isso fazia page.click('#SignIn') travar com "element is not enabled"
+    // seguido de "element was detached from the DOM" (TimeoutError em prod).
+    //
+    // Estratégia: preenche o username, observa se a URL muda em 3s. Se mudou,
+    // foi auto-redirect — aborta o ramo e deixa o proximo iteration do loop
+    // resolver pelo branch /u/login/password. Se nao mudou, eh Novajus legado
+    // puro — completa o fluxo single-page normal.
     if (
       (await firstExistingSelector(page, ['#Username'])) &&
       (await firstExistingSelector(page, ['#Password']))
     ) {
+      const initialUrl = page.url();
       await page.fill('#Username', username, { timeout: 30000 });
-      await page.fill('#Password', password, { timeout: 30000 });
-      await page.click('#SignIn', { timeout: 30000 });
+
+      const redirected = await page
+        .waitForURL((u) => u !== initialUrl, { timeout: 3000 })
+        .then(() => true)
+        .catch(() => false);
+
+      if (redirected) {
+        await waitForPageSettle(page, 4000);
+        continue;
+      }
+
+      if (await firstExistingSelector(page, ['#Password'])) {
+        await page.fill('#Password', password, { timeout: 30000 });
+        await page.click('#SignIn', { timeout: 30000 });
+      }
       await waitForPageSettle(page, 4000);
       continue;
     }
