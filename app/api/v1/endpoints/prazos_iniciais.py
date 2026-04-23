@@ -1337,3 +1337,101 @@ def delete_template(
     db.commit()
     db.refresh(template)
     return _enrich_template_response(db, template)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Tipos de pedido (dicionário admin, usado pela análise estratégica
+# de aprovisionamento / contingência pela IA).
+# ─────────────────────────────────────────────────────────────────────
+
+from app.models.prazo_inicial_tipo_pedido import PrazoInicialTipoPedido  # noqa: E402
+
+
+class TipoPedidoResponse(BaseModel):
+    id: int
+    codigo: str
+    nome: str
+    naturezas: Optional[str] = None
+    display_order: int
+    is_active: bool
+
+
+class TipoPedidoPatch(BaseModel):
+    """Hoje só toggle is_active.  Mantido como objeto pra evolução futura
+    (admin editar `nome` ou `naturezas` sem migration, se o negócio pedir)."""
+    is_active: Optional[bool] = None
+    nome: Optional[str] = None
+    naturezas: Optional[str] = None
+    display_order: Optional[int] = None
+
+
+@router.get(
+    "/tipos-pedido",
+    response_model=List[TipoPedidoResponse],
+    summary="Lista os tipos de pedido (taxonomia) usados pela análise estratégica.",
+)
+def list_tipos_pedido(
+    only_active: bool = Query(default=False, description="Se True, retorna só is_active=True"),
+    natureza: Optional[str] = Query(
+        default=None,
+        description=(
+            "Se informado, filtra tipos cuja coluna `naturezas` contém essa string. "
+            "Ex.: natureza='Consumidor' traz todos que aplicam em Consumidor."
+        ),
+    ),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    q = db.query(PrazoInicialTipoPedido)
+    if only_active:
+        q = q.filter(PrazoInicialTipoPedido.is_active.is_(True))
+    if natureza:
+        # Filtro simples por LIKE — naturezas é CSV ";". Maiúsculo pra
+        # robustez a variações tipo "Cível" vs "cível".
+        like = f"%{natureza}%"
+        q = q.filter(PrazoInicialTipoPedido.naturezas.ilike(like))
+    q = q.order_by(
+        PrazoInicialTipoPedido.display_order.asc(),
+        PrazoInicialTipoPedido.nome.asc(),
+    )
+    rows = q.all()
+    return [
+        TipoPedidoResponse(
+            id=r.id,
+            codigo=r.codigo,
+            nome=r.nome,
+            naturezas=r.naturezas,
+            display_order=r.display_order,
+            is_active=r.is_active,
+        )
+        for r in rows
+    ]
+
+
+@router.patch(
+    "/tipos-pedido/{tipo_id}",
+    response_model=TipoPedidoResponse,
+    summary="Edita metadados de um tipo de pedido (toggle is_active, nome, naturezas).",
+)
+def patch_tipo_pedido(
+    tipo_id: int,
+    payload: TipoPedidoPatch,
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    tipo = db.get(PrazoInicialTipoPedido, tipo_id)
+    if tipo is None:
+        raise HTTPException(status_code=404, detail="Tipo de pedido não encontrado.")
+    updates = payload.dict(exclude_unset=True)
+    for field, value in updates.items():
+        setattr(tipo, field, value)
+    db.commit()
+    db.refresh(tipo)
+    return TipoPedidoResponse(
+        id=tipo.id,
+        codigo=tipo.codigo,
+        nome=tipo.nome,
+        naturezas=tipo.naturezas,
+        display_order=tipo.display_order,
+        is_active=tipo.is_active,
+    )
