@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertCircle, ExternalLink, Loader2, Pause, Play, RefreshCw, Rocket, RotateCw, Workflow } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -80,6 +80,34 @@ function runStatusLabel(value: string) {
   return map[value] || value;
 }
 
+const PUBLICATION_TREATMENT_REQUEST_TIMEOUT_MS = 15000;
+
+async function withAbortTimeout<T>(
+  label: string,
+  request: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), PUBLICATION_TREATMENT_REQUEST_TIMEOUT_MS);
+
+  try {
+    return await request(controller.signal);
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error(
+        `${label} demorou mais que ${Math.round(PUBLICATION_TREATMENT_REQUEST_TIMEOUT_MS / 1000)}s para responder.`,
+      );
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+function describeLoadFailure(label: string, err: unknown): string {
+  const message = err instanceof Error ? err.message : "Erro desconhecido ao carregar dados.";
+  return `${label}: ${message}`;
+}
+
 interface ItemRowProps {
   item: PublicationTreatmentItem;
   onRetry?: (item: PublicationTreatmentItem) => void;
@@ -144,23 +172,70 @@ export default function PublicationTreatmentPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [retryingItemId, setRetryingItemId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const latestLoadIdRef = useRef(0);
 
   const loadData = async (showToast = false) => {
+    const loadId = ++latestLoadIdRef.current;
     try {
-      const [monitorPayload, runsPayload] = await Promise.all([
-        fetchPublicationTreatmentMonitor(),
-        fetchPublicationTreatmentRuns(),
+      const [monitorResult, runsResult] = await Promise.allSettled([
+        withAbortTimeout("O monitor do tratamento", (signal) => fetchPublicationTreatmentMonitor(signal)),
+        withAbortTimeout("O histórico de execuções", (signal) => fetchPublicationTreatmentRuns(signal)),
       ]);
-      setMonitor(monitorPayload);
-      setRuns(runsPayload);
-      setError(null);
+
+      if (loadId !== latestLoadIdRef.current) {
+        return;
+      }
+
+      const issues: string[] = [];
+      let monitorPayload: PublicationTreatmentMonitor | null = null;
+      let hasSuccess = false;
+
+      if (monitorResult.status === "fulfilled") {
+        monitorPayload = monitorResult.value;
+        setMonitor(monitorResult.value);
+        hasSuccess = true;
+      } else {
+        issues.push(describeLoadFailure("Monitor indisponível", monitorResult.reason));
+      }
+
+      if (runsResult.status === "fulfilled") {
+        setRuns(runsResult.value);
+        hasSuccess = true;
+      } else {
+        issues.push(describeLoadFailure("Histórico indisponível", runsResult.reason));
+      }
+
+      if (!hasSuccess) {
+        setMonitor(null);
+        setRuns([]);
+      }
+
+      setError(issues.length ? issues.join(" ") : null);
+
       if (showToast) {
-        toast({
-          title: "Painel atualizado",
-          description: `${monitorPayload.summary.pending_count} pendente(s) na fila.`,
-        });
+        if (issues.length === 0 && monitorPayload) {
+          toast({
+            title: "Painel atualizado",
+            description: `${monitorPayload.summary.pending_count} pendente(s) na fila.`,
+          });
+        } else if (hasSuccess) {
+          toast({
+            title: "Atualização parcial",
+            description: issues.join(" "),
+            variant: "destructive",
+          });
+        } else if (issues.length) {
+          toast({
+            title: "Falha ao atualizar",
+            description: issues.join(" "),
+            variant: "destructive",
+          });
+        }
       }
     } catch (err) {
+      if (loadId !== latestLoadIdRef.current) {
+        return;
+      }
       const message = err instanceof Error ? err.message : "Erro ao carregar o monitor.";
       setError(message);
       if (showToast) {
@@ -171,7 +246,9 @@ export default function PublicationTreatmentPage() {
         });
       }
     } finally {
-      setIsLoading(false);
+      if (loadId === latestLoadIdRef.current) {
+        setIsLoading(false);
+      }
     }
   };
 
@@ -304,7 +381,11 @@ export default function PublicationTreatmentPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" onClick={handleStart} disabled={isLoading || isSubmitting || monitor?.active_run?.is_final === false}>
+          <Button
+            size="sm"
+            onClick={handleStart}
+            disabled={isLoading || isSubmitting || !monitor || monitor?.active_run?.is_final === false}
+          >
             <Rocket className="mr-2 h-4 w-4" />
             Iniciar execução
           </Button>
@@ -381,7 +462,7 @@ export default function PublicationTreatmentPage() {
                 <span>Sinal atual: {monitor.control_signal === "pause" ? "Pausa solicitada" : "Execução livre"}</span>
               </div>
             </>
-          ) : (
+          ) : monitor ? (
             <Alert>
               <AlertCircle className="h-4 w-4" />
               <AlertTitle>Fila pronta para uso</AlertTitle>
@@ -389,6 +470,10 @@ export default function PublicationTreatmentPage() {
                 Assim que você iniciar uma execução, esta área passa a mostrar andamento, histórico e falhas recentes.
               </AlertDescription>
             </Alert>
+          ) : (
+            <div className="text-sm text-muted-foreground">
+              Monitor indisponível no momento. Tente atualizar novamente quando o backend destravar.
+            </div>
           )}
         </CardContent>
       </Card>
