@@ -190,29 +190,10 @@ async function login(page, { username, password, keyLabel, returnUrl }) {
       continue;
     }
 
-    if (await firstExistingSelector(page, ['#Username'])) {
-      await page.fill('#Username', username, { timeout: 30000 });
-      if (await firstExistingSelector(page, ['#Password'])) {
-        await page.fill('#Password', password, { timeout: 30000 });
-      }
-      await page.click('#SignIn', { timeout: 30000 });
-      await waitForPageSettle(page, 4000);
-      continue;
-    }
-
-    if (page.url().includes('/u/login/identifier')) {
-      const filled = await fillFirstAvailable(
-        page,
-        ['input[name="username"]', 'input[name="email"]', 'input[type="email"]'],
-        username,
-      );
-      if (filled) {
-        await clickFirstAvailable(page, ['button[name="action"]', 'button[type="submit"]']);
-        await waitForPageSettle(page, 4000);
-        continue;
-      }
-    }
-
+    // Thomson Reuters — fluxo novo de 2 etapas. Os checks por URL DEVEM vir
+    // ANTES do fallback com #Username/#SignIn, senão o branch single-page
+    // rouba a tela de identifier-only (que também tem #Username e #SignIn,
+    // mas com botão disabled) e trava esperando o click aceitar.
     if (page.url().includes('/u/login/password')) {
       const filled = await fillFirstAvailable(
         page,
@@ -224,6 +205,55 @@ async function login(page, { username, password, keyLabel, returnUrl }) {
         await waitForPageSettle(page, 6000);
         continue;
       }
+    }
+
+    if (page.url().includes('/u/login/identifier')) {
+      const filled = await fillFirstAvailable(
+        page,
+        ['input[name="username"]', 'input[name="email"]', 'input[type="email"]', '#Username'],
+        username,
+      );
+      if (filled) {
+        await clickFirstAvailable(page, ['button[name="action"]', 'button[type="submit"]', '#SignIn']);
+        await waitForPageSettle(page, 4000);
+        continue;
+      }
+    }
+
+    // Novajus antigo single-page: tela com #Username + #Password + #SignIn
+    // juntos. Hoje alguns tenants usam OnePass/SSO: ao preencher o username,
+    // o front detecta conta SSO e redireciona sozinho pra Thomson Reuters
+    // (auth.thomsonreuters.com/u/login/password) ANTES de habilitar o #SignIn.
+    // Isso fazia page.click('#SignIn') travar com "element is not enabled"
+    // seguido de "element was detached from the DOM" (TimeoutError em prod).
+    //
+    // Estratégia: preenche o username, observa se a URL muda em 3s. Se mudou,
+    // foi auto-redirect — aborta o ramo e deixa o proximo iteration do loop
+    // resolver pelo branch /u/login/password. Se nao mudou, eh Novajus legado
+    // puro — completa o fluxo single-page normal.
+    if (
+      (await firstExistingSelector(page, ['#Username'])) &&
+      (await firstExistingSelector(page, ['#Password']))
+    ) {
+      const initialUrl = page.url();
+      await page.fill('#Username', username, { timeout: 30000 });
+
+      const redirected = await page
+        .waitForURL((u) => u !== initialUrl, { timeout: 3000 })
+        .then(() => true)
+        .catch(() => false);
+
+      if (redirected) {
+        await waitForPageSettle(page, 4000);
+        continue;
+      }
+
+      if (await firstExistingSelector(page, ['#Password'])) {
+        await page.fill('#Password', password, { timeout: 30000 });
+        await page.click('#SignIn', { timeout: 30000 });
+      }
+      await waitForPageSettle(page, 4000);
+      continue;
     }
 
     const context = await capturePageContext(page);
