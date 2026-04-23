@@ -512,6 +512,26 @@ class PublicationSearchService:
                 # Commit parcial: sobrevive a OOM/SIGKILL e dá progresso real
                 # pra UI. Progress vai de 50 → 70% proporcional ao processado.
                 if pending_in_batch >= PERSIST_BATCH_SIZE:
+                    # Cancelamento cooperativo: cancel_search() roda em outra
+                    # session (request do endpoint) e apenas seta status=
+                    # CANCELADO no DB. O loop aqui não vê essa mudança sem
+                    # consultar. Granularidade de 500 registros (~segundos)
+                    # é aceitável e evita hit a cada publicação.
+                    current_status = (
+                        self.db.query(PublicationSearch.status)
+                        .filter(PublicationSearch.id == search.id)
+                        .scalar()
+                    )
+                    if current_status == SEARCH_STATUS_CANCELLED:
+                        self.db.rollback()  # descarta o lote pendente
+                        logger.warning(
+                            "Busca #%s cancelada pelo usuário no PERSIST "
+                            "(%d/%d processados antes do cancelamento, %d novas commitadas).",
+                            search.id, total_processed, total_pubs, new_count,
+                        )
+                        self.db.refresh(search)
+                        return self._search_to_dict(search)
+
                     search.total_found = new_count + discarded_count + obsolete_count
                     search.total_new = new_count
                     search.total_duplicate = dup_count + discarded_count + obsolete_count

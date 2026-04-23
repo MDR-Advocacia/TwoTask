@@ -476,6 +476,31 @@ const PublicationsPage = () => {
     } catch { /* ignore */ }
   }, []);
 
+  // Cancelamento cooperativo: o backend (PublicationSearchService) verifica
+  // search.status a cada commit de lote de 500 no PERSIST. A interrupção
+  // pode demorar alguns segundos — o tempo do lote em andamento terminar.
+  // Registros já persistidos em lotes anteriores são mantidos.
+  const cancelSearch = useCallback(async (searchId: number) => {
+    if (!window.confirm(
+      `Cancelar Busca #${searchId}?\n\nRegistros já persistidos em lotes anteriores serão mantidos. A interrupção pode levar alguns segundos até o lote atual terminar.`
+    )) return;
+    try {
+      const res = await apiFetch(`${API}/searches/${searchId}/cancel`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || "Falha ao cancelar busca.");
+      }
+      toast({
+        title: "Busca cancelada",
+        description: `Busca #${searchId} será interrompida no próximo lote.`,
+      });
+      await loadSearches();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Erro desconhecido.";
+      toast({ title: "Erro", description: msg, variant: "destructive" });
+    }
+  }, [toast, loadSearches]);
+
   const loadDuplicates = useCallback(async () => {
     setLoadingDuplicates(true);
     try {
@@ -1497,9 +1522,21 @@ const PublicationsPage = () => {
                     Busca #{activeSearch.id} em andamento
                   </span>
                 </div>
-                <span className="text-xs font-semibold text-blue-700">
-                  {activeSearch.progress_pct ?? 0}%
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-blue-700">
+                    {activeSearch.progress_pct ?? 0}%
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 px-2 text-xs text-red-600 hover:bg-red-50 hover:text-red-700"
+                    onClick={() => cancelSearch(activeSearch.id)}
+                    title="Cancelar busca em andamento"
+                  >
+                    <XCircle className="mr-1 h-3 w-3" />
+                    Cancelar
+                  </Button>
+                </div>
               </div>
               <Progress value={activeSearch.progress_pct ?? 0} className="h-2" />
               <p className="text-xs text-blue-700">
