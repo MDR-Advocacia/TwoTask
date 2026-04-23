@@ -101,12 +101,10 @@ def upgrade() -> None:
         ),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
     )
-    op.create_index(
-        "ix_prazo_inicial_tipos_pedido_codigo",
-        "prazo_inicial_tipos_pedido",
-        ["codigo"],
-        unique=True,
-    )
+    # ATENÇÃO: NÃO criar índice explícito sobre 'codigo' — a coluna já
+    # tem unique=True na definição da tabela, o que cria um índice único
+    # implícito. Criar um 2º índice causa 'relation already exists' no
+    # PostgreSQL e derruba a migration.
     op.create_index(
         "ix_prazo_inicial_tipos_pedido_is_active",
         "prazo_inicial_tipos_pedido",
@@ -143,10 +141,6 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index(
         "ix_prazo_inicial_tipos_pedido_is_active",
-        table_name="prazo_inicial_tipos_pedido",
-    )
-    op.drop_index(
-        "ix_prazo_inicial_tipos_pedido_codigo",
         table_name="prazo_inicial_tipos_pedido",
     )
     op.drop_table("prazo_inicial_tipos_pedido")
