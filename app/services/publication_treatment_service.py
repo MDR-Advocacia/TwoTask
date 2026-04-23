@@ -102,6 +102,7 @@ class PublicationTreatmentService:
             RECORD_STATUS_SCHEDULED,
             RECORD_STATUS_IGNORED,
             RECORD_STATUS_DISCARDED_DUPLICATE,
+            RECORD_STATUS_OBSOLETE,
         )
 
     def _map_record_status_to_target(self, record_status: str) -> Optional[str]:
@@ -272,7 +273,12 @@ class PublicationTreatmentService:
         }
 
     def get_summary(self, office_ids: Optional[list[int]] = None) -> dict[str, Any]:
-        query = self.db.query(PublicationTreatmentItem)
+        eligible_statuses = self._eligible_record_statuses()
+        query = (
+            self.db.query(PublicationTreatmentItem)
+            .join(PublicationRecord, PublicationRecord.id == PublicationTreatmentItem.publication_record_id)
+            .filter(PublicationRecord.status.in_(eligible_statuses))
+        )
         if office_ids:
             query = query.filter(PublicationTreatmentItem.linked_office_id.in_(office_ids))
         total_items = query.count()
@@ -293,13 +299,19 @@ class PublicationTreatmentService:
             .all()
         )
         eligible_records_query = self._record_query(office_ids).filter(
-            PublicationRecord.status.in_(self._eligible_record_statuses()),
+            PublicationRecord.status.in_(eligible_statuses),
         )
         by_status = {status: count for status, count in status_rows}
         by_target = {status: count for status, count in target_rows}
+        queue_count = (
+            by_status.get(QUEUE_STATUS_PENDING, 0)
+            + by_status.get(QUEUE_STATUS_PROCESSING, 0)
+            + by_status.get(QUEUE_STATUS_FAILED, 0)
+        )
         return {
             "total_items": total_items,
             "eligible_records": eligible_records_query.count(),
+            "queue_count": queue_count,
             "pending_count": by_status.get(QUEUE_STATUS_PENDING, 0),
             "processing_count": by_status.get(QUEUE_STATUS_PROCESSING, 0),
             "completed_count": by_status.get(QUEUE_STATUS_COMPLETED, 0),

@@ -216,7 +216,7 @@ export default function PublicationTreatmentPage() {
         if (issues.length === 0 && monitorPayload) {
           toast({
             title: "Painel atualizado",
-            description: `${monitorPayload.summary.pending_count} pendente(s) na fila.`,
+            description: `${monitorPayload.summary.queue_count} item(ns) restante(s) na fila.`,
           });
         } else if (hasSuccess) {
           toast({
@@ -351,7 +351,7 @@ export default function PublicationTreatmentPage() {
   const summaryCards = monitor
     ? [
         { title: "Registros elegíveis", value: monitor.summary.eligible_records },
-        { title: "Na fila", value: monitor.summary.pending_count },
+        { title: "Na fila", value: monitor.summary.queue_count },
         { title: "Concluídos", value: monitor.summary.completed_count },
         { title: "Falhas", value: monitor.summary.failed_count },
         { title: "Tratar como tratada", value: monitor.summary.treated_target_count },
