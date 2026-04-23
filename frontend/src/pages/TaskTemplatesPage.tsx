@@ -48,6 +48,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { MultiSelect } from "@/components/ui/MultiSelect";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -157,7 +158,11 @@ type TaskBlock = typeof BLANK_TASK_BLOCK;
 const BLANK_FORM = {
   category: "",
   subcategory: "",
-  office_external_id: "_global",
+  // Array de IDs (string) ou ["_global"] como sentinela pro template global
+  // que casa publicações sem processo vinculado. Multi-seleção no modo
+  // criação: cada escritório gera um template separado (N offices × M
+  // blocos = N*M registros). No modo edição, a UI trava em 1 valor.
+  office_external_ids: ["_global"] as string[],
   taskBlocks: [{ ...BLANK_TASK_BLOCK }] as TaskBlock[],
 };
 
@@ -191,6 +196,11 @@ const TaskTemplatesPage = () => {
   const [overrides, setOverrides] = useState<ClassificationOverride[]>([]);
   const [loadingOverrides, setLoadingOverrides] = useState(false);
   const [overrideFilterOffice, setOverrideFilterOffice] = useState("");
+  // Paginação client-side dos ajustes de classificação (overrides).
+  // Antes a tabela crescia infinita; 25 linhas/página cabe numa viewport
+  // padrão sem scroll vertical absurdo.
+  const [overridePage, setOverridePage] = useState(0);
+  const OVERRIDES_PAGE_SIZE = 25;
   const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
   const [editingOverride, setEditingOverride] = useState<ClassificationOverride | null>(null);
   const [savingOverride, setSavingOverride] = useState(false);
@@ -484,7 +494,7 @@ const TaskTemplatesPage = () => {
     setForm({
       category: tmpl.category,
       subcategory: tmpl.subcategory ?? "",
-      office_external_id: tmpl.office_external_id === null ? "_global" : String(tmpl.office_external_id),
+      office_external_ids: [tmpl.office_external_id === null ? "_global" : String(tmpl.office_external_id)],
       taskBlocks: [{
         name: tmpl.name,
         task_type_external_id: parentType ? String(parentType.external_id) : "",
@@ -525,10 +535,6 @@ const TaskTemplatesPage = () => {
     }
 
     setSaving(true);
-    const officeValue =
-      form.office_external_id === "_global" || form.office_external_id === ""
-        ? null
-        : parseInt(form.office_external_id);
 
     // Helper pra obter nome do subtipo (pra auto-nome)
     const subtypeName = (subtypeId: string): string => {
@@ -539,7 +545,7 @@ const TaskTemplatesPage = () => {
       return "Tarefa";
     };
 
-    const buildPayload = (block: TaskBlock, idx: number) => ({
+    const buildPayload = (block: TaskBlock, idx: number, officeValue: number | null) => ({
       // Nome auto-gerado: usa o subtipo como rótulo. Backend exige name,
       // mas a UI não expõe mais esse campo ao usuário.
       name: (block.name?.trim() ||
@@ -563,11 +569,14 @@ const TaskTemplatesPage = () => {
 
     try {
       if (editingId) {
-        // Edição:
+        // Edição: trava em 1 escritório (modo single). Pega o primeiro do array.
+        const editOfficeRaw = form.office_external_ids[0] ?? "_global";
+        const editOfficeValue =
+          editOfficeRaw === "_global" || editOfficeRaw === "" ? null : parseInt(editOfficeRaw);
         //  - bloco 0 → PUT no registro existente (editingId)
         //  - blocos 1..N (adicionados via "Adicionar tarefa") → POST como
         //    novos registros compartilhando categoria + subcategoria + escritório.
-        const firstPayload = buildPayload(form.taskBlocks[0], 0);
+        const firstPayload = buildPayload(form.taskBlocks[0], 0, editOfficeValue);
         const putRes = await apiFetch(`${API}/${editingId}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -580,7 +589,7 @@ const TaskTemplatesPage = () => {
 
         const addedNames: string[] = [];
         for (let idx = 1; idx < form.taskBlocks.length; idx++) {
-          const payload = buildPayload(form.taskBlocks[idx], idx);
+          const payload = buildPayload(form.taskBlocks[idx], idx, editOfficeValue);
           const res = await apiFetch(`${API}/`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -603,27 +612,37 @@ const TaskTemplatesPage = () => {
           toast({ title: "Template atualizado", description: `"${firstPayload.name}" salvo com sucesso.` });
         }
       } else {
-        // Criação: cria um registro por bloco (cada bloco gera uma tarefa
-        // distinta no agendamento, mas o usuário enxerga como "1 template
-        // com N tarefas").
+        // Criação: cria um registro POR ESCRITÓRIO selecionado e POR bloco.
+        // N escritórios × M blocos de tarefa = N*M templates. Cada bloco
+        // vira uma tarefa distinta no agendamento; cada escritório ganha
+        // sua própria cópia do template pra controle separado.
+        const officesToCreate = form.office_external_ids.length > 0
+          ? form.office_external_ids
+          : ["_global"];
         const created: string[] = [];
-        for (let idx = 0; idx < form.taskBlocks.length; idx++) {
-          const payload = buildPayload(form.taskBlocks[idx], idx);
-          const res = await apiFetch(`${API}/`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-          });
-          if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            throw new Error(data.detail || `Erro ao criar tarefa ${idx + 1}.`);
+        for (const officeRaw of officesToCreate) {
+          const officeValue =
+            officeRaw === "_global" || officeRaw === "" ? null : parseInt(officeRaw);
+          for (let idx = 0; idx < form.taskBlocks.length; idx++) {
+            const payload = buildPayload(form.taskBlocks[idx], idx, officeValue);
+            const res = await apiFetch(`${API}/`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            if (!res.ok) {
+              const data = await res.json().catch(() => ({}));
+              throw new Error(data.detail || `Erro ao criar tarefa ${idx + 1} (escritório ${officeRaw}).`);
+            }
+            const created_item = await res.json();
+            created.push(created_item.name ?? payload.name);
           }
-          const created_item = await res.json();
-          created.push(created_item.name ?? payload.name);
         }
         toast({
-          title: `Template criado com ${created.length} tarefa${created.length > 1 ? "s" : ""}`,
-          description: created.join(" • "),
+          title: `${created.length} template${created.length > 1 ? "s" : ""} criado${created.length > 1 ? "s" : ""}`,
+          description: created.length <= 8
+            ? created.join(" • ")
+            : `${created.slice(0, 8).join(" • ")} … (+${created.length - 8})`,
         });
       }
 
@@ -1339,7 +1358,7 @@ const TaskTemplatesPage = () => {
                                         setForm({
                                           category: s.category,
                                           subcategory: s.subcategory === "-" ? "" : s.subcategory,
-                                          office_external_id: String(entry.office.external_id),
+                                          office_external_ids: [String(entry.office.external_id)],
                                           taskBlocks: [{ ...BLANK_TASK_BLOCK }],
                                         });
                                         setDialogOpen(true);
@@ -1405,6 +1424,7 @@ const TaskTemplatesPage = () => {
             value={overrideFilterOffice || "all"}
             onValueChange={(v) => {
               setOverrideFilterOffice(v === "all" ? "" : v);
+              setOverridePage(0);
             }}
           >
             <SelectTrigger className="w-[320px]">
@@ -1449,7 +1469,17 @@ const TaskTemplatesPage = () => {
                 );
               }
 
+              const totalPages = Math.max(
+                1,
+                Math.ceil(visibleOverrides.length / OVERRIDES_PAGE_SIZE),
+              );
+              const safePage = Math.min(overridePage, totalPages - 1);
+              const pagedOverrides = visibleOverrides.slice(
+                safePage * OVERRIDES_PAGE_SIZE,
+                (safePage + 1) * OVERRIDES_PAGE_SIZE,
+              );
               return (
+              <>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -1463,7 +1493,7 @@ const TaskTemplatesPage = () => {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {visibleOverrides.map((ov) => {
+                  {pagedOverrides.map((ov) => {
                     const office = offices.find((o) => o.external_id === ov.office_external_id);
                     return (
                       <TableRow key={ov.id} className={!ov.is_active ? "opacity-50" : ""}>
@@ -1522,6 +1552,43 @@ const TaskTemplatesPage = () => {
                   })}
                 </TableBody>
               </Table>
+              {/* Controles de paginação — só aparecem se há >1 página */}
+              {totalPages > 1 && (
+                <div className="flex items-center justify-between border-t px-3 py-2 text-xs text-muted-foreground">
+                  <div>
+                    Mostrando {safePage * OVERRIDES_PAGE_SIZE + 1}–{Math.min(
+                      (safePage + 1) * OVERRIDES_PAGE_SIZE,
+                      visibleOverrides.length,
+                    )} de {visibleOverrides.length} ajustes
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2"
+                      onClick={() => setOverridePage((p) => Math.max(0, p - 1))}
+                      disabled={safePage === 0}
+                    >
+                      Anterior
+                    </Button>
+                    <span>
+                      Página {safePage + 1} de {totalPages}
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2"
+                      onClick={() =>
+                        setOverridePage((p) => Math.min(totalPages - 1, p + 1))
+                      }
+                      disabled={safePage >= totalPages - 1}
+                    >
+                      Próxima
+                    </Button>
+                  </div>
+                </div>
+              )}
+              </>
               );
             })()}
           </CardContent>
@@ -1864,52 +1931,90 @@ const TaskTemplatesPage = () => {
                   </Select>
                 </div>
                 <div className="grid gap-1.5">
-                  <Label>Subcategoria</Label>
-                  <Select
-                    value={form.subcategory || "_none"}
-                    onValueChange={(v) =>
-                      setField("subcategory", v === "_none" ? "" : v)
-                    }
-                    disabled={categorySubcategories.length === 0}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Qualquer subcategoria" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="_none">(qualquer / sem subcategoria)</SelectItem>
-                      {categorySubcategories.map((s) => (
-                        <SelectItem key={s} value={s}>{s}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <Label>
+                    Subcategoria
+                    <span className="ml-1 text-muted-foreground font-normal">
+                      (opcional — digite uma nova ou escolha uma existente)
+                    </span>
+                  </Label>
+                  {/* Input com datalist: aceita texto livre (permite criar templates
+                      para subcategorias customizadas vindas de overrides) e ao mesmo
+                      tempo oferece autocomplete com as subcategorias canônicas da
+                      categoria selecionada. Deixar vazio = template aplica a qualquer
+                      subcategoria (casamento mais permissivo). */}
+                  <Input
+                    value={form.subcategory}
+                    onChange={(e) => setField("subcategory", e.target.value)}
+                    list={`subcategorias-${form.category || "none"}`}
+                    placeholder="Qualquer subcategoria"
+                    autoComplete="off"
+                  />
+                  <datalist id={`subcategorias-${form.category || "none"}`}>
+                    {categorySubcategories.map((s) => (
+                      <option key={s} value={s} />
+                    ))}
+                  </datalist>
                 </div>
               </div>
             </div>
 
-            {/* Escritório */}
+            {/* Escritório(s) — Multi no modo criação, Single no modo edição */}
             <div className="grid gap-1.5">
-              <Label>Escritório responsável</Label>
-              <Select
-                value={form.office_external_id || "_global"}
-                onValueChange={(v) => setField("office_external_id", v)}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecione o escritório..." />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="_global">
-                    ✦ Publicações sem processo (template global)
-                  </SelectItem>
-                  {offices.map((o) => (
-                    <SelectItem key={o.external_id} value={String(o.external_id)}>
-                      {o.path || o.name}
+              <Label>
+                {editingId ? "Escritório responsável" : "Escritório(s) responsável(is)"}
+                {!editingId && (
+                  <span className="ml-1 text-muted-foreground font-normal">
+                    (selecione 1 ou mais — cada escritório gera um template)
+                  </span>
+                )}
+              </Label>
+              {editingId ? (
+                <Select
+                  value={form.office_external_ids[0] || "_global"}
+                  onValueChange={(v) =>
+                    setField("office_external_ids", [v] as unknown as string)
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecione o escritório..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="_global">
+                      ✦ Publicações sem processo (template global)
                     </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {(form.office_external_id === "_global" || form.office_external_id === "") && (
+                    {offices.map((o) => (
+                      <SelectItem key={o.external_id} value={String(o.external_id)}>
+                        {o.path || o.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <MultiSelect
+                  options={[
+                    { value: "_global", label: "✦ Publicações sem processo (template global)" },
+                    ...offices.map((o) => ({
+                      value: String(o.external_id),
+                      label: o.path || o.name,
+                    })),
+                  ]}
+                  defaultValue={form.office_external_ids}
+                  onValueChange={(v) =>
+                    setField("office_external_ids", v as unknown as string)
+                  }
+                  placeholder="Selecione 1 ou mais escritórios..."
+                  maxCount={3}
+                />
+              )}
+              {form.office_external_ids.includes("_global") && (
                 <p className="text-xs text-amber-600">
-                  Template global: será usado para publicações sem processo/escritório vinculado.
+                  Template global incluído: será usado para publicações sem processo/escritório vinculado.
+                </p>
+              )}
+              {!editingId && form.office_external_ids.length > 1 && (
+                <p className="text-xs text-blue-600">
+                  {form.office_external_ids.length} escritórios selecionados —{" "}
+                  {form.office_external_ids.length * form.taskBlocks.length} templates serão criados ao salvar.
                 </p>
               )}
             </div>

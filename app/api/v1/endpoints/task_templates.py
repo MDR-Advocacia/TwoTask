@@ -162,7 +162,15 @@ def list_templates(
     if is_active is not None:
         q = q.filter(TaskTemplate.is_active == is_active)
 
-    templates = q.order_by(TaskTemplate.category, TaskTemplate.subcategory, TaskTemplate.name).all()
+    # Recém-criados primeiro: quando o operador salva um template novo
+    # pela UI, ele espera ver no topo da lista imediatamente. Ordem secundária
+    # mantém a organização alfabética por categoria dentro de um mesmo dia.
+    templates = q.order_by(
+        TaskTemplate.created_at.desc(),
+        TaskTemplate.category,
+        TaskTemplate.subcategory,
+        TaskTemplate.name,
+    ).all()
     return [_to_response(t) for t in templates]
 
 
