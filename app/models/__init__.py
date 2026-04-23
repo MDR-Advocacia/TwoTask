@@ -26,3 +26,4 @@ from .prazo_inicial import (
 from .prazo_inicial_legacy_task_queue import PrazoInicialLegacyTaskCancellationItem
 from .prazo_inicial_task_template import PrazoInicialTaskTemplate
 from .prazo_inicial_tipo_pedido import PrazoInicialTipoPedido
+from .prazo_inicial_pedido import PrazoInicialPedido

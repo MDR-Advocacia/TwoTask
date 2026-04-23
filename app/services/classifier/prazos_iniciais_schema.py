@@ -334,6 +334,77 @@ class BlocoJulgamento(BaseModel):
         return self
 
 
+# ─── Pedidos extraídos da petição inicial (Bloco D2) ────────────────
+
+
+PROB_PERDA = Literal["remota", "possivel", "provavel"]
+
+
+class BlocoPedido(BaseModel):
+    """
+    Um pedido (pretensão) identificado na petição inicial.
+    Múltiplos pedidos por intake; cada um tem seu próprio valor,
+    probabilidade de perda (óptica do réu) e aprovisionamento.
+    """
+
+    tipo_pedido: str
+    """Código canônico da tabela `prazo_inicial_tipos_pedido`
+    (ex.: "DANOS_MORAIS", "REVISAO_CONTRATUAL"). A IA precisa escolher
+    dentre os tipos ATIVOS (is_active=true) que aplicam à natureza do
+    processo — a lista vai no prompt dinâmico."""
+
+    natureza: Optional[str] = None
+    """Natureza do pedido ("Cível", "Consumidor", etc.). Redundante
+    com a natureza_processo do intake, mas preservada por pedido pra
+    casos onde a PI tem pedidos de naturezas diferentes (raro)."""
+
+    valor_indicado: Optional[float] = Field(default=None, ge=0)
+    """Valor em reais que a PI pede (pode ser NULL em pedidos
+    declaratórios ou quando a PI não especifica valor)."""
+
+    valor_estimado: Optional[float] = Field(default=None, ge=0)
+    """Valor REALISTA de eventual condenação, baseado em jurisprudência
+    do tema. Obrigatório quando probabilidade_perda != 'remota'.
+    A IA projeta o que a corte provavelmente arbitraria, NÃO o valor
+    pedido (tipicamente menor)."""
+
+    fundamentacao_valor: Optional[str] = None
+    """Texto curto explicando como chegou ao valor_estimado (ex.:
+    "Jurisprudência do STJ fixa danos morais bancários em R$ 3-5k;
+    adotei R$ 4k pela ausência de agravantes")."""
+
+    probabilidade_perda: PROB_PERDA
+    """Da ótica do banco-réu: remota (baixa chance de condenação),
+    possivel (chance relevante), provavel (condenação esperada).
+    Segue CPC 25 / IAS 37."""
+
+    aprovisionamento: Optional[float] = Field(default=None, ge=0)
+    """Valor a provisionar segundo CPC 25:
+    - remota   → 0
+    - possivel → 0 (divulga em nota explicativa)
+    - provavel → valor_estimado integral
+    A IA DEVE aplicar essa regra automaticamente."""
+
+    fundamentacao_risco: Optional[str] = None
+    """Explicação curta do motivo da classificação de probabilidade.
+    Ex.: "Tema 1061 do STJ favorável ao banco; ausência de prova de
+    ciência prévia pelo autor → remota"."""
+
+    @model_validator(mode="after")
+    def _enforce_cpc25(self) -> "BlocoPedido":
+        # Regra de integridade: se prob=remota ou possivel, aprovisionamento
+        # DEVE ser 0. Se IA errar, corrigimos silenciosamente aqui pra
+        # evitar provisão indevida no relatório contábil.
+        if self.probabilidade_perda in ("remota", "possivel"):
+            self.aprovisionamento = 0.0
+        elif self.probabilidade_perda == "provavel" and self.aprovisionamento is None:
+            # Provavel sem valor_estimado é aceito (pode ser pedido
+            # ilíquido); aprovisionamento fica None pra HITL estimar.
+            if self.valor_estimado is not None:
+                self.aprovisionamento = self.valor_estimado
+        return self
+
+
 # ─── Info de Agravo (só preenchido quando natureza=AGRAVO_INSTRUMENTO) ──
 
 
@@ -423,6 +494,11 @@ class PrazoInicialClassificationResponse(BaseModel):
     # Só relevante quando natureza_processo=AGRAVO_INSTRUMENTO. Default
     # None pra ficar transparente nos ramos COMUM/JUIZADO/OUTRO.
     agravo: Optional[BlocoAgravoInfo] = None
+
+    # Pedidos extraídos da petição inicial (Bloco D2). Lista vazia
+    # quando a PI não tem pedidos explícitos — raro mas possível em
+    # petições declaratórias puras.
+    pedidos: list[BlocoPedido] = Field(default_factory=list)
 
     # Meta.
     confianca_geral: Confianca = "baixa"

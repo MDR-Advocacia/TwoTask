@@ -1435,3 +1435,124 @@ def patch_tipo_pedido(
         display_order=tipo.display_order,
         is_active=tipo.is_active,
     )
+
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Pedidos extraídos da petição inicial (Bloco D2).
+# ─────────────────────────────────────────────────────────────────────
+
+from app.models.prazo_inicial_pedido import (  # noqa: E402
+    PrazoInicialPedido,
+    PROB_PERDA_VALIDAS,
+)
+
+
+class PedidoResponse(BaseModel):
+    id: int
+    intake_id: int
+    tipo_pedido: str
+    natureza: Optional[str] = None
+    valor_indicado: Optional[float] = None
+    valor_estimado: Optional[float] = None
+    fundamentacao_valor: Optional[str] = None
+    probabilidade_perda: Optional[str] = None
+    aprovisionamento: Optional[float] = None
+    fundamentacao_risco: Optional[str] = None
+
+
+class PedidoPatch(BaseModel):
+    """Operador pode editar qualquer campo no HITL — a persistência
+    é auditada via updated_at. Mantemos também o código do tipo_pedido
+    editável caso a IA tenha classificado mal."""
+    tipo_pedido: Optional[str] = None
+    natureza: Optional[str] = None
+    valor_indicado: Optional[float] = None
+    valor_estimado: Optional[float] = None
+    fundamentacao_valor: Optional[str] = None
+    probabilidade_perda: Optional[str] = None
+    aprovisionamento: Optional[float] = None
+    fundamentacao_risco: Optional[str] = None
+
+
+def _pedido_to_response(p: PrazoInicialPedido) -> PedidoResponse:
+    return PedidoResponse(
+        id=p.id,
+        intake_id=p.intake_id,
+        tipo_pedido=p.tipo_pedido,
+        natureza=p.natureza,
+        valor_indicado=float(p.valor_indicado) if p.valor_indicado is not None else None,
+        valor_estimado=float(p.valor_estimado) if p.valor_estimado is not None else None,
+        fundamentacao_valor=p.fundamentacao_valor,
+        probabilidade_perda=p.probabilidade_perda,
+        aprovisionamento=float(p.aprovisionamento) if p.aprovisionamento is not None else None,
+        fundamentacao_risco=p.fundamentacao_risco,
+    )
+
+
+@router.get(
+    "/intakes/{intake_id}/pedidos",
+    response_model=List[PedidoResponse],
+    summary="Lista pedidos extraídos da petição inicial de um intake.",
+)
+def list_pedidos_do_intake(
+    intake_id: int,
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    rows = (
+        db.query(PrazoInicialPedido)
+        .filter(PrazoInicialPedido.intake_id == intake_id)
+        .order_by(PrazoInicialPedido.id.asc())
+        .all()
+    )
+    return [_pedido_to_response(p) for p in rows]
+
+
+@router.patch(
+    "/pedidos/{pedido_id}",
+    response_model=PedidoResponse,
+    summary="Edita um pedido (HITL — operador ajusta valor estimado, probabilidade, aprovisionamento).",
+)
+def patch_pedido(
+    pedido_id: int,
+    payload: PedidoPatch,
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    pedido = db.get(PrazoInicialPedido, pedido_id)
+    if pedido is None:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado.")
+
+    updates = payload.dict(exclude_unset=True)
+
+    # Valida probabilidade se foi informada
+    if "probabilidade_perda" in updates and updates["probabilidade_perda"] is not None:
+        if updates["probabilidade_perda"] not in PROB_PERDA_VALIDAS:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"probabilidade_perda inválida. Use um de: "
+                    f"{sorted(PROB_PERDA_VALIDAS)}"
+                ),
+            )
+
+    for field, value in updates.items():
+        setattr(pedido, field, value)
+
+    # Reaplica regra CPC 25 se operador mudou probabilidade mas esqueceu
+    # de atualizar aprovisionamento: remota/possível = 0; provável =
+    # valor_estimado. Operador pode sobrescrever depois com um PATCH novo
+    # se quiser — aqui só garantimos coerência quando não foi informado.
+    if (
+        "probabilidade_perda" in updates
+        and "aprovisionamento" not in updates
+    ):
+        if pedido.probabilidade_perda in ("remota", "possivel"):
+            pedido.aprovisionamento = 0
+        elif pedido.probabilidade_perda == "provavel" and pedido.valor_estimado is not None:
+            pedido.aprovisionamento = pedido.valor_estimado
+
+    db.commit()
+    db.refresh(pedido)
+    return _pedido_to_response(pedido)

@@ -168,6 +168,12 @@ class PrazoInicialIntake(Base):
         back_populates="intake",
         cascade="all, delete-orphan",
     )
+    pedidos = relationship(
+        "PrazoInicialPedido",
+        back_populates="intake",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
     classification_batch = relationship(
         "PrazoInicialBatch",
         back_populates="intakes",

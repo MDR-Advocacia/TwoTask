@@ -24,7 +24,7 @@ prazos e devolver um JSON estruturado.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Optional
 
 
 # ─── System prompt ────────────────────────────────────────────────────
@@ -392,6 +392,44 @@ bloco `agravo` no nível raiz da resposta:
   prova de verossimilhança e presença de contrato assinado."
 
 Fora do ramo AGRAVO, deixe `agravo` como null.
+
+
+## Pedidos da petição inicial (Fase 3d — Bloco D2)
+
+Extraia TODOS os pedidos feitos pela parte autora na petição inicial e
+retorne no campo `pedidos` da raiz (lista). Um pedido = uma pretensão.
+
+Para cada pedido:
+
+- `tipo_pedido`: escolha OBRIGATORIAMENTE um dos códigos da tabela de
+  tipos disponíveis (informada no contexto do usuário). Se nenhum se
+  encaixar precisamente, use o mais próximo + explique em
+  `fundamentacao_valor`.
+- `natureza`: natureza do pedido ("Cível", "Consumidor",
+  "Trabalhista", etc.). Geralmente igual à do processo; pode diferir.
+- `valor_indicado`: valor em reais que a PI pede para ESSE pedido
+  especificamente. NULL se a PI não especifica ou é declaratório puro.
+- `valor_estimado`: valor REALISTA de eventual condenação — NÃO é o
+  valor pedido; é sua projeção baseada em jurisprudência do tema.
+  Ex.: PI pede R$ 50k de dano moral bancário → estime R$ 4-6k
+  (padrão STJ).
+- `fundamentacao_valor`: texto curto explicando o raciocínio do
+  valor_estimado. Obrigatório.
+- `probabilidade_perda`: da ÓPTICA DO BANCO-RÉU, uma das três:
+    * "remota"    — baixa chance de condenação (tese favorável ao
+                      banco, ausência de prova robusta do autor, etc.)
+    * "possivel"  — incerteza real; ambos os lados têm argumentos
+    * "provavel"  — condenação esperada (tese consolidada a favor
+                      do autor, prova documental robusta, etc.)
+- `aprovisionamento`: aplique CPC 25 / IAS 37 automaticamente:
+    * remota   → 0
+    * possivel → 0 (o escritório divulga em nota explicativa)
+    * provavel → igual a valor_estimado (provisão integral)
+- `fundamentacao_risco`: justifique a probabilidade em 1-3 frases
+  citando precedentes, temas STJ, características do caso.
+
+Retorne lista VAZIA em `pedidos` apenas se a PI for puramente
+declaratória sem qualquer pretensão quantificável.
 """
 
 
@@ -419,6 +457,7 @@ def build_user_message(
     cnj_number: str,
     capa_json: Any,
     integra_json: Any,
+    tipos_pedido_disponiveis: Optional[list] = None,
 ) -> str:
     """
     Monta a mensagem do usuário enviada ao modelo.
@@ -430,9 +469,29 @@ def build_user_message(
     - `integra_json`: estrutura com a íntegra do processo. Tipicamente uma
       lista de blocos `{"data": "YYYY-MM-DD", "tipo": "...", "texto": "..."}`,
       mas aceitamos qualquer JSON serializável.
+    - `tipos_pedido_disponiveis`: lista opcional de dicts com os tipos de
+      pedido ativos no sistema. Cada dict tem pelo menos
+      `{"codigo": "DANOS_MORAIS", "nome": "Danos Morais",
+        "naturezas": "Cível;Consumidor;..."}`. Quando fornecida, é
+      anexada à mensagem pra o modelo escolher DENTRE esses códigos.
     """
     capa_text = _safe_json_dumps(capa_json)
     integra_text = _safe_json_dumps(integra_json)
+
+    tipos_section = ""
+    if tipos_pedido_disponiveis:
+        linhas = []
+        for t in tipos_pedido_disponiveis:
+            codigo = t.get("codigo", "")
+            nome = t.get("nome", "")
+            naturezas = t.get("naturezas", "") or ""
+            linhas.append(f"- `{codigo}` — {nome} (naturezas: {naturezas})")
+        tipos_txt = "\n".join(linhas)
+        tipos_section = (
+            "\n## TIPOS DE PEDIDO DISPONÍVEIS\n"
+            "Use OBRIGATORIAMENTE um desses códigos em `pedidos[].tipo_pedido`:\n\n"
+            f"{tipos_txt}\n\n"
+        )
 
     return (
         f"Processo CNJ: {cnj_number}\n\n"
@@ -440,7 +499,8 @@ def build_user_message(
         f"```json\n{capa_text}\n```\n\n"
         "## ÍNTEGRA DO PROCESSO\n"
         "Movimentações e documentos do processo, em ordem cronológica:\n"
-        f"```json\n{integra_text}\n```\n\n"
+        f"```json\n{integra_text}\n```\n"
+        f"{tipos_section}"
         "Responda EXCLUSIVAMENTE com o JSON conforme o schema descrito no "
         "system prompt — sem texto adicional, sem markdown."
     )

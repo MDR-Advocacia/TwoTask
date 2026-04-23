@@ -49,6 +49,7 @@ from app.models.prazo_inicial import (
     PrazoInicialIntake,
     PrazoInicialSugestao,
 )
+from app.models.prazo_inicial_pedido import PrazoInicialPedido
 from app.models.prazo_inicial_task_template import PrazoInicialTaskTemplate
 from app.services.classifier.ai_client import AnthropicClassifierClient
 from app.services.classifier.prazos_iniciais_prompts import (
@@ -133,10 +134,10 @@ class PrazosIniciaisBatchClassifier:
         custom_id_to_intake: dict[str, int] = {}
 
         for intake in intakes:
-            user_msg = build_user_message(
-                cnj_number=intake.cnj_number,
+            user_msg = build_user_message(cnj_number=intake.cnj_number,
                 capa_json=intake.capa_json,
                 integra_json=intake.integra_json,
+                tipos_pedido_disponiveis=self._fetch_tipos_pedido_ativos(),
             )
             custom_id = f"intake-{intake.id}"
             batch_requests.append(
@@ -339,6 +340,17 @@ class PrazosIniciaisBatchClassifier:
                 intake.agravo_processo_origem_cnj = None
                 intake.agravo_decisao_agravada_resumo = None
 
+            # Materializa pedidos (Bloco D2) antes das sugestões — um falha
+            # não deve impedir a outra, mas a ordem deixa pedidos no banco
+            # primeiro pra análise global ficar consistente.
+            try:
+                self._materialize_pedidos(intake, response_obj)
+            except Exception as exc:
+                logger.exception(
+                    "Erro materializando pedidos do intake %s: %s",
+                    intake.id, exc,
+                )
+
             # Materializa novas sugestões.
             try:
                 mat = self._materialize_sugestoes(intake, response_obj)
@@ -457,6 +469,69 @@ class PrazosIniciaisBatchClassifier:
             raise Exception(
                 f"Resposta não casa com o schema esperado: {exc.errors()[:3]}"
             ) from exc
+
+
+
+    def _fetch_tipos_pedido_ativos(self) -> list[dict]:
+        """
+        Busca os tipos de pedido ativos pra entregar ao Sonnet como
+        contexto — garante que a IA escolhe apenas dentre os códigos
+        cadastrados na tabela (operador pode desativar via admin).
+        """
+        from app.models.prazo_inicial_tipo_pedido import PrazoInicialTipoPedido
+        rows = (
+            self.db.query(PrazoInicialTipoPedido)
+            .filter(PrazoInicialTipoPedido.is_active.is_(True))
+            .order_by(
+                PrazoInicialTipoPedido.display_order.asc(),
+                PrazoInicialTipoPedido.nome.asc(),
+            )
+            .all()
+        )
+        return [
+            {
+                "codigo": r.codigo,
+                "nome": r.nome,
+                "naturezas": r.naturezas or "",
+            }
+            for r in rows
+        ]
+    def _materialize_pedidos(
+        self,
+        intake: "PrazoInicialIntake",
+        response: "PrazoInicialClassificationResponse",
+    ) -> int:
+        """
+        Persiste na tabela `prazo_inicial_pedidos` os pedidos extraídos
+        da petição inicial pela IA. Em reprocessamento, apaga os antigos
+        antes de criar os novos (cascade delete-orphan cuidaria se a
+        sessão soubesse da relação — aqui fazemos explicitamente pra
+        ser seguro).
+        """
+        if not hasattr(intake, "pedidos"):
+            return 0
+
+        # Limpa pedidos antigos (reprocessamento).
+        for old in list(intake.pedidos):
+            self.db.delete(old)
+
+        created = 0
+        for pedido in response.pedidos or []:
+            self.db.add(
+                PrazoInicialPedido(
+                    intake_id=intake.id,
+                    tipo_pedido=pedido.tipo_pedido,
+                    natureza=pedido.natureza,
+                    valor_indicado=pedido.valor_indicado,
+                    valor_estimado=pedido.valor_estimado,
+                    fundamentacao_valor=pedido.fundamentacao_valor,
+                    probabilidade_perda=pedido.probabilidade_perda,
+                    aprovisionamento=pedido.aprovisionamento,
+                    fundamentacao_risco=pedido.fundamentacao_risco,
+                )
+            )
+            created += 1
+        return created
 
     def _materialize_sugestoes(
         self,
