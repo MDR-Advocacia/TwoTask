@@ -13,6 +13,7 @@ prazo_inicial_batch      → lotes enviados à Anthropic (rastreabilidade)
 """
 
 from sqlalchemy import (
+    Numeric,
     BigInteger,
     Boolean,
     Column,
@@ -149,6 +150,20 @@ class PrazoInicialIntake(Base):
     # processo de 1º grau (origem) sem o operador precisar abrir o PDF.
     agravo_processo_origem_cnj = Column(String(32), nullable=True)
     agravo_decisao_agravada_resumo = Column(Text, nullable=True)
+
+    # Agregados calculados a partir de prazo_inicial_pedidos (Bloco E).
+    # Ficam NULL até a primeira classificação; recalculados em cada
+    # reprocessamento e em cada PATCH de pedido.
+    #
+    # Regra "menos favorável ao banco" em probabilidade_exito_global:
+    # se QUALQUER pedido tem prob_perda=provavel → exito=remota.
+    # Se a pior prob_perda entre pedidos é possivel → exito=possivel.
+    # Se todos remota → exito=provavel.
+    valor_total_pedido = Column(Numeric(14, 2), nullable=True)
+    valor_total_estimado = Column(Numeric(14, 2), nullable=True)
+    aprovisionamento_sugerido = Column(Numeric(14, 2), nullable=True)
+    probabilidade_exito_global = Column(String(16), nullable=True)
+    analise_estrategica = Column(Text, nullable=True)
 
     received_at = Column(
         DateTime(timezone=True),

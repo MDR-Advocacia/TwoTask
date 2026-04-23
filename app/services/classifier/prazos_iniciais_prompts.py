@@ -430,6 +430,27 @@ Para cada pedido:
 
 Retorne lista VAZIA em `pedidos` apenas se a PI for puramente
 declaratória sem qualquer pretensão quantificável.
+
+
+## Análise estratégica global (Bloco E)
+
+Após listar `pedidos`, você deve compor um CAMPO RAIZ extra:
+
+- `analise_estrategica`: texto curto (3-5 frases) em português
+  resumindo a posição do banco no processo. Deve incluir:
+    * a classificação GLOBAL de probabilidade de êxito (remota,
+      possível ou provável DO RÉU) e porquê — lembrando que a regra
+      é "menos favorável entre os pedidos": se 1 pedido for
+      provável de condenação, o intake inteiro é "remota" de êxito;
+    * os temas/teses principais que sustentam essa classificação
+      (mencione tema STJ / súmula / posição dominante quando couber);
+    * o valor total de aprovisionamento sugerido (soma dos
+      aprovisionamentos de cada pedido, aplicando CPC 25) e
+      destaque se há pedidos com classificação "possível" que
+      exigem nota explicativa em balanço.
+
+Esse texto é consumido pelo HITL pra o operador validar o
+raciocínio da IA sem abrir cada pedido — seja preciso e técnico.
 """
 
 

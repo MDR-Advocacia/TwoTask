@@ -1553,6 +1553,33 @@ def patch_pedido(
         elif pedido.probabilidade_perda == "provavel" and pedido.valor_estimado is not None:
             pedido.aprovisionamento = pedido.valor_estimado
 
+    # Recalcula agregados do intake ao editar qualquer pedido.  Mantem
+    # valor_total_*, aprovisionamento_sugerido e probabilidade_exito_global
+    # coerentes — evita dashboard/relatorio defasado apos correcao HITL.
     db.commit()
     db.refresh(pedido)
+
+    try:
+        from app.services.classifier.prazos_iniciais_classifier import (
+            PrazosIniciaisBatchClassifier,
+        )
+        # Reusa o helper (metodo de instancia, mas independe do state
+        # do classifier — só precisa de uma sessao db).
+        clf = PrazosIniciaisBatchClassifier.__new__(PrazosIniciaisBatchClassifier)
+        clf.db = db
+        intake = db.get(type(pedido).__mapper__.class_, pedido.intake_id)  # hack pra nao importar
+        # Melhor explicito:
+        from app.models.prazo_inicial import PrazoInicialIntake
+        intake = db.get(PrazoInicialIntake, pedido.intake_id)
+        if intake is not None:
+            clf._compute_intake_globals(intake)
+            db.commit()
+    except Exception:
+        # Nao bloqueia o PATCH se o recalculo falhar — operador pode
+        # acionar Reanalisar depois.
+        logger.exception(
+            "Falha ao recalcular agregados do intake %s apos PATCH do pedido %s",
+            pedido.intake_id, pedido.id,
+        )
+
     return _pedido_to_response(pedido)

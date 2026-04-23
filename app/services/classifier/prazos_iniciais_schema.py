@@ -504,6 +504,14 @@ class PrazoInicialClassificationResponse(BaseModel):
     confianca_geral: Confianca = "baixa"
     observacoes: Optional[str] = None  # texto livre do modelo, se quiser
 
+    # Análise estratégica global (Bloco E): texto livre explicando em
+    # 3-5 frases a posicao do banco, citando CPC 25 quando houver
+    # aprovisionamento, cenario jurisprudencial dos temas principais,
+    # e reconhecimento explicito da classificacao 'menos favoravel'.
+    # Usado pelo HITL pra o operador validar rapidamente o raciocinio
+    # da IA sem precisar ler cada pedido.
+    analise_estrategica: Optional[str] = None
+
     @field_validator("confianca_geral", mode="before")
     @classmethod
     def _normalize_confianca(cls, v):

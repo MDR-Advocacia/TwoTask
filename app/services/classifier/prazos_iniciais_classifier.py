@@ -351,6 +351,22 @@ class PrazosIniciaisBatchClassifier:
                     intake.id, exc,
                 )
 
+            # Analise estratégica global (Bloco E) — texto livre da IA.
+            intake.analise_estrategica = response_obj.analise_estrategica
+
+            # Precisamos commitar pedidos antes de agregar (senão o
+            # flush ainda não gravou). O classifier já usa flush
+            # implicito via session; força aqui pra garantir que
+            # intake.pedidos reflete os inserts desta iteração.
+            try:
+                self.db.flush()
+                self._compute_intake_globals(intake)
+            except Exception as exc:
+                logger.exception(
+                    "Erro computando agregados globais do intake %s: %s",
+                    intake.id, exc,
+                )
+
             # Materializa novas sugestões.
             try:
                 mat = self._materialize_sugestoes(intake, response_obj)
@@ -496,6 +512,73 @@ class PrazosIniciaisBatchClassifier:
             }
             for r in rows
         ]
+
+
+    def _compute_intake_globals(self, intake: "PrazoInicialIntake") -> None:
+        """
+        Recalcula os campos agregados do intake a partir dos pedidos
+        atuais. Chamado no fluxo de classificação e também após PATCH
+        de pedido (via endpoint) pra manter coerência.
+
+        Regras:
+          - valor_total_pedido    = sum(pedidos.valor_indicado)
+          - valor_total_estimado  = sum(pedidos.valor_estimado)
+          - aprovisionamento      = sum(pedidos.aprovisionamento)
+          - probabilidade_exito_global = "menos favorável ao banco":
+                pior prob_perda entre pedidos é remota   → exito=provavel
+                pior prob_perda                 possivel → exito=possivel
+                pior prob_perda                 provavel → exito=remota
+          - Se NÃO há pedidos, tudo fica NULL (não força zero).
+
+        `analise_estrategica` é preservado — vem direto da IA ou do
+        operador via PATCH; não é computado aqui.
+        """
+        from app.models.prazo_inicial_pedido import (
+            PROB_PERDA_RANK,
+            PROB_PERDA_REMOTA,
+            PROB_PERDA_POSSIVEL,
+            PROB_PERDA_PROVAVEL,
+        )
+
+        pedidos = list(intake.pedidos or [])
+        if not pedidos:
+            intake.valor_total_pedido = None
+            intake.valor_total_estimado = None
+            intake.aprovisionamento_sugerido = None
+            intake.probabilidade_exito_global = None
+            return
+
+        # Somas — só soma quando o campo não é None; soma de Nones vira None.
+        def _sum(attr):
+            valores = [getattr(p, attr) for p in pedidos if getattr(p, attr) is not None]
+            if not valores:
+                return None
+            total = 0
+            for v in valores:
+                total += float(v)
+            return total
+
+        intake.valor_total_pedido = _sum("valor_indicado")
+        intake.valor_total_estimado = _sum("valor_estimado")
+        intake.aprovisionamento_sugerido = _sum("aprovisionamento")
+
+        # Pior prob_perda (rank maior) → menor êxito.
+        ranks = [
+            PROB_PERDA_RANK.get(p.probabilidade_perda, -1)
+            for p in pedidos
+            if p.probabilidade_perda
+        ]
+        if not ranks:
+            intake.probabilidade_exito_global = None
+            return
+
+        pior_rank = max(ranks)
+        # Inverso: rank(perda)=0 remota → exito=provavel(rank 2)
+        #          rank(perda)=1 possivel → exito=possivel(rank 1)
+        #          rank(perda)=2 provavel → exito=remota(rank 0)
+        inverso = {0: PROB_PERDA_PROVAVEL, 1: PROB_PERDA_POSSIVEL, 2: PROB_PERDA_REMOTA}
+        intake.probabilidade_exito_global = inverso.get(pior_rank)
+
     def _materialize_pedidos(
         self,
         intake: "PrazoInicialIntake",
