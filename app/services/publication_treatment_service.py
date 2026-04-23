@@ -9,6 +9,7 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,6 +49,83 @@ from app.models.publication_treatment import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _tail_runner_log_to_logger(
+    file_path: Path,
+    pid: int,
+    run_id: int,
+    level: int = logging.INFO,
+    timeout_seconds: float = 7200.0,
+) -> None:
+    """
+    Thread daemon: segue um arquivo de log do runner Node.js e emite cada
+    linha no logger Python.  Assim os logs do runner aparecem no stdout
+    do container (Coolify/docker logs) em tempo real, além de continuarem
+    persistidos em disco pro debug futuro.
+
+    Termina quando:
+      - o processo PID some (runner concluiu ou crashou), OU
+      - `timeout_seconds` se esgota (safety cap — evita thread zumbi se o
+        runner ficar parado por um tempo absurdo).
+    """
+
+    def _pid_alive(target_pid: int) -> bool:
+        try:
+            os.kill(target_pid, 0)
+        except OSError:
+            return False
+        return True
+
+    started_at = time.monotonic()
+    deadline = started_at + timeout_seconds
+
+    # Espera o arquivo aparecer (runner pode levar ms pra criar).
+    for _ in range(40):
+        if file_path.exists():
+            break
+        if not _pid_alive(pid):
+            return  # runner morreu antes de escrever qualquer coisa
+        time.sleep(0.25)
+
+    if not file_path.exists():
+        logger.warning(
+            "tratamento: arquivo de log %s não apareceu (pid=%s, run=%s)",
+            file_path, pid, run_id,
+        )
+        return
+
+    try:
+        with file_path.open("r", encoding="utf-8", errors="replace") as fh:
+            while True:
+                line = fh.readline()
+                if line:
+                    logger.log(level, "[runner run=%s pid=%s] %s", run_id, pid, line.rstrip())
+                    continue
+                # Sem linha nova: confere se processo ainda vive
+                if not _pid_alive(pid):
+                    # Drena remanescente antes de sair
+                    remaining = fh.read()
+                    if remaining:
+                        for leftover in remaining.splitlines():
+                            logger.log(level, "[runner run=%s pid=%s] %s", run_id, pid, leftover)
+                    logger.info(
+                        "tratamento: tail do %s encerrado (pid=%s, run=%s, decorrido=%.1fs).",
+                        file_path.name, pid, run_id, time.monotonic() - started_at,
+                    )
+                    return
+                if time.monotonic() > deadline:
+                    logger.warning(
+                        "tratamento: tail do %s abortado por timeout (pid=%s, run=%s).",
+                        file_path.name, pid, run_id,
+                    )
+                    return
+                time.sleep(1.0)
+    except Exception:
+        logger.exception(
+            "tratamento: falha no tail de %s (pid=%s, run=%s).",
+            file_path, pid, run_id,
+        )
 
 RUNNER_STATUS_TREATED = "treated"
 RUNNER_STATUS_WITHOUT_PROVIDENCE = "without_providence"
@@ -627,7 +705,7 @@ class PublicationTreatmentService:
         env = {**os.environ, **credentials}
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         with paths["log"].open("ab") as stdout, paths["error_log"].open("ab") as stderr:
-            subprocess.Popen(  # noqa: S603
+            proc = subprocess.Popen(  # noqa: S603
                 command,
                 cwd=str(runner_script.parent),
                 env=env,
@@ -635,6 +713,27 @@ class PublicationTreatmentService:
                 stderr=stderr,
                 creationflags=creation_flags,
             )
+
+        logger.info(
+            "tratamento: runner iniciado run=%s pid=%s batch=%s items=%s",
+            run.id, proc.pid, batch_size, len(items),
+        )
+
+        # Espelha runner.log / runner.err.log no stdout do container via threads
+        # daemon. Isso é o que faltava pra o operador ver o que o runner está
+        # fazendo sem precisar `docker exec` e `tail` nos arquivos.
+        threading.Thread(
+            target=_tail_runner_log_to_logger,
+            args=(paths["log"], proc.pid, run.id, logging.INFO),
+            daemon=True,
+            name=f"runner-stdout-tail-{run.id}",
+        ).start()
+        threading.Thread(
+            target=_tail_runner_log_to_logger,
+            args=(paths["error_log"], proc.pid, run.id, logging.WARNING),
+            daemon=True,
+            name=f"runner-stderr-tail-{run.id}",
+        ).start()
 
         run.status = RUN_STATUS_RUNNING
         self.db.commit()

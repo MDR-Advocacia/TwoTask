@@ -190,29 +190,10 @@ async function login(page, { username, password, keyLabel, returnUrl }) {
       continue;
     }
 
-    if (await firstExistingSelector(page, ['#Username'])) {
-      await page.fill('#Username', username, { timeout: 30000 });
-      if (await firstExistingSelector(page, ['#Password'])) {
-        await page.fill('#Password', password, { timeout: 30000 });
-      }
-      await page.click('#SignIn', { timeout: 30000 });
-      await waitForPageSettle(page, 4000);
-      continue;
-    }
-
-    if (page.url().includes('/u/login/identifier')) {
-      const filled = await fillFirstAvailable(
-        page,
-        ['input[name="username"]', 'input[name="email"]', 'input[type="email"]'],
-        username,
-      );
-      if (filled) {
-        await clickFirstAvailable(page, ['button[name="action"]', 'button[type="submit"]']);
-        await waitForPageSettle(page, 4000);
-        continue;
-      }
-    }
-
+    // Thomson Reuters — fluxo novo de 2 etapas. Os checks por URL DEVEM vir
+    // ANTES do fallback com #Username/#SignIn, senão o branch single-page
+    // rouba a tela de identifier-only (que também tem #Username e #SignIn,
+    // mas com botão disabled) e trava esperando o click aceitar.
     if (page.url().includes('/u/login/password')) {
       const filled = await fillFirstAvailable(
         page,
@@ -224,6 +205,33 @@ async function login(page, { username, password, keyLabel, returnUrl }) {
         await waitForPageSettle(page, 6000);
         continue;
       }
+    }
+
+    if (page.url().includes('/u/login/identifier')) {
+      const filled = await fillFirstAvailable(
+        page,
+        ['input[name="username"]', 'input[name="email"]', 'input[type="email"]', '#Username'],
+        username,
+      );
+      if (filled) {
+        await clickFirstAvailable(page, ['button[name="action"]', 'button[type="submit"]', '#SignIn']);
+        await waitForPageSettle(page, 4000);
+        continue;
+      }
+    }
+
+    // Novajus antigo single-page: exige AMBOS #Username E #Password na mesma
+    // tela. Sem esse guard, essa rota matchava a tela nova de identifier-only
+    // (que tem #Username mas nao #Password) e travava no click do #SignIn.
+    if (
+      (await firstExistingSelector(page, ['#Username'])) &&
+      (await firstExistingSelector(page, ['#Password']))
+    ) {
+      await page.fill('#Username', username, { timeout: 30000 });
+      await page.fill('#Password', password, { timeout: 30000 });
+      await page.click('#SignIn', { timeout: 30000 });
+      await waitForPageSettle(page, 4000);
+      continue;
     }
 
     const context = await capturePageContext(page);
