@@ -93,14 +93,18 @@ export async function updateLegalOnePositionFixControl(
 }
 
 
-export async function fetchPublicationTreatmentMonitor(): Promise<PublicationTreatmentMonitor> {
-  const response = await apiFetch("/api/v1/publications/treatment/monitor");
+export async function fetchPublicationTreatmentMonitor(
+  signal?: AbortSignal,
+): Promise<PublicationTreatmentMonitor> {
+  const response = await apiFetch("/api/v1/publications/treatment/monitor", { signal });
   return expectJson<PublicationTreatmentMonitor>(response);
 }
 
 
-export async function fetchPublicationTreatmentRuns(): Promise<PublicationTreatmentRun[]> {
-  const response = await apiFetch("/api/v1/publications/treatment/runs");
+export async function fetchPublicationTreatmentRuns(
+  signal?: AbortSignal,
+): Promise<PublicationTreatmentRun[]> {
+  const response = await apiFetch("/api/v1/publications/treatment/runs", { signal });
   return expectJson<PublicationTreatmentRun[]>(response);
 }
 

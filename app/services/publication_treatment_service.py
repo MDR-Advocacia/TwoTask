@@ -403,9 +403,14 @@ class PublicationTreatmentService:
             .limit(limit)
             .all()
         )
+        should_commit = False
         for run in runs:
+            if not self._should_sync_run_from_file(run):
+                continue
             self._sync_run_from_status_file(run, commit=False)
-        self.db.commit()
+            should_commit = True
+        if should_commit:
+            self.db.commit()
         return [self._run_to_dict(run) for run in runs]
 
     def _read_control_signal(self, run: Optional[PublicationTreatmentRun]) -> str:
@@ -420,10 +425,21 @@ class PublicationTreatmentService:
             return "run"
         return signal if signal in {"pause", "stop"} else "run"
 
+    @staticmethod
+    def _should_sync_run_from_file(run: Optional[PublicationTreatmentRun]) -> bool:
+        if not run or not run.status_file_path:
+            return False
+        # Runs finais já persistidos não precisam reler artefato de disco a cada
+        # poll do painel. Isso reduz I/O desnecessário e evita travar o monitor
+        # se um caminho antigo do container ficar lento ou indisponível.
+        if run.status in FINAL_RUN_STATUSES and run.finished_at:
+            return False
+        return True
+
     def get_run(self, run_id: int, *, sync_from_file: bool = True) -> Optional[PublicationTreatmentRun]:
         self.db.expire_all()
         run = self.db.query(PublicationTreatmentRun).filter(PublicationTreatmentRun.id == run_id).first()
-        if run and sync_from_file:
+        if run and sync_from_file and self._should_sync_run_from_file(run):
             self._sync_run_from_status_file(run)
         return run
 
@@ -834,7 +850,7 @@ class PublicationTreatmentService:
                 .order_by(PublicationTreatmentRun.id.desc())
                 .first()
             )
-            if latest_run:
+            if latest_run and self._should_sync_run_from_file(latest_run):
                 latest_run = self.get_run(latest_run.id, sync_from_file=True)
 
         summary = self.get_summary(office_ids)
