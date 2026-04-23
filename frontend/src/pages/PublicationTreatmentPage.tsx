@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { AlertCircle, ExternalLink, Loader2, Pause, Play, RefreshCw, Rocket } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { AlertCircle, ExternalLink, Loader2, Pause, Play, RefreshCw, Rocket, RotateCw, Workflow } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -11,6 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import {
   fetchPublicationTreatmentMonitor,
   fetchPublicationTreatmentRuns,
+  retryPublicationTreatmentItem,
   startPublicationTreatmentRun,
   updatePublicationTreatmentRunControl,
 } from "@/services/api";
@@ -79,7 +80,43 @@ function runStatusLabel(value: string) {
   return map[value] || value;
 }
 
-function ItemRow({ item }: { item: PublicationTreatmentItem }) {
+const PUBLICATION_TREATMENT_REQUEST_TIMEOUT_MS = 15000;
+
+async function withAbortTimeout<T>(
+  label: string,
+  request: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), PUBLICATION_TREATMENT_REQUEST_TIMEOUT_MS);
+
+  try {
+    return await request(controller.signal);
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error(
+        `${label} demorou mais que ${Math.round(PUBLICATION_TREATMENT_REQUEST_TIMEOUT_MS / 1000)}s para responder.`,
+      );
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+function describeLoadFailure(label: string, err: unknown): string {
+  const message = err instanceof Error ? err.message : "Erro desconhecido ao carregar dados.";
+  return `${label}: ${message}`;
+}
+
+interface ItemRowProps {
+  item: PublicationTreatmentItem;
+  onRetry?: (item: PublicationTreatmentItem) => void;
+  isRetryPending?: boolean;
+  isRetryDisabled?: boolean;
+}
+
+function ItemRow({ item, onRetry, isRetryPending, isRetryDisabled }: ItemRowProps) {
+  const canRetry = item.queue_status === "FALHA" && typeof onRetry === "function";
   return (
     <TableRow>
       <TableCell>{item.linked_lawsuit_cnj || "-"}</TableCell>
@@ -91,19 +128,37 @@ function ItemRow({ item }: { item: PublicationTreatmentItem }) {
       <TableCell>{item.attempt_count}</TableCell>
       <TableCell className="max-w-[360px] truncate">{item.last_error || "-"}</TableCell>
       <TableCell>
-        {item.publication_link ? (
-          <a
-            href={item.publication_link}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1 text-primary hover:underline"
-          >
-            Abrir
-            <ExternalLink className="h-3.5 w-3.5" />
-          </a>
-        ) : (
-          "-"
-        )}
+        <div className="flex items-center gap-3">
+          {item.publication_link ? (
+            <a
+              href={item.publication_link}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-primary hover:underline"
+            >
+              Abrir
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+          ) : (
+            <span className="text-muted-foreground">-</span>
+          )}
+          {canRetry ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => onRetry?.(item)}
+              disabled={isRetryDisabled || isRetryPending}
+            >
+              {isRetryPending ? (
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+              ) : (
+                <RotateCw className="mr-1 h-3 w-3" />
+              )}
+              Reexecutar
+            </Button>
+          ) : null}
+        </div>
       </TableCell>
     </TableRow>
   );
@@ -115,24 +170,72 @@ export default function PublicationTreatmentPage() {
   const [runs, setRuns] = useState<PublicationTreatmentRun[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [retryingItemId, setRetryingItemId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const latestLoadIdRef = useRef(0);
 
   const loadData = async (showToast = false) => {
+    const loadId = ++latestLoadIdRef.current;
     try {
-      const [monitorPayload, runsPayload] = await Promise.all([
-        fetchPublicationTreatmentMonitor(),
-        fetchPublicationTreatmentRuns(),
+      const [monitorResult, runsResult] = await Promise.allSettled([
+        withAbortTimeout("O monitor do tratamento", (signal) => fetchPublicationTreatmentMonitor(signal)),
+        withAbortTimeout("O histórico de execuções", (signal) => fetchPublicationTreatmentRuns(signal)),
       ]);
-      setMonitor(monitorPayload);
-      setRuns(runsPayload);
-      setError(null);
+
+      if (loadId !== latestLoadIdRef.current) {
+        return;
+      }
+
+      const issues: string[] = [];
+      let monitorPayload: PublicationTreatmentMonitor | null = null;
+      let hasSuccess = false;
+
+      if (monitorResult.status === "fulfilled") {
+        monitorPayload = monitorResult.value;
+        setMonitor(monitorResult.value);
+        hasSuccess = true;
+      } else {
+        issues.push(describeLoadFailure("Monitor indisponível", monitorResult.reason));
+      }
+
+      if (runsResult.status === "fulfilled") {
+        setRuns(runsResult.value);
+        hasSuccess = true;
+      } else {
+        issues.push(describeLoadFailure("Histórico indisponível", runsResult.reason));
+      }
+
+      if (!hasSuccess) {
+        setMonitor(null);
+        setRuns([]);
+      }
+
+      setError(issues.length ? issues.join(" ") : null);
+
       if (showToast) {
-        toast({
-          title: "Painel atualizado",
-          description: `${monitorPayload.summary.pending_count} pendente(s) na fila.`,
-        });
+        if (issues.length === 0 && monitorPayload) {
+          toast({
+            title: "Painel atualizado",
+            description: `${monitorPayload.summary.pending_count} pendente(s) na fila.`,
+          });
+        } else if (hasSuccess) {
+          toast({
+            title: "Atualização parcial",
+            description: issues.join(" "),
+            variant: "destructive",
+          });
+        } else if (issues.length) {
+          toast({
+            title: "Falha ao atualizar",
+            description: issues.join(" "),
+            variant: "destructive",
+          });
+        }
       }
     } catch (err) {
+      if (loadId !== latestLoadIdRef.current) {
+        return;
+      }
       const message = err instanceof Error ? err.message : "Erro ao carregar o monitor.";
       setError(message);
       if (showToast) {
@@ -143,7 +246,9 @@ export default function PublicationTreatmentPage() {
         });
       }
     } finally {
-      setIsLoading(false);
+      if (loadId === latestLoadIdRef.current) {
+        setIsLoading(false);
+      }
     }
   };
 
@@ -186,6 +291,41 @@ export default function PublicationTreatmentPage() {
     }
   };
 
+  const handleRetry = async (item: PublicationTreatmentItem) => {
+    try {
+      setRetryingItemId(item.id);
+      setIsSubmitting(true);
+      const response = await retryPublicationTreatmentItem(item.id);
+      await loadData();
+      if (response.started) {
+        toast({
+          title: "Reexecução iniciada",
+          description: `Item #${item.id} foi reenfileirado para reprocessamento.`,
+        });
+        return;
+      }
+      toast({
+        title: "Item reenfileirado",
+        description:
+          response.reason === "already_running"
+            ? "Uma execução já está em andamento. O item entra no próximo ciclo."
+            : "Item reenfileirado com sucesso.",
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Não foi possível reexecutar o item.";
+      toast({
+        title: "Falha ao reexecutar",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setRetryingItemId(null);
+      setIsSubmitting(false);
+    }
+  };
+
+  const isRunActive = Boolean(monitor?.active_run) && monitor?.active_run?.is_final === false;
+
   const handleControl = async (action: "pause" | "resume") => {
     if (!monitor?.active_run) return;
     try {
@@ -220,11 +360,12 @@ export default function PublicationTreatmentPage() {
     : [];
 
   return (
-    <div className="container mx-auto px-6 py-8 space-y-8">
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-        <div className="space-y-2">
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
           <div className="flex items-center gap-3">
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
+            <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
+              <Workflow className="h-6 w-6" />
               Tratamento de Publicações
             </h1>
             {monitor?.active_run ? (
@@ -233,19 +374,24 @@ export default function PublicationTreatmentPage() {
               <Badge variant="outline">Sem execução ativa</Badge>
             )}
           </div>
-          <p className="text-sm text-muted-foreground">
+          <p className="text-muted-foreground">
             Cada tratamento usa o `publicationId` exato retornado pela API do Legal One, então a execução fica segura
             mesmo quando há multiplicidade no mesmo processo e na mesma data.
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <Button onClick={handleStart} disabled={isLoading || isSubmitting || monitor?.active_run?.is_final === false}>
+          <Button
+            size="sm"
+            onClick={handleStart}
+            disabled={isLoading || isSubmitting || !monitor || monitor?.active_run?.is_final === false}
+          >
             <Rocket className="mr-2 h-4 w-4" />
             Iniciar execução
           </Button>
           <Button
             variant="outline"
+            size="sm"
             onClick={() => handleControl("pause")}
             disabled={isLoading || isSubmitting || !monitor?.active_run || monitor.control_signal === "pause"}
           >
@@ -254,13 +400,14 @@ export default function PublicationTreatmentPage() {
           </Button>
           <Button
             variant="outline"
+            size="sm"
             onClick={() => handleControl("resume")}
             disabled={isLoading || isSubmitting || !monitor?.active_run || monitor.control_signal === "run"}
           >
             <Play className="mr-2 h-4 w-4" />
             Continuar
           </Button>
-          <Button variant="outline" onClick={() => loadData(true)} disabled={isLoading || isSubmitting}>
+          <Button variant="outline" size="sm" onClick={() => loadData(true)} disabled={isLoading || isSubmitting}>
             <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
             Atualizar
           </Button>
@@ -315,7 +462,7 @@ export default function PublicationTreatmentPage() {
                 <span>Sinal atual: {monitor.control_signal === "pause" ? "Pausa solicitada" : "Execução livre"}</span>
               </div>
             </>
-          ) : (
+          ) : monitor ? (
             <Alert>
               <AlertCircle className="h-4 w-4" />
               <AlertTitle>Fila pronta para uso</AlertTitle>
@@ -323,6 +470,10 @@ export default function PublicationTreatmentPage() {
                 Assim que você iniciar uma execução, esta área passa a mostrar andamento, histórico e falhas recentes.
               </AlertDescription>
             </Alert>
+          ) : (
+            <div className="text-sm text-muted-foreground">
+              Monitor indisponível no momento. Tente atualizar novamente quando o backend destravar.
+            </div>
           )}
         </CardContent>
       </Card>
@@ -350,7 +501,13 @@ export default function PublicationTreatmentPage() {
                   </TableHeader>
                   <TableBody>
                     {monitor.recent_failures.map((item) => (
-                      <ItemRow key={`failure-${item.id}`} item={item} />
+                      <ItemRow
+                        key={`failure-${item.id}`}
+                        item={item}
+                        onRetry={handleRetry}
+                        isRetryPending={retryingItemId === item.id}
+                        isRetryDisabled={isRunActive || isSubmitting}
+                      />
                     ))}
                   </TableBody>
                 </Table>
@@ -410,7 +567,13 @@ export default function PublicationTreatmentPage() {
                 </TableHeader>
                 <TableBody>
                   {monitor.recent_items.map((item) => (
-                    <ItemRow key={item.id} item={item} />
+                    <ItemRow
+                      key={item.id}
+                      item={item}
+                      onRetry={handleRetry}
+                      isRetryPending={retryingItemId === item.id}
+                      isRetryDisabled={isRunActive || isSubmitting}
+                    />
                   ))}
                 </TableBody>
               </Table>
