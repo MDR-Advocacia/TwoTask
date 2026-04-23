@@ -345,7 +345,9 @@ const CreateTaskByTemplatePage = () => {
                       />
                     </div>
                     <div>
-                      <label className="text-sm font-medium mb-2 block">Responsável</label>
+                      <label className="text-sm font-medium mb-2 block">
+                        Responsável <span className="text-red-600">*</span>
+                      </label>
                       <UserSelector
                         users={allUsers}
                         value={taskData.responsibleId}

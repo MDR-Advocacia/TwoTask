@@ -15,6 +15,7 @@ import {
   BookTemplate,
   Building2,
   Check,
+  ChevronDown,
   Edit2,
   LayoutGrid,
   List,
@@ -1322,15 +1323,34 @@ const TaskTemplatesPage = () => {
                         </div>
                       </div>
 
-                      {/* Slots grouped by category */}
+                      {/* Slots grouped by category — cada categoria vira um
+                          <details> colapsável. Aberto por default pra preservar
+                          UX; dá pra recolher clicando no header, resolvendo
+                          o problema das telas infinitas em escritórios com
+                          muitas subcategorias (ex.: MDR Advocacia, 46 faltando). */}
                       <div className="divide-y">
                         {Array.from(slotsByCategory.entries()).map(
-                          ([category, slots]) => (
-                            <div key={category} className="p-3">
-                              <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                                <Tag className="h-3 w-3" />
-                                {category}
-                              </div>
+                          ([category, slots]) => {
+                            const coveredCat = slots.filter((s) => s.covered).length;
+                            const missingCat = slots.length - coveredCat;
+                            return (
+                            <details key={category} className="group" open>
+                              <summary className="flex cursor-pointer list-none items-center justify-between gap-2 p-3 hover:bg-muted/30">
+                                <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                                  <ChevronDown className="h-3 w-3 -rotate-90 transition-transform group-open:rotate-0" />
+                                  <Tag className="h-3 w-3" />
+                                  {category}
+                                </div>
+                                <div className="flex items-center gap-2 text-[11px]">
+                                  <span className="text-emerald-700">
+                                    {coveredCat} coberto{coveredCat !== 1 ? "s" : ""}
+                                  </span>
+                                  {missingCat > 0 && (
+                                    <span className="text-rose-600">{missingCat} faltando</span>
+                                  )}
+                                </div>
+                              </summary>
+                              <div className="px-3 pb-3">
                               <div className="flex flex-wrap gap-1.5">
                                 {slots.map((s) => {
                                   const subLabel =
@@ -1372,8 +1392,10 @@ const TaskTemplatesPage = () => {
                                   );
                                 })}
                               </div>
-                            </div>
-                          )
+                              </div>
+                            </details>
+                            );
+                          }
                         )}
                         {slotsByCategory.size === 0 && (
                           <div className="p-4 text-center text-xs text-muted-foreground">
