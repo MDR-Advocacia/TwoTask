@@ -135,6 +135,24 @@ async def lifespan(_: FastAPI):
     except Exception:
         logger.exception("Falha ao reapear syncs órfãs de escritório no startup.")
 
+    # Reapa buscas de publicações presas em EXECUTANDO — o try/except interno
+    # do PublicationSearchService não cobre SIGKILL/OOM (caso visto em prod
+    # na Busca #2 em 22/04/2026: status ficou EXECUTANDO por 30+ min com
+    # total_new=0 na UI, sem error_message). Também registra job periódico
+    # no APScheduler pra cobrir casos sem restart de container.
+    try:
+        from app.services.publication_search_watchdog import (
+            reap_orphaned_searches_on_startup,
+            register_publication_search_watchdog_job,
+        )
+
+        reap_orphaned_searches_on_startup()
+        register_publication_search_watchdog_job(scheduler)
+    except Exception:
+        logger.exception(
+            "Falha ao inicializar watchdog de buscas de publicações no startup."
+        )
+
     # Worker periódico do fluxo "Agendar Prazos Iniciais" — gated pela flag
     # prazos_iniciais_auto_classification_enabled (default off).
     try:

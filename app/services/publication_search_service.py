@@ -381,6 +381,19 @@ class PublicationSearchService:
             discarded_count = 0
             obsolete_count = 0
 
+            # Commit em lote: evita perder TODO o trabalho se o worker uvicorn
+            # for killed (OOM/restart) no meio do PERSIST. Também dá progresso
+            # visível na UI via total_new/total_duplicate incrementais e
+            # permite o watchdog distinguir "rodando lento" de "morta" pelo
+            # MAX(created_at) em publicacao_registros.
+            #
+            # 500 ≈ sweet spot: inserts agrupados suficientes pra ser rápido
+            # e granular o bastante pra não perder muito em caso de crash.
+            PERSIST_BATCH_SIZE = 500
+            pending_in_batch = 0
+            total_processed = 0
+            total_pubs = len(publications)
+
             for pub in publications:
                 update_id = pub.get("id")
                 if not update_id:
@@ -471,6 +484,18 @@ class PublicationSearchService:
                 self.db.add(record)
                 existing_ids.add(update_id)
 
+                # Atualiza existing_keys ASSIM QUE registramos a primeira
+                # publicação com esse par (lawsuit_id, publication_date) —
+                # independente do status final (NOVO, OBSOLETA, etc.). Sem
+                # isso, duas publicações diferentes com o mesmo par dentro
+                # do MESMO batch geravam UniqueViolation no índice parcial
+                # uq_pub_lawsuit_date. Foi a causa real do travamento das
+                # Buscas #2 e #3 em 22/04/2026 (a #2 ficou órfã porque o
+                # except subsequente não conseguia commitar a marca de FALHA
+                # com a session em estado "transaction rolled back").
+                if dedup_key is not None and not is_lawsuit_date_duplicate:
+                    existing_keys.add(dedup_key)
+
                 if is_lawsuit_date_duplicate:
                     discarded_count += 1
                     duplicate_records.append(record)
@@ -479,10 +504,34 @@ class PublicationSearchService:
                     obsolete_records.append(record)
                 else:
                     new_records.append(record)
-                    if dedup_key is not None:
-                        existing_keys.add(dedup_key)
                     new_count += 1
 
+                pending_in_batch += 1
+                total_processed += 1
+
+                # Commit parcial: sobrevive a OOM/SIGKILL e dá progresso real
+                # pra UI. Progress vai de 50 → 70% proporcional ao processado.
+                if pending_in_batch >= PERSIST_BATCH_SIZE:
+                    search.total_found = new_count + discarded_count + obsolete_count
+                    search.total_new = new_count
+                    search.total_duplicate = dup_count + discarded_count + obsolete_count
+                    search.progress_step = "PERSIST"
+                    search.progress_detail = (
+                        f"Persistindo... {total_processed}/{total_pubs} "
+                        f"({new_count} novas, {discarded_count} duplicatas, "
+                        f"{obsolete_count} obsoletas)"
+                    )
+                    search.progress_pct = 50 + min(
+                        20, int(20 * total_processed / max(total_pubs, 1))
+                    )
+                    self.db.commit()
+                    logger.info(
+                        "Busca #%s: lote persistido (%d/%d processados, %d novas)",
+                        search.id, total_processed, total_pubs, new_count,
+                    )
+                    pending_in_batch = 0
+
+            # Commit final: pega o resto do último lote (<500 registros).
             self.db.commit()
 
             self._update_search_progress(
@@ -554,10 +603,37 @@ class PublicationSearchService:
 
         except Exception as exc:
             logger.error("Erro na busca #%s: %s", search.id, exc)
-            search.status = SEARCH_STATUS_FAILED
-            search.error_message = str(exc)[:500]
-            search.finished_at = datetime.now(timezone.utc)
-            self.db.commit()
+            # A session pode estar em "transaction rolled back due to previous
+            # exception" (caso típico: UniqueViolation em flush — foi o que
+            # aconteceu com as Buscas #2/#3 em 22/04/2026). Sem um rollback
+            # explícito antes, o commit abaixo falha silenciosamente e a
+            # busca fica eternamente com status='EXECUTANDO' e error_message
+            # NULL, exigindo intervenção manual no DB.
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+            try:
+                fresh_search = (
+                    self.db.query(PublicationSearch)
+                    .filter(PublicationSearch.id == search.id)
+                    .first()
+                )
+                if fresh_search is not None:
+                    fresh_search.status = SEARCH_STATUS_FAILED
+                    fresh_search.error_message = str(exc)[:500]
+                    fresh_search.finished_at = datetime.now(timezone.utc)
+                    fresh_search.progress_step = "FAILED"
+                    self.db.commit()
+            except Exception:
+                logger.exception(
+                    "Falha ao marcar busca #%s como FALHA após erro principal.",
+                    search.id,
+                )
+                try:
+                    self.db.rollback()
+                except Exception:
+                    pass
             raise
 
     # ──────────────────────────────────────────────
