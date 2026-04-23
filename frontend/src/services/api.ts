@@ -458,3 +458,39 @@ export async function deletePrazosIniciaisTemplate(
   );
   return expectJson<PrazoInicialTaskTemplate>(response);
 }
+
+
+
+// ─── Reanalisar (Bloco F) ────────────────────────────────────────────
+export async function reanalyzePrazoInicial(intakeId: number): Promise<{
+  intake_id: number;
+  status: string;
+  message: string;
+}> {
+  const res = await apiFetch(`/api/v1/prazos-iniciais/intakes/${intakeId}/reanalisar`, {
+    method: "POST",
+  });
+  return expectJson(res);
+}
+
+// ─── Export XLSX (Bloco F) ───────────────────────────────────────────
+export async function exportPrazosIniciaisXlsx(filters: {
+  status?: string;
+  office_id?: number;
+  date_from?: string;
+  date_to?: string;
+} = {}): Promise<Blob> {
+  const params = new URLSearchParams();
+  if (filters.status) params.set("status", filters.status);
+  if (filters.office_id) params.set("office_id", String(filters.office_id));
+  if (filters.date_from) params.set("date_from", filters.date_from);
+  if (filters.date_to) params.set("date_to", filters.date_to);
+  const qs = params.toString() ? `?${params.toString()}` : "";
+  const res = await apiFetch(
+    `/api/v1/prazos-iniciais/intakes/export.xlsx${qs}`,
+  );
+  if (!res.ok) {
+    throw new Error(`HTTP error! status: ${res.status}`);
+  }
+  return res.blob();
+}

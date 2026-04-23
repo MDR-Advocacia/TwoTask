@@ -5,6 +5,7 @@ import {
   CalendarClock,
   CheckCircle2,
   ExternalLink,
+  FileDown,
   FileText,
   Filter,
   Loader2,
@@ -46,6 +47,8 @@ import {
   confirmarAgendamentoPrazoInicial,
   fetchPrazoInicialDetail,
   fetchPrazosIniciaisIntakes,
+  reanalyzePrazoInicial,
+  exportPrazosIniciaisXlsx,
   prazoInicialPdfUrl,
   reprocessarPrazoInicialCnj,
 } from "@/services/api";
@@ -319,6 +322,56 @@ export default function PrazosIniciaisPage() {
     setOffset(0);
   };
 
+  const onReanalisar = async () => {
+    if (!detail) return;
+    if (
+      !confirm(
+        `Reanalisar intake #${detail.id}?\n\n` +
+          "Isso apaga sugestões e pedidos atuais e reenvia o processo para\n" +
+          "classificação na próxima janela de batch. Útil para popular os\n" +
+          "campos novos (pedidos + aprovisionamento + análise estratégica)\n" +
+          "em intakes classificados antes da última atualização.",
+      )
+    ) {
+      return;
+    }
+    setActionLoading(true);
+    try {
+      await reanalyzePrazoInicial(detail.id);
+      toast({
+        title: "Reanalise iniciada",
+        description: `Intake #${detail.id} será reclassificado no próximo batch.`,
+      });
+      await loadDetail(detail.id);
+      await loadIntakes();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Erro desconhecido";
+      toast({ title: "Erro", description: msg, variant: "destructive" });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const onExportXlsx = async () => {
+    try {
+      const blob = await exportPrazosIniciaisXlsx({
+        status: appliedStatus !== "__all__" ? appliedStatus : undefined,
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 16);
+      a.download = `prazos_iniciais_${ts}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast({ title: "Erro ao exportar", description: msg, variant: "destructive" });
+    }
+  };
+
   const onReprocessarCnj = useCallback(async () => {
     if (!selectedId) return;
     setActionLoading(true);
@@ -469,12 +522,23 @@ export default function PrazosIniciaisPage() {
           </p>
         </div>
 
-        <Button asChild variant="outline" className="w-full sm:w-auto">
-          <Link to="/prazos-iniciais/treatment">
-            <Workflow className="mr-2 h-4 w-4" />
-            Tratamento Web Agendamentos Iniciais
-          </Link>
-        </Button>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button
+            variant="outline"
+            className="w-full sm:w-auto"
+            onClick={onExportXlsx}
+            title="Baixa XLSX com resumo, sugestões e pedidos (respeita filtro de status)"
+          >
+            <FileDown className="mr-2 h-4 w-4" />
+            Exportar XLSX
+          </Button>
+          <Button asChild variant="outline" className="w-full sm:w-auto">
+            <Link to="/prazos-iniciais/treatment">
+              <Workflow className="mr-2 h-4 w-4" />
+              Tratamento Web Agendamentos Iniciais
+            </Link>
+          </Button>
+        </div>
       </div>
 
       {loadError ? (
@@ -727,6 +791,49 @@ export default function PrazosIniciaisPage() {
                   <div className="text-xs text-muted-foreground">Sugestoes</div>
                   <div>{detail.sugestoes.length}</div>
                 </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">Prob. êxito global</div>
+                  <div className="capitalize">
+                    {detail.probabilidade_exito_global ? (
+                      <Badge
+                        className={
+                          detail.probabilidade_exito_global === "provavel"
+                            ? "bg-emerald-100 text-emerald-800"
+                            : detail.probabilidade_exito_global === "possivel"
+                            ? "bg-amber-100 text-amber-800"
+                            : "bg-rose-100 text-rose-800"
+                        }
+                      >
+                        {detail.probabilidade_exito_global}
+                      </Badge>
+                    ) : (
+                      <span className="text-muted-foreground">-</span>
+                    )}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">
+                    Valor estimado / pedido
+                  </div>
+                  <div>
+                    {detail.valor_total_estimado != null
+                      ? `R$ ${detail.valor_total_estimado.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`
+                      : "-"}
+                    {detail.valor_total_pedido != null && (
+                      <span className="ml-1 text-xs text-muted-foreground">
+                        (pedido R$ {detail.valor_total_pedido.toLocaleString("pt-BR", { minimumFractionDigits: 2 })})
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">Aprovisionamento (CPC 25)</div>
+                  <div className="font-medium">
+                    {detail.aprovisionamento_sugerido != null
+                      ? `R$ ${detail.aprovisionamento_sugerido.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`
+                      : "-"}
+                  </div>
+                </div>
               </div>
 
               {detail.error_message ? (
@@ -735,6 +842,40 @@ export default function PrazosIniciaisPage() {
                   <AlertTitle>Mensagem de erro</AlertTitle>
                   <AlertDescription className="whitespace-pre-wrap">{detail.error_message}</AlertDescription>
                 </Alert>
+              ) : null}
+
+              {detail.analise_estrategica ? (
+                <div className="rounded-lg border bg-blue-50 p-3 text-sm">
+                  <div className="mb-1 text-xs font-semibold text-blue-800">
+                    Análise estratégica da IA
+                  </div>
+                  <div className="whitespace-pre-wrap text-blue-900">
+                    {detail.analise_estrategica}
+                  </div>
+                </div>
+              ) : null}
+
+              {detail.natureza_processo === "AGRAVO_INSTRUMENTO" &&
+              (detail.agravo_processo_origem_cnj || detail.agravo_decisao_agravada_resumo) ? (
+                <div className="rounded-lg border bg-amber-50 p-3 text-sm">
+                  <div className="mb-1 text-xs font-semibold text-amber-800">
+                    Agravo de Instrumento
+                  </div>
+                  {detail.agravo_processo_origem_cnj ? (
+                    <div className="mb-1">
+                      <span className="text-xs text-muted-foreground">Processo de origem (1º grau): </span>
+                      <span className="font-mono">
+                        {detail.agravo_processo_origem_cnj}
+                      </span>
+                    </div>
+                  ) : null}
+                  {detail.agravo_decisao_agravada_resumo ? (
+                    <div className="mt-1">
+                      <span className="text-xs text-muted-foreground">Decisão agravada: </span>
+                      <span className="whitespace-pre-wrap">{detail.agravo_decisao_agravada_resumo}</span>
+                    </div>
+                  ) : null}
+                </div>
               ) : null}
 
               <Separator />
@@ -864,6 +1005,14 @@ export default function PrazosIniciaisPage() {
                                   {suggestion.justificativa}
                                 </div>
                               ) : null}
+                              {suggestion.prazo_fatal_data ? (
+                                <div
+                                  className="mt-1 rounded-sm bg-rose-50 px-1.5 py-0.5 text-[11px] text-rose-700 inline-block"
+                                  title={suggestion.prazo_fatal_fundamentacao || undefined}
+                                >
+                                  Prazo fatal: {formatDate(suggestion.prazo_fatal_data)}
+                                </div>
+                              ) : null}
                             </TableCell>
                             <TableCell>{formatDate(suggestion.data_base)}</TableCell>
                             <TableCell>{formatSuggestionDeadline(suggestion)}</TableCell>
@@ -901,6 +1050,72 @@ export default function PrazosIniciaisPage() {
                   </AlertDescription>
                 </Alert>
               )}
+
+              {detail.pedidos && detail.pedidos.length > 0 ? (
+                <div>
+                  <div className="mb-2 text-sm font-semibold">
+                    Pedidos extraídos da petição inicial ({detail.pedidos.length})
+                  </div>
+                  <div className="overflow-x-auto rounded-md border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Tipo</TableHead>
+                          <TableHead>Prob. perda</TableHead>
+                          <TableHead className="text-right">Indicado</TableHead>
+                          <TableHead className="text-right">Estimado</TableHead>
+                          <TableHead className="text-right">Aprovisionamento</TableHead>
+                          <TableHead>Fundamentação</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {detail.pedidos.map((pedido) => (
+                          <TableRow key={pedido.id}>
+                            <TableCell className="font-medium">
+                              {pedido.tipo_pedido}
+                            </TableCell>
+                            <TableCell>
+                              {pedido.probabilidade_perda ? (
+                                <Badge
+                                  className={
+                                    pedido.probabilidade_perda === "provavel"
+                                      ? "bg-rose-100 text-rose-800"
+                                      : pedido.probabilidade_perda === "possivel"
+                                      ? "bg-amber-100 text-amber-800"
+                                      : "bg-emerald-100 text-emerald-800"
+                                  }
+                                >
+                                  {pedido.probabilidade_perda}
+                                </Badge>
+                              ) : (
+                                <span className="text-muted-foreground">-</span>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-right text-sm">
+                              {pedido.valor_indicado != null
+                                ? `R$ ${pedido.valor_indicado.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`
+                                : "-"}
+                            </TableCell>
+                            <TableCell className="text-right text-sm">
+                              {pedido.valor_estimado != null
+                                ? `R$ ${pedido.valor_estimado.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`
+                                : "-"}
+                            </TableCell>
+                            <TableCell className="text-right text-sm font-medium">
+                              {pedido.aprovisionamento != null
+                                ? `R$ ${pedido.aprovisionamento.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`
+                                : "-"}
+                            </TableCell>
+                            <TableCell className="max-w-[320px] text-xs text-muted-foreground">
+                              {pedido.fundamentacao_risco || pedido.fundamentacao_valor || "-"}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+              ) : null}
 
               <Alert>
                 <CheckCircle2 className="h-4 w-4" />
@@ -947,6 +1162,25 @@ export default function PrazosIniciaisPage() {
             >
               <XCircle className="mr-2 h-4 w-4" />
               Cancelar intake
+            </Button>
+
+            <Button
+              variant="outline"
+              onClick={onReanalisar}
+              disabled={
+                !detail ||
+                actionLoading ||
+                detail.status === "RECEBIDO" ||
+                detail.status === "EM_CLASSIFICACAO"
+              }
+              title="Apaga sugestões/pedidos atuais e reclassifica no próximo batch"
+            >
+              {actionLoading ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-2 h-4 w-4" />
+              )}
+              Reanalisar
             </Button>
 
             <Button variant="secondary" onClick={() => setSelectedId(null)}>

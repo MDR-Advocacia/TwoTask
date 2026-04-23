@@ -134,6 +134,10 @@ class SugestaoOut(BaseModel):
     prazo_dias: Optional[int]
     prazo_tipo: Optional[str]
     data_final_calculada: Optional[date]
+    # Campos novos Bloco B — prazo fatal.
+    prazo_fatal_data: Optional[date] = None
+    prazo_fatal_fundamentacao: Optional[str] = None
+    prazo_base_decisao: Optional[str] = None
     audiencia_data: Optional[date]
     audiencia_hora: Optional[str]
     audiencia_link: Optional[str]
@@ -164,6 +168,15 @@ class IntakeSummary(BaseModel):
     # classificado ou veio de um fluxo pré-3c.
     natureza_processo: Optional[str] = None
     produto: Optional[str] = None
+    # Campos novos Bloco C — info de agravo.
+    agravo_processo_origem_cnj: Optional[str] = None
+    agravo_decisao_agravada_resumo: Optional[str] = None
+    # Campos novos Bloco E — agregados globais.
+    valor_total_pedido: Optional[float] = None
+    valor_total_estimado: Optional[float] = None
+    aprovisionamento_sugerido: Optional[float] = None
+    probabilidade_exito_global: Optional[str] = None
+    analise_estrategica: Optional[str] = None
     error_message: Optional[str]
     pdf_filename_original: Optional[str]
     pdf_bytes: Optional[int]
@@ -181,6 +194,9 @@ class IntakeDetail(IntakeSummary):
     capa_json: dict
     metadata_json: Optional[dict]
     sugestoes: list[SugestaoOut]
+    # Pedidos extraídos da PI (Bloco D2). Lista vazia se intake não
+    # classificado ou classificado em versão antiga (pré-D2).
+    pedidos: list[dict] = []
 
 
 class IntakeListResponse(BaseModel):
@@ -353,6 +369,13 @@ def _intake_to_summary(intake: PrazoInicialIntake) -> IntakeSummary:
         status=intake.status,
         natureza_processo=intake.natureza_processo,
         produto=intake.produto,
+        agravo_processo_origem_cnj=intake.agravo_processo_origem_cnj,
+        agravo_decisao_agravada_resumo=intake.agravo_decisao_agravada_resumo,
+        valor_total_pedido=float(intake.valor_total_pedido) if intake.valor_total_pedido is not None else None,
+        valor_total_estimado=float(intake.valor_total_estimado) if intake.valor_total_estimado is not None else None,
+        aprovisionamento_sugerido=float(intake.aprovisionamento_sugerido) if intake.aprovisionamento_sugerido is not None else None,
+        probabilidade_exito_global=intake.probabilidade_exito_global,
+        analise_estrategica=intake.analise_estrategica,
         error_message=intake.error_message,
         pdf_filename_original=intake.pdf_filename_original,
         pdf_bytes=intake.pdf_bytes,
@@ -373,6 +396,9 @@ def _sugestao_to_out(sugestao: PrazoInicialSugestao) -> SugestaoOut:
         prazo_dias=sugestao.prazo_dias,
         prazo_tipo=sugestao.prazo_tipo,
         data_final_calculada=sugestao.data_final_calculada,
+        prazo_fatal_data=sugestao.prazo_fatal_data,
+        prazo_fatal_fundamentacao=sugestao.prazo_fatal_fundamentacao,
+        prazo_base_decisao=sugestao.prazo_base_decisao,
         audiencia_data=sugestao.audiencia_data,
         audiencia_hora=(
             sugestao.audiencia_hora.strftime("%H:%M")
@@ -503,11 +529,27 @@ def get_intake(
         intake.sugestoes or [],
         key=lambda s: (s.review_status != "pendente", s.id),
     )
+    pedidos_serialized = [
+        {
+            "id": p.id,
+            "intake_id": p.intake_id,
+            "tipo_pedido": p.tipo_pedido,
+            "natureza": p.natureza,
+            "valor_indicado": float(p.valor_indicado) if p.valor_indicado is not None else None,
+            "valor_estimado": float(p.valor_estimado) if p.valor_estimado is not None else None,
+            "fundamentacao_valor": p.fundamentacao_valor,
+            "probabilidade_perda": p.probabilidade_perda,
+            "aprovisionamento": float(p.aprovisionamento) if p.aprovisionamento is not None else None,
+            "fundamentacao_risco": p.fundamentacao_risco,
+        }
+        for p in (intake.pedidos or [])
+    ]
     return IntakeDetail(
         **summary.model_dump(),
         capa_json=intake.capa_json,
         metadata_json=intake.metadata_json,
         sugestoes=[_sugestao_to_out(s) for s in sugestoes_sorted],
+        pedidos=pedidos_serialized,
     )
 
 

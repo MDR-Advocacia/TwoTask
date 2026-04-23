@@ -208,6 +208,15 @@ export interface PrazoInicialIntakeSummary {
   status: PrazoInicialIntakeStatus;
   natureza_processo?: string | null;
   produto?: string | null;
+  // Bloco C — info de agravo (só natureza=AGRAVO_INSTRUMENTO).
+  agravo_processo_origem_cnj?: string | null;
+  agravo_decisao_agravada_resumo?: string | null;
+  // Bloco E — agregados globais.
+  valor_total_pedido?: number | null;
+  valor_total_estimado?: number | null;
+  aprovisionamento_sugerido?: number | null;
+  probabilidade_exito_global?: string | null;
+  analise_estrategica?: string | null;
   error_message: string | null;
   pdf_filename_original: string | null;
   pdf_bytes: number | null;
@@ -244,6 +253,10 @@ export interface PrazoInicialSugestao {
   prazo_dias: number | null;
   prazo_tipo: string | null;
   data_final_calculada: string | null;
+  // Bloco B — prazo fatal absoluto (considera últimas decisões + PI).
+  prazo_fatal_data: string | null;
+  prazo_fatal_fundamentacao: string | null;
+  prazo_base_decisao: string | null;
   audiencia_data: string | null;
   audiencia_hora: string | null;
   audiencia_link: string | null;
@@ -260,10 +273,24 @@ export interface PrazoInicialSugestao {
   created_at: string;
 }
 
+export interface PrazoInicialPedido {
+  id: number;
+  intake_id: number;
+  tipo_pedido: string;
+  natureza: string | null;
+  valor_indicado: number | null;
+  valor_estimado: number | null;
+  fundamentacao_valor: string | null;
+  probabilidade_perda: "remota" | "possivel" | "provavel" | null;
+  aprovisionamento: number | null;
+  fundamentacao_risco: string | null;
+}
+
 export interface PrazoInicialIntakeDetail extends PrazoInicialIntakeSummary {
   capa_json: PrazoInicialCapaProcesso;
   metadata_json: Record<string, unknown> | null;
   sugestoes: PrazoInicialSugestao[];
+  pedidos: PrazoInicialPedido[];
 }
 
 export interface PrazoInicialIntakeListResponse {
