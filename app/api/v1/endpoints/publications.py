@@ -169,38 +169,85 @@ def reclassify_pending(
 @router.post("/rebuild-proposals")
 def rebuild_task_proposals(
     background_tasks: BackgroundTasks,
-    linked_office_id: Optional[str] = None,
+    linked_office_id: Optional[str] = Query(None, description="CSV de office IDs"),
+    category: Optional[str] = Query(None, description="CSV de categorias"),
+    uf: Optional[str] = Query(None, description="CSV de UFs"),
+    polo: Optional[str] = Query(None, description="CSV: ativo,passivo,ambos"),
+    natureza: Optional[str] = Query(None, description="CSV de naturezas"),
+    vinculo: Optional[str] = Query(None, description="com_processo ou sem_processo"),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
     service: PublicationSearchService = Depends(_get_service),
     _=Depends(auth_security.get_current_user),
 ):
     """
-    Reconstrói propostas de tarefa para todos os registros já classificados
-    que ainda não possuem proposta (ou para todos, se force=True).
+    Reconstrói propostas de tarefa para registros já classificados.
 
-    Útil quando um novo template é criado e os registros já foram classificados
-    antes da criação do template.
+    Aceita TODOS os filtros da tela de Processos com Publicações, pra
+    permitir reaplicar templates só no escopo que o operador está
+    vendo — essencial quando se cria um template novo pra um escritório
+    e não se quer reprocessar os outros 50k registros do sistema.
+
+    O filtro de `status` é sempre implícito: apenas CLASSIFICADO é
+    reconstruído (NOVO não tem category pra casar template).
     """
     import logging as _logging
+    from app.models.publication_search import (
+        PublicationRecord as PR,
+        RECORD_STATUS_CLASSIFIED,
+    )
+    from app.services.publication_search_service import (
+        _parse_csv_ints,
+        _parse_csv_strs,
+    )
     _logger = _logging.getLogger(__name__)
 
     def _run():
         try:
-            from app.models.publication_search import PublicationRecord as PR, RECORD_STATUS_CLASSIFIED
             q = service.db.query(PR).filter(
                 PR.status == RECORD_STATUS_CLASSIFIED,
                 PR.category.isnot(None),
             )
-            if linked_office_id:
-                q = q.filter(PR.linked_office_id == linked_office_id)
+            # Aplica os mesmos filtros usados na listagem, com mesmo helper CSV.
+            office_ids = _parse_csv_ints(linked_office_id)
+            if office_ids:
+                q = q.filter(PR.linked_office_id.in_(office_ids)) if len(office_ids) > 1 else q.filter(PR.linked_office_id == office_ids[0])
+            cats = _parse_csv_strs(category)
+            if cats:
+                q = q.filter(PR.category.in_(cats)) if len(cats) > 1 else q.filter(PR.category == cats[0])
+            ufs = [u.strip().upper() for u in _parse_csv_strs(uf)]
+            if ufs:
+                q = q.filter(PR.uf.in_(ufs)) if len(ufs) > 1 else q.filter(PR.uf == ufs[0])
+            polos = [p.strip().lower() for p in _parse_csv_strs(polo)]
+            if polos:
+                q = q.filter(PR.polo.in_(polos)) if len(polos) > 1 else q.filter(PR.polo == polos[0])
+            nats = _parse_csv_strs(natureza)
+            if nats:
+                q = q.filter(PR.natureza_processo.in_(nats)) if len(nats) > 1 else q.filter(PR.natureza_processo == nats[0])
+            vincs = _parse_csv_strs(vinculo)
+            if vincs and len(vincs) < 2:
+                if vincs[0] == "sem_processo":
+                    q = q.filter(PR.linked_lawsuit_id.is_(None))
+                elif vincs[0] == "com_processo":
+                    q = q.filter(PR.linked_lawsuit_id.isnot(None))
+            if date_from:
+                q = q.filter(PR.creation_date >= date_from)
+            if date_to:
+                q = q.filter(PR.creation_date < date_to + "T99")
+
             records = q.all()
             if not records:
-                _logger.info("Nenhum registro classificado encontrado para reconstrução de propostas.")
+                _logger.info(
+                    "rebuild-proposals: nenhum registro classificado para os filtros atuais."
+                )
                 return
-            _logger.info("Reconstruindo propostas para %d registros classificados...", len(records))
+            _logger.info(
+                "rebuild-proposals: reconstruindo propostas para %d registros...",
+                len(records),
+            )
             # skip_responsible_lookup=True evita N chamadas à API Legal One que causam rate-limit (429).
-            # O responsável pode ser definido manualmente na hora do agendamento.
             service._build_task_proposals(records, skip_responsible_lookup=True)
-            _logger.info("Reconstrução de propostas concluída.")
+            _logger.info("rebuild-proposals: concluído.")
         except Exception as exc:
             _logger.error("Erro na reconstrução de propostas: %s", exc)
 

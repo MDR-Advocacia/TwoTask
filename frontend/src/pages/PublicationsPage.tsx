@@ -1128,20 +1128,35 @@ const PublicationsPage = () => {
   const handleRebuildProposals = async () => {
     setRebuildingProposals(true);
     try {
+      // Manda TODOS os filtros atuais pro backend — assim o rebuild fica
+      // escopado ao que o operador está vendo na tela (util pra aplicar
+      // um template novo só nas publicações de um escritório específico
+      // sem retocar os 50k outros registros).
       const params = new URLSearchParams();
       if (filterOffice) params.set("linked_office_id", filterOffice);
+      if (filterCategory) params.set("category", filterCategory);
+      if (filterUf) params.set("uf", filterUf);
+      if (filterPolo) params.set("polo", filterPolo);
+      if (filterNatureza) params.set("natureza", filterNatureza);
+      if (filterVinculo) params.set("vinculo", filterVinculo);
+      if (filterDateFrom) params.set("date_from", filterDateFrom);
+      if (filterDateTo) params.set("date_to", filterDateTo);
       const qs = params.toString() ? `?${params.toString()}` : "";
       const res = await apiFetch(`${API}/rebuild-proposals${qs}`, { method: "POST" });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.detail || "Falha ao reconstruir propostas");
       }
-      const scopeLabel = filterOffice
-        ? `escritório ${offices.find((o) => String(o.external_id) === filterOffice)?.name || filterOffice}`
-        : "todos os escritórios";
+      const activeFiltersCount = [
+        filterOffice, filterCategory, filterUf, filterPolo,
+        filterNatureza, filterVinculo, filterDateFrom, filterDateTo,
+      ].filter(Boolean).length;
+      const scopeLabel = activeFiltersCount > 0
+        ? `${activeFiltersCount} filtro${activeFiltersCount > 1 ? "s" : ""} ativo${activeFiltersCount > 1 ? "s" : ""}`
+        : "todas as publicações classificadas";
       toast({
         title: "Reconstrução iniciada",
-        description: `Propostas sendo reconstruídas para ${scopeLabel}. Atualize em instantes.`,
+        description: `Propostas sendo reconstruídas (escopo: ${scopeLabel}). Atualize em instantes.`,
       });
       setTimeout(() => {
         loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo);
@@ -1483,16 +1498,6 @@ const PublicationsPage = () => {
               <Settings className="mr-2 h-4 w-4" />
               Configurar Templates
             </Link>
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleRebuildProposals}
-            disabled={rebuildingProposals}
-            title="Reconstrói propostas de agendamento para registros já classificados (útil após criar novos templates)"
-          >
-            <RefreshCw className={`mr-2 h-4 w-4 ${rebuildingProposals ? "animate-spin" : ""}`} />
-            Reaplicar Templates
           </Button>
           <Button variant="outline" size="sm" onClick={handleRefreshAll}>
             <RefreshCw className="mr-2 h-4 w-4" />
@@ -2382,7 +2387,19 @@ const PublicationsPage = () => {
                 </Button>
               )}
 
-              <div className="ml-auto">
+              <div className="ml-auto flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8"
+                  onClick={handleRebuildProposals}
+                  disabled={rebuildingProposals}
+                  title="Reaplica os templates de tarefa nos registros que estão batendo os filtros atuais. Útil após criar templates novos pra escopo específico."
+                >
+                  <RefreshCw className={`h-4 w-4 ${rebuildingProposals ? "animate-spin" : ""}`} />
+                  <span className="ml-2 text-xs">Reaplicar Templates</span>
+                </Button>
                 <Button
                   type="button"
                   variant="outline"
@@ -2782,10 +2799,15 @@ const PublicationsPage = () => {
                 </div>
               </div>
 
-              {totalPages > 1 && (
+              {totalPages > 1 && grouped && (
                 <div className="mt-4 flex items-center justify-between">
                   <span className="text-sm text-muted-foreground">
-                    Página {groupPage + 1} de {totalPages}
+                    Mostrando {groupPage * GROUP_PAGE_SIZE + 1}–
+                    {Math.min(
+                      (groupPage + 1) * GROUP_PAGE_SIZE,
+                      grouped.total_groups,
+                    )}{" "}
+                    de {grouped.total_groups} grupos • Página {groupPage + 1} de {totalPages}
                   </span>
                   <div className="flex gap-2">
                     <Button variant="outline" size="sm" disabled={groupPage === 0}
