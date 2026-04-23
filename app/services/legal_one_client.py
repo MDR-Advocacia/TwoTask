@@ -125,6 +125,36 @@ class LegalOneApiClient:
         return str(cnj_number).strip()
 
     @staticmethod
+    def _cnj_variants(cnj: str) -> List[str]:
+        """
+        Gera variantes comuns de formatação de um CNJ para tornar o lookup
+        tolerante à divergência de formato entre quem envia (automação
+        externa, usuário) e como o Legal One armazena internamente.
+
+        Formato canônico CNJ: NNNNNNN-DD.AAAA.J.TR.OOOO (20 dígitos).
+        Geradas (em ordem estável pra cache-friendly):
+          1) o valor como veio (strip);
+          2) 20 dígitos puros;
+          3) formato canônico com máscara.
+
+        Duplicatas são removidas mantendo a ordem de inserção.
+        """
+        cnj = (cnj or "").strip()
+        if not cnj:
+            return []
+        digits = "".join(ch for ch in cnj if ch.isdigit())
+        variants: List[str] = [cnj]
+        if len(digits) == 20:
+            formatted = (
+                f"{digits[0:7]}-{digits[7:9]}.{digits[9:13]}."
+                f"{digits[13]}.{digits[14:16]}.{digits[16:20]}"
+            )
+            for variant in (digits, formatted):
+                if variant not in variants:
+                    variants.append(variant)
+        return variants
+
+    @staticmethod
     def _escape_odata_literal(value: str) -> str:
         return value.replace("'", "''")
 
@@ -295,20 +325,40 @@ class LegalOneApiClient:
             seen_numbers.add(normalized)
 
         for cnj_chunk in self._chunk_list(normalized_numbers, self._CNJ_LOOKUP_BATCH_SIZE):
-            filter_clause = " or ".join(
-                f"identifierNumber eq '{self._escape_odata_literal(cnj_number)}'"
-                for cnj_number in cnj_chunk
-            )
+            # Pra cada CNJ, geramos todas as variantes (dígitos puros +
+            # canônico com máscara) e expandimos o filtro OData com OR.
+            # Isso resolve o caso de "processo existe no L1 mas lookup
+            # retorna vazio" quando o formato armazenado difere do enviado.
+            #
+            # Também mantemos um reverse-map: {variante -> cnj_original}
+            # pra, ao receber a resposta do L1, voltar a chave do match
+            # pra forma canônica que o chamador passou.
+            variant_to_original: Dict[str, str] = {}
+            filter_parts: List[str] = []
+            for cnj_number in cnj_chunk:
+                for variant in self._cnj_variants(cnj_number):
+                    if variant not in variant_to_original:
+                        variant_to_original[variant] = cnj_number
+                        filter_parts.append(
+                            f"identifierNumber eq '{self._escape_odata_literal(variant)}'"
+                        )
+            filter_clause = " or ".join(filter_parts)
             params = {
                 "$filter": filter_clause,
+                # $top precisa caber TODAS as variantes — L1 pode devolver
+                # múltiplos matches se variantes do mesmo CNJ coexistirem.
                 "$select": self._PROCESS_LOOKUP_SELECT,
-                "$top": max(len(cnj_chunk), 1),
+                "$top": max(len(filter_parts), 1),
             }
             results = self._paginated_catalog_loader(endpoint, params)
             for item in results:
                 identifier_number = self._normalize_cnj_number(item.get("identifierNumber"))
-                if identifier_number and identifier_number not in matches:
-                    matches[identifier_number] = item
+                # Mapeia a resposta de volta pro CNJ original do chamador:
+                # se achou pela variante "digits-only", queremos indexar pelo
+                # CNJ como foi pedido (senão o chamador não encontra no dict).
+                key = variant_to_original.get(identifier_number, identifier_number)
+                if key and key not in matches:
+                    matches[key] = item
 
         return matches
 
