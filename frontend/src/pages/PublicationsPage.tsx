@@ -1033,7 +1033,10 @@ const PublicationsPage = () => {
     setSubmittingBatch(true);
     try {
       const payload: Record<string, unknown> = {};
-      if (batchOfficeId) payload.linked_office_id = parseInt(batchOfficeId);
+      // Backend espera string (Optional[str]) desde a mudanca do
+      // linked_office_id pra aceitar CSV ("61,62,63"). Nao usar parseInt
+      // aqui — Pydantic V2 rejeita com 422.
+      if (batchOfficeId) payload.linked_office_id = String(batchOfficeId);
       if (batchLimit) {
         const parsed = parseInt(batchLimit);
         if (!Number.isNaN(parsed) && parsed > 0) payload.limit = parsed;
