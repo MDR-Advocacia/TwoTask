@@ -138,7 +138,7 @@ def create_search(
 @router.post("/reclassify")
 def reclassify_pending(
     background_tasks: BackgroundTasks,
-    linked_office_id: Optional[int] = None,
+    linked_office_id: Optional[str] = None,
     service: PublicationSearchService = Depends(_get_service),
     _=Depends(auth_security.get_current_user),
 ):
@@ -169,7 +169,7 @@ def reclassify_pending(
 @router.post("/rebuild-proposals")
 def rebuild_task_proposals(
     background_tasks: BackgroundTasks,
-    linked_office_id: Optional[int] = None,
+    linked_office_id: Optional[str] = None,
     service: PublicationSearchService = Depends(_get_service),
     _=Depends(auth_security.get_current_user),
 ):
@@ -211,7 +211,7 @@ def rebuild_task_proposals(
 # ─── Classificação em lote (Anthropic Batch API) ────────────────────────
 
 class SubmitBatchRequest(BaseModel):
-    linked_office_id: Optional[int] = None
+    linked_office_id: Optional[str] = None
     limit: Optional[int] = None
     only_unlinked: bool = False  # Classificar apenas publicações sem processo vinculado
 
@@ -460,7 +460,7 @@ def cancel_search(
 def list_records(
     search_id: Optional[int] = Query(None),
     status: Optional[str] = Query(None),
-    linked_office_id: Optional[int] = Query(None, description="Filtra por escritório responsável"),
+    linked_office_id: Optional[str] = Query(None, description="Filtra por escritório responsável"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     service: PublicationSearchService = Depends(_get_service),
@@ -479,7 +479,7 @@ def list_records(
 def list_records_grouped(
     search_id: Optional[int] = Query(None),
     status: Optional[str] = Query(None),
-    linked_office_id: Optional[int] = Query(None),
+    linked_office_id: Optional[str] = Query(None),
     date_from: Optional[str] = Query(None, description="Data início (YYYY-MM-DD). Filtra por creation_date (data do Ajus)."),
     date_to: Optional[str] = Query(None, description="Data fim (YYYY-MM-DD). Filtra por creation_date (data do Ajus)."),
     category: Optional[str] = Query(None, description="Filtra por categoria de classificação."),
@@ -512,7 +512,7 @@ def list_records_grouped(
 def export_records_grouped(
     search_id: Optional[int] = Query(None),
     status: Optional[str] = Query(None),
-    linked_office_id: Optional[int] = Query(None),
+    linked_office_id: Optional[str] = Query(None),
     date_from: Optional[str] = Query(None, description="Data início (YYYY-MM-DD)."),
     date_to: Optional[str] = Query(None, description="Data fim (YYYY-MM-DD)."),
     category: Optional[str] = Query(None, description="Classificação primária."),

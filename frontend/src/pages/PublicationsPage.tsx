@@ -103,6 +103,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
+import { MultiSelect } from "@/components/ui/MultiSelect";
 import { apiFetch } from "@/lib/api-client";
 
 const API = "/api/v1/publications";
@@ -2225,33 +2226,36 @@ const PublicationsPage = () => {
             <div className="flex flex-wrap items-end gap-3">
               <div className="space-y-1">
                 <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Status</Label>
-                <Select value={filterStatus || "all"}
-                  onValueChange={(v) => handleFilterChange(v === "all" ? "" : v, filterOffice)}>
-                  <SelectTrigger className="h-8 w-[140px] text-xs"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todos</SelectItem>
-                    <SelectItem value="NOVO">Novos</SelectItem>
-                    <SelectItem value="CLASSIFICADO">Classificados</SelectItem>
-                    <SelectItem value="AGENDADO">Agendados</SelectItem>
-                    <SelectItem value="IGNORADO">Ignorados</SelectItem>
-                    <SelectItem value="ERRO">Com erro</SelectItem>
-                    <SelectItem value="DESCARTADO_OBSOLETA">Obsoletas</SelectItem>
-                  </SelectContent>
-                </Select>
+                <MultiSelect
+                  options={[
+                    { value: "NOVO", label: "Novos" },
+                    { value: "CLASSIFICADO", label: "Classificados" },
+                    { value: "AGENDADO", label: "Agendados" },
+                    { value: "IGNORADO", label: "Ignorados" },
+                    { value: "ERRO", label: "Com erro" },
+                    { value: "DESCARTADO_OBSOLETA", label: "Obsoletas" },
+                  ]}
+                  defaultValue={filterStatus ? filterStatus.split(",").filter(Boolean) : []}
+                  onValueChange={(vals) => handleFilterChange(vals.join(","), filterOffice)}
+                  placeholder="Todos"
+                  className="h-8 min-w-[160px] text-xs"
+                  maxCount={2}
+                />
               </div>
 
               <div className="space-y-1">
                 <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Escritório</Label>
-                <Select value={filterOffice || "all"}
-                  onValueChange={(v) => handleFilterChange(filterStatus, v === "all" ? "" : v)}>
-                  <SelectTrigger className="h-8 w-[200px] text-xs"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todos</SelectItem>
-                    {offices.map((o) => (
-                      <SelectItem key={o.external_id} value={String(o.external_id)}>{officeLabel(o)}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <MultiSelect
+                  options={offices.map((o) => ({
+                    value: String(o.external_id),
+                    label: officeLabel(o),
+                  }))}
+                  defaultValue={filterOffice ? filterOffice.split(",").filter(Boolean) : []}
+                  onValueChange={(vals) => handleFilterChange(filterStatus, vals.join(","))}
+                  placeholder="Todos"
+                  className="h-8 min-w-[220px] text-xs"
+                  maxCount={2}
+                />
               </div>
 
               <div className="space-y-1">

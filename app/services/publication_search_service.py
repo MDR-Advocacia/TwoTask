@@ -156,6 +156,28 @@ def extract_cnj_from_text(text: Optional[str]) -> Optional[str]:
     return None
 
 
+def _parse_csv_ints(raw) -> list:
+    """Aceita int, string CSV ("61,62") ou None; retorna lista de ints."""
+    if raw is None:
+        return []
+    if isinstance(raw, int):
+        return [raw]
+    if isinstance(raw, str):
+        return [int(p.strip()) for p in raw.split(",") if p.strip()]
+    if isinstance(raw, (list, tuple)):
+        return [int(x) for x in raw]
+    return []
+
+
+def _parse_csv_strs(raw) -> list:
+    """Aceita string CSV, lista ou None; retorna lista de strings não-vazias."""
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        return [str(x) for x in raw if x]
+    return [p.strip() for p in str(raw).split(",") if p.strip()]
+
+
 class PublicationSearchService:
 
     def __init__(self, db: Session, client: LegalOneApiClient):
@@ -1162,7 +1184,7 @@ class PublicationSearchService:
         return result
 
     def list_novo_with_text(
-        self, linked_office_id: Optional[int] = None
+        self, linked_office_id = None  # aceita int, CSV str ou lista
     ) -> List[PublicationRecord]:
         """Retorna todos os registros com status NOVO que têm descrição preenchida."""
         query = (
@@ -1211,10 +1233,18 @@ class PublicationSearchService:
 
         if search_id:
             query = query.filter(PublicationRecord.search_id == search_id)
-        if status:
-            query = query.filter(PublicationRecord.status == status)
-        if linked_office_id is not None:
-            query = query.filter(PublicationRecord.linked_office_id == linked_office_id)
+        status_list = _parse_csv_strs(status)
+        if status_list:
+            if len(status_list) == 1:
+                query = query.filter(PublicationRecord.status == status_list[0])
+            else:
+                query = query.filter(PublicationRecord.status.in_(status_list))
+        office_ids = _parse_csv_ints(linked_office_id)
+        if office_ids:
+            if len(office_ids) == 1:
+                query = query.filter(PublicationRecord.linked_office_id == office_ids[0])
+            else:
+                query = query.filter(PublicationRecord.linked_office_id.in_(office_ids))
 
         total = query.count()
         records = (
@@ -1251,13 +1281,23 @@ class PublicationSearchService:
         query = self.db.query(PublicationRecord).filter(PublicationRecord.is_duplicate == False)  # noqa: E712
         if search_id is not None:
             query = query.filter(PublicationRecord.search_id == search_id)
-        if status:
-            query = query.filter(PublicationRecord.status == status)
+        # status aceita CSV ("NOVO,CLASSIFICADO"); se lista com >1, usa IN.
+        status_list = _parse_csv_strs(status)
+        if status_list:
+            if len(status_list) == 1:
+                query = query.filter(PublicationRecord.status == status_list[0])
+            else:
+                query = query.filter(PublicationRecord.status.in_(status_list))
         else:
             # Sem filtro explícito, esconde obsoletas (não poluem a listagem principal).
             query = query.filter(PublicationRecord.status != RECORD_STATUS_OBSOLETE)
-        if linked_office_id is not None:
-            query = query.filter(PublicationRecord.linked_office_id == linked_office_id)
+        # linked_office_id aceita int, CSV ("61,62") ou lista.
+        office_ids = _parse_csv_ints(linked_office_id)
+        if office_ids:
+            if len(office_ids) == 1:
+                query = query.filter(PublicationRecord.linked_office_id == office_ids[0])
+            else:
+                query = query.filter(PublicationRecord.linked_office_id.in_(office_ids))
         if date_from:
             query = query.filter(PublicationRecord.creation_date >= date_from)
         if date_to:
