@@ -237,9 +237,10 @@ async function login(page, { username, password, keyLabel, returnUrl }) {
     ) {
       const initialUrl = page.url();
       await page.fill('#Username', username, { timeout: 30000 });
+      await page.locator('#Username').blur().catch(() => {});
 
       const redirected = await page
-        .waitForURL((u) => u !== initialUrl, { timeout: 3000 })
+        .waitForURL((u) => u !== initialUrl, { timeout: 5000 })
         .then(() => true)
         .catch(() => false);
 
