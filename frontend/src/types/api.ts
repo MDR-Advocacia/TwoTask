@@ -87,6 +87,7 @@ export interface LegalOnePositionFixControlResponse {
 export interface PublicationTreatmentSummary {
   total_items: number;
   eligible_records: number;
+  queue_count: number;
   pending_count: number;
   processing_count: number;
   completed_count: number;
