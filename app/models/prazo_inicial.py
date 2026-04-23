@@ -144,6 +144,12 @@ class PrazoInicialIntake(Base):
     # em relatórios e filtros da UI.
     produto = Column(String(64), nullable=True, index=True)
 
+    # Preenchidos apenas quando natureza_processo = AGRAVO_INSTRUMENTO.
+    # Extraídos pela IA da petição inicial pra ligar o agravo ao
+    # processo de 1º grau (origem) sem o operador precisar abrir o PDF.
+    agravo_processo_origem_cnj = Column(String(32), nullable=True)
+    agravo_decisao_agravada_resumo = Column(Text, nullable=True)
+
     received_at = Column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -197,6 +203,13 @@ class PrazoInicialSugestao(Base):
     prazo_dias = Column(Integer, nullable=True)
     prazo_tipo = Column(String(16), nullable=True)  # "util" | "corrido"
     data_final_calculada = Column(Date, nullable=True)
+
+    # Prazo fatal (o mais restritivo conhecido, considerando PI + últimas
+    # decisões). `fundamentacao` traz o artigo do CPC / súmula / trecho
+    # da decisão. `base_decisao` resume a movimentação que originou.
+    prazo_fatal_data = Column(Date, nullable=True)
+    prazo_fatal_fundamentacao = Column(Text, nullable=True)
+    prazo_base_decisao = Column(Text, nullable=True)
 
     # Dados de audiência (quando aplicável).
     audiencia_data = Column(Date, nullable=True)

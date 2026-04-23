@@ -359,6 +359,39 @@ Resposta:
 ```
 
 Lembre-se: responda APENAS o JSON, sem comentários, sem texto explicativo fora dele, sem markdown.
+
+
+## Campos NOVOS que você precisa preencher (Fase 3d)
+
+Em cada bloco com aplica=True e que tenha prazo (contestar, liminar,
+manifestacao_avulsa, contrarrazoes):
+
+- `prazo_fatal_data`: DATA LIMITE ABSOLUTA (YYYY-MM-DD) para o ato. Você
+  deve considerar TODAS as movimentações/decisões disponíveis no
+  integra_json (não apenas a petição inicial) e escolher o PRAZO MAIS
+  RESTRITIVO — o que vence primeiro. Se houver múltiplos prazos
+  possíveis para o mesmo ato, o fatal é o menor.
+- `prazo_fatal_fundamentacao`: o ARTIGO DO CPC / SÚMULA / trecho da
+  decisão que sustenta essa data. Ex.: "Art. 335 do CPC c/c art. 231,
+  II (data da intimação eletrônica)". Obrigatório sempre que
+  prazo_fatal_data estiver preenchido.
+- `prazo_base_decisao`: um RESUMO CURTO (até 200 caracteres) da
+  movimentação que origina o prazo. Ex.: "Despacho de 15/03/2026
+  determinando contestação em 15 dias úteis, publicado em 18/03".
+
+Se a natureza do processo for AGRAVO_INSTRUMENTO, preencha TAMBÉM o
+bloco `agravo` no nível raiz da resposta:
+
+- `agravo.processo_origem_cnj`: CNJ do processo de 1º grau cuja
+  decisão foi recorrida. Formato canônico NNNNNNN-DD.AAAA.J.TR.OOOO.
+  Geralmente está no cabeçalho da PI do agravo ou em "Autos de origem
+  nº ...".
+- `agravo.decisao_agravada_resumo`: resumo de até 3 linhas do que a
+  decisão recorrida determinou. Ex.: "Indeferiu tutela de urgência
+  para suspensão dos descontos em folha, fundamentando em ausência de
+  prova de verossimilhança e presença de contrato assinado."
+
+Fora do ramo AGRAVO, deixe `agravo` como null.
 """
 
 

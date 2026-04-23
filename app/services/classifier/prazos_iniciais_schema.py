@@ -190,6 +190,15 @@ class BlocoPrazoBase(BaseModel):
     - `prazo_dias` + `prazo_tipo`: tamanho do prazo (apenas quando aplica).
     - `data_base`: data a partir da qual o prazo conta (intimação / ciência /
       publicação). Formato ISO (YYYY-MM-DD).
+    - `prazo_fatal_data`: data-limite absoluta em que o ato precisa estar
+      concluído, considerando a última decisão que dispara prazo (= a mais
+      recente movimentação que impacta o polo passivo). A IA DEVE escolher
+      o mais restritivo entre os prazos possíveis.
+    - `prazo_fatal_fundamentacao`: artigo do CPC / súmula / trecho da
+      decisão que sustenta o prazo fatal (obrigatório sempre que há prazo).
+    - `prazo_base_decisao`: resumo curto da movimentação/decisão que
+      originou o prazo (ex.: "despacho de 15/03 determinando contestação
+      em 15 dias úteis"). Ajuda o operador a validar.
     - `justificativa`: trecho/frase que embasou a decisão (obrigatório
       sempre — ajuda a revisão humana).
     """
@@ -198,6 +207,9 @@ class BlocoPrazoBase(BaseModel):
     prazo_dias: Optional[int] = Field(default=None, ge=1, le=365)
     prazo_tipo: Optional[PrazoTipo] = None
     data_base: Optional[date] = None
+    prazo_fatal_data: Optional[date] = None
+    prazo_fatal_fundamentacao: Optional[str] = None
+    prazo_base_decisao: Optional[str] = None
     justificativa: str = ""
 
     @model_validator(mode="after")
@@ -209,6 +221,9 @@ class BlocoPrazoBase(BaseModel):
             self.prazo_dias = None
             self.prazo_tipo = None
             self.data_base = None
+            self.prazo_fatal_data = None
+            self.prazo_fatal_fundamentacao = None
+            self.prazo_base_decisao = None
         return self
 
 
@@ -319,6 +334,27 @@ class BlocoJulgamento(BaseModel):
         return self
 
 
+# ─── Info de Agravo (só preenchido quando natureza=AGRAVO_INSTRUMENTO) ──
+
+
+class BlocoAgravoInfo(BaseModel):
+    """
+    Informações extraídas da petição inicial quando a natureza é
+    AGRAVO_INSTRUMENTO. Ajuda o operador a vincular o agravo ao
+    processo de origem (1º grau) e entender o contexto da decisão
+    recorrida sem ler a PI inteira.
+    """
+
+    processo_origem_cnj: Optional[str] = None
+    """CNJ do processo de 1º grau cuja decisão foi agravada. Formato
+    canônico NNNNNNN-DD.AAAA.J.TR.OOOO. Pode ser NULL se a PI não
+    informar de forma clara."""
+
+    decisao_agravada_resumo: Optional[str] = None
+    """Resumo curto (até ~3 linhas) do conteúdo da decisão agravada.
+    Útil pra triagem sem abrir o PDF."""
+
+
 # ─── Resposta completa da IA ─────────────────────────────────────────
 
 
@@ -383,6 +419,10 @@ class PrazoInicialClassificationResponse(BaseModel):
     contrarrazoes: BlocoContrarrazoes = Field(
         default_factory=lambda: BlocoContrarrazoes(aplica=False)
     )
+
+    # Só relevante quando natureza_processo=AGRAVO_INSTRUMENTO. Default
+    # None pra ficar transparente nos ramos COMUM/JUIZADO/OUTRO.
+    agravo: Optional[BlocoAgravoInfo] = None
 
     # Meta.
     confianca_geral: Confianca = "baixa"

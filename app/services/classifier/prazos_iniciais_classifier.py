@@ -329,6 +329,16 @@ class PrazosIniciaisBatchClassifier:
             intake.natureza_processo = response_obj.natureza_processo
             intake.produto = response_obj.produto
 
+            # Info de agravo só faz sentido quando natureza=AGRAVO_INSTRUMENTO.
+            # Fora desse ramo, limpa pra não vazar dados de classificações
+            # anteriores caso um mesmo intake seja reprocessado.
+            if response_obj.natureza_processo == "AGRAVO_INSTRUMENTO" and response_obj.agravo:
+                intake.agravo_processo_origem_cnj = response_obj.agravo.processo_origem_cnj
+                intake.agravo_decisao_agravada_resumo = response_obj.agravo.decisao_agravada_resumo
+            else:
+                intake.agravo_processo_origem_cnj = None
+                intake.agravo_decisao_agravada_resumo = None
+
             # Materializa novas sugestões.
             try:
                 mat = self._materialize_sugestoes(intake, response_obj)
@@ -583,7 +593,7 @@ class PrazosIniciaisBatchClassifier:
             sugestao.payload_proposto = payload
             return sugestao
 
-        # Blocos com prazo (Contestar / Liminar / Manifestação Avulsa).
+        # Blocos com prazo (Contestar / Liminar / Manifestação Avulsa / Contrarrazoes).
         prazo_dias = getattr(bloco, "prazo_dias", None)
         prazo_tipo = getattr(bloco, "prazo_tipo", None)
         data_base = getattr(bloco, "data_base", None)
@@ -593,6 +603,14 @@ class PrazosIniciaisBatchClassifier:
         sugestao.data_final_calculada = calcular_prazo_seguro(
             data_base, prazo_dias, prazo_tipo
         )
+
+        # Prazo fatal: a IA informa uma data_limit absoluta (considerando
+        # PI + últimas decisões) + artigo/fundamento que sustenta +
+        # resumo da decisão que originou. Pode ser NULL se a IA não
+        # conseguiu derivar com segurança — operador revisa no HITL.
+        sugestao.prazo_fatal_data = getattr(bloco, "prazo_fatal_data", None)
+        sugestao.prazo_fatal_fundamentacao = getattr(bloco, "prazo_fatal_fundamentacao", None)
+        sugestao.prazo_base_decisao = getattr(bloco, "prazo_base_decisao", None)
 
         if isinstance(bloco, BlocoLiminar) and bloco.objeto:
             payload["objeto"] = bloco.objeto
