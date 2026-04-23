@@ -1583,3 +1583,250 @@ def patch_pedido(
         )
 
     return _pedido_to_response(pedido)
+
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Reanalisar intake (Bloco F): reseta status pra reprocessar,
+# útil pra popular campos novos (pedidos, prazo_fatal_*, agravo_*,
+# agregados globais) em intakes classificados antes desses blocos.
+# ─────────────────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/intakes/{intake_id}/reanalisar",
+    summary=(
+        "Reseta um intake pra reprocessar na próxima janela de classificação. "
+        "Limpa sugestões, pedidos e agregados antigos (cascade)."
+    ),
+)
+def reanalisar_intake(
+    intake_id: int,
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    from app.models.prazo_inicial import (
+        PrazoInicialIntake,
+        INTAKE_STATUS_READY_TO_CLASSIFY,
+        INTAKE_STATUS_IN_CLASSIFICATION,
+        INTAKE_STATUS_RECEIVED,
+    )
+
+    intake = db.get(PrazoInicialIntake, intake_id)
+    if intake is None:
+        raise HTTPException(status_code=404, detail="Intake não encontrado.")
+
+    # Estados não-reanalisáveis (ou seria atropelo num batch ativo).
+    if intake.status in {INTAKE_STATUS_RECEIVED, INTAKE_STATUS_IN_CLASSIFICATION}:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Intake está em '{intake.status}' — aguarde o ciclo atual "
+                "terminar antes de reanalisar."
+            ),
+        )
+
+    # Limpa sugestões e pedidos (cascade delete-orphan cuidaria, mas
+    # explícito é mais seguro e documentado).
+    for s in list(intake.sugestoes):
+        db.delete(s)
+    for p in list(intake.pedidos):
+        db.delete(p)
+
+    # Limpa agregados derivados (Bloco E) e enriquecimentos (Blocos B+C).
+    intake.valor_total_pedido = None
+    intake.valor_total_estimado = None
+    intake.aprovisionamento_sugerido = None
+    intake.probabilidade_exito_global = None
+    intake.analise_estrategica = None
+    intake.agravo_processo_origem_cnj = None
+    intake.agravo_decisao_agravada_resumo = None
+    intake.error_message = None
+
+    # Reseta status pra próximo batch pegar.
+    intake.status = INTAKE_STATUS_READY_TO_CLASSIFY
+    intake.classification_batch_id = None
+
+    db.commit()
+    db.refresh(intake)
+    return {
+        "intake_id": intake.id,
+        "status": intake.status,
+        "message": (
+            "Intake resetado. Será incluído na próxima janela de classificação."
+        ),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Export XLSX (Bloco F): relatório contábil com agregados + pedidos.
+# Protegido por permission('prazos_iniciais'). Formato: 3 abas
+# (Resumo, Sugestões, Pedidos) pra facilitar pivot no Excel.
+# ─────────────────────────────────────────────────────────────────────
+
+from fastapi.responses import StreamingResponse  # noqa: E402
+import io  # noqa: E402
+
+
+@router.get(
+    "/intakes/export.xlsx",
+    summary=(
+        "Exporta intakes (com agregados, sugestões e pedidos) em XLSX. "
+        "3 abas: Resumo, Sugestões, Pedidos. Útil pra relatório contábil "
+        "de aprovisionamento (CPC 25)."
+    ),
+)
+def export_intakes_xlsx(
+    status: Optional[str] = Query(default=None, description="Filtra por status (ex.: CONCLUIDO)"),
+    office_id: Optional[int] = Query(default=None, description="Filtra por office_id"),
+    date_from: Optional[str] = Query(default=None, description="ISO YYYY-MM-DD, filtra received_at >="),
+    date_to: Optional[str] = Query(default=None, description="ISO YYYY-MM-DD, filtra received_at <"),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    from app.models.prazo_inicial import PrazoInicialIntake
+    from app.models.prazo_inicial_pedido import PrazoInicialPedido
+    from datetime import datetime
+
+    q = db.query(PrazoInicialIntake)
+    if status:
+        q = q.filter(PrazoInicialIntake.status == status)
+    if office_id:
+        q = q.filter(PrazoInicialIntake.office_id == office_id)
+    if date_from:
+        q = q.filter(PrazoInicialIntake.received_at >= date_from)
+    if date_to:
+        q = q.filter(PrazoInicialIntake.received_at < date_to + "T99")
+
+    intakes = q.order_by(PrazoInicialIntake.received_at.desc()).all()
+
+    wb = Workbook()
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1E40AF", end_color="1E40AF", fill_type="solid")
+
+    def _write_header(ws, cols):
+        for idx, title in enumerate(cols, start=1):
+            cell = ws.cell(row=1, column=idx, value=title)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center")
+        ws.row_dimensions[1].height = 22
+        ws.freeze_panes = "A2"
+
+    def _autofit(ws, cols):
+        for idx in range(1, len(cols) + 1):
+            ws.column_dimensions[get_column_letter(idx)].width = 18
+
+    # ── Aba 1: Resumo (1 linha por intake) ──
+    ws = wb.active
+    ws.title = "Resumo"
+    resumo_cols = [
+        "Intake ID", "CNJ", "Status", "Natureza", "Produto",
+        "Escritório ID", "Lawsuit ID",
+        "Prob. Êxito Global",
+        "Valor Total Pedido", "Valor Total Estimado",
+        "Aprovisionamento Sugerido",
+        "Análise Estratégica",
+        "Agravo Origem CNJ",
+        "Recebido em", "Atualizado em",
+    ]
+    _write_header(ws, resumo_cols)
+    for i, intake in enumerate(intakes, start=2):
+        ws.cell(row=i, column=1, value=intake.id)
+        ws.cell(row=i, column=2, value=intake.cnj_number)
+        ws.cell(row=i, column=3, value=intake.status)
+        ws.cell(row=i, column=4, value=intake.natureza_processo)
+        ws.cell(row=i, column=5, value=intake.produto)
+        ws.cell(row=i, column=6, value=intake.office_id)
+        ws.cell(row=i, column=7, value=intake.lawsuit_id)
+        ws.cell(row=i, column=8, value=intake.probabilidade_exito_global)
+        ws.cell(row=i, column=9, value=float(intake.valor_total_pedido) if intake.valor_total_pedido is not None else None)
+        ws.cell(row=i, column=10, value=float(intake.valor_total_estimado) if intake.valor_total_estimado is not None else None)
+        ws.cell(row=i, column=11, value=float(intake.aprovisionamento_sugerido) if intake.aprovisionamento_sugerido is not None else None)
+        ws.cell(row=i, column=12, value=intake.analise_estrategica)
+        ws.cell(row=i, column=13, value=intake.agravo_processo_origem_cnj)
+        ws.cell(row=i, column=14, value=intake.received_at.isoformat() if intake.received_at else None)
+        ws.cell(row=i, column=15, value=intake.updated_at.isoformat() if intake.updated_at else None)
+    _autofit(ws, resumo_cols)
+    ws.column_dimensions[get_column_letter(12)].width = 60  # análise estratégica
+
+    # ── Aba 2: Sugestões (1 linha por sugestão) ──
+    ws2 = wb.create_sheet(title="Sugestões")
+    sug_cols = [
+        "Sugestão ID", "Intake ID", "CNJ", "Tipo Prazo", "Subtipo",
+        "Data Base", "Prazo Dias", "Prazo Tipo",
+        "Data Final Calculada",
+        "Prazo Fatal Data", "Prazo Fatal Fundamentação",
+        "Prazo Base Decisão",
+        "Audiência Data", "Audiência Hora", "Audiência Link",
+        "Confiança", "Justificativa", "Review Status",
+    ]
+    _write_header(ws2, sug_cols)
+    row = 2
+    for intake in intakes:
+        for s in intake.sugestoes:
+            ws2.cell(row=row, column=1, value=s.id)
+            ws2.cell(row=row, column=2, value=intake.id)
+            ws2.cell(row=row, column=3, value=intake.cnj_number)
+            ws2.cell(row=row, column=4, value=s.tipo_prazo)
+            ws2.cell(row=row, column=5, value=s.subtipo)
+            ws2.cell(row=row, column=6, value=s.data_base.isoformat() if s.data_base else None)
+            ws2.cell(row=row, column=7, value=s.prazo_dias)
+            ws2.cell(row=row, column=8, value=s.prazo_tipo)
+            ws2.cell(row=row, column=9, value=s.data_final_calculada.isoformat() if s.data_final_calculada else None)
+            ws2.cell(row=row, column=10, value=s.prazo_fatal_data.isoformat() if s.prazo_fatal_data else None)
+            ws2.cell(row=row, column=11, value=s.prazo_fatal_fundamentacao)
+            ws2.cell(row=row, column=12, value=s.prazo_base_decisao)
+            ws2.cell(row=row, column=13, value=s.audiencia_data.isoformat() if s.audiencia_data else None)
+            ws2.cell(row=row, column=14, value=s.audiencia_hora.isoformat() if s.audiencia_hora else None)
+            ws2.cell(row=row, column=15, value=s.audiencia_link)
+            ws2.cell(row=row, column=16, value=s.confianca)
+            ws2.cell(row=row, column=17, value=s.justificativa)
+            ws2.cell(row=row, column=18, value=s.review_status)
+            row += 1
+    _autofit(ws2, sug_cols)
+
+    # ── Aba 3: Pedidos (1 linha por pedido) ──
+    ws3 = wb.create_sheet(title="Pedidos")
+    ped_cols = [
+        "Pedido ID", "Intake ID", "CNJ", "Tipo Pedido", "Natureza",
+        "Valor Indicado", "Valor Estimado", "Fundamentação Valor",
+        "Probabilidade Perda", "Aprovisionamento", "Fundamentação Risco",
+    ]
+    _write_header(ws3, ped_cols)
+    row = 2
+    for intake in intakes:
+        for p in intake.pedidos:
+            ws3.cell(row=row, column=1, value=p.id)
+            ws3.cell(row=row, column=2, value=intake.id)
+            ws3.cell(row=row, column=3, value=intake.cnj_number)
+            ws3.cell(row=row, column=4, value=p.tipo_pedido)
+            ws3.cell(row=row, column=5, value=p.natureza)
+            ws3.cell(row=row, column=6, value=float(p.valor_indicado) if p.valor_indicado is not None else None)
+            ws3.cell(row=row, column=7, value=float(p.valor_estimado) if p.valor_estimado is not None else None)
+            ws3.cell(row=row, column=8, value=p.fundamentacao_valor)
+            ws3.cell(row=row, column=9, value=p.probabilidade_perda)
+            ws3.cell(row=row, column=10, value=float(p.aprovisionamento) if p.aprovisionamento is not None else None)
+            ws3.cell(row=row, column=11, value=p.fundamentacao_risco)
+            row += 1
+    _autofit(ws3, ped_cols)
+    ws3.column_dimensions[get_column_letter(8)].width = 60
+    ws3.column_dimensions[get_column_letter(11)].width = 60
+
+    # Serializa pra memória e devolve como download.
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M")
+    filename = f"prazos_iniciais_{timestamp}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
