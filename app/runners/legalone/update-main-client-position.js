@@ -151,16 +151,6 @@ async function login(page, { username, password, keyLabel, returnUrl }) {
       continue;
     }
 
-    if (await firstExistingSelector(page, ['#Username'])) {
-      await page.fill('#Username', username, { timeout: 30000 });
-      if (await firstExistingSelector(page, ['#Password'])) {
-        await page.fill('#Password', password, { timeout: 30000 });
-      }
-      await page.click('#SignIn', { timeout: 30000 });
-      await waitForPageSettle(page, 4000);
-      continue;
-    }
-
     if (page.url().includes('/u/login/identifier')) {
       const filled = await fillFirstAvailable(
         page,
@@ -185,6 +175,30 @@ async function login(page, { username, password, keyLabel, returnUrl }) {
         await waitForPageSettle(page, 6000);
         continue;
       }
+    }
+
+    if (
+      (await firstExistingSelector(page, ['#Username'])) &&
+      (await firstExistingSelector(page, ['#Password']))
+    ) {
+      const initialUrl = page.url();
+      await page.fill('#Username', username, { timeout: 30000 });
+      await page.locator('#Username').blur().catch(() => {});
+
+      const redirected = await page
+        .waitForURL((u) => u !== initialUrl, { timeout: 5000 })
+        .then(() => true)
+        .catch(() => false);
+
+      if (redirected) {
+        await waitForPageSettle(page, 4000);
+        continue;
+      }
+
+      await page.fill('#Password', password, { timeout: 30000 });
+      await page.click('#SignIn', { timeout: 30000 });
+      await waitForPageSettle(page, 4000);
+      continue;
     }
 
     const context = await capturePageContext(page);
