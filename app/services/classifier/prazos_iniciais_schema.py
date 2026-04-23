@@ -62,6 +62,20 @@ TIPOS_PRAZO_VALIDOS = frozenset({
     TIPO_PRAZO_CONTRARRAZOES,
 })
 
+# Rótulos humanizados para exibição em UI / logs / relatórios.  NUNCA use
+# esses valores como chave em comparações — eles podem mudar livremente
+# sem quebrar a persistência.  A chave canônica é a constante em
+# MAIÚSCULO acima (ex.: "CONTESTAR").
+TIPO_PRAZO_LABELS = {
+    TIPO_PRAZO_CONTESTAR: "Contestação",
+    TIPO_PRAZO_LIMINAR: "Cumprimento de liminar",
+    TIPO_PRAZO_MANIFESTACAO_AVULSA: "Manifestação avulsa",
+    TIPO_PRAZO_AUDIENCIA: "Audiência",
+    TIPO_PRAZO_JULGAMENTO: "Julgamento",
+    TIPO_PRAZO_SEM_DETERMINACAO: "Sem determinação",
+    TIPO_PRAZO_CONTRARRAZOES: "Contrarrazões",
+}
+
 
 # ─── Natureza do processo (router) ───────────────────────────────────
 # Determina o conjunto de perguntas aplicáveis (ver docstring).
@@ -113,6 +127,53 @@ PRODUTOS_VALIDOS = frozenset({
     PRODUTO_GOLPE_FRAUDE,
     PRODUTO_OUTRO,
 })
+
+
+# ─── Labels dos subtipos ─────────────────────────────────────────────
+
+SUBTIPO_AUDIENCIA_LABELS = {
+    "conciliacao": "Conciliação",
+    "instrucao": "Instrução e julgamento",
+    "una": "Una (conciliação + instrução)",
+    "outra": "Outra",
+}
+
+SUBTIPO_JULGAMENTO_LABELS = {
+    "merito": "Sentença de mérito",
+    "extincao_sem_merito": "Extinção sem resolução de mérito",
+    "outro": "Outro",
+}
+
+# ─── Labels das naturezas e produtos ─────────────────────────────────
+
+NATUREZA_LABELS = {
+    NATUREZA_COMUM: "Procedimento comum",
+    NATUREZA_JUIZADO: "Juizado especial",
+    NATUREZA_AGRAVO_INSTRUMENTO: "Agravo de instrumento",
+    NATUREZA_OUTRO: "Outro (execução, cautelar, monitória…)",
+}
+
+PRODUTO_LABELS = {
+    PRODUTO_SUPERENDIVIDAMENTO: "Superendividamento",
+    PRODUTO_CREDCESTA: "CredCesta",
+    PRODUTO_EMPRESTIMO_CONSIGNADO: "Empréstimo consignado",
+    PRODUTO_CARTAO_CREDITO_CONSIGNADO: "Cartão de crédito consignado",
+    PRODUTO_EXIBICAO_DOCUMENTOS: "Exibição de documentos",
+    PRODUTO_ANULACAO_REVISAO_CONTRATUAL: "Anulação / revisão contratual",
+    PRODUTO_NEGATIVACAO_INDEVIDA: "Negativação indevida",
+    PRODUTO_LIMITACAO_30: "Limitação de 30% (desconto em folha)",
+    PRODUTO_GOLPE_FRAUDE: "Golpe / fraude",
+    PRODUTO_OUTRO: "Outro",
+}
+
+
+def humanize(codigo: str, dicionario: dict) -> str:
+    """Fallback seguro: devolve o label se conhecido; senão capitaliza o código."""
+    if codigo is None:
+        return ""
+    if codigo in dicionario:
+        return dicionario[codigo]
+    return codigo.replace("_", " ").capitalize()
 
 
 # ─── Blocos de resposta (1 por pergunta com prazo) ───────────────────
