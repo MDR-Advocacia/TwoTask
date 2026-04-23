@@ -514,10 +514,10 @@ const TaskTemplatesPage = () => {
     // Valida todos os blocos
     for (let i = 0; i < form.taskBlocks.length; i++) {
       const b = form.taskBlocks[i];
-      if (!b.task_subtype_external_id || !b.responsible_user_external_id) {
+      if (!b.task_subtype_external_id) {
         toast({
           title: `Tarefa ${i + 1} incompleta`,
-          description: "Preencha: subtipo de tarefa e usuário responsável.",
+          description: "Preencha o subtipo de tarefa.",
           variant: "destructive",
         });
         return;
@@ -548,7 +548,11 @@ const TaskTemplatesPage = () => {
       subcategory: form.subcategory || null,
       office_external_id: officeValue,
       task_subtype_external_id: parseInt(block.task_subtype_external_id),
-      responsible_user_external_id: parseInt(block.responsible_user_external_id),
+      // Sem responsável é permitido: o modal de criação da tarefa trava
+      // o submit se o operador não preencher no momento de aplicar.
+      responsible_user_external_id: block.responsible_user_external_id
+        ? parseInt(block.responsible_user_external_id)
+        : null,
       priority: block.priority,
       due_business_days: parseInt(block.due_business_days) || 3,
       due_date_reference: block.due_date_reference || "publication",
@@ -2017,7 +2021,12 @@ const TaskTemplatesPage = () => {
 
                     {/* Responsável */}
                     <div className="grid gap-1.5">
-                      <Label className="text-xs">Usuário responsável *</Label>
+                      <Label className="text-xs">
+                        Usuário responsável
+                        <span className="ml-1 text-muted-foreground font-normal">
+                          (opcional — será exigido ao criar a tarefa)
+                        </span>
+                      </Label>
                       <Select
                         value={block.responsible_user_external_id}
                         onValueChange={(v) => setBlockField(idx, "responsible_user_external_id", v)}

@@ -32,7 +32,9 @@ class TaskTemplateBase(BaseModel):
     # None = template global (publicações sem escritório/processo vinculado)
     office_external_id: Optional[int] = None
     task_subtype_external_id: int
-    responsible_user_external_id: int
+    # Opcional: template pode ser criado sem responsável; o modal de
+    # criação da tarefa cobra o preenchimento no momento de aplicar.
+    responsible_user_external_id: Optional[int] = None
     priority: str = "Normal"
     due_business_days: int = Field(default=3, ge=0, le=365)
     due_date_reference: str = Field(default="publication", pattern=r"^(publication|today)$")
@@ -116,7 +118,7 @@ def _validate_foreign_keys(
     db: Session,
     office_external_id: Optional[int],
     task_subtype_external_id: int,
-    responsible_user_external_id: int,
+    responsible_user_external_id: Optional[int],
 ) -> None:
     # office_external_id pode ser None (template global)
     if office_external_id is not None:
@@ -130,10 +132,12 @@ def _validate_foreign_keys(
     ).first():
         raise HTTPException(status_code=400, detail=f"Subtipo de tarefa {task_subtype_external_id} não encontrado.")
 
-    if not db.query(LegalOneUser).filter(
-        LegalOneUser.external_id == responsible_user_external_id
-    ).first():
-        raise HTTPException(status_code=400, detail=f"Usuário {responsible_user_external_id} não encontrado.")
+    # Responsável é opcional; só valida FK se foi informado.
+    if responsible_user_external_id is not None:
+        if not db.query(LegalOneUser).filter(
+            LegalOneUser.external_id == responsible_user_external_id
+        ).first():
+            raise HTTPException(status_code=400, detail=f"Usuário {responsible_user_external_id} não encontrado.")
 
 
 # ─── Endpoints ──────────────────────────────────

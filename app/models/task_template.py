@@ -52,10 +52,16 @@ class TaskTemplate(Base):
         nullable=False,
         index=True,
     )
+    # Nullable: templates podem ser criados sem responsável nominal. Quando o
+    # operador for de fato criar a tarefa a partir desse template, o modal da
+    # tela de classificação exige que o responsável seja preenchido (trava
+    # client-side em CreateTaskByProcessPage). Assim a definição do
+    # responsável fica para o momento da criação, tipicamente resolvendo-o
+    # como o responsável principal da pasta do processo.
     responsible_user_external_id = Column(
         Integer,
         ForeignKey("legal_one_users.external_id"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
 

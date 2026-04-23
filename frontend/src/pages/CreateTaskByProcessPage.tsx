@@ -274,7 +274,9 @@ const CreateTaskByProcessPage = () => {
                 <Select value={selectedSubTypeId} onValueChange={setSelectedSubTypeId} disabled={!selectedTaskTypeId}><SelectTrigger id="sub-type"><SelectValue placeholder="Selecione o subtipo..." /></SelectTrigger><SelectContent>{filteredSubTypes.map(subType => (<SelectItem key={subType.id} value={String(subType.id)}>{subType.name}</SelectItem>))}</SelectContent></Select>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="responsible">Responsável</Label>
+                <Label htmlFor="responsible">
+                  Responsável <span className="text-red-600">*</span>
+                </Label>
                 <UserSelector users={users} value={selectedResponsibleId} onChange={setSelectedResponsibleId} filterBySquadIds={squadIdsForFilter} disabled={!selectedSubTypeId || users.length === 0} />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
