@@ -1193,31 +1193,35 @@ class LegalOneApiClient:
         # O correto é passar o `fileName` que o GetContainer retornou
         # (ex: "cee24743-...pdf") como ExternalId.
         #
-        # ATENCAO: o swagger OFICIAL declara FileUploaderModel e
-        # DocumentRelationshipModel em PascalCase (ExternalId/FileName,
-        # Link/LinkItem/Id/Description), MAS o exemplo oficial de curl
-        # que o L1 publica no proprio site usa tudo em camelCase:
-        #   "relationships": [
-        #     { "id": 1, "link": "Litigation",
-        #       "linkItem": { "id": 1, "description": "..." } }
-        #   ]
-        # O OData real valida em camelCase. Mandar em PascalCase faz o
-        # server responder HTTP 400 com
-        #   "Does not support untyped value in non-open type"
-        # porque as props PascalCase nao existem no schema interno.
-        # Seguimos o exemplo oficial.
+        # Tutorial OFICIAL da Thomson Reuters ("How to upload a document
+        # through API") publica o payload exato do POST /Documents. A API
+        # real:
+        #   - NAO aceita `fileUploader` (o swagger lista, mas o EDM
+        #     interno nao tem essa property -> rejeita com
+        #     "Does not support untyped value in non-open type").
+        #   - NAO aceita `externalId`/`uploadedFileSize` no top-level
+        #     nem aninhado.
+        #   - usa `fileName` top-level (o MESMO retornado pelo
+        #     GetContainer) como unico ponto de ligacao com o blob.
+        #   - valida em camelCase: `link`, `linkItem`, `id`.
+        #
+        # Exemplo do tutorial (copiado literalmente):
+        #   {
+        #     "fileName": "287edeb8-...docx",
+        #     "archive": "file.docx",
+        #     "typeId": "type_1",
+        #     "description": "...",
+        #     "relationships": [
+        #       { "link": "Service", "linkItem": { "id": 1 } }
+        #     ]
+        #   }
         post_endpoint = "/Documents"
         post_url = f"{self.base_url}{post_endpoint}"
         payload: Dict[str, Any] = {
+            "fileName": temp_file_name,  # mesmo fileName do GetContainer
             "archive": archive_name or file_name,
             "description": description or file_name,
             "typeId": type_id,
-            "fileName": temp_file_name,
-            "fileUploader": {
-                "externalId": temp_file_name,  # NOME no container, NÃO a URL SAS
-                "fileName": file_name,
-                "uploadedFileSize": len(file_bytes),
-            },
             "relationships": [
                 {
                     "link": "Litigation",
