@@ -1349,17 +1349,24 @@ class LegalOneApiClient:
                 raise LegalOneGedUploadError(f"Erro ao criar registro no GED: {exc}") from exc
         else:
             # Esgotou os retries de storage miss.
+            today_iso = datetime.utcnow().date().isoformat()
             tutorial_full_payload = {
                 **payload,
                 "notes": notes or "",
                 "isPhysicallyStored": False,
                 "phisicalLocalization": "",
-                "author": "",
+                "author": "OneTask",
+                "beginDate": today_iso,
+                "endDate": today_iso,
                 "isModel": False,
             }
             self.logger.warning(
                 "GED POST payload oficial esgotou com storage miss. "
                 "Tentando fallback com metadados completos do tutorial."
+            )
+            self.logger.info(
+                "GED POST fallback tutorial completo payload:\n%s",
+                json.dumps(tutorial_full_payload, indent=2, ensure_ascii=False),
             )
             try:
                 resp = self._request_with_retry("POST", post_url, json=tutorial_full_payload)
