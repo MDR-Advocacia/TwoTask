@@ -1208,21 +1208,31 @@ class LegalOneApiClient:
                 put_response.headers.get("x-ms-request-id", "-"),
             )
 
-            head_response = requests.head(external_id, timeout=30)
-            head_response.raise_for_status()
-            azure_size_raw = head_response.headers.get("Content-Length")
-            azure_size = int(azure_size_raw) if azure_size_raw and azure_size_raw.isdigit() else None
-            self.logger.info(
-                "GED blob HEAD OK: blob=%s status=%s azure_size=%s content_type=%s request_id=%s",
-                temp_file_name,
-                head_response.status_code,
-                azure_size_raw or "-",
-                head_response.headers.get("Content-Type", "-"),
-                head_response.headers.get("x-ms-request-id", "-"),
-            )
-            if azure_size is not None and azure_size != len(file_bytes):
-                raise LegalOneGedUploadError(
-                    f"Blob enviado com tamanho divergente no Azure: esperado {len(file_bytes)}, recebido {azure_size}."
+            try:
+                head_response = requests.head(external_id, timeout=30)
+                head_response.raise_for_status()
+                azure_size_raw = head_response.headers.get("Content-Length")
+                azure_size = int(azure_size_raw) if azure_size_raw and azure_size_raw.isdigit() else None
+                self.logger.info(
+                    "GED blob HEAD OK: blob=%s status=%s azure_size=%s content_type=%s request_id=%s",
+                    temp_file_name,
+                    head_response.status_code,
+                    azure_size_raw or "-",
+                    head_response.headers.get("Content-Type", "-"),
+                    head_response.headers.get("x-ms-request-id", "-"),
+                )
+                if azure_size is not None and azure_size != len(file_bytes):
+                    raise LegalOneGedUploadError(
+                        f"Blob enviado com tamanho divergente no Azure: esperado {len(file_bytes)}, recebido {azure_size}."
+                    )
+            except LegalOneGedUploadError:
+                raise
+            except requests.exceptions.HTTPError as head_exc:
+                head_status = head_exc.response.status_code if head_exc.response is not None else "?"
+                self.logger.warning(
+                    "GED blob HEAD ignorado: blob=%s status=%s. URL SAS pode permitir apenas escrita.",
+                    temp_file_name,
+                    head_status,
                 )
         except requests.exceptions.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else "?"
