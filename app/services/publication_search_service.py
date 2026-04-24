@@ -1151,9 +1151,19 @@ class PublicationSearchService:
                 f"and ({subtype_filter}) and ({status_filter})"
             )
             try:
+                # L1 impoe limite rigido de $top=30 no endpoint /Tasks. Topo
+                # maior retorna HTTP 400 e o _paginated_catalog_loader engole
+                # o erro devolvendo lista vazia (falso negativo de duplicata).
+                # 30 eh o maximo seguro; paginacao via @odata.nextLink cobre
+                # caso o filtro retorne mais que isso — raro, pois o filtro
+                # eh estreito (1 processo + N subtipos + 3 status).
                 tasks = self.client.search_tasks(
                     filter_expression=filter_expr,
-                    top=200,
+                    top=30,
+                )
+                logger.info(
+                    "check_duplicates lawsuit=%s subtypes=%s retornou %d task(s) do L1",
+                    lawsuit_id, subtype_ids_clean, len(tasks or []),
                 )
                 _DUPLICATE_CACHE[cache_key] = (now_ts, tasks)
                 # Limpa entradas velhas oportunisticamente pra não vazar memória
