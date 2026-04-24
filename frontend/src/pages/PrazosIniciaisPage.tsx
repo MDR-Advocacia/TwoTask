@@ -1317,7 +1317,7 @@ export default function PrazosIniciaisPage() {
           if (!open) setSelectedId(null);
         }}
       >
-        <DialogContent className="max-h-[88vh] w-[95vw] max-w-6xl overflow-y-auto overflow-x-hidden">
+        <DialogContent className="max-h-[92vh] w-[min(95vw,72rem)] overflow-y-auto overflow-x-hidden p-5 sm:p-6">
           <DialogHeader>
             <DialogTitle>Intake #{selectedId}</DialogTitle>
             <DialogDescription>
@@ -1343,7 +1343,7 @@ export default function PrazosIniciaisPage() {
 
           {detail && !detailLoading ? (
             <div className="space-y-5">
-              <div className="grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-3 [&>div]:min-w-0 [&>div>div]:break-words">
+              <div className="grid gap-3 text-sm sm:grid-cols-2 2xl:grid-cols-3 [&>div]:min-w-0 [&>div>div]:break-words">
                 <div>
                   <div className="text-xs text-muted-foreground">External ID</div>
                   <div className="break-all font-mono">{detail.external_id}</div>
@@ -1736,7 +1736,7 @@ export default function PrazosIniciaisPage() {
             </div>
           ) : null}
 
-          <DialogFooter className="gap-2">
+          <DialogFooter className="flex-wrap justify-end gap-2 sm:space-x-0">
             <Button
               variant="outline"
               onClick={onReprocessarCnj}
