@@ -1349,44 +1349,75 @@ class LegalOneApiClient:
                 raise LegalOneGedUploadError(f"Erro ao criar registro no GED: {exc}") from exc
         else:
             # Esgotou os retries de storage miss.
-            fallback_payload = {
+            tutorial_full_payload = {
                 **payload,
-                "fileUploader": {
-                    "externalId": temp_file_name,
-                    "fileName": archive_candidate,
-                    "uploadedFileSize": len(file_bytes),
-                },
+                "notes": notes or "",
+                "isPhysicallyStored": False,
+                "phisicalLocalization": "",
+                "author": "",
+                "isModel": False,
             }
             self.logger.warning(
                 "GED POST payload oficial esgotou com storage miss. "
-                "Tentando fallback com fileUploader camelCase para diagnostico."
+                "Tentando fallback com metadados completos do tutorial."
             )
             try:
-                resp = self._request_with_retry("POST", post_url, json=fallback_payload)
+                resp = self._request_with_retry("POST", post_url, json=tutorial_full_payload)
                 created = resp.json() or {}
                 self.logger.info(
-                    "GED POST fallback fileUploader OK: document_id=%s",
+                    "GED POST fallback tutorial completo OK: document_id=%s",
                     created.get("id"),
                 )
-            except requests.exceptions.HTTPError as exc:
-                fallback_status = exc.response.status_code if exc.response is not None else "?"
-                fallback_body = exc.response.text[:800] if exc.response is not None else ""
+            except requests.exceptions.HTTPError as tutorial_exc:
+                tutorial_status = tutorial_exc.response.status_code if tutorial_exc.response is not None else "?"
+                tutorial_body = tutorial_exc.response.text[:800] if tutorial_exc.response is not None else ""
                 self.logger.error(
-                    "GED POST fallback fileUploader falhou: HTTP %s. Body: %s. Payload:\n%s",
-                    fallback_status,
-                    fallback_body,
-                    json.dumps(fallback_payload, indent=2, ensure_ascii=False),
+                    "GED POST fallback tutorial completo falhou: HTTP %s. Body: %s. Payload:\n%s",
+                    tutorial_status,
+                    tutorial_body,
+                    json.dumps(tutorial_full_payload, indent=2, ensure_ascii=False),
                 )
-                self.logger.error(
-                    "GED upload falhou apos retries de storage. Payload oficial enviado:\n%s",
-                    json.dumps(payload, indent=2, ensure_ascii=False),
+
+                fallback_payload = {
+                    **payload,
+                    "fileUploader": {
+                        "externalId": temp_file_name,
+                        "fileName": archive_candidate,
+                        "uploadedFileSize": len(file_bytes),
+                    },
+                }
+                self.logger.warning(
+                    "GED POST fallback tutorial completo falhou. "
+                    "Tentando fallback com fileUploader camelCase para diagnostico."
                 )
-                raise LegalOneGedUploadError(
-                    "Falha no POST /Documents "
-                    f"(payload oficial storage miss HTTP {last_error_status}; "
-                    f"fallback fileUploader HTTP {fallback_status}). "
-                    f"Oficial: {last_error_body} | Fallback: {fallback_body}"
-                ) from exc
+                try:
+                    resp = self._request_with_retry("POST", post_url, json=fallback_payload)
+                    created = resp.json() or {}
+                    self.logger.info(
+                        "GED POST fallback fileUploader OK: document_id=%s",
+                        created.get("id"),
+                    )
+                except requests.exceptions.HTTPError as exc:
+                    fallback_status = exc.response.status_code if exc.response is not None else "?"
+                    fallback_body = exc.response.text[:800] if exc.response is not None else ""
+                    self.logger.error(
+                        "GED POST fallback fileUploader falhou: HTTP %s. Body: %s. Payload:\n%s",
+                        fallback_status,
+                        fallback_body,
+                        json.dumps(fallback_payload, indent=2, ensure_ascii=False),
+                    )
+                    self.logger.error(
+                        "GED upload falhou apos retries de storage. Payload oficial enviado:\n%s",
+                        json.dumps(payload, indent=2, ensure_ascii=False),
+                    )
+                    raise LegalOneGedUploadError(
+                        "Falha no POST /Documents "
+                        f"(payload oficial storage miss HTTP {last_error_status}; "
+                        f"fallback tutorial HTTP {tutorial_status}; "
+                        f"fallback fileUploader HTTP {fallback_status}). "
+                        f"Oficial: {last_error_body} | Tutorial: {tutorial_body} | "
+                        f"Fallback: {fallback_body}"
+                    ) from exc
 
         document_id = created.get("id")
         if not document_id:
