@@ -1276,6 +1276,7 @@ class PublicationSearchService:
         vinculo: Optional[str] = None,
         natureza: Optional[str] = None,
         polo: Optional[str] = None,
+        cnj_search: Optional[str] = None,
     ):
         """Query base reutilizada por list_records_grouped e contagens."""
         query = self.db.query(PublicationRecord).filter(PublicationRecord.is_duplicate == False)  # noqa: E712
@@ -1337,6 +1338,18 @@ class PublicationSearchService:
                 query = query.filter(PublicationRecord.polo == polo_list[0])
             else:
                 query = query.filter(PublicationRecord.polo.in_(polo_list))
+        # Busca por CNJ: match tolerante por dígitos (ignora máscara do usuário).
+        # Comparamos a forma só-dígitos dos dois lados, assim "0000161-07.2026..."
+        # e "000016107202680500" casam sem precisar normalizar o input.
+        if cnj_search:
+            digits = "".join(c for c in cnj_search if c.isdigit())
+            if digits:
+                query = query.filter(
+                    sa_func.regexp_replace(
+                        sa_func.coalesce(PublicationRecord.linked_lawsuit_cnj, ""),
+                        r"\D", "", "g",
+                    ).like(f"%{digits}%")
+                )
         return query
 
     @staticmethod
@@ -1405,6 +1418,7 @@ class PublicationSearchService:
         vinculo: Optional[str] = None,
         natureza: Optional[str] = None,
         polo: Optional[str] = None,
+        cnj_search: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
@@ -1421,7 +1435,7 @@ class PublicationSearchService:
             date_from=date_from, date_to=date_to,
             category=category, uf=uf,
             vinculo=vinculo, natureza=natureza,
-            polo=polo,
+            polo=polo, cnj_search=cnj_search,
         )
 
         # ─── Etapa 1: contar e paginar grupos (lawsuit_ids distintos) ───
@@ -1484,7 +1498,7 @@ class PublicationSearchService:
             date_from=date_from, date_to=date_to,
             category=category, uf=uf,
             vinculo=vinculo, natureza=natureza,
-            polo=polo,
+            polo=polo, cnj_search=cnj_search,
         )
 
         # Filtro: records que pertencem aos grupos da página
@@ -1915,6 +1929,7 @@ class PublicationSearchService:
         lawsuit_id: int,
         payload_override: Optional[dict] = None,
         payload_overrides: Optional[list[dict]] = None,
+        scheduled_by: Optional[Any] = None,
     ) -> dict[str, Any]:
         """
         Executa o agendamento de um grupo de publicações (mesmo processo) no LegalOne.
@@ -1969,9 +1984,19 @@ class PublicationSearchService:
 
         from app.services.publication_treatment_service import PublicationTreatmentService
         treatment_service = PublicationTreatmentService(self.db)
+        now_utc = datetime.now(timezone.utc)
+        # Snapshot do usuário que agendou (pub002). Usamos getattr pra não
+        # explodir caso venha algo que não tenha os atributos (testes, etc.).
+        sb_user_id = getattr(scheduled_by, "id", None) if scheduled_by else None
+        sb_email = getattr(scheduled_by, "email", None) if scheduled_by else None
+        sb_name = getattr(scheduled_by, "name", None) if scheduled_by else None
         for r in records:
             r.status = RECORD_STATUS_SCHEDULED
-            r.updated_at = datetime.now(timezone.utc)
+            r.updated_at = now_utc
+            r.scheduled_by_user_id = sb_user_id
+            r.scheduled_by_email = sb_email
+            r.scheduled_by_name = sb_name
+            r.scheduled_at = now_utc
             treatment_service.sync_item_from_record(r, commit=False)
         self.db.commit()
 
@@ -1987,6 +2012,7 @@ class PublicationSearchService:
         record_ids: List[int],
         payload_override: Optional[dict] = None,
         payload_overrides: Optional[list[dict]] = None,
+        scheduled_by: Optional[Any] = None,
     ) -> dict[str, Any]:
         """
         Agenda N tarefas para uma lista explícita de record IDs,
@@ -2035,9 +2061,17 @@ class PublicationSearchService:
 
         from app.services.publication_treatment_service import PublicationTreatmentService
         treatment_service = PublicationTreatmentService(self.db)
+        now_utc = datetime.now(timezone.utc)
+        sb_user_id = getattr(scheduled_by, "id", None) if scheduled_by else None
+        sb_email = getattr(scheduled_by, "email", None) if scheduled_by else None
+        sb_name = getattr(scheduled_by, "name", None) if scheduled_by else None
         for r in records:
             r.status = RECORD_STATUS_SCHEDULED
-            r.updated_at = datetime.now(timezone.utc)
+            r.updated_at = now_utc
+            r.scheduled_by_user_id = sb_user_id
+            r.scheduled_by_email = sb_email
+            r.scheduled_by_name = sb_name
+            r.scheduled_at = now_utc
             treatment_service.sync_item_from_record(r, commit=False)
         self.db.commit()
 
@@ -2432,6 +2466,11 @@ class PublicationSearchService:
             "has_proposal": bool(proposal),
             "proposal": proposal if include_full_text else None,
             "proposals_count": len(proposals) if proposals else (1 if proposal else 0),
+            # Autoria do agendamento (pub002). Só tem valor quando status=AGENDADO.
+            "scheduled_by_user_id": record.scheduled_by_user_id,
+            "scheduled_by_email": record.scheduled_by_email,
+            "scheduled_by_name": record.scheduled_by_name,
+            "scheduled_at": record.scheduled_at.isoformat() if record.scheduled_at else None,
             "created_at": record.created_at.isoformat() if record.created_at else None,
             "updated_at": record.updated_at.isoformat() if record.updated_at else None,
         }

@@ -123,6 +123,22 @@ class PublicationRecord(Base):
     # ao criar o registro e pela data migration perf002.
     uf = Column(String(10), nullable=True, index=True)
 
+    # Autoria do agendamento (migration pub002).
+    # Preenchido quando o registro vai pra status=AGENDADO via endpoints de
+    # schedule_group/schedule_records. Guardamos FK + snapshot de email/nome
+    # pra não perder o rastro caso o LegalOneUser seja removido. Usado pra
+    # exibir "Agendado por X" na listagem de publicações e pra compor a
+    # trilha de auditoria do processo.
+    scheduled_by_user_id = Column(
+        Integer,
+        ForeignKey("legal_one_users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    scheduled_by_email = Column(String, nullable=True)
+    scheduled_by_name = Column(String, nullable=True)
+    scheduled_at = Column(DateTime(timezone=True), nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 

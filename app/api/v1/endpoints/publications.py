@@ -534,6 +534,7 @@ def list_records_grouped(
     vinculo: Optional[str] = Query(None, description="Filtro de vínculo: com_processo, sem_processo."),
     natureza: Optional[str] = Query(None, description="Filtra por natureza do processo (ex.: Embargos à Execução)."),
     polo: Optional[str] = Query(None, description="Filtra por polo indicado (ativo, passivo, ambos)."),
+    cnj_search: Optional[str] = Query(None, description="Busca tolerante por CNJ (match por dígitos, ignora máscara)."),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     service: PublicationSearchService = Depends(_get_service),
@@ -550,6 +551,7 @@ def list_records_grouped(
         vinculo=vinculo,
         natureza=natureza,
         polo=polo,
+        cnj_search=cnj_search,
         limit=limit,
         offset=offset,
     )
@@ -735,6 +737,7 @@ def schedule_group(
     lawsuit_id: int,
     payload: ScheduleGroupRequest,
     service: PublicationSearchService = Depends(_get_service),
+    current_user=Depends(auth_security.get_current_user),
 ):
     """Agenda uma tarefa consolidada para todas as publicações de um processo."""
     try:
@@ -742,6 +745,7 @@ def schedule_group(
             lawsuit_id=lawsuit_id,
             payload_override=payload.payload_override,
             payload_overrides=payload.payload_overrides,
+            scheduled_by=current_user,
         )
         # Alias for frontend
         result["task_id"] = result.get("created_task_id")
@@ -756,6 +760,7 @@ def schedule_group(
 def schedule_records(
     payload: ScheduleRecordsRequest,
     service: PublicationSearchService = Depends(_get_service),
+    current_user=Depends(auth_security.get_current_user),
 ):
     """
     Agenda uma tarefa para publicações SEM processo vinculado.
@@ -766,6 +771,7 @@ def schedule_records(
             record_ids=payload.record_ids,
             payload_override=payload.payload_override,
             payload_overrides=payload.payload_overrides,
+            scheduled_by=current_user,
         )
         result["task_id"] = result.get("created_task_id")
         return result

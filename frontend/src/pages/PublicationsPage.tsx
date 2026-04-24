@@ -41,6 +41,7 @@ import {
   Settings,
   ThumbsDown,
   TrendingUp,
+  UserCircle2,
   XCircle,
 } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -225,6 +226,11 @@ interface PublicationRecord {
   audiencia_link: string | null;
   natureza_processo: string | null;
   classifications: Classification[] | null;
+  // Trilha de autoria do agendamento (pub002). Só preenchido quando status=AGENDADO.
+  scheduled_by_user_id?: number | null;
+  scheduled_by_email?: string | null;
+  scheduled_by_name?: string | null;
+  scheduled_at?: string | null;
   created_at: string | null;
   raw_relationships?: any;
 }
@@ -496,6 +502,9 @@ const PublicationsPage = () => {
   const [filterVinculo, setFilterVinculo] = useState<string>("");
   const [filterNatureza, setFilterNatureza] = useState<string>("");
   const [filterPolo, setFilterPolo] = useState<string>("");
+  // Busca livre por CNJ — backend faz match tolerante por dígitos, então o
+  // usuário pode digitar "0000161", "161-07", ou o CNJ inteiro com máscara.
+  const [filterCnj, setFilterCnj] = useState<string>("");
   // Controla se o painel de filtros está expandido no mobile (no desktop fica sempre visível via md:block)
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [groupPage, setGroupPage] = useState(0);
@@ -647,7 +656,7 @@ const PublicationsPage = () => {
   }, []);
 
   const loadGrouped = useCallback(async (
-    page = 0, status = "", officeId = "", dateFrom = "", dateTo = "", category = "", ufParam = "", vinculoParam = "", naturezaParam = "", poloParam = "",
+    page = 0, status = "", officeId = "", dateFrom = "", dateTo = "", category = "", ufParam = "", vinculoParam = "", naturezaParam = "", poloParam = "", cnjParam = "",
   ) => {
     try {
       let url = `${API}/records/grouped?limit=${GROUP_PAGE_SIZE}&offset=${page * GROUP_PAGE_SIZE}`;
@@ -660,6 +669,7 @@ const PublicationsPage = () => {
       if (vinculoParam) url += `&vinculo=${vinculoParam}`;
       if (naturezaParam) url += `&natureza=${encodeURIComponent(naturezaParam)}`;
       if (poloParam) url += `&polo=${encodeURIComponent(poloParam)}`;
+      if (cnjParam) url += `&cnj_search=${encodeURIComponent(cnjParam)}`;
       const res = await apiFetch(url);
       if (res.ok) setGrouped(await res.json());
     } catch { /* ignore */ }
@@ -804,7 +814,7 @@ const PublicationsPage = () => {
     loadTaskMeta();
     loadStats();
     loadSearches();
-    loadGrouped(0, "", "", "", "", "", "", "", "", "");
+    loadGrouped(0, "", "", "", "", "", "", "", "", "", "");
     loadBatches();
     loadSavedFilters();
   }, []);
@@ -857,7 +867,7 @@ const PublicationsPage = () => {
       clearInterval(t);
       // Quando polling para (busca terminou), recarrega dados
       loadStats();
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj);
     };
   }, [activeSearch?.id]);
 
@@ -887,7 +897,7 @@ const PublicationsPage = () => {
       }
       toast({ title: "Busca iniciada", description: "Acompanhe o progresso no histórico." });
       [3000, 8000, 15000, 30000].forEach((delay) => {
-        setTimeout(() => { loadSearches(); loadStats(); loadGrouped(0, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo); }, delay);
+        setTimeout(() => { loadSearches(); loadStats(); loadGrouped(0, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj); }, delay);
       });
     } catch (err: any) {
       setError(err.message);
@@ -897,7 +907,7 @@ const PublicationsPage = () => {
   };
 
   const handleFilterChange = (
-    status: string, officeId: string, dateFrom?: string, dateTo?: string, category?: string, ufParam?: string, vinculoParam?: string, naturezaParam?: string, poloParam?: string,
+    status: string, officeId: string, dateFrom?: string, dateTo?: string, category?: string, ufParam?: string, vinculoParam?: string, naturezaParam?: string, poloParam?: string, cnjParam?: string,
   ) => {
     setFilterStatus(status);
     setFilterOffice(officeId);
@@ -908,6 +918,7 @@ const PublicationsPage = () => {
     if (vinculoParam !== undefined) setFilterVinculo(vinculoParam);
     if (naturezaParam !== undefined) setFilterNatureza(naturezaParam);
     if (poloParam !== undefined) setFilterPolo(poloParam);
+    if (cnjParam !== undefined) setFilterCnj(cnjParam);
     const df = dateFrom ?? filterDateFrom;
     const dt = dateTo ?? filterDateTo;
     const cat = category ?? filterCategory;
@@ -915,15 +926,16 @@ const PublicationsPage = () => {
     const vin = vinculoParam ?? filterVinculo;
     const nat = naturezaParam ?? filterNatureza;
     const pol = poloParam ?? filterPolo;
+    const cnj = cnjParam ?? filterCnj;
     setGroupPage(0);
     setSelectedGroupKeys(new Set());
-    loadGrouped(0, status, officeId, df, dt, cat, uf, vin, nat, pol);
+    loadGrouped(0, status, officeId, df, dt, cat, uf, vin, nat, pol, cnj);
   };
 
   const handleGroupPageChange = (newPage: number) => {
     setGroupPage(newPage);
     setSelectedGroupKeys(new Set());
-    loadGrouped(newPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo);
+    loadGrouped(newPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj);
   };
 
   const handleIgnoreRecord = async (recordId: number) => {
@@ -934,7 +946,7 @@ const PublicationsPage = () => {
         body: JSON.stringify({ status: "IGNORADO" }),
       });
       toast({ title: "Registro ignorado" });
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj);
       loadStats();
     } catch { /* ignore */ }
   };
@@ -966,7 +978,7 @@ const PublicationsPage = () => {
         title: "Reclassificado",
         description: `${category}${subcategory ? " → " + subcategory : ""} aplicado a ${recordIds.length} publicação(ões). Proposta de tarefa atualizada.`,
       });
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj);
       loadStats();
     } catch (err: any) {
       toast({ title: "Erro", description: err.message, variant: "destructive" });
@@ -1014,7 +1026,7 @@ const PublicationsPage = () => {
       }
       toast({ title: "Feedback registrado", description: "Obrigado! O classificador vai aprender com essa correção." });
       setFeedbackOpen(false);
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj);
     } catch (err: any) {
       toast({ title: "Erro", description: err.message, variant: "destructive" });
     } finally {
@@ -1023,7 +1035,7 @@ const PublicationsPage = () => {
   };
 
   const handleRefreshAll = () => {
-    loadStats(); loadSearches(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo); loadBatches();
+    loadStats(); loadSearches(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj); loadBatches();
     if (insightsOpen) loadInsights(insightPeriod);
   };
 
@@ -1093,7 +1105,7 @@ const PublicationsPage = () => {
       });
       // Pequeno polling para refletir o efeito na UI
       [3000, 8000, 20000].forEach((delay) => {
-        setTimeout(() => { loadBatches(); loadStats(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo); }, delay);
+        setTimeout(() => { loadBatches(); loadStats(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj); }, delay);
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1162,7 +1174,7 @@ const PublicationsPage = () => {
         description: `Propostas sendo reconstruídas (escopo: ${scopeLabel}). Atualize em instantes.`,
       });
       setTimeout(() => {
-        loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo);
+        loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj);
       }, 3000);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1284,7 +1296,7 @@ const PublicationsPage = () => {
       });
       setScheduleOpen(false);
       setRemovedTaskIndices(new Set());
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj);
       loadStats();
     } catch (err: any) {
       toast({ title: "Erro ao agendar", description: err.message, variant: "destructive" });
@@ -1388,7 +1400,7 @@ const PublicationsPage = () => {
 
     clearSelection();
     setBulkProcessing(false);
-    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo);
+    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj);
     loadStats();
   };
 
@@ -1429,7 +1441,7 @@ const PublicationsPage = () => {
 
     clearSelection();
     setBulkProcessing(false);
-    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo);
+    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj);
     loadStats();
   };
 
@@ -2392,13 +2404,57 @@ const PublicationsPage = () => {
                 </div>
               </div>
 
+              {/* Busca livre por CNJ — match tolerante: backend compara por dígitos, ignora máscara */}
+              <div className="space-y-1">
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Buscar processo</Label>
+                <div className="relative">
+                  <Input
+                    type="text"
+                    inputMode="numeric"
+                    value={filterCnj}
+                    onChange={(e) => setFilterCnj(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        handleFilterChange(filterStatus, filterOffice, undefined, undefined, undefined, undefined, undefined, undefined, undefined, filterCnj.trim());
+                      }
+                    }}
+                    onBlur={() => {
+                      // Aplica automaticamente quando o usuário sai do campo.
+                      // handleFilterChange é idempotente — se o valor já for o mesmo
+                      // o re-fetch só repete a request, sem efeito colateral.
+                      handleFilterChange(filterStatus, filterOffice, undefined, undefined, undefined, undefined, undefined, undefined, undefined, filterCnj.trim());
+                    }}
+                    placeholder="CNJ (pode digitar só dígitos)"
+                    className="h-8 w-[220px] text-xs pl-7"
+                    title="Busca por CNJ. Aceita com ou sem máscara — comparamos só os dígitos."
+                  />
+                  <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+                  {filterCnj && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFilterCnj("");
+                        handleFilterChange(filterStatus, filterOffice, undefined, undefined, undefined, undefined, undefined, undefined, undefined, "");
+                      }}
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:text-destructive transition-colors"
+                      title="Limpar CNJ"
+                    >
+                      <XCircle className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
               {/* Botão limpar filtros (aparece quando há filtros ativos) */}
-              {(filterStatus || filterOffice || filterCategory || filterUf || filterVinculo || filterNatureza || filterPolo || filterDateFrom || filterDateTo) && (
+              {(filterStatus || filterOffice || filterCategory || filterUf || filterVinculo || filterNatureza || filterPolo || filterDateFrom || filterDateTo || filterCnj) && (
                 <Button
                   variant="ghost"
                   size="sm"
                   className="h-8 text-xs text-muted-foreground"
-                  onClick={() => handleFilterChange("", "", "", "", "", "", "", "", "")}
+                  onClick={() => {
+                    setFilterCnj("");
+                    handleFilterChange("", "", "", "", "", "", "", "", "", "");
+                  }}
                 >
                   <XCircle className="h-3.5 w-3.5 mr-1" />
                   Limpar filtros
@@ -2741,19 +2797,46 @@ const PublicationsPage = () => {
                             })()}
                           </TableCell>
                           <TableCell>
-                            <div className="flex items-center gap-1">
-                              <Badge variant={statusColor(status)} className="text-xs">{status}</Badge>
-                              {categories.length > 0 && (
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  className="h-5 w-5 p-0 text-muted-foreground hover:text-red-600"
-                                  title="Reportar classificação errada"
-                                  onClick={() => openFeedback(group.records[0])}
-                                >
-                                  <ThumbsDown className="h-3 w-3" />
-                                </Button>
-                              )}
+                            <div className="flex flex-col gap-1">
+                              <div className="flex items-center gap-1">
+                                <Badge variant={statusColor(status)} className="text-xs">{status}</Badge>
+                                {categories.length > 0 && (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-5 w-5 p-0 text-muted-foreground hover:text-red-600"
+                                    title="Reportar classificação errada"
+                                    onClick={() => openFeedback(group.records[0])}
+                                  >
+                                    <ThumbsDown className="h-3 w-3" />
+                                  </Button>
+                                )}
+                              </div>
+                              {/* Trilha do AGENDADO: mostra quem agendou (populado via pub002). */}
+                              {status === "AGENDADO" && (() => {
+                                const scheduled = group.records.find(
+                                  (r) => r.status === "AGENDADO" && (r.scheduled_by_name || r.scheduled_by_email)
+                                );
+                                if (!scheduled) return null;
+                                const who = scheduled.scheduled_by_name || scheduled.scheduled_by_email;
+                                const when = scheduled.scheduled_at
+                                  ? new Date(scheduled.scheduled_at).toLocaleString("pt-BR", {
+                                      day: "2-digit", month: "2-digit", year: "2-digit",
+                                      hour: "2-digit", minute: "2-digit",
+                                    })
+                                  : null;
+                                return (
+                                  <div
+                                    className="flex items-center gap-1 text-[10px] text-muted-foreground"
+                                    title={`Agendado por ${scheduled.scheduled_by_name ?? ""}${scheduled.scheduled_by_email ? ` <${scheduled.scheduled_by_email}>` : ""}${when ? ` em ${when}` : ""}`}
+                                  >
+                                    <UserCircle2 className="h-3 w-3 flex-shrink-0" />
+                                    <span className="truncate max-w-[140px]">
+                                      por <span className="font-medium text-foreground">{who}</span>
+                                    </span>
+                                  </div>
+                                );
+                              })()}
                             </div>
                           </TableCell>
                           <TableCell className="text-xs">

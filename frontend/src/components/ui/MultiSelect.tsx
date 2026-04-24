@@ -158,7 +158,10 @@ export const MultiSelect = React.forwardRef<HTMLButtonElement, MultiSelectProps>
             )}
           </Button>
         </PopoverTrigger>
-        <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+        <PopoverContent
+          className="w-auto min-w-[--radix-popover-trigger-width] max-w-[520px] p-0"
+          align="start"
+        >
           <Command>
             <CommandInput
               placeholder="Search..."
@@ -177,11 +180,11 @@ export const MultiSelect = React.forwardRef<HTMLButtonElement, MultiSelectProps>
                         pointerEvents: "auto",
                         opacity: 1,
                       }}
-                      className="cursor-pointer"
+                      className="cursor-pointer items-start py-2"
                     >
                       <div
                         className={cn(
-                          "mr-2 flex h-4 w-4 items-center justify-center rounded-sm border border-primary",
+                          "mr-2 mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border border-primary",
                           isSelected
                             ? "bg-primary text-primary-foreground"
                             : "opacity-50 [&_svg]:invisible"
@@ -190,9 +193,14 @@ export const MultiSelect = React.forwardRef<HTMLButtonElement, MultiSelectProps>
                         <CheckIcon className="h-4 w-4" />
                       </div>
                       {option.icon && (
-                        <option.icon className="mr-2 h-4 w-4 text-muted-foreground" />
+                        <option.icon className="mr-2 mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
                       )}
-                      <span>{option.label}</span>
+                      <span
+                        className="flex-1 whitespace-normal break-words leading-snug text-left"
+                        title={option.label}
+                      >
+                        {option.label}
+                      </span>
                     </CommandItem>
                   );
                 })}
