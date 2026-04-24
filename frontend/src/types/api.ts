@@ -298,6 +298,49 @@ export interface PrazoInicialIntakeListResponse {
   items: PrazoInicialIntakeSummary[];
 }
 
+// Batch de classificacao (Onda 1 — botao manual na tela de Prazos Iniciais).
+// Espelha backend/app/api/v1/endpoints/prazos_iniciais.py::BatchSummary.
+export interface PrazoInicialClassifyPendingResponse {
+  submitted: boolean;
+  batch_id: number | null;
+  anthropic_batch_id: string | null;
+  intakes_count: number;
+  message: string;
+}
+
+export interface PrazoInicialBatchSummary {
+  id: number;
+  anthropic_batch_id: string | null;
+  // ENVIADO | EM_PROCESSAMENTO | PRONTO | APLICADO | ERRO
+  status: string;
+  anthropic_status: string | null;
+  total_records: number;
+  succeeded_count: number;
+  errored_count: number;
+  expired_count: number;
+  canceled_count: number;
+  model_used: string | null;
+  requested_by_email: string | null;
+  intake_ids: number[] | null;
+  created_at: string | null;
+  submitted_at: string | null;
+  ended_at: string | null;
+  applied_at: string | null;
+}
+
+export interface PrazoInicialBatchListResponse {
+  total: number;
+  items: PrazoInicialBatchSummary[];
+}
+
+export interface PrazoInicialApplyBatchResponse {
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  total_results: number;
+  total_sugestoes: number;
+}
+
 export interface PrazoInicialIntakeFilters {
   status?: string;
   cnj_number?: string;

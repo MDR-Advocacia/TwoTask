@@ -3,6 +3,10 @@ import {
   BatchExecution,
   LegalOnePositionFixControlResponse,
   LegalOnePositionFixStatus,
+  PrazoInicialApplyBatchResponse,
+  PrazoInicialBatchListResponse,
+  PrazoInicialBatchSummary,
+  PrazoInicialClassifyPendingResponse,
   PrazoInicialEnums,
   PrazoInicialIntakeDetail,
   PrazoInicialIntakeFilters,
@@ -242,6 +246,57 @@ export async function confirmarAgendamentoPrazoInicial(
     },
   );
   return expectJson<PrazoInicialSchedulingConfirmationResponse>(response);
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// Classificação em lote (Sonnet / Anthropic Batches) — Onda 1 manual
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Dispara um batch de classificação com todos os intakes em
+ * PRONTO_PARA_CLASSIFICAR. Aceita `limit` opcional pra cortar o tamanho.
+ * Retorna metadados do batch criado (ou flag `submitted=false` se não
+ * houver intakes pendentes).
+ */
+export async function submitPrazosIniciaisClassifyPending(
+  limit?: number,
+): Promise<PrazoInicialClassifyPendingResponse> {
+  const qs = typeof limit === "number" && limit > 0 ? `?limit=${limit}` : "";
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/classificar-pendentes${qs}`,
+    { method: "POST" },
+  );
+  return expectJson<PrazoInicialClassifyPendingResponse>(response);
+}
+
+export async function fetchPrazosIniciaisBatches(
+  limit = 50,
+): Promise<PrazoInicialBatchListResponse> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/batches?limit=${limit}`,
+  );
+  return expectJson<PrazoInicialBatchListResponse>(response);
+}
+
+export async function refreshPrazosIniciaisBatch(
+  batchId: number,
+): Promise<PrazoInicialBatchSummary> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/batches/${batchId}/refresh`,
+    { method: "POST" },
+  );
+  return expectJson<PrazoInicialBatchSummary>(response);
+}
+
+export async function applyPrazosIniciaisBatch(
+  batchId: number,
+): Promise<PrazoInicialApplyBatchResponse> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/batches/${batchId}/apply`,
+    { method: "POST" },
+  );
+  return expectJson<PrazoInicialApplyBatchResponse>(response);
 }
 
 

@@ -4,13 +4,16 @@ import {
   AlertCircle,
   CalendarClock,
   CheckCircle2,
+  Cpu,
   ExternalLink,
   FileDown,
   FileText,
   Filter,
   Loader2,
+  Play,
   RefreshCw,
   Search,
+  Sparkles,
   Undo2,
   Workflow,
   XCircle,
@@ -43,16 +46,21 @@ import { Separator } from "@/components/ui/separator";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import {
+  applyPrazosIniciaisBatch,
   cancelarPrazoInicial,
   confirmarAgendamentoPrazoInicial,
   fetchPrazoInicialDetail,
+  fetchPrazosIniciaisBatches,
   fetchPrazosIniciaisIntakes,
   reanalyzePrazoInicial,
   exportPrazosIniciaisXlsx,
   prazoInicialPdfUrl,
+  refreshPrazosIniciaisBatch,
   reprocessarPrazoInicialCnj,
+  submitPrazosIniciaisClassifyPending,
 } from "@/services/api";
 import type {
+  PrazoInicialBatchSummary,
   PrazoInicialIntakeDetail,
   PrazoInicialIntakeStatus,
   PrazoInicialIntakeSummary,
@@ -198,6 +206,12 @@ export default function PrazosIniciaisPage() {
 
   const [selectedSuggestions, setSelectedSuggestions] = useState<Record<number, boolean>>({});
   const [createdTaskIds, setCreatedTaskIds] = useState<Record<number, string>>({});
+
+  // Classificação em batch (Sonnet) — Onda 1 manual.
+  const [batches, setBatches] = useState<PrazoInicialBatchSummary[]>([]);
+  const [batchesLoading, setBatchesLoading] = useState(false);
+  const [classifyingPending, setClassifyingPending] = useState(false);
+  const [batchActionId, setBatchActionId] = useState<number | null>(null);
 
   const loadIntakes = useCallback(
     async (resetPage = false) => {
@@ -508,6 +522,101 @@ export default function PrazosIniciaisPage() {
     }
   }, [createdTaskIds, detail, loadDetail, loadIntakes, selectedId, selectedSuggestions, toast]);
 
+  // ─── Classificação em batch (Sonnet) — controlada manualmente ─────────
+
+  const loadBatches = useCallback(async () => {
+    setBatchesLoading(true);
+    try {
+      const response = await fetchPrazosIniciaisBatches(20);
+      setBatches(response.items);
+    } catch (error) {
+      // Falhar silenciosamente — a tela principal continua funcionando
+      // sem a listagem de batches. O erro já aparece no console.
+      console.warn("Falha ao carregar batches de prazos iniciais", error);
+    } finally {
+      setBatchesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadBatches();
+  }, [loadBatches]);
+
+  const handleClassifyPending = useCallback(async () => {
+    setClassifyingPending(true);
+    try {
+      const response = await submitPrazosIniciaisClassifyPending();
+      if (!response.submitted) {
+        toast({
+          title: "Nenhum intake pendente",
+          description: response.message,
+        });
+        return;
+      }
+      toast({
+        title: "Batch criado",
+        description: `${response.intakes_count} intake(s) enviados pro Sonnet. Batch #${response.batch_id}.`,
+      });
+      await Promise.all([loadBatches(), loadIntakes()]);
+    } catch (error) {
+      toast({
+        title: "Falha ao classificar pendentes",
+        description: error instanceof Error ? error.message : "Nao foi possivel criar o batch.",
+        variant: "destructive",
+      });
+    } finally {
+      setClassifyingPending(false);
+    }
+  }, [loadBatches, loadIntakes, toast]);
+
+  const handleRefreshBatch = useCallback(
+    async (batchId: number) => {
+      setBatchActionId(batchId);
+      try {
+        await refreshPrazosIniciaisBatch(batchId);
+        await loadBatches();
+      } catch (error) {
+        toast({
+          title: "Falha ao atualizar status",
+          description: error instanceof Error ? error.message : "Erro desconhecido.",
+          variant: "destructive",
+        });
+      } finally {
+        setBatchActionId(null);
+      }
+    },
+    [loadBatches, toast],
+  );
+
+  const handleApplyBatch = useCallback(
+    async (batchId: number) => {
+      setBatchActionId(batchId);
+      try {
+        const result = await applyPrazosIniciaisBatch(batchId);
+        toast({
+          title: "Resultados aplicados",
+          description: `${result.succeeded} intake(s) classificados, ${result.total_sugestoes} sugestao(oes) geradas. ${result.failed} falha(s), ${result.skipped} puladas.`,
+        });
+        await Promise.all([loadBatches(), loadIntakes()]);
+      } catch (error) {
+        toast({
+          title: "Falha ao aplicar resultados",
+          description: error instanceof Error ? error.message : "Erro desconhecido.",
+          variant: "destructive",
+        });
+      } finally {
+        setBatchActionId(null);
+      }
+    },
+    [loadBatches, loadIntakes, toast],
+  );
+
+  // Contagem de pendentes na grade visível (usado como badge no botão).
+  const pendingCount = useMemo(
+    () => items.filter((i) => i.status === "PRONTO_PARA_CLASSIFICAR").length,
+    [items],
+  );
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -523,6 +632,24 @@ export default function PrazosIniciaisPage() {
         </div>
 
         <div className="flex flex-col gap-2 sm:flex-row">
+          <Button
+            className="w-full sm:w-auto"
+            onClick={handleClassifyPending}
+            disabled={classifyingPending}
+            title="Coleta intakes em PRONTO_PARA_CLASSIFICAR e envia em lote ao Sonnet."
+          >
+            {classifyingPending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Sparkles className="mr-2 h-4 w-4" />
+            )}
+            Classificar pendentes
+            {pendingCount > 0 && (
+              <Badge variant="secondary" className="ml-2">
+                {pendingCount}
+              </Badge>
+            )}
+          </Button>
           <Button
             variant="outline"
             className="w-full sm:w-auto"
@@ -548,6 +675,148 @@ export default function PrazosIniciaisPage() {
           <AlertDescription>{loadError}</AlertDescription>
         </Alert>
       ) : null}
+
+      {/* ── Batches de classificação (Onda 1 manual) ───────────────────── */}
+      {batches.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Cpu className="h-4 w-4" />
+                  Batches de classificação
+                </CardTitle>
+                <CardDescription>
+                  Acompanhe o status dos envios ao Sonnet. Ao ficar PRONTO, clique em "Aplicar" para materializar pedidos e sugestões.
+                </CardDescription>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={loadBatches}
+                disabled={batchesLoading}
+                title="Recarregar lista"
+              >
+                <RefreshCw className={`h-4 w-4 ${batchesLoading ? "animate-spin" : ""}`} />
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-[70px]">Batch</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead className="text-right">Intakes</TableHead>
+                    <TableHead className="text-right">Sucesso</TableHead>
+                    <TableHead className="text-right">Erros</TableHead>
+                    <TableHead>Enviado em</TableHead>
+                    <TableHead>Concluído em</TableHead>
+                    <TableHead className="text-right">Ações</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {batches.map((batch) => {
+                    const isActing = batchActionId === batch.id;
+                    const isPronto = batch.status === "PRONTO" || batch.status === "READY";
+                    const isAplicado = batch.status === "APLICADO";
+                    const isEmAndamento =
+                      batch.status === "ENVIADO" || batch.status === "EM_PROCESSAMENTO";
+                    const statusColor =
+                      isAplicado
+                        ? "bg-emerald-100 text-emerald-700 border-emerald-300"
+                        : isPronto
+                          ? "bg-blue-100 text-blue-700 border-blue-300"
+                          : isEmAndamento
+                            ? "bg-amber-100 text-amber-700 border-amber-300"
+                            : "bg-slate-100 text-slate-700 border-slate-300";
+                    const fmtDate = (iso: string | null) =>
+                      iso
+                        ? new Date(iso).toLocaleString("pt-BR", {
+                            day: "2-digit",
+                            month: "2-digit",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })
+                        : "—";
+                    return (
+                      <TableRow key={batch.id}>
+                        <TableCell className="font-mono text-xs">#{batch.id}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline" className={`text-[10px] ${statusColor}`}>
+                            {batch.status}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">{batch.total_records}</TableCell>
+                        <TableCell className="text-right tabular-nums text-emerald-700">
+                          {batch.succeeded_count}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums text-red-700">
+                          {batch.errored_count}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {fmtDate(batch.submitted_at)}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {fmtDate(batch.ended_at)}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-1">
+                            {isEmAndamento && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 text-xs"
+                                onClick={() => handleRefreshBatch(batch.id)}
+                                disabled={isActing}
+                                title="Consultar Anthropic e atualizar status"
+                              >
+                                {isActing ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <>
+                                    <RefreshCw className="mr-1 h-3.5 w-3.5" />
+                                    Atualizar
+                                  </>
+                                )}
+                              </Button>
+                            )}
+                            {isPronto && (
+                              <Button
+                                size="sm"
+                                className="h-7 bg-blue-600 text-xs hover:bg-blue-700"
+                                onClick={() => handleApplyBatch(batch.id)}
+                                disabled={isActing}
+                                title="Materializar pedidos e sugestões no banco"
+                              >
+                                {isActing ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <>
+                                    <Play className="mr-1 h-3.5 w-3.5" />
+                                    Aplicar
+                                  </>
+                                )}
+                              </Button>
+                            )}
+                            {isAplicado && (
+                              <span className="inline-flex items-center gap-1 text-xs text-emerald-700">
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                                Concluído
+                              </span>
+                            )}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
