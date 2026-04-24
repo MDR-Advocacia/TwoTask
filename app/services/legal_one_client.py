@@ -1197,9 +1197,9 @@ class LegalOneApiClient:
         # Passo 2 — PUT bytes direto no Azure Blob. URL já tem SAS
         # embutido; não usamos nossos headers de Authorization aqui.
         #
-        # Mantem o PUT alinhado ao tutorial: bytes crus do PDF para a URL
-        # SAS retornada pelo GetContainer, com o blob explicitamente marcado
-        # como PDF no Azure.
+        # Mantem o PUT o mais simples possivel: bytes crus do PDF para a URL
+        # SAS retornada pelo GetContainer. Evitamos propriedades extras do
+        # Azure Blob enquanto isolamos o motivo do L1 nao localizar o arquivo.
         try:
             put_response = requests.put(
                 external_id,
@@ -1207,7 +1207,6 @@ class LegalOneApiClient:
                 headers={
                     "x-ms-blob-type": "BlockBlob",
                     "Content-Type": "application/pdf",
-                    "x-ms-blob-content-type": "application/pdf",
                 },
                 timeout=60,
             )
@@ -1313,10 +1312,10 @@ class LegalOneApiClient:
             json.dumps(payload, indent=2, ensure_ascii=False),
         )
 
-        # Retry custom pra 404 "File not found in Storage" — eh erro
-        # transiente de consistencia eventual entre o PUT no Azure Blob
-        # e a indexacao do L1. Tentamos ate 5 vezes com backoff.
-        storage_retry_waits = (1.5, 3.0, 6.0, 10.0, 15.0)
+        # Retry custom pra 404 "File not found in Storage" — se o L1 tiver
+        # uma fila interna de varredura/importacao do blob temporario, essa
+        # janela maior ajuda a separar latencia real de erro de contrato.
+        storage_retry_waits = (1.5, 3.0, 6.0, 10.0, 15.0, 30.0, 60.0)
         last_error_body = ""
         last_error_status: Any = "?"
         created: Optional[Dict[str, Any]] = None
