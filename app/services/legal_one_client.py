@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime, timedelta
@@ -13,6 +14,18 @@ import requests
 from app.core.config import settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+
+def _ascii_filename(value: str, default: str = "documento.pdf") -> str:
+    import unicodedata
+
+    base = os.path.basename(value or default)
+    stem, ext = os.path.splitext(base)
+    normalized = unicodedata.normalize("NFKD", stem).encode("ascii", "ignore").decode("ascii")
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", normalized).strip(".-_")
+    if not normalized:
+        normalized = os.path.splitext(default)[0] or "documento"
+    return f"{normalized}{ext or os.path.splitext(default)[1] or '.pdf'}"
 
 
 class LegalOneAuthenticationError(RuntimeError):
@@ -1255,13 +1268,26 @@ class LegalOneApiClient:
         archive_candidate = archive_name or file_name
         if archive_candidate and "." not in os.path.basename(archive_candidate):
             archive_candidate = f"{archive_candidate}.{ext}"
+        original_archive_candidate = archive_candidate
+        archive_candidate = _ascii_filename(archive_candidate, default=f"documento.{ext}")
+        if archive_candidate != original_archive_candidate:
+            self.logger.info(
+                "GED archive normalizado para ASCII: original=%r normalized=%r",
+                original_archive_candidate,
+                archive_candidate,
+            )
         metadata_date = f"{datetime.utcnow().replace(microsecond=0).isoformat()}Z"
+        payload_notes = notes or ""
+        if original_archive_candidate != archive_candidate:
+            payload_notes = (payload_notes + "\n" if payload_notes else "") + (
+                f"Nome original do arquivo: {original_archive_candidate}"
+            )
         payload: Dict[str, Any] = {
             "fileName": temp_file_name,  # mesmo fileName do GetContainer
             "archive": archive_candidate,
             "typeId": type_id,
             "description": description or file_name,
-            "notes": notes or "",
+            "notes": payload_notes,
             "isPhysicallyStored": False,
             "phisicalLocalization": "",
             "author": "OneTask",
@@ -1327,13 +1353,40 @@ class LegalOneApiClient:
             except Exception as exc:  # noqa: BLE001
                 raise LegalOneGedUploadError(f"Erro ao criar registro no GED: {exc}") from exc
         else:
-            self.logger.error(
-                "GED upload falhou apos retries de storage. Payload v10 enviado:\n%s",
-                json.dumps(payload, indent=2, ensure_ascii=False),
+            archive_as_blob_payload = {**payload, "archive": temp_file_name}
+            self.logger.warning(
+                "GED POST v10 esgotou com storage miss. "
+                "Tentando diagnostico com archive igual ao fileName temporario."
             )
-            raise LegalOneGedUploadError(
-                f"Falha no POST /documents (storage miss persistente): HTTP {last_error_status}. {last_error_body}"
+            self.logger.info(
+                "GED POST archive=temp_file_name payload:\n%s",
+                json.dumps(archive_as_blob_payload, indent=2, ensure_ascii=False),
             )
+            try:
+                resp = self._request_with_retry("POST", post_url, json=archive_as_blob_payload)
+                created = resp.json() or {}
+                self.logger.info(
+                    "GED POST archive=temp_file_name OK: document_id=%s",
+                    created.get("id"),
+                )
+            except requests.exceptions.HTTPError as exc:
+                fallback_status = exc.response.status_code if exc.response is not None else "?"
+                fallback_body = exc.response.text[:800] if exc.response is not None else ""
+                self.logger.error(
+                    "GED POST archive=temp_file_name falhou: HTTP %s. Body: %s",
+                    fallback_status,
+                    fallback_body,
+                )
+                self.logger.error(
+                    "GED upload falhou apos retries de storage. Payload v10 enviado:\n%s",
+                    json.dumps(payload, indent=2, ensure_ascii=False),
+                )
+                raise LegalOneGedUploadError(
+                    "Falha no POST /documents "
+                    f"(payload v10 storage miss HTTP {last_error_status}; "
+                    f"archive=temp_file_name HTTP {fallback_status}). "
+                    f"V10: {last_error_body} | Fallback: {fallback_body}"
+                ) from exc
 
         document_id = created.get("id")
         if not document_id:
