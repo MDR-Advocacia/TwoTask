@@ -634,6 +634,11 @@ const PublicationsPage = () => {
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [editedPayloads, setEditedPayloads] = useState<Partial<ProposedTask>[]>([]);
   const [scheduling, setScheduling] = useState(false);
+  // Checagem de duplicatas (tarefa pendente no L1) — Onda 1.
+  // Estrutura: { [subTypeId]: [{task_id, description, status_label, end_date_time, l1_url}] }
+  const [duplicatesBySubtype, setDuplicatesBySubtype] = useState<Record<number, any[]>>({});
+  const [duplicateCheckLoading, setDuplicateCheckLoading] = useState(false);
+  const [duplicateCheckFailed, setDuplicateCheckFailed] = useState(false);
 
   // Bulk selection de grupos (Processos com Publicações)
   const [selectedGroupKeys, setSelectedGroupKeys] = useState<Set<string>>(new Set());
@@ -1305,8 +1310,75 @@ const PublicationsPage = () => {
     setScheduleGroup(group);
     const tasks = group.proposed_tasks?.length > 0 ? group.proposed_tasks : (group.proposed_task ? [group.proposed_task] : []);
     setEditedPayloads(tasks.map((t) => ({ ...t })));
+    // Reset do estado de duplicatas — a checagem roda via useEffect abaixo.
+    setDuplicatesBySubtype({});
+    setDuplicateCheckFailed(false);
     setScheduleOpen(true);
   };
+
+  // Check-duplicates: quando modal abre (ou subtipos mudam), consulta o
+  // backend e carrega a lista de tasks já pendentes no L1. Debounce leve
+  // pra quando o usuário muda um subtipo várias vezes em poucos segundos.
+  useEffect(() => {
+    if (!scheduleOpen || !scheduleGroup?.lawsuit_id) {
+      // Avulsas sem processo: backend não suporta check eficiente sem
+      // lawsuit_id, então nem tenta — limpa estado.
+      setDuplicatesBySubtype({});
+      setDuplicateCheckFailed(false);
+      return;
+    }
+    const activeTasks = editedPayloads.filter((_, i) => !removedTaskIndices.has(i));
+    const subtypeIds = Array.from(new Set(
+      activeTasks.map((t) => t.subTypeId).filter((x): x is number => !!x)
+    ));
+    if (subtypeIds.length === 0) {
+      setDuplicatesBySubtype({});
+      setDuplicateCheckFailed(false);
+      return;
+    }
+    const lawsuitId = scheduleGroup.lawsuit_id;
+    setDuplicateCheckLoading(true);
+    const controller = new AbortController();
+    const handle = setTimeout(async () => {
+      try {
+        const res = await apiFetch(
+          `${API}/groups/${lawsuitId}/check-duplicates`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ subtype_ids: subtypeIds }),
+            signal: controller.signal,
+          }
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (data.check_failed) {
+          setDuplicateCheckFailed(true);
+          setDuplicatesBySubtype({});
+        } else {
+          setDuplicateCheckFailed(false);
+          // Backend retorna com keys string (JSON). Normaliza pra number.
+          const raw = data.duplicates_by_subtype || {};
+          const normalized: Record<number, any[]> = {};
+          for (const k of Object.keys(raw)) {
+            normalized[Number(k)] = raw[k];
+          }
+          setDuplicatesBySubtype(normalized);
+        }
+      } catch (err: any) {
+        if (err?.name === "AbortError") return;
+        setDuplicateCheckFailed(true);
+        setDuplicatesBySubtype({});
+      } finally {
+        setDuplicateCheckLoading(false);
+      }
+    }, 300);
+    return () => {
+      clearTimeout(handle);
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scheduleOpen, scheduleGroup?.lawsuit_id, editedPayloads.map((p) => p.subTypeId).join(","), Array.from(removedTaskIndices).join(",")]);
 
   // Adiciona uma tarefa avulsa (manual) no modal de agendamento.
   // Começa em branco — usuário preenche subtipo, responsável, data etc.
@@ -1367,6 +1439,30 @@ const PublicationsPage = () => {
       return rest;
     });
 
+    // Detecta duplicata e pede confirmação antes de enviar. Só bloqueia
+    // se o check-duplicates retornou algo pro subtipo de pelo menos uma
+    // tarefa ativa (subtipos fora da lista não aparecem no map).
+    const hasDup = activeTasks.some((t) => {
+      const sid = t.subTypeId;
+      return sid && (duplicatesBySubtype[sid]?.length ?? 0) > 0;
+    });
+    let forceDuplicate = false;
+    if (hasDup) {
+      const affected = activeTasks
+        .filter((t) => t.subTypeId && (duplicatesBySubtype[t.subTypeId!]?.length ?? 0) > 0)
+        .map((t) => {
+          const dups = duplicatesBySubtype[t.subTypeId!] || [];
+          return `• ${t.description?.slice(0, 40) || "(sem descrição)"} — ${dups.length} tarefa(s) já pendente(s)`;
+        })
+        .join("\n");
+      const ok = window.confirm(
+        `Já existe(m) tarefa(s) pendente(s) no Legal One para:\n\n${affected}\n\n` +
+        `Deseja agendar mesmo assim? (Clique em Cancelar para rever no painel do L1 e remover duplicatas.)`
+      );
+      if (!ok) return;
+      forceDuplicate = true;
+    }
+
     setScheduling(true);
     const isNoProcess = !scheduleGroup.lawsuit_id;
     try {
@@ -1375,7 +1471,11 @@ const PublicationsPage = () => {
       if (isNoProcess) {
         // Publicações sem processo: agendamento único com N payloads
         const recordIds = scheduleGroup.records.map((r) => r.id);
-        const body: any = { record_ids: recordIds, payload_overrides: sanitizedTasks };
+        const body: any = {
+          record_ids: recordIds,
+          payload_overrides: sanitizedTasks,
+          force_duplicate: forceDuplicate,
+        };
         const res = await apiFetch(`${API}/groups/records/schedule`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1390,7 +1490,10 @@ const PublicationsPage = () => {
         results.push(...ids.map(String));
       } else {
         // Publicações com processo vinculado: agendamento único com N payloads
-        const body: any = { payload_overrides: sanitizedTasks };
+        const body: any = {
+          payload_overrides: sanitizedTasks,
+          force_duplicate: forceDuplicate,
+        };
         const res = await apiFetch(`${API}/groups/${scheduleGroup.lawsuit_id}/schedule`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1398,7 +1501,13 @@ const PublicationsPage = () => {
         });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
-          throw new Error(data.detail || "Erro ao agendar tarefa.");
+          const detail = data.detail || "Erro ao agendar tarefa.";
+          // Backend pode retornar 409 com detail "DUPLICATE_BLOCKED:..." caso
+          // o check local não tenha sido feito (race condition) — traduz aqui.
+          if (typeof detail === "string" && detail.startsWith("DUPLICATE_BLOCKED:")) {
+            throw new Error("Já existe tarefa pendente similar no L1. Recarregue o modal para ver os detalhes.");
+          }
+          throw new Error(detail);
         }
         const result = await res.json();
         const ids = result.created_task_ids ?? [result.task_id ?? result.created_task_id ?? "?"];
@@ -3386,6 +3495,19 @@ const PublicationsPage = () => {
                       {editedPayloads.length} tarefa(s) a enviar — revise e confirme
                     </p>
 
+                    {/* Status do check-duplicates (Onda 1) */}
+                    {scheduleGroup?.lawsuit_id && duplicateCheckLoading && (
+                      <p className="mb-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        Verificando tarefas pendentes no Legal One...
+                      </p>
+                    )}
+                    {scheduleGroup?.lawsuit_id && !duplicateCheckLoading && duplicateCheckFailed && (
+                      <p className="mb-2 text-[11px] text-amber-700">
+                        Não foi possível verificar duplicatas no L1 agora. Prossiga com cautela.
+                      </p>
+                    )}
+
                     {editedPayloads.map((payload, idx) => {
                       const isRemoved = removedTaskIndices.has(idx);
                       return (
@@ -3422,6 +3544,51 @@ const PublicationsPage = () => {
                               {isRemoved ? "Restaurar" : "Remover"}
                             </Button>
                           </div>
+
+                          {/* Banner de duplicata (Onda 1): exibido quando o
+                              check-duplicates encontrou tasks pendentes no L1
+                              com mesmo subTypeId + mesmo processo. */}
+                          {!isRemoved && payload.subTypeId && (duplicatesBySubtype[payload.subTypeId]?.length ?? 0) > 0 && (
+                            <div className="mx-4 mt-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+                              <div className="flex items-start gap-2">
+                                <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600" />
+                                <div className="flex-1 space-y-2">
+                                  <p className="font-semibold">
+                                    Já existe tarefa pendente no Legal One com este subtipo
+                                  </p>
+                                  <ul className="space-y-1">
+                                    {duplicatesBySubtype[payload.subTypeId].map((d: any) => (
+                                      <li key={d.task_id} className="flex items-start gap-1.5">
+                                        <span className="flex-1">
+                                          <span className="font-medium">#{d.task_id}</span>
+                                          {" · "}
+                                          <span className="italic text-amber-800">{d.status_label}</span>
+                                          {d.description && (
+                                            <> — <span className="text-amber-900/80">{d.description.slice(0, 80)}</span></>
+                                          )}
+                                        </span>
+                                        {d.l1_url && (
+                                          <a
+                                            href={d.l1_url}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="inline-flex items-center gap-0.5 font-medium text-amber-700 underline hover:text-amber-900"
+                                          >
+                                            abrir
+                                            <ExternalLink className="h-3 w-3" />
+                                          </a>
+                                        )}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                  <p className="text-[10px] text-amber-800">
+                                    Você pode remover esta tarefa da lista, ou confirmar no envio
+                                    pra agendar mesmo assim.
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                          )}
 
                           {/* Campos do bloco */}
                           {!isRemoved && (() => {

@@ -66,6 +66,9 @@ class ScheduleGroupRequest(BaseModel):
     payload_overrides: Optional[list[dict]] = None
     # Se vazio, usa todos os registros do processo; se informado, só esses
     record_ids: Optional[list[int]] = None
+    # Ignora a checagem de duplicata no L1. Frontend envia True quando o
+    # operador confirma explicitamente o aviso de "já existe tarefa pendente".
+    force_duplicate: bool = False
 
 
 class ScheduleRecordsRequest(BaseModel):
@@ -73,6 +76,14 @@ class ScheduleRecordsRequest(BaseModel):
     record_ids: list[int]
     payload_override: Optional[dict] = None
     payload_overrides: Optional[list[dict]] = None
+    # Engolido por paridade com ScheduleGroupRequest (fluxo avulso não
+    # consulta L1 porque não há lawsuit_id pra indexar a busca).
+    force_duplicate: bool = False
+
+
+class CheckDuplicatesRequest(BaseModel):
+    """Payload pra consultar tasks pendentes no L1 por subtipo."""
+    subtype_ids: list[int]
 
 
 class ReclassifyRecordsRequest(BaseModel):
@@ -746,12 +757,17 @@ def schedule_group(
             payload_override=payload.payload_override,
             payload_overrides=payload.payload_overrides,
             scheduled_by=current_user,
+            force_duplicate=payload.force_duplicate,
         )
         # Alias for frontend
         result["task_id"] = result.get("created_task_id")
         return result
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        # Erros de duplicata carregam prefixo "DUPLICATE_BLOCKED:<n>:" pro
+        # frontend distinguir e mostrar modal de confirmação específica.
+        detail = str(exc)
+        status_code = 409 if detail.startswith("DUPLICATE_BLOCKED:") else 400
+        raise HTTPException(status_code=status_code, detail=detail)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Erro ao agendar: {exc}")
 
@@ -772,6 +788,7 @@ def schedule_records(
             payload_override=payload.payload_override,
             payload_overrides=payload.payload_overrides,
             scheduled_by=current_user,
+            force_duplicate=payload.force_duplicate,
         )
         result["task_id"] = result.get("created_task_id")
         return result
@@ -779,6 +796,29 @@ def schedule_records(
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Erro ao agendar: {exc}")
+
+
+@router.post("/groups/{lawsuit_id}/check-duplicates")
+def check_duplicates(
+    lawsuit_id: int,
+    payload: CheckDuplicatesRequest,
+    service: PublicationSearchService = Depends(_get_service),
+    _=Depends(auth_security.get_current_user),
+):
+    """
+    Retorna a lista de tasks já pendentes no L1 (statusId em 0/1/2) para
+    cada subtype_id informado, agrupadas por subtipo. Usado pelo modal de
+    agendamento pra alertar o operador antes do envio.
+    """
+    try:
+        return service.check_duplicates_for_lawsuit(
+            lawsuit_id=lawsuit_id,
+            subtype_ids=payload.subtype_ids,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Erro ao checar duplicatas: {exc}")
 
 
 # ─── Debug ──────────────────────────────────────

@@ -44,6 +44,26 @@ from app.services.legal_one_client import LegalOneApiClient
 logger = logging.getLogger(__name__)
 
 _METRICS_TZ = ZoneInfo("America/Fortaleza")
+
+# ── Checagem de duplicatas no L1 (agendamento) ─────────────────────────
+# Status de Tarefa que consideramos "em aberto" e portanto bloqueiam um
+# novo agendamento com o mesmo subtipo/processo. Validado com TI MDR:
+#   0 = Pendente   |   1 = Em Andamento   |   2 = Aguardando
+# Status que NÃO bloqueiam (Concluída, Cancelada etc.) são filtrados
+# implicitamente por não estarem nessa lista.
+L1_BLOCKING_STATUS_IDS = (0, 1, 2)
+L1_STATUS_LABELS = {0: "Pendente", 1: "Em Andamento", 2: "Aguardando"}
+
+# Base URL do painel web do L1 do MDR. Usada pra gerar deep-link que o
+# operador abre numa nova aba pra ver a task já existente antes de decidir
+# se agenda mesmo assim (force_duplicate=True) ou se remove da lista.
+L1_WEB_BASE_URL = "https://mdradvocacia.novajus.com.br"
+
+# Cache in-memory do check-duplicates: evita martelar o L1 quando o usuário
+# abre/fecha a modal várias vezes em sequência. TTL curto porque a vida útil
+# é literalmente "um session de revisão".
+_DUPLICATE_CACHE: dict[tuple, tuple[float, list]] = {}
+_DUPLICATE_CACHE_TTL_SECONDS = 15.0
 _WITHOUT_PROVIDENCE_STATUSES = (
     RECORD_STATUS_IGNORED,
     RECORD_STATUS_DISCARDED_DUPLICATE,
@@ -1050,6 +1070,135 @@ class PublicationSearchService:
             desc = desc[: self._DESCRIPTION_MAX_CHARS - 1].rstrip() + "…"
         payload["description"] = desc
 
+    # ──────────────────────────────────────────────
+    # Checagem de duplicatas (tarefa já pendente no L1)
+    # ──────────────────────────────────────────────
+
+    @staticmethod
+    def _build_l1_task_url(task_id: int, lawsuit_id: int) -> str:
+        """
+        Monta a URL de deep-link pro painel web do L1.
+        Formato validado com o MDR — inclui parentId e returnUrl pra que
+        ao fechar a task o usuário volte pra aba de compromissos do processo.
+        """
+        from urllib.parse import quote
+        return_path = (
+            f"/processos/processos/DetailsCompromissosTarefas/{int(lawsuit_id)}"
+            "?ajaxnavigation=true&renderOnlySection=True"
+        )
+        return (
+            f"{L1_WEB_BASE_URL}/agenda/tarefas/DetailsCompromissoTarefa/{int(task_id)}"
+            f"?parentId={int(lawsuit_id)}&tipoContexto=1&hasNavigation=True"
+            f"&currentPage=1&returnUrl={quote(return_path, safe='')}"
+        )
+
+    def check_duplicates_for_lawsuit(
+        self,
+        lawsuit_id: int,
+        subtype_ids: list[int],
+    ) -> dict[str, Any]:
+        """
+        Pergunta ao L1 quais tarefas `subTypeId IN subtype_ids` já estão em
+        aberto no processo `lawsuit_id`. "Em aberto" = statusId em
+        L1_BLOCKING_STATUS_IDS (Pendente/Em Andamento/Aguardando).
+
+        Retorno:
+            {
+              "duplicates_by_subtype": {
+                 <subtype_id>: [
+                    { "task_id", "description", "status_id", "status_label",
+                      "end_date_time", "l1_url" },
+                    ...
+                 ],
+                 ...
+              },
+              "total_duplicates": N,
+              "checked_subtype_ids": [..],
+              "blocking_status_ids": [0,1,2],
+            }
+
+        Nunca levanta exceção — em caso de falha ao consultar L1, retorna
+        dict com flag `check_failed=True` e segue o fluxo (operador decide
+        sem o aviso). A ideia é não travar agendamento legítimo por causa
+        de indisponibilidade da API externa.
+        """
+        subtype_ids_clean = [int(s) for s in subtype_ids if s]
+        if not subtype_ids_clean:
+            return {
+                "duplicates_by_subtype": {},
+                "total_duplicates": 0,
+                "checked_subtype_ids": [],
+                "blocking_status_ids": list(L1_BLOCKING_STATUS_IDS),
+            }
+
+        cache_key = (int(lawsuit_id), tuple(sorted(set(subtype_ids_clean))))
+        import time
+        now_ts = time.monotonic()
+        cached = _DUPLICATE_CACHE.get(cache_key)
+        if cached and (now_ts - cached[0]) < _DUPLICATE_CACHE_TTL_SECONDS:
+            tasks = cached[1]
+        else:
+            # Monta OData filter: relationships link + subtype IN + status IN
+            subtype_filter = " or ".join(
+                f"subTypeId eq {sid}" for sid in subtype_ids_clean
+            )
+            status_filter = " or ".join(
+                f"statusId eq {sid}" for sid in L1_BLOCKING_STATUS_IDS
+            )
+            filter_expr = (
+                f"relationships/any(r: r/linkType eq 'Litigation' "
+                f"and r/linkId eq {int(lawsuit_id)}) "
+                f"and ({subtype_filter}) and ({status_filter})"
+            )
+            try:
+                tasks = self.client.search_tasks(
+                    filter_expression=filter_expr,
+                    top=200,
+                )
+                _DUPLICATE_CACHE[cache_key] = (now_ts, tasks)
+                # Limpa entradas velhas oportunisticamente pra não vazar memória
+                stale = [k for k, (ts, _) in _DUPLICATE_CACHE.items()
+                         if (now_ts - ts) > 300]
+                for k in stale:
+                    _DUPLICATE_CACHE.pop(k, None)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "check_duplicates falhou no L1 (lawsuit_id=%s subtypes=%s): %s",
+                    lawsuit_id, subtype_ids_clean, exc,
+                )
+                return {
+                    "duplicates_by_subtype": {},
+                    "total_duplicates": 0,
+                    "checked_subtype_ids": subtype_ids_clean,
+                    "blocking_status_ids": list(L1_BLOCKING_STATUS_IDS),
+                    "check_failed": True,
+                    "check_error": str(exc)[:200],
+                }
+
+        duplicates_by_subtype: dict[int, list[dict]] = {}
+        for t in tasks or []:
+            sid = t.get("subTypeId")
+            if sid is None:
+                continue
+            entry = {
+                "task_id": t.get("id"),
+                "description": (t.get("description") or "")[:200],
+                "status_id": t.get("statusId"),
+                "status_label": L1_STATUS_LABELS.get(
+                    t.get("statusId"), f"status {t.get('statusId')}"
+                ),
+                "end_date_time": t.get("endDateTime"),
+                "l1_url": self._build_l1_task_url(t.get("id"), lawsuit_id),
+            }
+            duplicates_by_subtype.setdefault(int(sid), []).append(entry)
+
+        return {
+            "duplicates_by_subtype": duplicates_by_subtype,
+            "total_duplicates": sum(len(v) for v in duplicates_by_subtype.values()),
+            "checked_subtype_ids": subtype_ids_clean,
+            "blocking_status_ids": list(L1_BLOCKING_STATUS_IDS),
+        }
+
     def _apply_required_task_defaults(self, payload: dict) -> None:
         """
         Garante que todo payload enviado pro L1 tenha os campos que a API
@@ -1966,6 +2115,7 @@ class PublicationSearchService:
         payload_override: Optional[dict] = None,
         payload_overrides: Optional[list[dict]] = None,
         scheduled_by: Optional[Any] = None,
+        force_duplicate: bool = False,
     ) -> dict[str, Any]:
         """
         Executa o agendamento de um grupo de publicações (mesmo processo) no LegalOne.
@@ -2004,6 +2154,29 @@ class PublicationSearchService:
 
         if not payloads:
             raise ValueError("Proposta de tarefa inexistente. Configure um template.")
+
+        # Defesa em profundidade: mesmo que o frontend não tenha feito o
+        # check-duplicates (ou alguém tenha chamado o endpoint direto via
+        # API), rechecamos aqui. Só bloqueia se force_duplicate=False e o
+        # L1 realmente retornou tasks em aberto que colidem.
+        if not force_duplicate:
+            subtype_ids_to_check = [
+                int(p.get("subTypeId")) for p in payloads
+                if isinstance(p, dict) and p.get("subTypeId")
+            ]
+            if subtype_ids_to_check:
+                dup_check = self.check_duplicates_for_lawsuit(
+                    lawsuit_id, subtype_ids_to_check
+                )
+                if dup_check.get("total_duplicates", 0) > 0 and not dup_check.get("check_failed"):
+                    raise ValueError(
+                        "DUPLICATE_BLOCKED:"
+                        + str(dup_check.get("total_duplicates", 0))
+                        + ": Já existe(m) tarefa(s) pendente(s) no Legal One "
+                          "com o mesmo subtipo para este processo. "
+                          "Confirme no painel web ou reenvie com force_duplicate=true "
+                          "para ignorar."
+                    )
 
         created_task_ids: list[int] = []
         for payload in payloads:
@@ -2050,10 +2223,15 @@ class PublicationSearchService:
         payload_override: Optional[dict] = None,
         payload_overrides: Optional[list[dict]] = None,
         scheduled_by: Optional[Any] = None,
+        force_duplicate: bool = False,
     ) -> dict[str, Any]:
         """
         Agenda N tarefas para uma lista explícita de record IDs,
         SEM vincular a um processo. Aceita 1 ou N payloads por chamada.
+
+        Nota sobre `force_duplicate`: aceito apenas por paridade de
+        assinatura com schedule_group — nesse fluxo não há lawsuit_id
+        pra indexar a busca no L1, então a checagem é pulada.
         """
         if not record_ids:
             raise ValueError("Nenhum registro informado.")
