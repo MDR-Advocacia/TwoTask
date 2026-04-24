@@ -305,6 +305,33 @@ export async function applyPrazosIniciaisBatch(
  * persistidos do intake. Não re-roda Sonnet, não gasta tokens.
  * Útil pra corrigir intakes órfãos de apply antigo.
  */
+/**
+ * Finaliza o intake SEM criar tarefa no Legal One (Caminho A).
+ * Sobe habilitação pro GED, cancela a task legada, marca intake como
+ * CONCLUIDO_SEM_PROVIDENCIA. Caso operacional pra processos sem
+ * providência necessária (ex.: sentença de improcedência transitada,
+ * arquivamento definitivo).
+ */
+export async function finalizarPrazoInicialSemProvidencia(
+  intakeId: number,
+  payload: { notes?: string | null; enqueue_legacy_task_cancellation?: boolean } = {},
+): Promise<{ intake: Record<string, unknown>; legacy_task_cancellation_item: Record<string, unknown> | null }> {
+  const body = {
+    notes: payload.notes ?? null,
+    enqueue_legacy_task_cancellation: payload.enqueue_legacy_task_cancellation ?? true,
+  };
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/intakes/${intakeId}/finalizar-sem-providencia`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  return expectJson(response);
+}
+
+
 export async function recomputePrazoInicialGlobals(
   intakeId: number,
 ): Promise<{

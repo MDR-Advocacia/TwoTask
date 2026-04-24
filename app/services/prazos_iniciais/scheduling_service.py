@@ -9,7 +9,9 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.models.legal_one import LegalOneTaskSubType
 from app.models.prazo_inicial import (
+    INTAKE_STATUS_AWAITING_TEMPLATE_CONFIG,
     INTAKE_STATUS_CLASSIFIED,
+    INTAKE_STATUS_COMPLETED_WITHOUT_PROVIDENCE,
     INTAKE_STATUS_IN_REVIEW,
     INTAKE_STATUS_SCHEDULE_ERROR,
     INTAKE_STATUS_SCHEDULED,
@@ -517,6 +519,141 @@ class PrazosIniciaisSchedulingService:
             "intake": intake,
             "confirmed_suggestion_ids": confirmed_ids,
             "created_task_ids": created_task_ids,
+            "legacy_task_cancellation_item": (
+                self.queue_service._item_to_dict(queue_item) if queue_item else None
+            ),
+        }
+
+    # ──────────────────────────────────────────────
+    # Finalizar sem providência (Caminho A)
+    # ──────────────────────────────────────────────
+    # Caso operacional: operador analisou o processo e determinou que
+    # o banco NÃO precisa tomar nenhuma providência (ex.: sentença de
+    # improcedência já transitada, extinção sem resolução do mérito,
+    # processo arquivado). O fluxo é:
+    #   1. Sobe habilitação no GED do L1 (reusa Onda 3 — idempotente).
+    #   2. Apaga PDF local.
+    #   3. Marca intake como CONCLUIDO_SEM_PROVIDENCIA.
+    #   4. Enfileira cancelamento da task legada "Agendar Prazos".
+    # NÃO cria nenhuma task nova no L1.
+
+    # Status elegíveis pra finalizar sem providência. AGENDADO fica de
+    # fora — se já tem task criada, finalizar sem providência seria
+    # inconsistente (a task existiria sem cobrir a publicação original).
+    _FINALIZE_WITHOUT_PROVIDENCE_ALLOWED_STATUSES = frozenset({
+        INTAKE_STATUS_IN_REVIEW,
+        INTAKE_STATUS_CLASSIFIED,
+        INTAKE_STATUS_AWAITING_TEMPLATE_CONFIG,
+        INTAKE_STATUS_SCHEDULE_ERROR,
+        INTAKE_STATUS_COMPLETED_WITHOUT_PROVIDENCE,  # idempotente
+    })
+
+    def finalize_without_scheduling(
+        self,
+        *,
+        intake_id: int,
+        confirmed_by_email: str,
+        notes: Optional[str] = None,
+        enqueue_legacy_task_cancellation: bool = True,
+        legacy_task_type_external_id: int = DEFAULT_LEGACY_TASK_TYPE_EXTERNAL_ID,
+        legacy_task_subtype_external_id: int = DEFAULT_LEGACY_TASK_SUBTYPE_EXTERNAL_ID,
+    ) -> dict:
+        """
+        Finaliza o intake sem criar tarefa no L1. Sobe habilitação pro
+        GED, cancela a task legada, marca intake como
+        CONCLUIDO_SEM_PROVIDENCIA.
+
+        Idempotente: se já está nesse status, reexecuta os passos que
+        ainda não terminaram (GED upload via `ged_document_id`, cleanup
+        local via `pdf_path`, enfileiramento da legada).
+
+        Levanta ValueError se intake não existe, RuntimeError se o
+        status atual não permite essa operação ou se o GED falhar.
+        """
+        intake = self._load_intake(intake_id)
+        if intake is None:
+            raise ValueError("Intake não encontrado.")
+
+        if intake.status not in self._FINALIZE_WITHOUT_PROVIDENCE_ALLOWED_STATUSES:
+            raise RuntimeError(
+                "Finalizar sem providência só é permitido nos status "
+                f"{sorted(self._FINALIZE_WITHOUT_PROVIDENCE_ALLOWED_STATUSES)}. "
+                f"Status atual: {intake.status}."
+            )
+
+        if not intake.lawsuit_id:
+            raise RuntimeError(
+                "Intake sem lawsuit_id — GED do L1 exige vínculo a processo. "
+                "Reprocesse o CNJ antes ou cancele o intake."
+            )
+
+        # ── Fase 1 — Upload GED (idempotente) ──
+        try:
+            if not intake.ged_document_id:
+                document_id = self._upload_habilitacao_to_ged(intake)
+                intake.ged_document_id = int(document_id)
+                intake.ged_uploaded_at = self._utcnow()
+                self._cleanup_local_pdf(intake)
+        except LegalOneGedUploadError as exc:
+            self.db.rollback()
+            intake = self._load_intake(intake_id)
+            if intake is not None:
+                # Não troca pra ERRO_AGENDAMENTO pq não é agendamento —
+                # mantém o status atual e grava o erro pra operador ver.
+                intake.error_message = (
+                    f"Finalizar sem providência: GED upload falhou: {str(exc)[:500]}"
+                )
+                self.db.commit()
+            logger.exception(
+                "finalize_without_scheduling: GED falhou (intake_id=%s): %s",
+                intake_id, exc,
+            )
+            raise RuntimeError(
+                f"Falha no upload da habilitação no GED do Legal One: {exc}"
+            ) from exc
+
+        # ── Fase 2 — Status + metadados de auditoria ──
+        now = self._utcnow()
+        intake.status = INTAKE_STATUS_COMPLETED_WITHOUT_PROVIDENCE
+        intake.error_message = None
+        # Anexa notas de auditoria em metadata_json sem sobrescrever
+        # o que já tem lá (metadata livre da automação externa).
+        if notes:
+            meta = dict(intake.metadata_json or {})
+            finalize_log = meta.setdefault("finalize_without_providence", [])
+            if isinstance(finalize_log, list):
+                finalize_log.append({
+                    "at": now.isoformat(),
+                    "by": confirmed_by_email,
+                    "notes": notes[:500],
+                })
+                intake.metadata_json = meta
+
+        # ── Fase 3 — Fila de cancelamento da task legada ──
+        queue_item = None
+        if enqueue_legacy_task_cancellation:
+            queue_item = self.queue_service.sync_item_from_intake(
+                intake,
+                commit=False,
+                legacy_task_type_external_id=legacy_task_type_external_id,
+                legacy_task_subtype_external_id=legacy_task_subtype_external_id,
+            )
+
+        self.db.commit()
+        self.db.refresh(intake)
+        if queue_item is not None:
+            self.db.refresh(queue_item)
+
+        logger.info(
+            "intake %s finalizado sem providencia por %s (ged=%s, legacy_queue=%s)",
+            intake_id,
+            confirmed_by_email,
+            intake.ged_document_id,
+            queue_item.id if queue_item else None,
+        )
+
+        return {
+            "intake": intake,
             "legacy_task_cancellation_item": (
                 self.queue_service._item_to_dict(queue_item) if queue_item else None
             ),

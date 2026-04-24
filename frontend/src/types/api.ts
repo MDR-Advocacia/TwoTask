@@ -191,6 +191,7 @@ export type PrazoInicialIntakeStatus =
   | "CLASSIFICADO"
   | "EM_REVISAO"
   | "AGENDADO"
+  | "CONCLUIDO_SEM_PROVIDENCIA"
   | "GED_ENVIADO"
   | "CONCLUIDO"
   | "ERRO_CLASSIFICACAO"

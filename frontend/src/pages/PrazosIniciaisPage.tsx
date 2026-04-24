@@ -52,6 +52,7 @@ import {
   fetchPrazoInicialDetail,
   fetchPrazosIniciaisBatches,
   fetchPrazosIniciaisIntakes,
+  finalizarPrazoInicialSemProvidencia,
   reanalyzePrazoInicial,
   exportPrazosIniciaisXlsx,
   fetchPrazoInicialPdfBlob,
@@ -79,6 +80,7 @@ const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "CLASSIFICADO", label: "Classificado" },
   { value: "EM_REVISAO", label: "Em revisao" },
   { value: "AGENDADO", label: "Agendado" },
+  { value: "CONCLUIDO_SEM_PROVIDENCIA", label: "Concluido sem providencia" },
   { value: "GED_ENVIADO", label: "GED enviado" },
   { value: "CONCLUIDO", label: "Concluido" },
   { value: "ERRO_CLASSIFICACAO", label: "Erro na classificacao" },
@@ -362,6 +364,48 @@ export default function PrazosIniciaisPage() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Erro desconhecido";
       toast({ title: "Erro", description: msg, variant: "destructive" });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Finaliza o intake sem criar tarefa no L1 (Caminho A). Sobe habilitação
+  // pro GED, cancela task legada, marca CONCLUIDO_SEM_PROVIDENCIA. Usado
+  // quando operador determina que o processo não exige providência do
+  // banco (sentença improcedente transitada, arquivamento, etc.).
+  const onFinalizeWithoutProvidence = async () => {
+    if (!detail) return;
+    const notes = window.prompt(
+      `Finalizar intake #${detail.id} SEM criar tarefa no Legal One?\n\n` +
+      "Isso vai:\n" +
+      "  • Subir a habilitação pro GED do processo no L1\n" +
+      "  • Cancelar a task legada 'Agendar Prazos'\n" +
+      "  • Marcar o intake como CONCLUIDO_SEM_PROVIDENCIA\n\n" +
+      "Opcional: digite um motivo abaixo (aparece na trilha de auditoria) " +
+      "ou deixe vazio e clique OK pra confirmar. Cancelar interrompe a ação.",
+      "",
+    );
+    if (notes === null) return;  // usuário apertou Cancel
+
+    setActionLoading(true);
+    try {
+      await finalizarPrazoInicialSemProvidencia(detail.id, {
+        notes: notes.trim() || null,
+      });
+      toast({
+        title: "Intake finalizado sem providência",
+        description:
+          "Habilitação enviada ao GED, task legada entrou na fila de cancelamento.",
+      });
+      await Promise.all([loadDetail(detail.id), loadIntakes()]);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Erro desconhecido";
+      toast({
+        title: "Falha ao finalizar",
+        description: msg,
+        variant: "destructive",
+        duration: 15000,
+      });
     } finally {
       setActionLoading(false);
     }
@@ -1484,6 +1528,34 @@ export default function PrazosIniciaisPage() {
             >
               <XCircle className="mr-2 h-4 w-4" />
               Cancelar intake
+            </Button>
+
+            <Button
+              variant="outline"
+              onClick={onFinalizeWithoutProvidence}
+              disabled={
+                !detail ||
+                actionLoading ||
+                !detail.lawsuit_id ||
+                detail.status === "CANCELADO" ||
+                detail.status === "AGENDADO" ||
+                detail.status === "CONCLUIDO_SEM_PROVIDENCIA" ||
+                detail.status === "RECEBIDO" ||
+                detail.status === "EM_CLASSIFICACAO"
+              }
+              className="border-amber-400 text-amber-700 hover:bg-amber-50 hover:text-amber-900"
+              title={
+                !detail?.lawsuit_id
+                  ? "Intake sem processo vinculado — reprocesse o CNJ primeiro"
+                  : "Sobe habilitação pro GED, cancela task legada, marca intake como concluído SEM criar tarefa nova no L1"
+              }
+            >
+              {actionLoading ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <CheckCircle2 className="mr-2 h-4 w-4" />
+              )}
+              Finalizar sem providência
             </Button>
 
             <Button

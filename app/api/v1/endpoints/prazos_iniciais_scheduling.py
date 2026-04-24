@@ -162,6 +162,80 @@ def confirm_intake_scheduling(
     )
 
 
+# ────────────────────────────────────────────────────────────────
+# Finalizar sem providência (Caminho A)
+# ────────────────────────────────────────────────────────────────
+
+
+class FinalizeWithoutProvidenceRequest(BaseModel):
+    """
+    Body do POST /intakes/{id}/finalizar-sem-providencia.
+    `notes` é opcional e vai pra `metadata_json.finalize_without_providence`
+    pra trilha de auditoria (quem finalizou e por quê).
+    """
+    notes: Optional[str] = Field(default=None, max_length=500)
+    enqueue_legacy_task_cancellation: bool = True
+    legacy_task_type_external_id: int = Field(
+        default=DEFAULT_LEGACY_TASK_TYPE_EXTERNAL_ID,
+        ge=1,
+    )
+    legacy_task_subtype_external_id: int = Field(
+        default=DEFAULT_LEGACY_TASK_SUBTYPE_EXTERNAL_ID,
+        ge=1,
+    )
+
+
+class FinalizeWithoutProvidenceResponse(BaseModel):
+    intake: dict
+    legacy_task_cancellation_item: Optional[dict] = None
+
+
+@router.post(
+    "/intakes/{intake_id}/finalizar-sem-providencia",
+    response_model=FinalizeWithoutProvidenceResponse,
+    summary=(
+        "Finaliza o intake SEM criar tarefa no Legal One. Sobe habilitação "
+        "pro GED, cancela task legada, marca CONCLUIDO_SEM_PROVIDENCIA."
+    ),
+)
+def finalize_without_providence(
+    background_tasks: BackgroundTasks,
+    payload: FinalizeWithoutProvidenceRequest,
+    intake_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(
+        auth_security.require_permission("prazos_iniciais")
+    ),
+):
+    service = PrazosIniciaisSchedulingService(db)
+    try:
+        result = service.finalize_without_scheduling(
+            intake_id=intake_id,
+            confirmed_by_email=current_user.email,
+            notes=payload.notes,
+            enqueue_legacy_task_cancellation=payload.enqueue_legacy_task_cancellation,
+            legacy_task_type_external_id=payload.legacy_task_type_external_id,
+            legacy_task_subtype_external_id=payload.legacy_task_subtype_external_id,
+        )
+    except ValueError as exc:
+        # intake não encontrado
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        # status inválido OU falha no GED
+        detail = str(exc)
+        # 422 pra status inválido (regra de negócio), 502 pra falha do L1
+        status_code = 502 if "Legal One" in detail or "GED" in detail else 422
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+
+    if payload.enqueue_legacy_task_cancellation:
+        background_tasks.add_task(_process_legacy_task_queue_for_intake, intake_id)
+
+    return FinalizeWithoutProvidenceResponse(
+        intake=_intake_to_summary(result["intake"]),
+        legacy_task_cancellation_item=result["legacy_task_cancellation_item"],
+    )
+
+
 @router.get(
     "/legacy-task-cancel-queue",
     summary="Lista a fila de cancelamento da task legada de Agendar Prazos.",
