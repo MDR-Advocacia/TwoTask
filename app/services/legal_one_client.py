@@ -1320,6 +1320,7 @@ class LegalOneApiClient:
         last_error_body = ""
         last_error_status: Any = "?"
         created: Optional[Dict[str, Any]] = None
+        exhausted_storage_miss = False
         for attempt_idx, wait_before in enumerate((0.0,) + storage_retry_waits):
             if wait_before > 0:
                 self.logger.warning(
@@ -1343,6 +1344,9 @@ class LegalOneApiClient:
                 )
                 if is_storage_miss and attempt_idx < len(storage_retry_waits):
                     continue
+                if is_storage_miss:
+                    exhausted_storage_miss = True
+                    break
                 self.logger.error(
                     "GED upload falhou. Payload enviado:\n%s",
                     json.dumps(payload, indent=2, ensure_ascii=False),
@@ -1352,7 +1356,8 @@ class LegalOneApiClient:
                 ) from exc
             except Exception as exc:  # noqa: BLE001
                 raise LegalOneGedUploadError(f"Erro ao criar registro no GED: {exc}") from exc
-        else:
+
+        if created is None and exhausted_storage_miss:
             archive_as_blob_payload = {**payload, "archive": temp_file_name}
             self.logger.warning(
                 "GED POST v10 esgotou com storage miss. "
@@ -1387,6 +1392,11 @@ class LegalOneApiClient:
                     f"archive=temp_file_name HTTP {fallback_status}). "
                     f"V10: {last_error_body} | Fallback: {fallback_body}"
                 ) from exc
+
+        if created is None:
+            raise LegalOneGedUploadError(
+                f"Falha no POST /documents: HTTP {last_error_status}. {last_error_body}"
+            )
 
         document_id = created.get("id")
         if not document_id:
