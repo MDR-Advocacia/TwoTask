@@ -1209,20 +1209,27 @@ class PublicationSearchService:
             "blocking_status_ids": list(L1_BLOCKING_STATUS_IDS),
         }
 
-    def _apply_required_task_defaults(self, payload: dict) -> None:
+    def _apply_required_task_defaults(
+        self,
+        payload: dict,
+        fallback_office_id: Optional[int] = None,
+    ) -> None:
         """
         Garante que todo payload enviado pro L1 tenha os campos que a API
-        considera obrigatórios: `status.id`, `originOfficeId` e `publishDate`.
-        O proposer padrão (_render_proposal) já preenche todos, mas quando
-        o frontend manda `payload_override` (modal de confirmar/editar
-        tarefa avulsa) pode acontecer dele vir sem esses campos — L1
-        devolve 400 em cascata (um erro por campo faltante).
+        considera obrigatórios: `status.id`, `responsibleOfficeId`,
+        `originOfficeId` e `publishDate`. O proposer padrão (_render_proposal)
+        já preenche todos, mas quando o frontend manda `payload_override`
+        (modal de confirmar/editar tarefa avulsa) pode acontecer dele vir
+        sem esses campos — L1 devolve 400 em cascata (um erro por campo
+        faltante).
 
         Regras:
         - `status.id` ausente ou malformado → default 0 (igual _render_proposal).
+        - `responsibleOfficeId` ausente → usa `fallback_office_id` quando
+          disponível. O modal de Tarefa Avulsa não expõe esse campo no
+          form, então o caller (schedule_group) deriva do processo.
         - `originOfficeId` ausente → herda de `responsibleOfficeId` quando
-          presente; senão fica sem, pra preservar o erro explícito caso não
-          tenha office em lugar nenhum (melhor falhar cedo).
+          presente; depois disso, do `fallback_office_id`.
         - `publishDate` ausente → usa `startDateTime` (quando o SubTypeId
           tá preenchido L1 exige esse campo obrigatoriamente); se nem
           `startDateTime` houver, usa now() em UTC.
@@ -1233,9 +1240,15 @@ class PublicationSearchService:
         status_val = payload.get("status")
         if not isinstance(status_val, dict) or status_val.get("id") is None:
             payload["status"] = {"id": 0}
-        # originOfficeId — herda de responsibleOfficeId se ausente
-        if not payload.get("originOfficeId") and payload.get("responsibleOfficeId"):
-            payload["originOfficeId"] = payload["responsibleOfficeId"]
+        # responsibleOfficeId — ausente: tenta o fallback do processo.
+        if not payload.get("responsibleOfficeId") and fallback_office_id:
+            payload["responsibleOfficeId"] = int(fallback_office_id)
+        # originOfficeId — herda de responsibleOfficeId (que agora pode
+        # ter sido preenchido acima) ou do fallback_office_id diretamente.
+        if not payload.get("originOfficeId"):
+            origin = payload.get("responsibleOfficeId") or fallback_office_id
+            if origin:
+                payload["originOfficeId"] = int(origin)
         # publishDate — obrigatório quando SubTypeId tem valor. Usa o
         # startDateTime (semantica: "data de publicação" == data-base da
         # tarefa no modal de avulsa); fallback pra now() em UTC com sufixo Z.
@@ -2188,10 +2201,23 @@ class PublicationSearchService:
                           "para ignorar."
                     )
 
+        # Fallback de office pro _apply_required_task_defaults. Tarefa avulsa
+        # criada no modal não tem campo de escritório no form, então o
+        # payload nasce sem responsibleOfficeId/originOfficeId. Usamos o
+        # linked_office_id do(s) record(s) do grupo pra preencher.
+        office_candidates = {
+            r.linked_office_id for r in records if r.linked_office_id
+        }
+        fallback_office_id = (
+            next(iter(office_candidates)) if len(office_candidates) == 1 else None
+        )
+
         created_task_ids: list[int] = []
         for payload in payloads:
             self._enforce_description_limit(payload)
-            self._apply_required_task_defaults(payload)
+            self._apply_required_task_defaults(
+                payload, fallback_office_id=fallback_office_id,
+            )
             created = self.client.create_task(payload)
             if not created or not created.get("id"):
                 # Se o client conseguiu extrair o que o L1 reclamou, usa
@@ -2281,10 +2307,23 @@ class PublicationSearchService:
         if not payloads:
             raise ValueError("Proposta de tarefa inexistente. Configure um template global (sem escritório).")
 
+        # Fallback de office pra tarefas avulsas: embora esse fluxo seja
+        # explicitamente "sem processo vinculado", alguns records ainda
+        # podem ter linked_office_id (quando a publicação tem escritório
+        # mas não o processo). Usa esse como fallback.
+        office_candidates = {
+            r.linked_office_id for r in records if r.linked_office_id
+        }
+        fallback_office_id = (
+            next(iter(office_candidates)) if len(office_candidates) == 1 else None
+        )
+
         created_task_ids: list[int] = []
         for payload in payloads:
             self._enforce_description_limit(payload)
-            self._apply_required_task_defaults(payload)
+            self._apply_required_task_defaults(
+                payload, fallback_office_id=fallback_office_id,
+            )
             created = self.client.create_task(payload)
             if not created or not created.get("id"):
                 # Se o client conseguiu extrair o que o L1 reclamou, usa
