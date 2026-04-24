@@ -1,0 +1,561 @@
+const fs = require('fs');
+const path = require('path');
+const { chromium } = require('playwright');
+
+const STATUS_UPLOADED = 'uploaded';
+const STATUS_ERROR = 'error';
+
+function parseArgs(argv) {
+  const args = {};
+  for (let index = 0; index < argv.length; index += 1) {
+    const current = argv[index];
+    if (!current.startsWith('--')) continue;
+    const key = current.slice(2);
+    const next = argv[index + 1];
+    if (!next || next.startsWith('--')) {
+      args[key] = true;
+      continue;
+    }
+    args[key] = next;
+    index += 1;
+  }
+  return args;
+}
+
+function requireEnvAny(names) {
+  for (const name of names) {
+    const value = process.env[name];
+    if (value) return value;
+  }
+  throw new Error(`Missing required env var. Tried: ${names.join(', ')}`);
+}
+
+function readJsonFile(filePath, fallback = null) {
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJsonFile(filePath, payload) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify(payload, null, 2));
+}
+
+function sanitizeFileSegment(value) {
+  const normalized = String(value ?? '')
+    .normalize('NFKD')
+    .replace(/[^\w.-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 80);
+  return normalized || 'item';
+}
+
+async function waitForPageSettle(page, delayMs = 0) {
+  await page.waitForLoadState('domcontentloaded', { timeout: 120000 }).catch(() => {});
+  if (delayMs > 0) await page.waitForTimeout(delayMs);
+  await page.waitForLoadState('networkidle', { timeout: 45000 }).catch(() => {});
+}
+
+async function firstExistingSelector(page, selectors) {
+  for (const selector of selectors) {
+    const handle = await page.$(selector).catch(() => null);
+    if (handle) return selector;
+  }
+  return null;
+}
+
+async function clickFirstAvailable(page, selectors) {
+  const selector = await firstExistingSelector(page, selectors);
+  if (!selector) return false;
+  await page.click(selector, { timeout: 30000 });
+  return true;
+}
+
+async function fillFirstAvailable(page, selectors, value) {
+  const selector = await firstExistingSelector(page, selectors);
+  if (!selector) return false;
+  await page.fill(selector, value, { timeout: 30000 });
+  return true;
+}
+
+async function completeKeySelectionIfPresent(page, keyLabel) {
+  const body = await page.locator('body').innerText().catch(() => '');
+  if (!body || (!/Selecione uma chave de registro/i.test(body) && !body.includes(keyLabel))) {
+    return false;
+  }
+  await page.getByText(keyLabel, { exact: false }).first().click({ timeout: 30000 });
+  await page.getByRole('button', { name: /Continuar/i }).click({ timeout: 30000 });
+  return true;
+}
+
+async function capturePageContext(page) {
+  return page
+    .evaluate(() => {
+      const bodyText = document.body ? document.body.innerText || '' : '';
+      return {
+        url: window.location.href,
+        title: document.title || '',
+        bodyStart: bodyText.slice(0, 2500),
+      };
+    })
+    .catch(() => ({
+      url: page.url(),
+      title: '',
+      bodyStart: '',
+    }));
+}
+
+function isAuthenticationPage(context) {
+  const text = `${context.url}\n${context.title}\n${context.bodyStart}`.toLowerCase();
+  return (
+    text.includes('signon.thomsonreuters.com') ||
+    text.includes('auth.thomsonreuters.com') ||
+    text.includes('novajus.com.br/conta/login') ||
+    text.includes('loginonepass') ||
+    text.includes('onepass') ||
+    text.includes('username') ||
+    text.includes('password') ||
+    text.includes('entrar') ||
+    text.includes('autentica')
+  );
+}
+
+async function login(page, { username, password, keyLabel, returnUrl }) {
+  await page.goto(returnUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
+  await waitForPageSettle(page, 4000);
+
+  for (let attempt = 1; attempt <= 8; attempt += 1) {
+    if (await completeKeySelectionIfPresent(page, keyLabel)) {
+      await waitForPageSettle(page, 8000);
+      continue;
+    }
+
+    if (await firstExistingSelector(page, ['#btn-login-onepass'])) {
+      await clickFirstAvailable(page, ['#btn-login-onepass']);
+      await waitForPageSettle(page, 4000);
+      continue;
+    }
+
+    if (page.url().includes('/u/login/identifier')) {
+      const filled = await fillFirstAvailable(
+        page,
+        ['input[name="username"]', 'input[name="email"]', 'input[type="email"]'],
+        username,
+      );
+      if (filled) {
+        await clickFirstAvailable(page, ['button[name="action"]', 'button[type="submit"]']);
+        await waitForPageSettle(page, 4000);
+        continue;
+      }
+    }
+
+    if (page.url().includes('/u/login/password')) {
+      const filled = await fillFirstAvailable(
+        page,
+        ['#password', 'input[name="password"]', '#Password'],
+        password,
+      );
+      if (filled) {
+        await clickFirstAvailable(page, ['button[name="action"]', 'button[type="submit"]', '#SignIn']);
+        await waitForPageSettle(page, 6000);
+        continue;
+      }
+    }
+
+    if (
+      (await firstExistingSelector(page, ['#Username'])) &&
+      (await firstExistingSelector(page, ['#Password']))
+    ) {
+      const initialUrl = page.url();
+      await page.fill('#Username', username, { timeout: 30000 });
+      await page.locator('#Username').blur().catch(() => {});
+
+      const redirected = await page
+        .waitForURL((u) => u !== initialUrl, { timeout: 5000 })
+        .then(() => true)
+        .catch(() => false);
+
+      if (redirected) {
+        await waitForPageSettle(page, 4000);
+        continue;
+      }
+
+      await page.fill('#Password', password, { timeout: 30000 });
+      await page.click('#SignIn', { timeout: 30000 });
+      await waitForPageSettle(page, 4000);
+      continue;
+    }
+
+    const context = await capturePageContext(page);
+    if (!isAuthenticationPage(context)) return;
+  }
+
+  const finalContext = await capturePageContext(page);
+  if (isAuthenticationPage(finalContext)) {
+    throw new Error(
+      `Authentication flow did not finish | url=${finalContext.url} | title=${finalContext.title || ''} | body=${(finalContext.bodyStart || '').slice(0, 400)}`,
+    );
+  }
+}
+
+async function writeDiagnosticArtifact(page, item, artifactsDir, payload) {
+  if (!artifactsDir) return {};
+
+  fs.mkdirSync(artifactsDir, { recursive: true });
+  const baseName = `${sanitizeFileSegment(item.cnj || item.lawsuitId)}-${Date.now()}`;
+  const jsonPath = path.join(artifactsDir, `${baseName}.json`);
+  const screenshotPath = path.join(artifactsDir, `${baseName}.png`);
+  const diagnostic = {
+    capturedAt: new Date().toISOString(),
+    item: { ...item, pdfPath: item.pdfPath },
+    payload,
+  };
+
+  try {
+    diagnostic.page = await capturePageContext(page);
+  } catch (error) {
+    diagnostic.pageError = error instanceof Error ? error.message : String(error);
+  }
+
+  try {
+    if (page && !page.isClosed()) {
+      await page.screenshot({ path: screenshotPath, fullPage: true, timeout: 30000 });
+      diagnostic.screenshotPath = screenshotPath;
+    }
+  } catch (error) {
+    diagnostic.screenshotError = error instanceof Error ? error.message : String(error);
+  }
+
+  writeJsonFile(jsonPath, diagnostic);
+  return {
+    diagnosticJsonPath: jsonPath,
+    diagnosticScreenshotPath: diagnostic.screenshotPath || null,
+  };
+}
+
+async function createLoggedInSession(loginConfig) {
+  const launchOptions = { headless: true };
+  if (process.env.PLAYWRIGHT_CHANNEL) launchOptions.channel = process.env.PLAYWRIGHT_CHANNEL;
+  const browser = await chromium.launch(launchOptions);
+  const context = await browser.newContext({ acceptDownloads: true });
+  await context.route('**/*', (route) => {
+    const resourceType = route.request().resourceType();
+    if (resourceType === 'image' || resourceType === 'media' || resourceType === 'font') {
+      return route.abort();
+    }
+    return route.continue();
+  });
+
+  const page = await context.newPage();
+  await login(page, loginConfig);
+  return { browser, context, page };
+}
+
+async function closeSession(session) {
+  if (!session) return;
+  await session.browser?.close().catch(() => {});
+}
+
+async function clickByText(page, pattern, options = {}) {
+  const locators = [
+    page.getByRole('link', { name: pattern }),
+    page.getByRole('button', { name: pattern }),
+    page.getByText(pattern).first(),
+  ];
+  for (const locator of locators) {
+    const count = await locator.count().catch(() => 0);
+    if (!count) continue;
+    await locator.first().click({ timeout: options.timeout || 12000 }).catch(() => null);
+    await waitForPageSettle(page, options.delayMs || 1200);
+    return true;
+  }
+  return false;
+}
+
+async function openLawsuit(page, item, webBaseUrl, loginConfig) {
+  const detailsUrl = `${webBaseUrl}/processos/Processos/details/${item.lawsuitId}`;
+  await page.goto(detailsUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
+  await waitForPageSettle(page, 5000);
+
+  let context = await capturePageContext(page);
+  if (isAuthenticationPage(context)) {
+    await login(page, { ...loginConfig, returnUrl: detailsUrl });
+    await waitForPageSettle(page, 3000);
+    context = await capturePageContext(page);
+  }
+
+  const body = context.bodyStart || '';
+  const hasCnj = item.cnj && body.replace(/\D/g, '').includes(String(item.cnj).replace(/\D/g, ''));
+  const looksLikeLawsuit = /processo|pasta|partes|andamentos|publica/i.test(body);
+  if (!hasCnj && !looksLikeLawsuit) {
+    throw new Error(
+      `Tela do processo nao reconhecida | url=${context.url} | title=${context.title} | body=${body.slice(0, 500)}`,
+    );
+  }
+
+  return detailsUrl;
+}
+
+async function discoverUploadArea(page) {
+  const candidates = [
+    /Documentos/i,
+    /\bGED\b/i,
+    /Arquivos/i,
+    /Anexos/i,
+    /Pasta digital/i,
+  ];
+  for (const pattern of candidates) {
+    if (await clickByText(page, pattern)) return pattern.toString();
+  }
+
+  const clicked = await page.evaluate(() => {
+    const links = Array.from(document.querySelectorAll('a,button'));
+    const candidate = links.find((node) => {
+      const text = `${node.innerText || ''} ${node.textContent || ''} ${node.getAttribute('href') || ''}`;
+      return /document|ged|arquivo|anexo/i.test(text);
+    });
+    if (!candidate) return null;
+    candidate.click();
+    return (candidate.innerText || candidate.textContent || candidate.getAttribute('href') || '').trim();
+  });
+  if (clicked) {
+    await waitForPageSettle(page, 2000);
+    return clicked;
+  }
+
+  return null;
+}
+
+async function triggerNewDocumentFlow(page) {
+  const patterns = [
+    /Novo documento/i,
+    /Adicionar documento/i,
+    /Incluir documento/i,
+    /Anexar documento/i,
+    /Upload/i,
+    /Enviar arquivo/i,
+    /Adicionar/i,
+    /Novo/i,
+  ];
+  for (const pattern of patterns) {
+    if (await clickByText(page, pattern, { timeout: 7000, delayMs: 1500 })) return pattern.toString();
+  }
+  return null;
+}
+
+async function setFirstFileInput(page, filePath) {
+  const input = await page.$('input[type="file"]').catch(() => null);
+  if (!input) return false;
+  await input.setInputFiles(filePath);
+  await page.waitForTimeout(1500);
+  return true;
+}
+
+async function fillUploadMetadata(page, item) {
+  const archive = item.archive || path.basename(item.pdfPath);
+  const description = item.description || archive;
+
+  const filled = await page.evaluate(
+    ({ archive: archiveValue, description: descriptionValue, typeId }) => {
+      const normalize = (value) => String(value || '').toLowerCase();
+      const setValue = (element, value) => {
+        element.focus();
+        element.value = value;
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+
+      const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]), textarea'));
+      const result = { archive: false, description: false, typeId: false };
+
+      for (const input of inputs) {
+        const label = normalize(
+          `${input.name || ''} ${input.id || ''} ${input.placeholder || ''} ${input.getAttribute('aria-label') || ''}`,
+        );
+        if (!result.archive && /arquivo|archive|nome|titulo|título|documento/.test(label)) {
+          setValue(input, archiveValue);
+          result.archive = true;
+          continue;
+        }
+        if (!result.description && /descri|observa|nota|notes|description/.test(label)) {
+          setValue(input, descriptionValue);
+          result.description = true;
+        }
+      }
+
+      const selects = Array.from(document.querySelectorAll('select'));
+      for (const select of selects) {
+        const label = normalize(`${select.name || ''} ${select.id || ''} ${select.getAttribute('aria-label') || ''}`);
+        if (!/tipo|type|document/.test(label)) continue;
+        const exact = Array.from(select.options).find((option) => String(option.value) === String(typeId));
+        const habilitacao = Array.from(select.options).find((option) => /habilita/i.test(option.textContent || ''));
+        const chosen = exact || habilitacao;
+        if (chosen) {
+          select.value = chosen.value;
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+          result.typeId = true;
+          break;
+        }
+      }
+
+      return result;
+    },
+    { archive, description, typeId: item.typeId },
+  );
+
+  await page.waitForTimeout(1000);
+  return filled;
+}
+
+async function submitUpload(page) {
+  const patterns = [/Salvar/i, /Gravar/i, /Enviar/i, /Concluir/i, /Confirmar/i, /Upload/i];
+  for (const pattern of patterns) {
+    if (await clickByText(page, pattern, { timeout: 7000, delayMs: 3000 })) return pattern.toString();
+  }
+  return null;
+}
+
+async function verifyUpload(page, item, detailsUrl) {
+  const filename = path.basename(item.archive || item.pdfPath || '');
+  const normalizedFilename = filename.normalize('NFKD').replace(/[^\w.-]+/g, '.*');
+  const patterns = [
+    filename ? new RegExp(normalizedFilename, 'i') : null,
+    /Habilita/i,
+    item.cnj ? new RegExp(String(item.cnj).replace(/\D/g, '').slice(-8)) : null,
+  ].filter(Boolean);
+
+  await waitForPageSettle(page, 3000);
+  let context = await capturePageContext(page);
+  let text = context.bodyStart || '';
+
+  if (!patterns.some((pattern) => pattern.test(text))) {
+    await page.goto(detailsUrl, { waitUntil: 'domcontentloaded', timeout: 120000 }).catch(() => {});
+    await waitForPageSettle(page, 3000);
+    await discoverUploadArea(page).catch(() => null);
+    context = await capturePageContext(page);
+    text = context.bodyStart || '';
+  }
+
+  const matched = patterns.find((pattern) => pattern.test(text));
+  const idMatch = `${context.url}\n${text}`.match(/(?:Documento|Document|id)[^\d]{0,20}(\d{3,})/i);
+  return {
+    matched: !!matched,
+    matchedPattern: matched ? String(matched) : null,
+    documentId: idMatch ? Number(idMatch[1]) : null,
+    page: context,
+  };
+}
+
+async function uploadGedDocument(session, item, webBaseUrl, loginConfig) {
+  if (!fs.existsSync(item.pdfPath)) {
+    throw new Error(`PDF nao encontrado: ${item.pdfPath}`);
+  }
+
+  const detailsUrl = await openLawsuit(session.page, item, webBaseUrl, loginConfig);
+  const uploadArea = await discoverUploadArea(session.page);
+  if (!uploadArea) {
+    throw new Error('Nao encontrei aba/link de documentos, GED, arquivos ou anexos no processo.');
+  }
+
+  const trigger = await triggerNewDocumentFlow(session.page);
+  if (!trigger) {
+    throw new Error('Nao encontrei botao/link para adicionar ou enviar documento.');
+  }
+
+  const fileInputFound = await setFirstFileInput(session.page, item.pdfPath);
+  if (!fileInputFound) {
+    throw new Error('Nao encontrei input[type=file] apos abrir o fluxo de upload.');
+  }
+
+  const metadata = await fillUploadMetadata(session.page, item);
+  const submitButton = await submitUpload(session.page);
+  if (!submitButton) {
+    throw new Error('Nao encontrei botao para salvar/enviar o documento.');
+  }
+
+  const verification = await verifyUpload(session.page, item, detailsUrl);
+  if (!verification.matched) {
+    throw new Error(
+      `Upload submetido mas nao consegui verificar o documento na tela | url=${verification.page.url} | body=${(verification.page.bodyStart || '').slice(0, 600)}`,
+    );
+  }
+
+  return {
+    status: STATUS_UPLOADED,
+    response: {
+      detailsUrl,
+      uploadArea,
+      trigger,
+      metadata,
+      submitButton,
+      verification,
+      documentId: verification.documentId,
+    },
+  };
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const inputPath = args.input;
+  if (!inputPath) throw new Error('Use --input <json>');
+
+  const item = readJsonFile(inputPath, null);
+  if (!item || typeof item !== 'object') throw new Error('Arquivo de entrada invalido.');
+
+  const outputPath = args.output || path.join(path.dirname(inputPath), `ged-upload-${Date.now()}.json`);
+  const artifactsDir = args['artifacts-dir'] || null;
+  const webBaseUrl = (process.env.LEGAL_ONE_WEB_URL || process.env.LEGALONE_WEB_URL || item.webBaseUrl || 'https://mdradvocacia.novajus.com.br').replace(/\/+$/, '');
+  const username = requireEnvAny(['LEGALONE_WEB_USERNAME', 'LEGAL_ONE_WEB_USERNAME']);
+  const password = requireEnvAny(['LEGALONE_WEB_PASSWORD', 'LEGAL_ONE_WEB_PASSWORD']);
+  const keyLabel = requireEnvAny(['LEGALONE_WEB_KEY_LABEL', 'LEGAL_ONE_WEB_KEY_LABEL']);
+  const returnUrl = `${webBaseUrl}/processos/Processos/details/${item.lawsuitId}`;
+  const loginConfig = { username, password, keyLabel, returnUrl };
+
+  writeJsonFile(outputPath, {
+    generatedAt: new Date().toISOString(),
+    state: 'starting',
+    item: { ...item, pdfPath: item.pdfPath },
+  });
+
+  let session = null;
+  try {
+    session = await createLoggedInSession(loginConfig);
+    const result = await uploadGedDocument(session, item, webBaseUrl, loginConfig);
+    const payload = {
+      generatedAt: new Date().toISOString(),
+      state: 'completed',
+      status: result.status,
+      item: { ...item, pdfPath: item.pdfPath },
+      response: result.response,
+      error: null,
+    };
+    writeJsonFile(outputPath, payload);
+    console.log(JSON.stringify(payload));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const diagnostics = await writeDiagnosticArtifact(session?.page, item, artifactsDir, { error: message });
+    const payload = {
+      generatedAt: new Date().toISOString(),
+      state: 'failed',
+      status: STATUS_ERROR,
+      item: { ...item, pdfPath: item.pdfPath },
+      response: null,
+      error: message,
+      ...diagnostics,
+    };
+    writeJsonFile(outputPath, payload);
+    console.error(message);
+    process.exitCode = 1;
+  } finally {
+    await closeSession(session);
+  }
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
