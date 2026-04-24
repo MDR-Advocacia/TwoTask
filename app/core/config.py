@@ -112,6 +112,13 @@ class Settings(BaseSettings):
     prazos_iniciais_legacy_task_circuit_breaker_threshold: int = 3
     prazos_iniciais_legacy_task_circuit_breaker_cooldown_minutes: int = 10
 
+    # ── Batch Tasks (OneSid, OneRequest, etc.) ────────────────────────
+    # Chave(s) que autenticam as automações externas no endpoint
+    # /api/v1/tasks/batch-create. Separado do JWT do operador pq o
+    # OneSid chama direto via HTTP sem ter usuário/senha no sistema.
+    # Aceita múltiplas separadas por vírgula pra rotação sem downtime.
+    batch_tasks_api_key: str | None = None
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -144,6 +151,16 @@ class Settings(BaseSettings):
     @property
     def prazos_iniciais_max_pdf_bytes(self) -> int:
         return self.prazos_iniciais_max_pdf_mb * 1024 * 1024
+
+    @property
+    def batch_tasks_api_keys(self) -> set[str]:
+        """
+        Chaves válidas pra autenticar automações externas que chamam
+        /api/v1/tasks/batch-create (OneSid, OneRequest etc.). Aceita
+        múltiplas separadas por vírgula.
+        """
+        raw = self.batch_tasks_api_key or ""
+        return {key.strip() for key in raw.split(",") if key.strip()}
 
 
 @lru_cache
