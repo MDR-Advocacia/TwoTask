@@ -1313,6 +1313,10 @@ const PublicationsPage = () => {
     // Reset do estado de duplicatas — a checagem roda via useEffect abaixo.
     setDuplicatesBySubtype({});
     setDuplicateCheckFailed(false);
+    // CRITICO: resetar removedTaskIndices ao abrir. Antes ele so era zerado
+    // apos envio bem-sucedido, entao 'Remover tarefa' do processo A vazava
+    // como indices ja marcados como removidos no processo B.
+    setRemovedTaskIndices(new Set());
     setScheduleOpen(true);
   };
 
@@ -3403,7 +3407,20 @@ const PublicationsPage = () => {
       </Card>
 
       {/* Schedule Dialog */}
-      <Dialog open={scheduleOpen} onOpenChange={setScheduleOpen}>
+      <Dialog
+        open={scheduleOpen}
+        onOpenChange={(next) => {
+          setScheduleOpen(next);
+          // Ao fechar (X, Esc, click-fora, Cancelar), limpa estados locais
+          // do modal pra nao vazar pra proxima abertura. Redundante com o
+          // reset feito em openScheduleDialog, mas defesa em profundidade.
+          if (!next) {
+            setRemovedTaskIndices(new Set());
+            setDuplicatesBySubtype({});
+            setDuplicateCheckFailed(false);
+          }
+        }}
+      >
         <DialogContent className="flex max-h-[90vh] max-w-2xl flex-col gap-0 p-0">
           {/* ── Header fixo ── */}
           <div className="border-b px-6 py-4">
