@@ -28,6 +28,56 @@ DEFAULT_LEGAL_ONE_WEB_BASE_URL = "https://mdradvocacia.novajus.com.br"
 
 RUNNER_SUCCESS_STATUSES = {"cancelled", "already_cancelled"}
 
+
+# Quantas linhas dos logs do runner Node.js vão ser replicadas pro stdout
+# do container (Coolify). Evita poluição absurda quando o runner produz
+# milhares de linhas (ex: full trace de Playwright).
+_RUNNER_LOG_TAIL_LIMIT = 500
+
+
+def _mirror_runner_log_to_stdout(
+    *,
+    log_path: Path,
+    error_log_path: Path,
+    run_label: str,
+    exit_code: int,
+) -> None:
+    """
+    Replica as linhas finais dos arquivos de log do runner Node.js (Playwright)
+    pro logger Python — que por sua vez aparece no stdout do container no
+    Coolify. Invocado após `subprocess.run` concluir (bem ou mal), pra dar
+    visibilidade ao operador sem precisar entrar no container.
+
+    Limita em `_RUNNER_LOG_TAIL_LIMIT` linhas por arquivo pra não estourar o
+    stdout em caso de loop infinito do runner.
+    """
+    level = logging.INFO if exit_code == 0 else logging.WARNING
+
+    for label, path in (("stdout", log_path), ("stderr", error_log_path)):
+        if not path.exists():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            logger.warning(
+                "%s: nao foi possivel ler %s: %s", run_label, path.name, exc,
+            )
+            continue
+
+        lines = text.splitlines()
+        if not lines:
+            continue
+        tail = lines[-_RUNNER_LOG_TAIL_LIMIT:]
+        truncated = len(lines) - len(tail)
+        if truncated > 0:
+            logger.log(
+                level,
+                "%s: [%s] (%d linhas iniciais suprimidas, mostrando ultimas %d)",
+                run_label, label, truncated, len(tail),
+            )
+        for line in tail:
+            logger.log(level, "%s: [%s] %s", run_label, label, line)
+
 # Substrings (lowercase) que classificam falhas do runner para alimentar
 # o circuit breaker e a UI:
 #  - layout_drift     → tela do L1 mudou (campo/seletor não encontrado)
@@ -484,6 +534,27 @@ class LegacyTaskCancellationService:
                 stderr=stderr,
                 creationflags=creation_flags,
                 check=False,
+            )
+
+        # Espelha os logs do runner Node.js pro stdout do container (Coolify)
+        # pra não precisar entrar no container e abrir os arquivos manualmente
+        # quando algo der errado. Síncrono (pós-terminar), limitado pra não
+        # estourar o stdout se o runner produzir N mil linhas.
+        run_label = f"legacy-cancel run={paths.run_dir.name}"
+        logger.info(
+            "%s: runner Node finalizou (exit_code=%s).",
+            run_label, completed.returncode,
+        )
+        try:
+            _mirror_runner_log_to_stdout(
+                log_path=paths.log,
+                error_log_path=paths.error_log,
+                run_label=run_label,
+                exit_code=completed.returncode,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "%s: falha ao espelhar logs do runner pro stdout.", run_label,
             )
 
         payload = self._read_json_file(paths.status, fallback=None)
