@@ -20,7 +20,12 @@ from app.models.prazo_inicial import (
     PrazoInicialIntake,
     PrazoInicialSugestao,
 )
-from app.services.legal_one_client import LegalOneApiClient
+from app.core.config import settings
+from app.services.legal_one_client import (
+    LegalOneApiClient,
+    LegalOneGedUploadError,
+)
+from app.services.prazos_iniciais import storage as pdf_storage
 from app.services.prazos_iniciais.legacy_task_cancellation_service import (
     DEFAULT_LEGACY_TASK_SUBTYPE_EXTERNAL_ID,
     DEFAULT_LEGACY_TASK_TYPE_EXTERNAL_ID,
@@ -236,6 +241,99 @@ class PrazosIniciaisSchedulingService:
                 )
         return task_id
 
+    # ──────────────────────────────────────────────
+    # Upload do PDF da habilitação no GED (Onda 3)
+    # ──────────────────────────────────────────────
+
+    def _upload_habilitacao_to_ged(
+        self,
+        intake: PrazoInicialIntake,
+    ) -> int:
+        """
+        Upload do PDF da habilitação no GED do L1 vinculado ao processo.
+        Retorna o `document_id`. Levanta LegalOneGedUploadError em falha.
+
+        Idempotente: se `intake.ged_document_id` já existe, retorna ele
+        sem fazer nada (evita duplicar upload em retries).
+
+        Pré-condições:
+          - `intake.lawsuit_id` preenchido (o GED L1 exige vínculo)
+          - `intake.pdf_path` apontando pra arquivo físico ainda presente
+        """
+        if intake.ged_document_id:
+            return int(intake.ged_document_id)
+
+        if not intake.lawsuit_id:
+            raise LegalOneGedUploadError(
+                f"Intake {intake.id} não tem lawsuit_id — GED requer vínculo a processo."
+            )
+        if not intake.pdf_path:
+            raise LegalOneGedUploadError(
+                f"Intake {intake.id} sem pdf_path (retido: {intake.pdf_bytes} bytes). "
+                "Arquivo já foi limpo ou nunca chegou."
+            )
+
+        try:
+            absolute = pdf_storage.resolve_pdf_path(intake.pdf_path)
+        except ValueError as exc:
+            raise LegalOneGedUploadError(
+                f"pdf_path inválido do intake {intake.id}: {exc}"
+            ) from exc
+
+        if not absolute.exists():
+            raise LegalOneGedUploadError(
+                f"PDF físico não encontrado em {absolute} (intake {intake.id})."
+            )
+
+        file_bytes = absolute.read_bytes()
+        if not file_bytes:
+            raise LegalOneGedUploadError(
+                f"Arquivo PDF vazio (intake {intake.id}, path={intake.pdf_path})."
+            )
+
+        file_name = intake.pdf_filename_original or f"habilitacao-{intake.id}.pdf"
+        archive_name = (
+            f"Habilitação — {intake.cnj_number}" if intake.cnj_number
+            else f"Habilitação intake #{intake.id}"
+        )
+        description = (
+            f"Habilitação nos autos (intake Flow #{intake.id}) — "
+            f"CNJ {intake.cnj_number or '?'}"
+        )
+
+        document_id = self.l1_client.upload_document_to_ged(
+            file_bytes=file_bytes,
+            file_name=file_name,
+            type_id=settings.prazos_iniciais_ged_type_id,
+            litigation_id=int(intake.lawsuit_id),
+            archive_name=archive_name,
+            description=description,
+        )
+        logger.info(
+            "GED upload OK: intake=%s lawsuit=%s document_id=%s size=%d",
+            intake.id, intake.lawsuit_id, document_id, len(file_bytes),
+        )
+        return document_id
+
+    def _cleanup_local_pdf(self, intake: PrazoInicialIntake) -> None:
+        """
+        Deleta o PDF local e zera `pdf_path` + `pdf_bytes`. Chamado logo
+        após upload GED bem-sucedido. Best-effort — se a deleção falhar,
+        loga mas não quebra o fluxo (cron de cleanup pega depois).
+        """
+        if not intake.pdf_path:
+            return
+        try:
+            pdf_storage.delete_pdf(intake.pdf_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Falha ao apagar PDF local do intake %s (%s): %s",
+                intake.id, intake.pdf_path, exc,
+            )
+            return
+        intake.pdf_path = None
+        intake.pdf_bytes = None
+
     def confirm_intake_scheduling(
         self,
         *,
@@ -348,8 +446,42 @@ class PrazosIniciaisSchedulingService:
                     f"Falha ao criar tarefa no Legal One (intake {intake_id}): {exc}"
                 ) from exc
 
+        # ── FASE 2.5 — upload do PDF da habilitação no GED ──
+        # Só executa se AINDA não foi feito (idempotência via ged_document_id
+        # no próprio intake). Atomic: se falhar, intake vai pra
+        # ERRO_AGENDAMENTO e NÃO enfileira cancelamento da legada. As
+        # tasks L1 criadas na FASE 2 ficam (são idempotentes por
+        # sugestao.created_task_id no retry).
+        if not intake.ged_document_id:
+            try:
+                document_id = self._upload_habilitacao_to_ged(intake)
+                intake.ged_document_id = int(document_id)
+                intake.ged_uploaded_at = self._utcnow()
+                # FASE 4 — cleanup imediato do PDF local. Cron defensivo
+                # pega caso esta chamada falhe (ged OK mas file delete falha).
+                self._cleanup_local_pdf(intake)
+                self.db.commit()  # Persiste ged_* + pdf_path zerado cedo
+            except LegalOneGedUploadError as exc:
+                self.db.rollback()
+                intake = self._load_intake(intake_id)
+                if intake is not None:
+                    intake.status = INTAKE_STATUS_SCHEDULE_ERROR
+                    intake.error_message = (
+                        f"GED upload falhou: {str(exc)[:500]}"
+                    )
+                    self.db.commit()
+                logger.exception(
+                    "prazos_iniciais.confirm_intake_scheduling: GED falhou "
+                    "(intake_id=%s). Tasks L1 ja criadas: %s. "
+                    "Operador precisa reclicar 'Confirmar' — etapa é idempotente.",
+                    intake_id, l1_created_ids,
+                )
+                raise RuntimeError(
+                    f"Falha no upload da habilitação no GED do Legal One: {exc}"
+                ) from exc
+
         # ── FASE 3 — persiste review_status e promove intake ──
-        # Só chega aqui se a FASE 2 completou sem exceção.
+        # Só chega aqui se a FASE 2 e FASE 2.5 completaram sem exceção.
         confirmed_ids: list[int] = []
         created_task_ids: list[int] = []
         for sugestao, entry in selected:

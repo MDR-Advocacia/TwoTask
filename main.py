@@ -177,6 +177,21 @@ async def lifespan(_: FastAPI):
             "Falha ao registrar worker de cancelamento legado de prazos iniciais no startup."
         )
 
+    # Cron diário de cleanup dos PDFs da habilitação (Onda 3).
+    # Pega resíduos: intakes já uplodados pro GED mas com pdf_path != None,
+    # e também arquivos antigos (retenção) de intakes que travaram fora
+    # do fluxo crítico.
+    try:
+        from app.services.prazos_iniciais.pdf_cleanup_worker import (
+            register_pdf_cleanup_job,
+        )
+
+        register_pdf_cleanup_job(scheduler)
+    except Exception:
+        logger.exception(
+            "Falha ao registrar worker de cleanup de PDFs de prazos iniciais no startup."
+        )
+
     try:
         yield
     finally:

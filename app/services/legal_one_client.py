@@ -19,6 +19,15 @@ class LegalOneAuthenticationError(RuntimeError):
     pass
 
 
+class LegalOneGedUploadError(RuntimeError):
+    """
+    Falha em algum dos 3 passos do upload GED (GetContainer / PUT blob /
+    POST Documents). A mensagem inclui contexto sobre em qual passo
+    ocorreu e o body de erro retornado pelo servidor quando disponível.
+    """
+    pass
+
+
 class _GlobalRateLimiter:
     """
     Token-bucket rate limiter compartilhado por todas as instâncias do client.
@@ -1081,6 +1090,140 @@ class LegalOneApiClient:
         except requests.exceptions.HTTPError as exc:
             self.logger.error("Erro HTTP ao adicionar participante a tarefa %s: %s", task_id, exc.response.text)
             return False
+
+    # ──────────────────────────────────────────────────────────────
+    # GED (ECM) — Upload de Documentos
+    # ──────────────────────────────────────────────────────────────
+    # Fluxo documentado no swagger oficial (legal-one-firms-brazil-api):
+    #
+    #   1) GET /Documents/GetContainer(fileExtension='pdf')
+    #      → retorna DocumentUploadModel:
+    #        { id, externalId (URL SAS do Azure Blob),
+    #          fileName (nome temp no container),
+    #          uploadedFileSize (0 nesse ponto) }
+    #
+    #   2) PUT {externalId} (a URL retornada acima) com os BYTES do PDF.
+    #      Esse PUT vai direto pro Azure Blob Storage (não passa pela
+    #      API do L1 nem precisa do Authorization Bearer — a URL já tem
+    #      o SAS embutido). Header obrigatório:
+    #        - x-ms-blob-type: BlockBlob
+    #        - Content-Type: application/pdf
+    #
+    #   3) POST /Documents com DocumentModel:
+    #        { archive (nome visível), description, typeId ("2-48"),
+    #          notes, fileUploader: { ExternalId, FileName, UploadedFileSize },
+    #          relationships: [{ Link: "Litigation", LinkItem: { Id: ... } }] }
+    #      → retorna o DocumentModel com `id` — esse é o ged_document_id.
+
+    def upload_document_to_ged(
+        self,
+        *,
+        file_bytes: bytes,
+        file_name: str,
+        type_id: str,
+        litigation_id: int,
+        archive_name: Optional[str] = None,
+        description: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> int:
+        """
+        Faz upload de um PDF no GED do L1 vinculado a um processo (Litigation).
+        Retorna o `document_id` criado.
+
+        Levanta `LegalOneGedUploadError` com mensagem humana em qualquer
+        falha de um dos 3 passos. O chamador pode capturar e traduzir.
+        """
+        # Passo 1 — obtém container temp.
+        ext = "pdf"
+        get_container_endpoint = (
+            f"/Documents/GetContainer(fileExtension='{ext}')"
+        )
+        get_container_url = f"{self.base_url}{get_container_endpoint}"
+        try:
+            resp = self._request_with_retry("GET", get_container_url)
+            container = resp.json() or {}
+        except requests.exceptions.HTTPError as exc:
+            body = exc.response.text if exc.response is not None else ""
+            raise LegalOneGedUploadError(
+                f"Falha no GetContainer do GED: HTTP {exc.response.status_code if exc.response else '?'}. {body[:400]}"
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise LegalOneGedUploadError(f"Erro ao obter container do GED: {exc}") from exc
+
+        external_id = container.get("externalId")
+        temp_file_name = container.get("fileName") or file_name
+        if not external_id:
+            raise LegalOneGedUploadError(
+                f"GetContainer não retornou externalId. Resposta: {container}"
+            )
+
+        # Passo 2 — PUT bytes direto no Azure Blob. URL já tem SAS
+        # embutido; não usamos nossos headers de Authorization aqui.
+        try:
+            put_response = requests.put(
+                external_id,
+                data=file_bytes,
+                headers={
+                    "Content-Type": "application/pdf",
+                    "x-ms-blob-type": "BlockBlob",
+                },
+                timeout=60,
+            )
+            put_response.raise_for_status()
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else "?"
+            body = exc.response.text[:400] if exc.response is not None else ""
+            raise LegalOneGedUploadError(
+                f"Falha no PUT do blob (Azure): HTTP {status}. {body}"
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise LegalOneGedUploadError(f"Erro ao enviar bytes pro blob: {exc}") from exc
+
+        # Passo 3 — POST metadata + relationship + fileUploader.
+        post_endpoint = "/Documents"
+        post_url = f"{self.base_url}{post_endpoint}"
+        payload: Dict[str, Any] = {
+            "archive": archive_name or file_name,
+            "description": description or file_name,
+            "typeId": type_id,
+            "fileName": temp_file_name,
+            "fileUploader": {
+                "ExternalId": external_id,
+                "FileName": file_name,
+                "UploadedFileSize": len(file_bytes),
+            },
+            "relationships": [
+                {
+                    "Link": "Litigation",
+                    "LinkItem": {"Id": int(litigation_id)},
+                }
+            ],
+        }
+        if notes:
+            payload["notes"] = notes
+
+        self.logger.info(
+            "GED upload: POST /Documents litigation=%s type=%s size=%d",
+            litigation_id, type_id, len(file_bytes),
+        )
+        try:
+            resp = self._request_with_retry("POST", post_url, json=payload)
+            created = resp.json() or {}
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else "?"
+            body = exc.response.text[:400] if exc.response is not None else ""
+            raise LegalOneGedUploadError(
+                f"Falha no POST /Documents: HTTP {status}. {body}"
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise LegalOneGedUploadError(f"Erro ao criar registro no GED: {exc}") from exc
+
+        document_id = created.get("id")
+        if not document_id:
+            raise LegalOneGedUploadError(
+                f"POST /Documents não retornou id. Resposta: {created}"
+            )
+        return int(document_id)
 
     # ──────────────────────────────────────────────────────────────
     # Motor de Busca de Publicações (Updates)
