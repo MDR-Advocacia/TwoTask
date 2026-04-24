@@ -54,7 +54,7 @@ import {
   fetchPrazosIniciaisIntakes,
   reanalyzePrazoInicial,
   exportPrazosIniciaisXlsx,
-  prazoInicialPdfUrl,
+  fetchPrazoInicialPdfBlob,
   recomputePrazoInicialGlobals,
   refreshPrazosIniciaisBatch,
   reprocessarPrazoInicialCnj,
@@ -364,6 +364,29 @@ export default function PrazosIniciaisPage() {
       toast({ title: "Erro", description: msg, variant: "destructive" });
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  // Baixa o PDF da habilitação autenticado (via apiFetch) e abre numa nova
+  // aba usando Object URL. Anchor <a href target="_blank"> direto nao
+  // funciona porque o browser nao envia o header Authorization do JWT em
+  // navegacoes — resultado seria 401 'Not authenticated'.
+  const onOpenPdfInNewTab = async () => {
+    if (!detail) return;
+    try {
+      const blob = await fetchPrazoInicialPdfBlob(detail.id);
+      const objectUrl = URL.createObjectURL(blob);
+      // Abre e agenda revoke depois de um tempinho (browser ainda precisa
+      // carregar o conteúdo antes de revogarmos).
+      window.open(objectUrl, "_blank", "noopener,noreferrer");
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Erro desconhecido";
+      toast({
+        title: "Falha ao abrir PDF",
+        description: msg,
+        variant: "destructive",
+      });
     }
   };
 
@@ -1216,11 +1239,15 @@ export default function PrazosIniciaisPage() {
                     <span className="ml-2 text-muted-foreground">({formatBytes(detail.pdf_bytes)})</span>
                   </span>
                   {detail.pdf_bytes ? (
-                    <Button asChild size="sm" variant="outline" className="ml-auto">
-                      <a href={prazoInicialPdfUrl(detail.id)} target="_blank" rel="noopener noreferrer">
-                        <ExternalLink className="mr-1 h-4 w-4" />
-                        Abrir em nova aba
-                      </a>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="ml-auto"
+                      onClick={onOpenPdfInNewTab}
+                      title="Baixa o PDF autenticado e abre numa nova aba"
+                    >
+                      <ExternalLink className="mr-1 h-4 w-4" />
+                      Abrir em nova aba
                     </Button>
                   ) : (
                     <span className="ml-auto text-xs text-muted-foreground">Retencao expirada</span>
