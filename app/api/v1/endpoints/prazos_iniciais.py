@@ -268,6 +268,19 @@ async def ingest_intake(
     estável para o ciclo de vida do processo.
     """
     # 1. Parse do JSON (o FastAPI já validou que o campo existe, mas é string).
+    # Recovery de encoding: python-multipart decoda form fields em Latin-1
+    # quando o cliente não envia charset explícito, corrompendo UTF-8
+    # (Í vira "Ã\x8D" etc.). Re-encodamos pra Latin-1 → decodamos como
+    # UTF-8 — operação idempotente pra strings já corretas (cai no
+    # UnicodeDecodeError do fallback).
+    try:
+        recovered = payload.encode("latin-1").decode("utf-8")
+        payload = recovered
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        # Já era UTF-8 válido, ou contém caracteres fora de Latin-1 —
+        # segue com o payload original sem tocar.
+        pass
+
     try:
         payload_dict = json.loads(payload)
         intake_payload = PrazoInicialIntakePayload.model_validate(payload_dict)
