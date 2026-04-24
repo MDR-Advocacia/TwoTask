@@ -5,7 +5,7 @@ from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Header, HTTPException, Query, UploadFile, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from openpyxl import Workbook, load_workbook
 from pydantic import BaseModel
@@ -57,6 +57,43 @@ from app.services.task_creation_service import (
 from app.services.task_rule_service import TaskRuleService
 
 router = APIRouter()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Router separado pra automações externas (OneSid, OneRequest, etc.)
+# Autenticado por API key no header X-Batch-Api-Key — não exige JWT
+# porque essas automações chamam direto via HTTP sem ter usuário/senha
+# no sistema. Mesma arquitetura do /prazos-iniciais/intake.
+# ──────────────────────────────────────────────────────────────────────
+batch_router = APIRouter(tags=["Tasks (Automação Externa)"])
+
+
+def _validate_batch_api_key(
+    x_batch_api_key: Optional[str] = Header(default=None, alias="X-Batch-Api-Key"),
+) -> str:
+    """
+    Dependency que autentica automações externas via header
+    `X-Batch-Api-Key`. Compara contra settings.batch_tasks_api_keys.
+
+    Se nenhuma chave estiver configurada na env BATCH_TASKS_API_KEY, o
+    endpoint fica explicitamente bloqueado (500) pra evitar rota aberta
+    em produção por esquecimento de config.
+    """
+    valid_keys = settings.batch_tasks_api_keys
+    if not valid_keys:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                "Endpoint indisponível: BATCH_TASKS_API_KEY não configurada "
+                "no servidor."
+            ),
+        )
+    if not x_batch_api_key or x_batch_api_key not in valid_keys:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API key inválida ou não fornecida no header X-Batch-Api-Key.",
+        )
+    return x_batch_api_key
 
 
 class RetryRequest(BaseModel):
@@ -531,15 +568,23 @@ def create_full_task(
         raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno inesperado: {exc}") from exc
 
 
-@router.post(
+@batch_router.post(
     "/batch-create",
     status_code=202,
-    summary="Criar tarefas em lote a partir de uma fonte externa",
+    summary="Criar tarefas em lote a partir de uma fonte externa (OneSid/OneRequest)",
+    description=(
+        "Endpoint pra automações externas criarem tarefas em lote. "
+        "Autenticação por API key no header `X-Batch-Api-Key` "
+        "(configurada na env `BATCH_TASKS_API_KEY`, aceita múltiplas "
+        "separadas por vírgula pra rotação). Processa em background e "
+        "retorna 202 imediatamente."
+    ),
 )
 def create_batch_tasks(
     request: BatchTaskCreationRequest,
     background_tasks: BackgroundTasks,
     service: BatchTaskCreationService = Depends(get_batch_task_creation_service),
+    _: str = Depends(_validate_batch_api_key),
 ):
     background_tasks.add_task(service.process_batch_request, request)
     return {

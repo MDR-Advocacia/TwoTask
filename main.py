@@ -229,6 +229,10 @@ app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["Dashboar
 app.include_router(squads.router, prefix="/api/v1/squads", tags=["Squads"], dependencies=protected_dependencies)
 app.include_router(sectors.router, prefix="/api/v1/sectors", tags=["Sectors"], dependencies=protected_dependencies)
 app.include_router(tasks.router, prefix="/api/v1/tasks", tags=["Tasks"], dependencies=protected_dependencies)
+# Router de automação externa (OneSid, OneRequest): autenticado por
+# header X-Batch-Api-Key, SEM JWT. Separado pra não herdar o
+# protected_dependencies do router de operador.
+app.include_router(tasks.batch_router, prefix="/api/v1/tasks")
 app.include_router(users.router, prefix="/api/v1/users", tags=["Users"], dependencies=protected_dependencies)
 app.include_router(offices.router, prefix="/api/v1", tags=["Offices"], dependencies=protected_dependencies)
 app.include_router(classifier.router, prefix="/api/v1/classifier", tags=["Classificador"], dependencies=protected_dependencies)
