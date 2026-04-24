@@ -15,10 +15,12 @@ import {
   BookOpen,
   Building2,
   Calendar,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronsUpDown,
   ChevronUp,
   Clock,
   Eye,
@@ -70,6 +72,20 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import { cn } from "@/lib/utils";
 import {
   Sheet,
   SheetContent,
@@ -454,6 +470,105 @@ const OperationalStatCard = ({
     </CardContent>
   </Card>
 );
+
+// ─── SubtypePicker ─────────────────────────────────────────────────────────
+// Combobox com busca pro campo "Subtipo de tarefa" (~900 itens no catalogo
+// do L1). Troca o Select tradicional por Popover+Command pra permitir
+// filtro instantaneo. A busca casa tanto no nome do subtipo quanto no nome
+// do tipo pai — via concatenacao "tipo::subtipo" no value do CommandItem,
+// que eh onde o cmdk aplica o matcher.
+interface SubtypePickerProps {
+  value: number | null;
+  parentType: TaskType | null;
+  taskTypes: TaskType[];
+  onChange: (subId: number, parentType: TaskType | null) => void;
+}
+
+const SubtypePicker = ({ value, parentType, taskTypes, onChange }: SubtypePickerProps) => {
+  const [open, setOpen] = useState(false);
+
+  // Label do botao: "Tipo · Subtipo" quando ha selecao, placeholder caso contrario.
+  const selectedLabel = (() => {
+    if (!value) return null;
+    for (const t of taskTypes) {
+      const s = t.subtypes.find((x) => x.external_id === value);
+      if (s) return { typeName: t.name, subName: s.name };
+    }
+    return null;
+  })();
+
+  return (
+    <div className="grid gap-1.5">
+      <Label className="text-xs font-medium">Subtipo de tarefa *</Label>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            variant="outline"
+            role="combobox"
+            aria-expanded={open}
+            className="h-9 w-full justify-between text-sm font-normal"
+          >
+            {selectedLabel ? (
+              <span className="truncate">
+                <span className="text-muted-foreground">{selectedLabel.typeName} · </span>
+                <span className="font-medium">{selectedLabel.subName}</span>
+              </span>
+            ) : (
+              <span className="text-muted-foreground">Selecione o subtipo</span>
+            )}
+            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent
+          className="w-[--radix-popover-trigger-width] p-0"
+          align="start"
+        >
+          <Command
+            // Matcher customizado: busca case-insensitive sem acento em
+            // "tipo | subtipo". O cmdk passa o `value` bruto do CommandItem
+            // (que cadastramos como "tipo::subtipo::id") e o termo digitado.
+            filter={(itemValue, search) => {
+              const norm = (s: string) =>
+                s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+              return norm(itemValue).includes(norm(search)) ? 1 : 0;
+            }}
+          >
+            <CommandInput placeholder="Buscar por tipo ou subtipo..." />
+            <CommandList className="max-h-80">
+              <CommandEmpty>Nenhum resultado.</CommandEmpty>
+              {taskTypes.map((t) => (
+                <CommandGroup key={t.external_id} heading={t.name}>
+                  {t.subtypes.map((s) => {
+                    const itemValue = `${t.name}::${s.name}::${s.external_id}`;
+                    const isSelected = value === s.external_id;
+                    return (
+                      <CommandItem
+                        key={s.external_id}
+                        value={itemValue}
+                        onSelect={() => {
+                          onChange(s.external_id, t);
+                          setOpen(false);
+                        }}
+                      >
+                        <Check
+                          className={cn(
+                            "mr-2 h-4 w-4",
+                            isSelected ? "opacity-100" : "opacity-0"
+                          )}
+                        />
+                        <span className="truncate">{s.name}</span>
+                      </CommandItem>
+                    );
+                  })}
+                </CommandGroup>
+              ))}
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
+};
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
@@ -3340,52 +3455,31 @@ const PublicationsPage = () => {
                                   </p>
                                 </div>
 
-                                {/* Subtipo de tarefa */}
-                                <div className="grid gap-1.5">
-                                  <Label className="text-xs font-medium">Subtipo de tarefa *</Label>
-                                  <Select
-                                    value={currentSubId ? String(currentSubId) : ""}
-                                    onValueChange={(v) => {
-                                      const newSubId = parseInt(v, 10);
-                                      const newType = taskTypes.find((t) =>
-                                        t.subtypes.some((s) => s.external_id === newSubId)
-                                      );
-                                      const next = [...editedPayloads];
-                                      next[idx] = {
-                                        ...next[idx],
-                                        subTypeId: newSubId,
-                                        typeId: newType?.external_id ?? next[idx].typeId,
-                                      };
-                                      setEditedPayloads(next);
-                                    }}
-                                  >
-                                    <SelectTrigger className="text-sm">
-                                      <SelectValue placeholder="Selecione o subtipo" />
-                                    </SelectTrigger>
-                                    <SelectContent className="max-h-72">
-                                      {taskTypes.map((t) => (
-                                        <div key={t.external_id}>
-                                          <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                                            {t.name}
-                                          </div>
-                                          {t.subtypes.map((s) => (
-                                            <SelectItem
-                                              key={s.external_id}
-                                              value={String(s.external_id)}
-                                            >
-                                              {s.name}
-                                            </SelectItem>
-                                          ))}
-                                        </div>
-                                      ))}
-                                    </SelectContent>
-                                  </Select>
-                                  {parentType && (
-                                    <p className="text-[10px] text-muted-foreground">
-                                      Tipo: {parentType.name}
-                                    </p>
-                                  )}
-                                </div>
+                                {/* Subtipo de tarefa — combobox com busca (antes era Select de
+                                    ~900 itens, impossivel de rolar). Cadastramos o rótulo
+                                    "Tipo · Subtipo" no `value` do CommandItem pra que a busca
+                                    nativa do shadcn case tanto pelo nome do subtipo quanto
+                                    pelo tipo pai. Digitar "BB" retorna subtipos de BB; digitar
+                                    "publicação" retorna todos os subtipos de Publicação. */}
+                                <SubtypePicker
+                                  value={currentSubId}
+                                  parentType={parentType}
+                                  taskTypes={taskTypes}
+                                  onChange={(newSubId, newType) => {
+                                    const next = [...editedPayloads];
+                                    next[idx] = {
+                                      ...next[idx],
+                                      subTypeId: newSubId,
+                                      typeId: newType?.external_id ?? next[idx].typeId,
+                                    };
+                                    setEditedPayloads(next);
+                                  }}
+                                />
+                                {parentType && (
+                                  <p className="text-[10px] text-muted-foreground -mt-1">
+                                    Tipo: {parentType.name}
+                                  </p>
+                                )}
 
                                 {/* Responsável */}
                                 <div className="grid gap-1.5">
