@@ -1382,16 +1382,59 @@ class LegalOneApiClient:
                     fallback_status,
                     fallback_body,
                 )
-                self.logger.error(
-                    "GED upload falhou apos retries de storage. Payload v10 enviado:\n%s",
-                    json.dumps(payload, indent=2, ensure_ascii=False),
+                docs_example_payload = {
+                    **payload,
+                    "id": 0,
+                    "generateUrlDownload": "",
+                    "type": "",
+                    "repository": "LegalOne",
+                    "isModel": True,
+                    "relationships": [
+                        {
+                            "id": 0,
+                            "link": "Litigation",
+                            "linkItem": {
+                                "id": int(litigation_id),
+                                "description": "",
+                            },
+                        }
+                    ],
+                }
+                self.logger.warning(
+                    "GED POST archive=temp_file_name falhou. "
+                    "Tentando diagnostico com payload maximo do exemplo da documentacao."
                 )
-                raise LegalOneGedUploadError(
-                    "Falha no POST /documents "
-                    f"(payload v10 storage miss HTTP {last_error_status}; "
-                    f"archive=temp_file_name HTTP {fallback_status}). "
-                    f"V10: {last_error_body} | Fallback: {fallback_body}"
-                ) from exc
+                self.logger.info(
+                    "GED POST docs-example payload:\n%s",
+                    json.dumps(docs_example_payload, indent=2, ensure_ascii=False),
+                )
+                try:
+                    resp = self._request_with_retry("POST", post_url, json=docs_example_payload)
+                    created = resp.json() or {}
+                    self.logger.info(
+                        "GED POST docs-example OK: document_id=%s",
+                        created.get("id"),
+                    )
+                except requests.exceptions.HTTPError as docs_exc:
+                    docs_status = docs_exc.response.status_code if docs_exc.response is not None else "?"
+                    docs_body = docs_exc.response.text[:800] if docs_exc.response is not None else ""
+                    self.logger.error(
+                        "GED POST docs-example falhou: HTTP %s. Body: %s",
+                        docs_status,
+                        docs_body,
+                    )
+                    self.logger.error(
+                        "GED upload falhou apos retries de storage. Payload v10 enviado:\n%s",
+                        json.dumps(payload, indent=2, ensure_ascii=False),
+                    )
+                    raise LegalOneGedUploadError(
+                        "Falha no POST /documents "
+                        f"(payload v10 storage miss HTTP {last_error_status}; "
+                        f"archive=temp_file_name HTTP {fallback_status}; "
+                        f"docs-example HTTP {docs_status}). "
+                        f"V10: {last_error_body} | ArchiveFallback: {fallback_body} | "
+                        f"DocsExample: {docs_body}"
+                    ) from docs_exc
 
         if created is None:
             raise LegalOneGedUploadError(
