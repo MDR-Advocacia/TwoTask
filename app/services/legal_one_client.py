@@ -1193,17 +1193,19 @@ class LegalOneApiClient:
         # O correto é passar o `fileName` que o GetContainer retornou
         # (ex: "cee24743-...pdf") como ExternalId.
         #
-        # Casing: o swagger declara os campos complexos em PascalCase
-        # (ExternalId/FileName/UploadedFileSize, Link/LinkItem). Mantemos
-        # PascalCase no FileUploaderModel por ser o que o swagger exige.
-        #
-        # IMPORTANTE: o formato do `relationships` aqui NAO eh o mesmo
-        # do endpoint `/tasks/{id}/relationships` (que usa linkType/linkId
-        # em camelCase, validado via link_task_to_lawsuit). No DocumentModel
-        # embutido o tipo complex de relationship eh `Link`/`LinkItem.Id`,
-        # conforme o swagger. Mandar `linkType/linkId` aqui faz o OData
-        # rejeitar com "Does not support untyped value in non-open type"
-        # porque essas propriedades nao existem no tipo do DocumentModel.
+        # ATENCAO: o swagger OFICIAL declara FileUploaderModel e
+        # DocumentRelationshipModel em PascalCase (ExternalId/FileName,
+        # Link/LinkItem/Id/Description), MAS o exemplo oficial de curl
+        # que o L1 publica no proprio site usa tudo em camelCase:
+        #   "relationships": [
+        #     { "id": 1, "link": "Litigation",
+        #       "linkItem": { "id": 1, "description": "..." } }
+        #   ]
+        # O OData real valida em camelCase. Mandar em PascalCase faz o
+        # server responder HTTP 400 com
+        #   "Does not support untyped value in non-open type"
+        # porque as props PascalCase nao existem no schema interno.
+        # Seguimos o exemplo oficial.
         post_endpoint = "/Documents"
         post_url = f"{self.base_url}{post_endpoint}"
         payload: Dict[str, Any] = {
@@ -1212,14 +1214,16 @@ class LegalOneApiClient:
             "typeId": type_id,
             "fileName": temp_file_name,
             "fileUploader": {
-                "ExternalId": temp_file_name,  # NOME no container, NÃO a URL SAS
-                "FileName": file_name,
-                "UploadedFileSize": len(file_bytes),
+                "externalId": temp_file_name,  # NOME no container, NÃO a URL SAS
+                "fileName": file_name,
+                "uploadedFileSize": len(file_bytes),
             },
             "relationships": [
                 {
-                    "Link": "Litigation",
-                    "LinkItem": {"Id": int(litigation_id)},
+                    "link": "Litigation",
+                    "linkItem": {
+                        "id": int(litigation_id),
+                    },
                 }
             ],
         }
