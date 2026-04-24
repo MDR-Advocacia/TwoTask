@@ -1349,13 +1349,44 @@ class LegalOneApiClient:
                 raise LegalOneGedUploadError(f"Erro ao criar registro no GED: {exc}") from exc
         else:
             # Esgotou os retries de storage miss.
-            self.logger.error(
-                "GED upload falhou apos retries de storage. Payload enviado:\n%s",
-                json.dumps(payload, indent=2, ensure_ascii=False),
+            fallback_payload = {
+                **payload,
+                "fileUploader": {
+                    "externalId": temp_file_name,
+                    "fileName": archive_candidate,
+                    "uploadedFileSize": len(file_bytes),
+                },
+            }
+            self.logger.warning(
+                "GED POST payload oficial esgotou com storage miss. "
+                "Tentando fallback com fileUploader camelCase para diagnostico."
             )
-            raise LegalOneGedUploadError(
-                f"Falha no POST /Documents (storage miss persistente): HTTP {last_error_status}. {last_error_body}"
-            )
+            try:
+                resp = self._request_with_retry("POST", post_url, json=fallback_payload)
+                created = resp.json() or {}
+                self.logger.info(
+                    "GED POST fallback fileUploader OK: document_id=%s",
+                    created.get("id"),
+                )
+            except requests.exceptions.HTTPError as exc:
+                fallback_status = exc.response.status_code if exc.response is not None else "?"
+                fallback_body = exc.response.text[:800] if exc.response is not None else ""
+                self.logger.error(
+                    "GED POST fallback fileUploader falhou: HTTP %s. Body: %s. Payload:\n%s",
+                    fallback_status,
+                    fallback_body,
+                    json.dumps(fallback_payload, indent=2, ensure_ascii=False),
+                )
+                self.logger.error(
+                    "GED upload falhou apos retries de storage. Payload oficial enviado:\n%s",
+                    json.dumps(payload, indent=2, ensure_ascii=False),
+                )
+                raise LegalOneGedUploadError(
+                    "Falha no POST /Documents "
+                    f"(payload oficial storage miss HTTP {last_error_status}; "
+                    f"fallback fileUploader HTTP {fallback_status}). "
+                    f"Oficial: {last_error_body} | Fallback: {fallback_body}"
+                ) from exc
 
         document_id = created.get("id")
         if not document_id:
