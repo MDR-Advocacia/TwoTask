@@ -42,6 +42,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { MultiSelect } from "@/components/ui/MultiSelect";
 import { Separator } from "@/components/ui/separator";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
@@ -51,6 +52,7 @@ import {
   confirmarAgendamentoPrazoInicial,
   fetchPrazoInicialDetail,
   fetchPrazosIniciaisBatches,
+  fetchPrazosIniciaisEnums,
   fetchPrazosIniciaisIntakes,
   finalizarPrazoInicialSemProvidencia,
   reanalyzePrazoInicial,
@@ -63,6 +65,7 @@ import {
 } from "@/services/api";
 import type {
   PrazoInicialBatchSummary,
+  PrazoInicialEnums,
   PrazoInicialIntakeDetail,
   PrazoInicialIntakeStatus,
   PrazoInicialIntakeSummary,
@@ -190,10 +193,28 @@ export default function PrazosIniciaisPage() {
   const { toast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const [statusFilter, setStatusFilter] = useState("__all__");
+  // Filtros - os "appliedXxx" são os que efetivamente vão pro GET, os
+  // "xxxFilter" são os que o operador está editando antes de clicar "Aplicar".
+  // Multi-select filtros guardam CSV (ex "CLASSIFICADO,AGENDADO").
+  const [statusFilter, setStatusFilter] = useState("");           // CSV
   const [cnjFilter, setCnjFilter] = useState("");
-  const [appliedStatus, setAppliedStatus] = useState("__all__");
+  const [officeFilter, setOfficeFilter] = useState("");           // CSV de ids
+  const [naturezaFilter, setNaturezaFilter] = useState("");       // CSV
+  const [produtoFilter, setProdutoFilter] = useState("");         // CSV
+  const [probExitoFilter, setProbExitoFilter] = useState("");     // CSV
+  const [dateFromFilter, setDateFromFilter] = useState("");
+  const [dateToFilter, setDateToFilter] = useState("");
+  const [hasErrorFilter, setHasErrorFilter] = useState<"__all__" | "com" | "sem">("__all__");
+
+  const [appliedStatus, setAppliedStatus] = useState("");
   const [appliedCnj, setAppliedCnj] = useState("");
+  const [appliedOffice, setAppliedOffice] = useState("");
+  const [appliedNatureza, setAppliedNatureza] = useState("");
+  const [appliedProduto, setAppliedProduto] = useState("");
+  const [appliedProbExito, setAppliedProbExito] = useState("");
+  const [appliedDateFrom, setAppliedDateFrom] = useState("");
+  const [appliedDateTo, setAppliedDateTo] = useState("");
+  const [appliedHasError, setAppliedHasError] = useState<"__all__" | "com" | "sem">("__all__");
   const [offset, setOffset] = useState(0);
 
   const [items, setItems] = useState<PrazoInicialIntakeSummary[]>([]);
@@ -210,6 +231,10 @@ export default function PrazosIniciaisPage() {
   const [selectedSuggestions, setSelectedSuggestions] = useState<Record<number, boolean>>({});
   const [createdTaskIds, setCreatedTaskIds] = useState<Record<number, string>>({});
 
+  // Enums (naturezas, produtos, etc.) pra popular os MultiSelects dos filtros.
+  // Carregado 1x no mount — valores vêm do /api/v1/prazos-iniciais/enums.
+  const [enums, setEnums] = useState<PrazoInicialEnums | null>(null);
+
   // Classificação em batch (Sonnet) — Onda 1 manual.
   const [batches, setBatches] = useState<PrazoInicialBatchSummary[]>([]);
   const [batchesLoading, setBatchesLoading] = useState(false);
@@ -222,9 +247,20 @@ export default function PrazosIniciaisPage() {
       setLoadError(null);
       try {
         const nextOffset = resetPage ? 0 : offset;
+        const has_error =
+          appliedHasError === "com" ? true
+          : appliedHasError === "sem" ? false
+          : undefined;
         const payload = await fetchPrazosIniciaisIntakes({
-          status: appliedStatus !== "__all__" ? appliedStatus : undefined,
+          status: appliedStatus || undefined,
           cnj_number: appliedCnj || undefined,
+          office_id: appliedOffice || undefined,
+          natureza_processo: appliedNatureza || undefined,
+          produto: appliedProduto || undefined,
+          probabilidade_exito_global: appliedProbExito || undefined,
+          date_from: appliedDateFrom || undefined,
+          date_to: appliedDateTo || undefined,
+          has_error,
           limit: PAGE_SIZE,
           offset: nextOffset,
         });
@@ -237,7 +273,11 @@ export default function PrazosIniciaisPage() {
         setIsLoading(false);
       }
     },
-    [appliedCnj, appliedStatus, offset],
+    [
+      appliedCnj, appliedStatus, appliedOffice, appliedNatureza,
+      appliedProduto, appliedProbExito, appliedDateFrom, appliedDateTo,
+      appliedHasError, offset,
+    ],
   );
 
   const loadDetail = useCallback(async (intakeId: number) => {
@@ -328,14 +368,35 @@ export default function PrazosIniciaisPage() {
   const onAplicarFiltros = () => {
     setAppliedStatus(statusFilter);
     setAppliedCnj(cnjFilter.trim());
+    setAppliedOffice(officeFilter);
+    setAppliedNatureza(naturezaFilter);
+    setAppliedProduto(produtoFilter);
+    setAppliedProbExito(probExitoFilter);
+    setAppliedDateFrom(dateFromFilter);
+    setAppliedDateTo(dateToFilter);
+    setAppliedHasError(hasErrorFilter);
     setOffset(0);
   };
 
   const onLimparFiltros = () => {
-    setStatusFilter("__all__");
+    setStatusFilter("");
     setCnjFilter("");
-    setAppliedStatus("__all__");
+    setOfficeFilter("");
+    setNaturezaFilter("");
+    setProdutoFilter("");
+    setProbExitoFilter("");
+    setDateFromFilter("");
+    setDateToFilter("");
+    setHasErrorFilter("__all__");
+    setAppliedStatus("");
     setAppliedCnj("");
+    setAppliedOffice("");
+    setAppliedNatureza("");
+    setAppliedProduto("");
+    setAppliedProbExito("");
+    setAppliedDateFrom("");
+    setAppliedDateTo("");
+    setAppliedHasError("__all__");
     setOffset(0);
   };
 
@@ -375,16 +436,22 @@ export default function PrazosIniciaisPage() {
   // banco (sentença improcedente transitada, arquivamento, etc.).
   const onFinalizeWithoutProvidence = async () => {
     if (!detail) return;
-    const notes = window.prompt(
-      `Finalizar intake #${detail.id} SEM criar tarefa no Legal One?\n\n` +
-      "Isso vai:\n" +
-      "  • Subir a habilitação pro GED do processo no L1\n" +
-      "  • Cancelar a task legada 'Agendar Prazos'\n" +
-      "  • Marcar o intake como CONCLUIDO_SEM_PROVIDENCIA\n\n" +
-      "Opcional: digite um motivo abaixo (aparece na trilha de auditoria) " +
-      "ou deixe vazio e clique OK pra confirmar. Cancelar interrompe a ação.",
-      "",
-    );
+    const isRetry = detail.status === "CONCLUIDO_SEM_PROVIDENCIA";
+    const promptTitle = isRetry
+      ? `Retentar finalização do intake #${detail.id}?`
+      : `Finalizar intake #${detail.id} SEM criar tarefa no Legal One?`;
+    const promptBody = isRetry
+      ? "O intake já está CONCLUIDO_SEM_PROVIDENCIA. Reexecutar os passos pode\n" +
+        "ajudar se algum falhou na primeira vez (ex.: GED upload, cancelamento\n" +
+        "da legada). Idempotente — passos já concluídos são pulados.\n\n" +
+        "Opcional: digite um motivo da retentativa abaixo."
+      : "Isso vai:\n" +
+        "  • Subir a habilitação pro GED do processo no L1\n" +
+        "  • Cancelar a task legada 'Agendar Prazos'\n" +
+        "  • Marcar o intake como CONCLUIDO_SEM_PROVIDENCIA\n\n" +
+        "Opcional: digite um motivo abaixo (aparece na trilha de auditoria) " +
+        "ou deixe vazio e clique OK pra confirmar. Cancelar interrompe a ação.";
+    const notes = window.prompt(`${promptTitle}\n\n${promptBody}`, "");
     if (notes === null) return;  // usuário apertou Cancel
 
     setActionLoading(true);
@@ -634,6 +701,18 @@ export default function PrazosIniciaisPage() {
   useEffect(() => {
     loadBatches();
   }, [loadBatches]);
+
+  // Carrega enums 1x no mount. Usado pra popular os MultiSelects de
+  // Natureza/Produto/Probabilidade nos filtros.
+  useEffect(() => {
+    let cancelled = false;
+    fetchPrazosIniciaisEnums()
+      .then((e) => { if (!cancelled) setEnums(e); })
+      .catch((err) => {
+        console.warn("Falha ao carregar enums de prazos iniciais:", err);
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   const handleClassifyPending = useCallback(async () => {
     setClassifyingPending(true);
@@ -917,48 +996,158 @@ export default function PrazosIniciaisPage() {
             <Filter className="h-4 w-4" />
             Filtros
           </CardTitle>
-          <CardDescription>Filtre por status do intake ou por numero CNJ, com ou sem mascara.</CardDescription>
+          <CardDescription>
+            Multi-seleção na maioria dos campos. Use Ctrl/Cmd pra marcar várias opções.
+            Clique em <span className="font-semibold">Aplicar</span> (ou Enter no CNJ) pra executar a busca.
+          </CardDescription>
         </CardHeader>
-        <CardContent>
-          <div className="grid gap-4 md:grid-cols-[1fr_1fr_auto_auto_auto]">
+        <CardContent className="space-y-4">
+          {/* ── Linha 1: Status, Natureza, Produto ──────────────────── */}
+          <div className="grid gap-3 md:grid-cols-3">
             <div className="space-y-1">
-              <Label htmlFor="pin-status">Status</Label>
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger id="pin-status">
-                  <SelectValue placeholder="Todos os status" />
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Status
+              </Label>
+              <MultiSelect
+                options={STATUS_OPTIONS
+                  .filter((o) => o.value !== "__all__")
+                  .map((o) => ({ value: o.value, label: o.label }))}
+                defaultValue={statusFilter ? statusFilter.split(",").filter(Boolean) : []}
+                onValueChange={(vals) => setStatusFilter(vals.join(","))}
+                placeholder="Todos"
+                className="h-9 text-sm"
+                maxCount={2}
+              />
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Natureza do processo
+              </Label>
+              <MultiSelect
+                options={(enums?.naturezas ?? []).map((n) => ({ value: n, label: n }))}
+                defaultValue={naturezaFilter ? naturezaFilter.split(",").filter(Boolean) : []}
+                onValueChange={(vals) => setNaturezaFilter(vals.join(","))}
+                placeholder={enums ? "Todas" : "Carregando..."}
+                className="h-9 text-sm"
+                maxCount={2}
+              />
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Produto
+              </Label>
+              <MultiSelect
+                options={(enums?.produtos ?? []).map((p) => ({ value: p, label: p }))}
+                defaultValue={produtoFilter ? produtoFilter.split(",").filter(Boolean) : []}
+                onValueChange={(vals) => setProdutoFilter(vals.join(","))}
+                placeholder={enums ? "Todos" : "Carregando..."}
+                className="h-9 text-sm"
+                maxCount={2}
+              />
+            </div>
+          </div>
+
+          {/* ── Linha 2: Prob. êxito, Erro, Escritório ──────────────── */}
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="space-y-1">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Probabilidade de êxito global
+              </Label>
+              <MultiSelect
+                options={[
+                  { value: "remota", label: "Remota" },
+                  { value: "possivel", label: "Possível" },
+                  { value: "provavel", label: "Provável" },
+                ]}
+                defaultValue={probExitoFilter ? probExitoFilter.split(",").filter(Boolean) : []}
+                onValueChange={(vals) => setProbExitoFilter(vals.join(","))}
+                placeholder="Todas"
+                className="h-9 text-sm"
+                maxCount={3}
+              />
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Mensagem de erro
+              </Label>
+              <Select value={hasErrorFilter} onValueChange={(v) => setHasErrorFilter(v as "__all__" | "com" | "sem")}>
+                <SelectTrigger className="h-9 text-sm">
+                  <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {STATUS_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
+                  <SelectItem value="__all__">Qualquer</SelectItem>
+                  <SelectItem value="com">Só com erro</SelectItem>
+                  <SelectItem value="sem">Só sem erro</SelectItem>
                 </SelectContent>
               </Select>
             </div>
 
             <div className="space-y-1">
-              <Label htmlFor="pin-cnj">CNJ</Label>
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Escritório (IDs)
+              </Label>
+              <Input
+                placeholder="CSV de IDs. Ex.: 61,62"
+                value={officeFilter}
+                onChange={(e) => setOfficeFilter(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") onAplicarFiltros(); }}
+                className="h-9 text-sm"
+              />
+            </div>
+          </div>
+
+          {/* ── Linha 3: CNJ, Período, Botões ───────────────────────── */}
+          <div className="grid gap-3 md:grid-cols-[2fr_1fr_1fr_auto_auto_auto]">
+            <div className="space-y-1">
+              <Label htmlFor="pin-cnj" className="text-xs uppercase tracking-wide text-muted-foreground">
+                CNJ
+              </Label>
               <Input
                 id="pin-cnj"
-                placeholder="Ex.: 0072837-30.2026.8.05.0001"
+                placeholder="Com ou sem máscara — match por dígitos"
                 value={cnjFilter}
                 onChange={(event) => setCnjFilter(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") onAplicarFiltros();
-                }}
+                onKeyDown={(event) => { if (event.key === "Enter") onAplicarFiltros(); }}
+                className="h-9 text-sm"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Recebido de
+              </Label>
+              <Input
+                type="date"
+                value={dateFromFilter}
+                onChange={(e) => setDateFromFilter(e.target.value)}
+                className="h-9 text-sm"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Recebido até
+              </Label>
+              <Input
+                type="date"
+                value={dateToFilter}
+                onChange={(e) => setDateToFilter(e.target.value)}
+                className="h-9 text-sm"
               />
             </div>
 
             <div className="flex items-end">
-              <Button type="button" onClick={onAplicarFiltros} disabled={isLoading}>
+              <Button type="button" onClick={onAplicarFiltros} disabled={isLoading} className="h-9">
                 <Search className="mr-2 h-4 w-4" />
                 Aplicar
               </Button>
             </div>
 
             <div className="flex items-end">
-              <Button type="button" variant="outline" onClick={onLimparFiltros} disabled={isLoading}>
+              <Button type="button" variant="outline" onClick={onLimparFiltros} disabled={isLoading} className="h-9">
                 <Undo2 className="mr-2 h-4 w-4" />
                 Limpar
               </Button>
@@ -970,7 +1159,8 @@ export default function PrazosIniciaisPage() {
                 variant="ghost"
                 onClick={() => loadIntakes()}
                 disabled={isLoading}
-                title="Atualizar lista"
+                title="Atualizar lista sem mudar filtros"
+                className="h-9"
               >
                 <RefreshCw className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
               </Button>
@@ -1539,7 +1729,6 @@ export default function PrazosIniciaisPage() {
                 !detail.lawsuit_id ||
                 detail.status === "CANCELADO" ||
                 detail.status === "AGENDADO" ||
-                detail.status === "CONCLUIDO_SEM_PROVIDENCIA" ||
                 detail.status === "RECEBIDO" ||
                 detail.status === "EM_CLASSIFICACAO"
               }
@@ -1547,7 +1736,9 @@ export default function PrazosIniciaisPage() {
               title={
                 !detail?.lawsuit_id
                   ? "Intake sem processo vinculado — reprocesse o CNJ primeiro"
-                  : "Sobe habilitação pro GED, cancela task legada, marca intake como concluído SEM criar tarefa nova no L1"
+                  : detail?.status === "CONCLUIDO_SEM_PROVIDENCIA"
+                    ? "Retentar os passos que faltaram (idempotente): refaz GED se não subiu, cleanup PDF se não apagou, reenfileira cancelamento da legada"
+                    : "Sobe habilitação pro GED, cancela task legada, marca intake como concluído SEM criar tarefa nova no L1"
               }
             >
               {actionLoading ? (
@@ -1555,7 +1746,9 @@ export default function PrazosIniciaisPage() {
               ) : (
                 <CheckCircle2 className="mr-2 h-4 w-4" />
               )}
-              Finalizar sem providência
+              {detail?.status === "CONCLUIDO_SEM_PROVIDENCIA"
+                ? "Retentar finalização"
+                : "Finalizar sem providência"}
             </Button>
 
             <Button

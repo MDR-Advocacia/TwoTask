@@ -462,27 +462,91 @@ def get_enums(
     )
 
 
+def _parse_csv_strs(value: Optional[str]) -> list[str]:
+    """Divide string CSV em lista de strings limpas. 'a,b, c ' → ['a','b','c']."""
+    if not value:
+        return []
+    return [v.strip() for v in value.split(",") if v.strip()]
+
+
+def _parse_csv_ints(value: Optional[str]) -> list[int]:
+    """Divide string CSV em lista de ints. '61, 62' → [61, 62]. Tolerante a erros."""
+    out: list[int] = []
+    for v in _parse_csv_strs(value):
+        try:
+            out.append(int(v))
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
 @router.get(
     "/intakes",
     response_model=IntakeListResponse,
     summary="Lista intakes com filtros.",
 )
 def list_intakes(
-    status_filter: Optional[str] = Query(default=None, alias="status"),
-    office_id: Optional[int] = Query(default=None),
+    status_filter: Optional[str] = Query(
+        default=None,
+        alias="status",
+        description="Aceita CSV: 'CLASSIFICADO,AGENDADO'.",
+    ),
+    office_id: Optional[str] = Query(
+        default=None,
+        description="CSV de office_ids: '61,62'.",
+    ),
     cnj_number: Optional[str] = Query(default=None),
-    natureza_processo: Optional[str] = Query(default=None),
-    produto: Optional[str] = Query(default=None),
+    natureza_processo: Optional[str] = Query(
+        default=None,
+        description="CSV: 'COMUM,JUIZADO,AGRAVO_INSTRUMENTO,OUTRO'.",
+    ),
+    produto: Optional[str] = Query(
+        default=None,
+        description="CSV: 'SUPERENDIVIDAMENTO,CREDCESTA,...'.",
+    ),
+    probabilidade_exito_global: Optional[str] = Query(
+        default=None,
+        description="CSV: 'remota,possivel,provavel'.",
+    ),
+    date_from: Optional[str] = Query(
+        default=None,
+        description="Data início (YYYY-MM-DD). Filtra por received_at >=.",
+    ),
+    date_to: Optional[str] = Query(
+        default=None,
+        description="Data fim (YYYY-MM-DD). Filtra por received_at < date_to+1dia.",
+    ),
+    has_error: Optional[bool] = Query(
+        default=None,
+        description="true = só com error_message; false = só sem; omitido = ambos.",
+    ),
+    batch_id: Optional[int] = Query(
+        default=None,
+        description="Filtra intakes de um batch de classificação específico.",
+    ),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
     query = db.query(PrazoInicialIntake)
-    if status_filter:
-        query = query.filter(PrazoInicialIntake.status == status_filter)
-    if office_id is not None:
-        query = query.filter(PrazoInicialIntake.office_id == office_id)
+
+    # status — CSV, IN quando múltiplo
+    status_list = _parse_csv_strs(status_filter)
+    if status_list:
+        if len(status_list) == 1:
+            query = query.filter(PrazoInicialIntake.status == status_list[0])
+        else:
+            query = query.filter(PrazoInicialIntake.status.in_(status_list))
+
+    # office_id — CSV de ints
+    office_ids = _parse_csv_ints(office_id)
+    if office_ids:
+        if len(office_ids) == 1:
+            query = query.filter(PrazoInicialIntake.office_id == office_ids[0])
+        else:
+            query = query.filter(PrazoInicialIntake.office_id.in_(office_ids))
+
     if cnj_number:
         # aceita busca por pedaço do CNJ (sem máscara)
         normalized = "".join(c for c in cnj_number if c.isdigit())
@@ -490,12 +554,61 @@ def list_intakes(
             query = query.filter(
                 PrazoInicialIntake.cnj_number.like(f"%{normalized}%")
             )
-    if natureza_processo:
+
+    # natureza_processo — CSV
+    natureza_list = _parse_csv_strs(natureza_processo)
+    if natureza_list:
+        if len(natureza_list) == 1:
+            query = query.filter(
+                PrazoInicialIntake.natureza_processo == natureza_list[0]
+            )
+        else:
+            query = query.filter(
+                PrazoInicialIntake.natureza_processo.in_(natureza_list)
+            )
+
+    # produto — CSV
+    produto_list = _parse_csv_strs(produto)
+    if produto_list:
+        if len(produto_list) == 1:
+            query = query.filter(PrazoInicialIntake.produto == produto_list[0])
+        else:
+            query = query.filter(PrazoInicialIntake.produto.in_(produto_list))
+
+    # probabilidade_exito_global — CSV
+    prob_list = [p.lower() for p in _parse_csv_strs(probabilidade_exito_global)]
+    if prob_list:
+        if len(prob_list) == 1:
+            query = query.filter(
+                PrazoInicialIntake.probabilidade_exito_global == prob_list[0]
+            )
+        else:
+            query = query.filter(
+                PrazoInicialIntake.probabilidade_exito_global.in_(prob_list)
+            )
+
+    # Data range por received_at — comparação lexicográfica segura pq é timestamptz
+    if date_from:
+        query = query.filter(PrazoInicialIntake.received_at >= date_from)
+    if date_to:
+        # Inclusivo no dia final: compara com "<= date_to 23:59:59".
+        query = query.filter(PrazoInicialIntake.received_at <= f"{date_to}T23:59:59.999999+00:00")
+
+    # Presença de erro (independente do status — útil pra triagem)
+    if has_error is True:
         query = query.filter(
-            PrazoInicialIntake.natureza_processo == natureza_processo
+            PrazoInicialIntake.error_message.isnot(None),
+            PrazoInicialIntake.error_message != "",
         )
-    if produto:
-        query = query.filter(PrazoInicialIntake.produto == produto)
+    elif has_error is False:
+        query = query.filter(
+            (PrazoInicialIntake.error_message.is_(None))
+            | (PrazoInicialIntake.error_message == "")
+        )
+
+    # Batch de classificação
+    if batch_id is not None:
+        query = query.filter(PrazoInicialIntake.classification_batch_id == batch_id)
 
     total = query.count()
     items = (

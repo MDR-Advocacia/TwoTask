@@ -343,9 +343,17 @@ export interface PrazoInicialApplyBatchResponse {
 }
 
 export interface PrazoInicialIntakeFilters {
-  status?: string;
+  // Todos os filtros abaixo aceitam CSV quando é multi-valor.
+  status?: string;           // "CLASSIFICADO,AGENDADO"
   cnj_number?: string;
-  office_id?: number;
+  office_id?: string;        // "61,62" (string porque backend aceita CSV agora)
+  natureza_processo?: string;
+  produto?: string;
+  probabilidade_exito_global?: string; // "remota,possivel,provavel"
+  date_from?: string;        // "YYYY-MM-DD"
+  date_to?: string;
+  has_error?: boolean;
+  batch_id?: number;
   limit?: number;
   offset?: number;
 }

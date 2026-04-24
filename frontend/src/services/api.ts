@@ -180,8 +180,22 @@ export async function fetchPrazosIniciaisIntakes(
   const params = new URLSearchParams();
   if (filters.status) params.set("status", filters.status);
   if (filters.cnj_number) params.set("cnj_number", filters.cnj_number);
-  if (typeof filters.office_id === "number") {
-    params.set("office_id", String(filters.office_id));
+  // office_id agora aceita CSV no backend — serializamos como string.
+  if (filters.office_id) params.set("office_id", filters.office_id);
+  if (filters.natureza_processo) {
+    params.set("natureza_processo", filters.natureza_processo);
+  }
+  if (filters.produto) params.set("produto", filters.produto);
+  if (filters.probabilidade_exito_global) {
+    params.set("probabilidade_exito_global", filters.probabilidade_exito_global);
+  }
+  if (filters.date_from) params.set("date_from", filters.date_from);
+  if (filters.date_to) params.set("date_to", filters.date_to);
+  if (typeof filters.has_error === "boolean") {
+    params.set("has_error", String(filters.has_error));
+  }
+  if (typeof filters.batch_id === "number") {
+    params.set("batch_id", String(filters.batch_id));
   }
   if (typeof filters.limit === "number") params.set("limit", String(filters.limit));
   if (typeof filters.offset === "number") params.set("offset", String(filters.offset));
