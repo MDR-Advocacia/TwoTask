@@ -1275,24 +1275,27 @@ class PublicationSearchService:
             base_date = date_cls.today()
 
         # ── Data/hora da tarefa ─────────────────────────────────────
-        # Se for audiência com data extraída, usa EXATAMENTE a data/hora
-        # da publicação sem qualquer conversão de fuso horário.
+        # Os horários extraidos das publicacoes (audiencia_hora) e os
+        # prazos (23:59:59) sao sempre no fuso LOCAL brasileiro (BRT).
+        # Usamos offset explicito -03:00 em vez de `Z` (UTC) pra que o
+        # L1 interprete corretamente. Mandar "13:00:00Z" faz o L1 gravar
+        # 13:00 UTC e renderizar 10:00 BRT, errado.
+        BR_OFFSET = "-03:00"
         if rec.audiencia_data:
-            # Formata ISO: YYYY-MM-DDTHH:MM:SSZ
             if rec.audiencia_hora:
-                due_iso = f"{rec.audiencia_data}T{rec.audiencia_hora}:00Z"
+                due_iso = f"{rec.audiencia_data}T{rec.audiencia_hora}:00{BR_OFFSET}"
             else:
-                # Sem horário: usa 23:59:59 como fallback
-                due_iso = f"{rec.audiencia_data}T23:59:59Z"
+                # Sem horário: usa 23:59:59 como fallback (fim do dia BRT)
+                due_iso = f"{rec.audiencia_data}T23:59:59{BR_OFFSET}"
         else:
             # Sem audiência: usa prazo padrão
             # Se due_date_reference == "today", conta a partir da data atual
             due_ref = getattr(tmpl, "due_date_reference", "publication") or "publication"
             due_base = date_cls.today() if due_ref == "today" else base_date
             due_date = due_base + timedelta(days=tmpl.due_business_days or 5)
-            due_iso = due_date.strftime("%Y-%m-%dT23:59:59Z")
+            due_iso = due_date.strftime(f"%Y-%m-%dT23:59:59{BR_OFFSET}")
 
-        publish_iso = base_date.strftime("%Y-%m-%dT00:00:00Z")
+        publish_iso = base_date.strftime(f"%Y-%m-%dT00:00:00{BR_OFFSET}")
 
         # Interpolação simples de variáveis na descrição/notas
         ctx = {
