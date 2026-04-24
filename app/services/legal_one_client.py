@@ -6,6 +6,8 @@ import os
 import re
 import threading
 import time
+import base64
+import hashlib
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -1197,25 +1199,29 @@ class LegalOneApiClient:
         # Passo 2 — PUT bytes direto no Azure Blob. URL já tem SAS
         # embutido; não usamos nossos headers de Authorization aqui.
         #
-        # Mantem o PUT o mais simples possivel: bytes crus do PDF para a URL
-        # SAS retornada pelo GetContainer. Evitamos propriedades extras do
-        # Azure Blob enquanto isolamos o motivo do L1 nao localizar o arquivo.
+        # Envia os bytes crus do PDF para a URL SAS retornada pelo
+        # GetContainer. O MD5 e a versao do Blob API ajudam a deixar o PUT
+        # deterministico para o Azure e para qualquer validacao posterior do L1.
+        content_md5 = base64.b64encode(hashlib.md5(file_bytes).digest()).decode("ascii")
         try:
             put_response = requests.put(
                 external_id,
                 data=file_bytes,
                 headers={
                     "x-ms-blob-type": "BlockBlob",
+                    "x-ms-version": "2018-03-28",
+                    "Content-MD5": content_md5,
                     "Content-Type": "application/pdf",
                 },
                 timeout=60,
             )
             put_response.raise_for_status()
             self.logger.info(
-                "GED PUT OK: blob=%s status=%s size=%d etag=%s request_id=%s",
+                "GED PUT OK: blob=%s status=%s size=%d md5=%s etag=%s request_id=%s",
                 temp_file_name,
                 put_response.status_code,
                 len(file_bytes),
+                content_md5,
                 put_response.headers.get("ETag", "-"),
                 put_response.headers.get("x-ms-request-id", "-"),
             )
@@ -1357,83 +1363,13 @@ class LegalOneApiClient:
                 raise LegalOneGedUploadError(f"Erro ao criar registro no GED: {exc}") from exc
 
         if created is None and exhausted_storage_miss:
-            archive_as_blob_payload = {**payload, "archive": temp_file_name}
-            self.logger.warning(
-                "GED POST v10 esgotou com storage miss. "
-                "Tentando diagnostico com archive igual ao fileName temporario."
+            self.logger.error(
+                "GED upload falhou apos retries de storage. Payload v10 enviado:\n%s",
+                json.dumps(payload, indent=2, ensure_ascii=False),
             )
-            self.logger.info(
-                "GED POST archive=temp_file_name payload:\n%s",
-                json.dumps(archive_as_blob_payload, indent=2, ensure_ascii=False),
+            raise LegalOneGedUploadError(
+                f"Falha no POST /documents (storage miss persistente): HTTP {last_error_status}. {last_error_body}"
             )
-            try:
-                resp = self._request_with_retry("POST", post_url, json=archive_as_blob_payload)
-                created = resp.json() or {}
-                self.logger.info(
-                    "GED POST archive=temp_file_name OK: document_id=%s",
-                    created.get("id"),
-                )
-            except requests.exceptions.HTTPError as exc:
-                fallback_status = exc.response.status_code if exc.response is not None else "?"
-                fallback_body = exc.response.text[:800] if exc.response is not None else ""
-                self.logger.error(
-                    "GED POST archive=temp_file_name falhou: HTTP %s. Body: %s",
-                    fallback_status,
-                    fallback_body,
-                )
-                docs_example_payload = {
-                    **payload,
-                    "id": 0,
-                    "generateUrlDownload": "",
-                    "type": "",
-                    "repository": "LegalOne",
-                    "isModel": True,
-                    "relationships": [
-                        {
-                            "id": 0,
-                            "link": "Litigation",
-                            "linkItem": {
-                                "id": int(litigation_id),
-                                "description": "",
-                            },
-                        }
-                    ],
-                }
-                self.logger.warning(
-                    "GED POST archive=temp_file_name falhou. "
-                    "Tentando diagnostico com payload maximo do exemplo da documentacao."
-                )
-                self.logger.info(
-                    "GED POST docs-example payload:\n%s",
-                    json.dumps(docs_example_payload, indent=2, ensure_ascii=False),
-                )
-                try:
-                    resp = self._request_with_retry("POST", post_url, json=docs_example_payload)
-                    created = resp.json() or {}
-                    self.logger.info(
-                        "GED POST docs-example OK: document_id=%s",
-                        created.get("id"),
-                    )
-                except requests.exceptions.HTTPError as docs_exc:
-                    docs_status = docs_exc.response.status_code if docs_exc.response is not None else "?"
-                    docs_body = docs_exc.response.text[:800] if docs_exc.response is not None else ""
-                    self.logger.error(
-                        "GED POST docs-example falhou: HTTP %s. Body: %s",
-                        docs_status,
-                        docs_body,
-                    )
-                    self.logger.error(
-                        "GED upload falhou apos retries de storage. Payload v10 enviado:\n%s",
-                        json.dumps(payload, indent=2, ensure_ascii=False),
-                    )
-                    raise LegalOneGedUploadError(
-                        "Falha no POST /documents "
-                        f"(payload v10 storage miss HTTP {last_error_status}; "
-                        f"archive=temp_file_name HTTP {fallback_status}; "
-                        f"docs-example HTTP {docs_status}). "
-                        f"V10: {last_error_body} | ArchiveFallback: {fallback_body} | "
-                        f"DocsExample: {docs_body}"
-                    ) from docs_exc
 
         if created is None:
             raise LegalOneGedUploadError(
