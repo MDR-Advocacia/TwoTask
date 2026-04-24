@@ -1275,27 +1275,39 @@ class PublicationSearchService:
             base_date = date_cls.today()
 
         # ── Data/hora da tarefa ─────────────────────────────────────
-        # Os horários extraidos das publicacoes (audiencia_hora) e os
+        # Os horarios extraidos das publicacoes (audiencia_hora) e os
         # prazos (23:59:59) sao sempre no fuso LOCAL brasileiro (BRT).
-        # Usamos offset explicito -03:00 em vez de `Z` (UTC) pra que o
-        # L1 interprete corretamente. Mandar "13:00:00Z" faz o L1 gravar
-        # 13:00 UTC e renderizar 10:00 BRT, errado.
-        BR_OFFSET = "-03:00"
+        # O L1 IGNORA o offset ISO (`-03:00`) ao parsear datetime — trata
+        # o numero literal como UTC e depois renderiza em BRT (subtrai 3h).
+        # Resultado: mandar "11:30:00-03:00" aparece como 08:30 no L1.
+        # Solucao (mesma usada em batch_strategies/spreadsheet_strategy):
+        # converter o horario local BRT pra UTC com `Z` ANTES de mandar.
+        # Assim 11:30 BRT vira 14:30Z, o L1 grava 14:30 UTC, renderiza
+        # 11:30 BRT na tela. Visualmente correto.
+        BR_TZ = ZoneInfo("America/Sao_Paulo")
+
+        def _brt_to_utc_z(date_str: str, time_str: str) -> str:
+            """Converte 'YYYY-MM-DD' + 'HH:MM[:SS]' BRT em ISO UTC com Z."""
+            # garante segundos
+            if time_str.count(":") == 1:
+                time_str = f"{time_str}:00"
+            local_dt = datetime.fromisoformat(f"{date_str}T{time_str}").replace(tzinfo=BR_TZ)
+            return local_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
         if rec.audiencia_data:
             if rec.audiencia_hora:
-                due_iso = f"{rec.audiencia_data}T{rec.audiencia_hora}:00{BR_OFFSET}"
+                due_iso = _brt_to_utc_z(rec.audiencia_data, rec.audiencia_hora)
             else:
-                # Sem horário: usa 23:59:59 como fallback (fim do dia BRT)
-                due_iso = f"{rec.audiencia_data}T23:59:59{BR_OFFSET}"
+                # Sem horario: usa 23:59:59 BRT como fallback (fim do dia)
+                due_iso = _brt_to_utc_z(rec.audiencia_data, "23:59:59")
         else:
-            # Sem audiência: usa prazo padrão
-            # Se due_date_reference == "today", conta a partir da data atual
+            # Sem audiencia: usa prazo padrao
             due_ref = getattr(tmpl, "due_date_reference", "publication") or "publication"
             due_base = date_cls.today() if due_ref == "today" else base_date
             due_date = due_base + timedelta(days=tmpl.due_business_days or 5)
-            due_iso = due_date.strftime(f"%Y-%m-%dT23:59:59{BR_OFFSET}")
+            due_iso = _brt_to_utc_z(due_date.isoformat(), "23:59:59")
 
-        publish_iso = base_date.strftime(f"%Y-%m-%dT00:00:00{BR_OFFSET}")
+        publish_iso = _brt_to_utc_z(base_date.isoformat(), "00:00:00")
 
         # Interpolação simples de variáveis na descrição/notas
         ctx = {
