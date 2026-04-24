@@ -1053,16 +1053,20 @@ class PublicationSearchService:
     def _apply_required_task_defaults(self, payload: dict) -> None:
         """
         Garante que todo payload enviado pro L1 tenha os campos que a API
-        considera obrigatórios: `status.id` e `originOfficeId`. O proposer
-        padrão (_render_proposal) já preenche ambos, mas quando o frontend
-        manda `payload_override` (modal de confirmar/editar tarefa) pode
-        acontecer dele vir sem esses campos — L1 devolve 400.
+        considera obrigatórios: `status.id`, `originOfficeId` e `publishDate`.
+        O proposer padrão (_render_proposal) já preenche todos, mas quando
+        o frontend manda `payload_override` (modal de confirmar/editar
+        tarefa avulsa) pode acontecer dele vir sem esses campos — L1
+        devolve 400 em cascata (um erro por campo faltante).
 
         Regras:
         - `status.id` ausente ou malformado → default 0 (igual _render_proposal).
         - `originOfficeId` ausente → herda de `responsibleOfficeId` quando
           presente; senão fica sem, pra preservar o erro explícito caso não
           tenha office em lugar nenhum (melhor falhar cedo).
+        - `publishDate` ausente → usa `startDateTime` (quando o SubTypeId
+          tá preenchido L1 exige esse campo obrigatoriamente); se nem
+          `startDateTime` houver, usa now() em UTC.
 
         Modifica o `payload` in-place.
         """
@@ -1073,6 +1077,14 @@ class PublicationSearchService:
         # originOfficeId — herda de responsibleOfficeId se ausente
         if not payload.get("originOfficeId") and payload.get("responsibleOfficeId"):
             payload["originOfficeId"] = payload["responsibleOfficeId"]
+        # publishDate — obrigatório quando SubTypeId tem valor. Usa o
+        # startDateTime (semantica: "data de publicação" == data-base da
+        # tarefa no modal de avulsa); fallback pra now() em UTC com sufixo Z.
+        if not payload.get("publishDate"):
+            fallback = payload.get("startDateTime")
+            if not fallback:
+                fallback = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            payload["publishDate"] = fallback
 
     def _render_proposal(self, rec: PublicationRecord, tmpl, lawsuit_responsible: dict = None) -> dict:
         """Monta o dict de payload de tarefa baseado no template + record."""
