@@ -1184,16 +1184,17 @@ class LegalOneApiClient:
         # Passo 2 — PUT bytes direto no Azure Blob. URL já tem SAS
         # embutido; não usamos nossos headers de Authorization aqui.
         #
-        # MINIMALISMO: o Azure Blob Storage PUT exige *apenas*
-        # `x-ms-blob-type: BlockBlob`. Qualquer header a mais (Content-
-        # Type, x-ms-blob-content-type) pode interferir com o que o L1
-        # usa internamente pra indexar o blob.
+        # Mantem o PUT alinhado ao tutorial: bytes crus do PDF para a URL
+        # SAS retornada pelo GetContainer, com o blob explicitamente marcado
+        # como PDF no Azure.
         try:
             put_response = requests.put(
                 external_id,
                 data=file_bytes,
                 headers={
                     "x-ms-blob-type": "BlockBlob",
+                    "Content-Type": "application/pdf",
+                    "x-ms-blob-content-type": "application/pdf",
                 },
                 timeout=60,
             )
@@ -1206,6 +1207,23 @@ class LegalOneApiClient:
                 put_response.headers.get("ETag", "-"),
                 put_response.headers.get("x-ms-request-id", "-"),
             )
+
+            head_response = requests.head(external_id, timeout=30)
+            head_response.raise_for_status()
+            azure_size_raw = head_response.headers.get("Content-Length")
+            azure_size = int(azure_size_raw) if azure_size_raw and azure_size_raw.isdigit() else None
+            self.logger.info(
+                "GED blob HEAD OK: blob=%s status=%s azure_size=%s content_type=%s request_id=%s",
+                temp_file_name,
+                head_response.status_code,
+                azure_size_raw or "-",
+                head_response.headers.get("Content-Type", "-"),
+                head_response.headers.get("x-ms-request-id", "-"),
+            )
+            if azure_size is not None and azure_size != len(file_bytes):
+                raise LegalOneGedUploadError(
+                    f"Blob enviado com tamanho divergente no Azure: esperado {len(file_bytes)}, recebido {azure_size}."
+                )
         except requests.exceptions.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else "?"
             body = exc.response.text[:400] if exc.response is not None else ""
@@ -1263,11 +1281,6 @@ class LegalOneApiClient:
             "archive": archive_candidate,
             "description": description or file_name,
             "typeId": type_id,
-            # `repository` o tutorial nao passa, mas o swagger lista
-            # como enum (LegalOne, OneDrive, GoogleDrive, ...). Se o L1
-            # estiver procurando o blob no repositorio errado quando o
-            # campo vem omisso, isso resolve.
-            "repository": "LegalOne",
             "relationships": [
                 {
                     "link": "Litigation",
