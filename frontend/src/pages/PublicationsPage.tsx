@@ -3277,16 +3277,16 @@ const PublicationsPage = () => {
 
       {/* Detail Dialog */}
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="!max-w-[min(95vw,72rem)] max-h-[92vh] w-[95vw] overflow-y-auto overflow-x-hidden p-5 sm:p-6">
           <DialogHeader>
-            <DialogTitle>
+            <DialogTitle className="text-xl">
               Publicação #{selectedRecord?.id} (LO: {selectedRecord?.legal_one_update_id})
             </DialogTitle>
             <DialogDescription>Detalhe completo do registro.</DialogDescription>
           </DialogHeader>
           {selectedRecord && (
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4 text-sm">
+              <div className="grid grid-cols-1 gap-4 text-base sm:grid-cols-2">
                 <div>
                   <span className="font-medium text-muted-foreground">Status: </span>
                   <Badge variant={statusColor(selectedRecord.status)}>{selectedRecord.status}</Badge>
@@ -3401,17 +3401,17 @@ const PublicationsPage = () => {
                 )}
               </div>
               <div>
-                <Label className="text-muted-foreground">Texto da Publicação</Label>
-                <ScrollArea className="mt-1 h-[200px] rounded border p-3">
-                  <p className="whitespace-pre-wrap text-sm">
+                <Label className="text-sm text-muted-foreground">Texto da Publicação</Label>
+                <ScrollArea className="mt-1 h-[360px] rounded border p-4">
+                  <p className="whitespace-pre-wrap text-[15px] leading-relaxed">
                     {selectedRecord.description || "Sem texto disponível."}
                   </p>
                 </ScrollArea>
               </div>
               {selectedRecord.notes && (
                 <div>
-                  <Label className="text-muted-foreground">Observações</Label>
-                  <p className="mt-1 text-sm">{selectedRecord.notes}</p>
+                  <Label className="text-sm text-muted-foreground">Observações</Label>
+                  <p className="mt-1 whitespace-pre-wrap text-[15px] leading-relaxed">{selectedRecord.notes}</p>
                 </div>
               )}
               <div className="flex gap-2 pt-2">
