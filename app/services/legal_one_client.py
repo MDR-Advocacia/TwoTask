@@ -1180,6 +1180,12 @@ class LegalOneApiClient:
             raise LegalOneGedUploadError(f"Erro ao enviar bytes pro blob: {exc}") from exc
 
         # Passo 3 — POST metadata + relationship + fileUploader.
+        # IMPORTANTE: a doc swagger da Thomson Reuters declara os campos
+        # complexos em PascalCase (Link/LinkItem.Id, ExternalId, etc.),
+        # mas a API OData do tenant (mdradvocacia) rejeita esse formato
+        # com "Does not support untyped value in non-open type". A
+        # convenção que funciona (validada com link_task_to_lawsuit) é
+        # camelCase consistente: linkType/linkId, externalId, etc.
         post_endpoint = "/Documents"
         post_url = f"{self.base_url}{post_endpoint}"
         payload: Dict[str, Any] = {
@@ -1188,14 +1194,14 @@ class LegalOneApiClient:
             "typeId": type_id,
             "fileName": temp_file_name,
             "fileUploader": {
-                "ExternalId": external_id,
-                "FileName": file_name,
-                "UploadedFileSize": len(file_bytes),
+                "externalId": external_id,
+                "fileName": file_name,
+                "uploadedFileSize": len(file_bytes),
             },
             "relationships": [
                 {
-                    "Link": "Litigation",
-                    "LinkItem": {"Id": int(litigation_id)},
+                    "linkType": "Litigation",
+                    "linkId": int(litigation_id),
                 }
             ],
         }
@@ -1212,6 +1218,13 @@ class LegalOneApiClient:
         except requests.exceptions.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else "?"
             body = exc.response.text[:400] if exc.response is not None else ""
+            # Loga o payload enviado pra facilitar diagnostico de
+            # incompatibilidades de schema com o L1 (mesmo padrao
+            # do create_task). Expoe no stdout do container.
+            self.logger.error(
+                "GED upload falhou. Payload enviado:\n%s",
+                json.dumps(payload, indent=2, ensure_ascii=False),
+            )
             raise LegalOneGedUploadError(
                 f"Falha no POST /Documents: HTTP {status}. {body}"
             ) from exc
