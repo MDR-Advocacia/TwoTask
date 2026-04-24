@@ -126,6 +126,63 @@ import { apiFetch } from "@/lib/api-client";
 const API = "/api/v1/publications";
 const API_V1 = "/api/v1";
 
+// ─── Timezone helpers ────────────────────────────────────────────────
+// O backend persiste datas/horas como ISO UTC (sufixo "Z"), e o L1
+// renderiza em BRT (UTC-3). O modal de agendamento precisa exibir e
+// editar em BRT pra bater com o que o usuario ve nas publicacoes e no
+// LegalOne. Estes helpers fazem a ponte UTC <-> BRT.
+const BR_TZ = "America/Sao_Paulo";
+
+/** Extrai "YYYY-MM-DD" no fuso BRT a partir de um ISO UTC. */
+function brtDateFromIso(iso?: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: BR_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return fmt.format(d); // "YYYY-MM-DD"
+}
+
+/** Extrai "HH:MM" no fuso BRT a partir de um ISO UTC. */
+function brtTimeFromIso(iso?: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const fmt = new Intl.DateTimeFormat("en-GB", {
+    timeZone: BR_TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  return fmt.format(d); // "HH:MM"
+}
+
+/**
+ * Constroi ISO UTC com sufixo "Z" a partir de data + hora locais BRT.
+ * dateStr "YYYY-MM-DD" + timeStr "HH:MM" (ou "HH:MM:SS") em BRT.
+ * Brasil nao tem mais DST; usamos offset fixo -03:00.
+ */
+function brtToUtcIso(dateStr: string, timeStr: string): string {
+  if (!dateStr) return "";
+  const [yStr, mStr, dStr] = dateStr.split("-");
+  const [hStr = "0", minStr = "0", sStr = "0"] = timeStr.split(":");
+  const y = Number(yStr);
+  const m = Number(mStr);
+  const d = Number(dStr);
+  const h = Number(hStr);
+  const min = Number(minStr);
+  const s = Number(sStr);
+  if ([y, m, d, h, min, s].some((n) => isNaN(n))) return "";
+  // BRT = UTC-3, entao UTC = BRT + 3h. Date.UTC normaliza overflow do dia.
+  const ms = Date.UTC(y, m - 1, d, h + 3, min, s);
+  const out = new Date(ms).toISOString();
+  return out.replace(/\.\d{3}Z$/, "Z");
+}
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 interface Statistics {
@@ -1449,8 +1506,11 @@ const PublicationsPage = () => {
   const handleAddCustomTask = () => {
     const in7Days = new Date();
     in7Days.setDate(in7Days.getDate() + 7);
-    const dateStr = in7Days.toISOString().slice(0, 10);
-    const defaultIso = `${dateStr}T23:59:00Z`;
+    // Usa data BRT (nao UTC) pra que "daqui a 7 dias" reflita 7 dias do
+    // calendario do usuario, e horario 23:59 local BRT = 02:59:00Z do dia
+    // seguinte em UTC.
+    const dateStr = brtDateFromIso(in7Days.toISOString());
+    const defaultIso = brtToUtcIso(dateStr, "23:59:00");
 
     const newTask: Partial<ProposedTask> = {
       description: "",
@@ -3945,12 +4005,11 @@ const PublicationsPage = () => {
                                     <Input
                                       type="date"
                                       className="text-sm"
-                                      value={payload.endDateTime?.slice(0, 10) ?? ""}
+                                      value={brtDateFromIso(payload.endDateTime)}
                                       onChange={(e) => {
-                                        const newDate = e.target.value;
-                                        const currentIso = payload.endDateTime ?? "";
-                                        const time = currentIso.slice(11, 19) || "23:59:59";
-                                        const iso = `${newDate}T${time}Z`;
+                                        const newDate = e.target.value; // BRT
+                                        const currentTime = brtTimeFromIso(payload.endDateTime) || "23:59";
+                                        const iso = brtToUtcIso(newDate, `${currentTime}:00`);
                                         const next = [...editedPayloads];
                                         next[idx] = { ...next[idx], endDateTime: iso, startDateTime: iso };
                                         setEditedPayloads(next);
@@ -3963,13 +4022,13 @@ const PublicationsPage = () => {
                                       type="time"
                                       step={60}
                                       className="text-sm"
-                                      value={payload.endDateTime?.slice(11, 16) ?? ""}
+                                      value={brtTimeFromIso(payload.endDateTime)}
                                       onChange={(e) => {
-                                        const newTime = e.target.value || "23:59";
-                                        const currentIso = payload.endDateTime ?? "";
-                                        const date = currentIso.slice(0, 10) ||
-                                          new Date().toISOString().slice(0, 10);
-                                        const iso = `${date}T${newTime}:00Z`;
+                                        const newTime = e.target.value || "23:59"; // BRT
+                                        const currentDate =
+                                          brtDateFromIso(payload.endDateTime) ||
+                                          brtDateFromIso(new Date().toISOString());
+                                        const iso = brtToUtcIso(currentDate, `${newTime}:00`);
                                         const next = [...editedPayloads];
                                         next[idx] = { ...next[idx], endDateTime: iso, startDateTime: iso };
                                         setEditedPayloads(next);
