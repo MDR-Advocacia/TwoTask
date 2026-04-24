@@ -1170,6 +1170,13 @@ class LegalOneApiClient:
                 timeout=60,
             )
             put_response.raise_for_status()
+            self.logger.info(
+                "GED PUT OK: blob=%s status=%s size=%d etag=%s",
+                temp_file_name,
+                put_response.status_code,
+                len(file_bytes),
+                put_response.headers.get("ETag", "-"),
+            )
         except requests.exceptions.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else "?"
             body = exc.response.text[:400] if exc.response is not None else ""
@@ -1243,24 +1250,55 @@ class LegalOneApiClient:
             "GED upload: POST /Documents litigation=%s type=%s size=%d",
             litigation_id, type_id, len(file_bytes),
         )
-        try:
-            resp = self._request_with_retry("POST", post_url, json=payload)
-            created = resp.json() or {}
-        except requests.exceptions.HTTPError as exc:
-            status = exc.response.status_code if exc.response is not None else "?"
-            body = exc.response.text[:400] if exc.response is not None else ""
-            # Loga o payload enviado pra facilitar diagnostico de
-            # incompatibilidades de schema com o L1 (mesmo padrao
-            # do create_task). Expoe no stdout do container.
+
+        # Retry custom pra 404 "File not found in Storage" — eh erro
+        # transiente de consistencia eventual entre o PUT no Azure Blob
+        # e a indexacao do L1. Tentamos ate 5 vezes com backoff.
+        storage_retry_waits = (1.5, 3.0, 6.0, 10.0, 15.0)
+        last_error_body = ""
+        last_error_status: Any = "?"
+        created: Optional[Dict[str, Any]] = None
+        for attempt_idx, wait_before in enumerate((0.0,) + storage_retry_waits):
+            if wait_before > 0:
+                self.logger.warning(
+                    "GED POST 'File not found in Storage' (tentativa %d). "
+                    "Aguardando %.1fs para reindexacao do blob.",
+                    attempt_idx, wait_before,
+                )
+                time.sleep(wait_before)
+            try:
+                resp = self._request_with_retry("POST", post_url, json=payload)
+                created = resp.json() or {}
+                break
+            except requests.exceptions.HTTPError as exc:
+                last_error_status = exc.response.status_code if exc.response is not None else "?"
+                last_error_body = exc.response.text[:400] if exc.response is not None else ""
+                # Se for especificamente 404 "File not found in Storage",
+                # aguarda e tenta de novo. Demais erros -> falha imediata.
+                is_storage_miss = (
+                    last_error_status == 404
+                    and "File not found in Storage" in last_error_body
+                )
+                if is_storage_miss and attempt_idx < len(storage_retry_waits):
+                    continue
+                self.logger.error(
+                    "GED upload falhou. Payload enviado:\n%s",
+                    json.dumps(payload, indent=2, ensure_ascii=False),
+                )
+                raise LegalOneGedUploadError(
+                    f"Falha no POST /Documents: HTTP {last_error_status}. {last_error_body}"
+                ) from exc
+            except Exception as exc:  # noqa: BLE001
+                raise LegalOneGedUploadError(f"Erro ao criar registro no GED: {exc}") from exc
+        else:
+            # Esgotou os retries de storage miss.
             self.logger.error(
-                "GED upload falhou. Payload enviado:\n%s",
+                "GED upload falhou apos retries de storage. Payload enviado:\n%s",
                 json.dumps(payload, indent=2, ensure_ascii=False),
             )
             raise LegalOneGedUploadError(
-                f"Falha no POST /Documents: HTTP {status}. {body}"
-            ) from exc
-        except Exception as exc:  # noqa: BLE001
-            raise LegalOneGedUploadError(f"Erro ao criar registro no GED: {exc}") from exc
+                f"Falha no POST /Documents (storage miss persistente): HTTP {last_error_status}. {last_error_body}"
+            )
 
         document_id = created.get("id")
         if not document_id:
