@@ -8,7 +8,7 @@
  *   4. Ao confirmar → tarefa criada no Legal One
  */
 
-import { useEffect, useState, useCallback, type ComponentType } from "react";
+import { useEffect, useRef, useState, useCallback, type ComponentType } from "react";
 import {
   AlertCircle,
   BarChart as BarChartIcon,
@@ -623,7 +623,8 @@ const PublicationsPage = () => {
   // Controla se o painel de filtros está expandido no mobile (no desktop fica sempre visível via md:block)
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [groupPage, setGroupPage] = useState(0);
-  const GROUP_PAGE_SIZE = 20;
+  // Tamanho de página — operador escolhe entre 20/50/100.
+  const [groupPageSize, setGroupPageSize] = useState<20 | 50 | 100>(20);
 
   // Detail dialog
   const [selectedRecord, setSelectedRecord] = useState<PublicationRecord | null>(null);
@@ -779,7 +780,7 @@ const PublicationsPage = () => {
     page = 0, status = "", officeId = "", dateFrom = "", dateTo = "", category = "", ufParam = "", vinculoParam = "", naturezaParam = "", poloParam = "", cnjParam = "",
   ) => {
     try {
-      let url = `${API}/records/grouped?limit=${GROUP_PAGE_SIZE}&offset=${page * GROUP_PAGE_SIZE}`;
+      let url = `${API}/records/grouped?limit=${groupPageSize}&offset=${page * groupPageSize}`;
       if (status) url += `&status=${status}`;
       if (officeId) url += `&linked_office_id=${officeId}`;
       if (dateFrom) url += `&date_from=${dateFrom}`;
@@ -943,6 +944,24 @@ const PublicationsPage = () => {
     if (!insightsOpen) return;
     loadInsights(insightPeriod);
   }, [insightsOpen, insightPeriod, loadInsights]);
+
+  // Re-fetch quando o operador muda o tamanho de página. Separado do
+  // evento do Select pra evitar stale closure em loadGrouped (o useCallback
+  // captura o state antigo senão). Só dispara depois do primeiro mount,
+  // pra não refazer o load inicial da montagem.
+  const isFirstPageSizeEffect = useRef(true);
+  useEffect(() => {
+    if (isFirstPageSizeEffect.current) {
+      isFirstPageSizeEffect.current = false;
+      return;
+    }
+    loadGrouped(
+      0, filterStatus, filterOffice, filterDateFrom, filterDateTo,
+      filterCategory, filterUf, filterVinculo, filterNatureza,
+      filterPolo, filterCnj,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupPageSize]);
 
   // ─── Office Lawsuit Index ─────────────────────────────────────────────
   const loadIndexStatus = useCallback(async (officeId: string) => {
@@ -1728,22 +1747,32 @@ const PublicationsPage = () => {
 
   // ─── Derived ─────────────────────────────────────────────────────────
 
-  const totalPages = grouped ? Math.ceil(grouped.total_groups / GROUP_PAGE_SIZE) : 0;
+  const totalPages = grouped ? Math.ceil(grouped.total_groups / groupPageSize) : 0;
 
-  // UFs disponíveis na página atual (derivadas do CNJ). A lista é limitada ao
-  // que vem do servidor na página vigente; inclui sempre a UF atualmente
-  // selecionada pra evitar sumir do Select quando o resultado fica vazio.
-  const availableUfs: string[] = grouped
-    ? (() => {
-        const ufs = new Set(
-          grouped.groups
-            .map((g) => ufFromCnj(g.lawsuit_cnj))
-            .filter((u): u is string => !!u),
-        );
-        if (filterUf) ufs.add(filterUf);
-        return Array.from(ufs).sort();
-      })()
-    : (filterUf ? [filterUf] : []);
+  // UFs disponíveis globalmente — vêm do backend no campo
+  // `available_ufs` da resposta /records/grouped, calculado sobre
+  // TODA a base filtrada (ignora apenas o próprio filtro de UF pra não
+  // sumir opções conforme o operador seleciona). Fallback pra derivar
+  // da página atual caso o backend seja uma versão antiga (sem o campo).
+  const availableUfs: string[] = (() => {
+    const serverUfs = (grouped as unknown as { available_ufs?: string[] } | null)?.available_ufs;
+    if (serverUfs && serverUfs.length > 0) {
+      const set = new Set(serverUfs);
+      if (filterUf) filterUf.split(",").filter(Boolean).forEach((u) => set.add(u));
+      return Array.from(set).sort();
+    }
+    // Fallback: derivar da página atual (comportamento legado).
+    if (grouped) {
+      const set = new Set(
+        grouped.groups
+          .map((g) => ufFromCnj(g.lawsuit_cnj))
+          .filter((u): u is string => !!u),
+      );
+      if (filterUf) filterUf.split(",").filter(Boolean).forEach((u) => set.add(u));
+      return Array.from(set).sort();
+    }
+    return filterUf ? filterUf.split(",").filter(Boolean) : [];
+  })();
 
   // O filtro UF agora é server-side, então os grupos já vêm filtrados.
   const visibleGroups: GroupedRecord[] = grouped ? grouped.groups : [];
@@ -3181,29 +3210,63 @@ const PublicationsPage = () => {
                 </div>
               </div>
 
-              {totalPages > 1 && grouped && (
-                <div className="mt-4 flex items-center justify-between">
+              {grouped && grouped.total_groups > 0 && (
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
                   <span className="text-sm text-muted-foreground">
-                    Mostrando {groupPage * GROUP_PAGE_SIZE + 1}–
+                    Mostrando {groupPage * groupPageSize + 1}–
                     {Math.min(
-                      (groupPage + 1) * GROUP_PAGE_SIZE,
+                      (groupPage + 1) * groupPageSize,
                       grouped.total_groups,
                     )}{" "}
                     de {grouped.total_groups} grupos
                     {typeof grouped.total_records === "number" && (
                       <> · {grouped.total_records} publicações</>
-                    )}{" "}
-                    · Página {groupPage + 1} de {totalPages}
+                    )}
+                    {totalPages > 1 && (
+                      <> · Página {groupPage + 1} de {totalPages}</>
+                    )}
                   </span>
-                  <div className="flex gap-2">
-                    <Button variant="outline" size="sm" disabled={groupPage === 0}
-                      onClick={() => handleGroupPageChange(groupPage - 1)}>
-                      <ChevronLeft className="h-4 w-4" />
-                    </Button>
-                    <Button variant="outline" size="sm" disabled={groupPage >= totalPages - 1}
-                      onClick={() => handleGroupPageChange(groupPage + 1)}>
-                      <ChevronRight className="h-4 w-4" />
-                    </Button>
+                  <div className="flex items-center gap-3">
+                    {/* Selector de tamanho de página */}
+                    <div className="flex items-center gap-2">
+                      <Label className="text-xs text-muted-foreground">
+                        Itens por página:
+                      </Label>
+                      <Select
+                        value={String(groupPageSize)}
+                        onValueChange={(v) => {
+                          const next = Number(v) as 20 | 50 | 100;
+                          if (![20, 50, 100].includes(next)) return;
+                          // Reset de página + page size novo. O useEffect
+                          // de baixo escuta groupPageSize e re-fetcha com
+                          // o valor atualizado (evita stale closure).
+                          setGroupPage(0);
+                          setGroupPageSize(next);
+                        }}
+                      >
+                        <SelectTrigger className="h-8 w-[70px] text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="20">20</SelectItem>
+                          <SelectItem value="50">50</SelectItem>
+                          <SelectItem value="100">100</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    {/* Paginação */}
+                    {totalPages > 1 && (
+                      <div className="flex gap-2">
+                        <Button variant="outline" size="sm" disabled={groupPage === 0}
+                          onClick={() => handleGroupPageChange(groupPage - 1)}>
+                          <ChevronLeft className="h-4 w-4" />
+                        </Button>
+                        <Button variant="outline" size="sm" disabled={groupPage >= totalPages - 1}
+                          onClick={() => handleGroupPageChange(groupPage + 1)}>
+                          <ChevronRight className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
