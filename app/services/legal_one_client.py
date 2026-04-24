@@ -1195,9 +1195,15 @@ class LegalOneApiClient:
         #
         # Casing: o swagger declara os campos complexos em PascalCase
         # (ExternalId/FileName/UploadedFileSize, Link/LinkItem). Mantemos
-        # PascalCase no FileUploaderModel por ser o que o swagger exige,
-        # e camelCase em relationships[].linkType/linkId por ser o que o
-        # link_task_to_lawsuit (em uso na prod) já valida funcionando.
+        # PascalCase no FileUploaderModel por ser o que o swagger exige.
+        #
+        # IMPORTANTE: o formato do `relationships` aqui NAO eh o mesmo
+        # do endpoint `/tasks/{id}/relationships` (que usa linkType/linkId
+        # em camelCase, validado via link_task_to_lawsuit). No DocumentModel
+        # embutido o tipo complex de relationship eh `Link`/`LinkItem.Id`,
+        # conforme o swagger. Mandar `linkType/linkId` aqui faz o OData
+        # rejeitar com "Does not support untyped value in non-open type"
+        # porque essas propriedades nao existem no tipo do DocumentModel.
         post_endpoint = "/Documents"
         post_url = f"{self.base_url}{post_endpoint}"
         payload: Dict[str, Any] = {
@@ -1212,8 +1218,8 @@ class LegalOneApiClient:
             },
             "relationships": [
                 {
-                    "linkType": "Litigation",
-                    "linkId": int(litigation_id),
+                    "Link": "Litigation",
+                    "LinkItem": {"Id": int(litigation_id)},
                 }
             ],
         }
