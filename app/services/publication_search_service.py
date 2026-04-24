@@ -1671,6 +1671,29 @@ class PublicationSearchService:
         total_groups = self.db.query(sa_func.count()).select_from(groups_subq).scalar() or 0
         total_records = self.db.query(sa_func.sum(groups_subq.c.cnt)).scalar() or 0
 
+        # UFs disponíveis globalmente — respeita todos os filtros EXCETO
+        # o próprio UF (senão sumiriam as outras opções assim que o
+        # operador marcasse uma). Usado pra popular o dropdown no
+        # frontend sem depender dos records da página atual.
+        uf_query = self._base_publication_query(
+            search_id=search_id, status=status,
+            linked_office_id=linked_office_id,
+            date_from=date_from, date_to=date_to,
+            category=category,
+            uf=None,  # ignora o filtro de UF aqui — é o que queremos descobrir
+            vinculo=vinculo, natureza=natureza,
+            polo=polo, cnj_search=cnj_search,
+        )
+        available_ufs = [
+            row[0] for row in uf_query
+            .with_entities(PublicationRecord.uf)
+            .filter(PublicationRecord.uf.isnot(None))
+            .distinct()
+            .order_by(PublicationRecord.uf)
+            .all()
+            if row[0]
+        ]
+
         # Busca as group_keys da página atual
         page_keys_rows = (
             self.db.query(groups_subq.c.group_key)
@@ -1688,6 +1711,7 @@ class PublicationSearchService:
                 "offset": offset,
                 "limit": limit,
                 "groups": [],
+                "available_ufs": available_ufs,
             }
 
         # ─── Etapa 2: carrega records só dos grupos da página ───────
@@ -1754,6 +1778,7 @@ class PublicationSearchService:
             "offset": offset,
             "limit": limit,
             "groups": grouped_list,
+            "available_ufs": available_ufs,
         }
 
     def get_record(self, record_id: int) -> dict[str, Any]:
