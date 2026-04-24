@@ -3423,7 +3423,25 @@ const PublicationsPage = () => {
           </div>
 
           {/* ── Corpo scrollável ── */}
-          <div className="flex-1 overflow-y-auto px-6 py-4">
+          <div className="relative flex-1 overflow-y-auto px-6 py-4">
+            {/* Overlay bloqueante enquanto consulta o L1. Sem isso o usuário
+                podia apertar Enviar antes da checagem terminar e causar
+                agendamento duplicado. */}
+            {scheduleOpen && scheduleGroup?.lawsuit_id && duplicateCheckLoading && (
+              <div className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-3 bg-background/85 backdrop-blur-sm">
+                <div className="rounded-full bg-primary/10 p-4">
+                  <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                </div>
+                <div className="space-y-1 text-center">
+                  <p className="text-sm font-semibold text-foreground">
+                    Verificando tarefas pendentes no Legal One...
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Aguarde — isso evita agendamento duplicado do mesmo subtipo.
+                  </p>
+                </div>
+              </div>
+            )}
             {scheduleGroup && (
               <div className="space-y-5">
 
@@ -3495,17 +3513,19 @@ const PublicationsPage = () => {
                       {editedPayloads.length} tarefa(s) a enviar — revise e confirme
                     </p>
 
-                    {/* Status do check-duplicates (Onda 1) */}
-                    {scheduleGroup?.lawsuit_id && duplicateCheckLoading && (
-                      <p className="mb-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                        Verificando tarefas pendentes no Legal One...
-                      </p>
-                    )}
+                    {/* Aviso se o check-duplicates falhou (overlay some, mas
+                        o usuário precisa saber que não temos certeza sobre
+                        duplicatas). */}
                     {scheduleGroup?.lawsuit_id && !duplicateCheckLoading && duplicateCheckFailed && (
-                      <p className="mb-2 text-[11px] text-amber-700">
-                        Não foi possível verificar duplicatas no L1 agora. Prossiga com cautela.
-                      </p>
+                      <div className="mb-3 flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-900">
+                        <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600" />
+                        <div>
+                          <p className="font-semibold">Não foi possível verificar duplicatas no Legal One</p>
+                          <p className="mt-0.5 text-[11px] text-amber-800">
+                            Pode ser instabilidade temporária. Prossiga com cautela ou feche e reabra o modal.
+                          </p>
+                        </div>
+                      </div>
                     )}
 
                     {editedPayloads.map((payload, idx) => {
@@ -3547,48 +3567,83 @@ const PublicationsPage = () => {
 
                           {/* Banner de duplicata (Onda 1): exibido quando o
                               check-duplicates encontrou tasks pendentes no L1
-                              com mesmo subTypeId + mesmo processo. */}
-                          {!isRemoved && payload.subTypeId && (duplicatesBySubtype[payload.subTypeId]?.length ?? 0) > 0 && (
-                            <div className="mx-4 mt-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
-                              <div className="flex items-start gap-2">
-                                <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600" />
-                                <div className="flex-1 space-y-2">
-                                  <p className="font-semibold">
-                                    Já existe tarefa pendente no Legal One com este subtipo
-                                  </p>
-                                  <ul className="space-y-1">
-                                    {duplicatesBySubtype[payload.subTypeId].map((d: any) => (
-                                      <li key={d.task_id} className="flex items-start gap-1.5">
-                                        <span className="flex-1">
-                                          <span className="font-medium">#{d.task_id}</span>
-                                          {" · "}
-                                          <span className="italic text-amber-800">{d.status_label}</span>
-                                          {d.description && (
-                                            <> — <span className="text-amber-900/80">{d.description.slice(0, 80)}</span></>
-                                          )}
-                                        </span>
-                                        {d.l1_url && (
-                                          <a
-                                            href={d.l1_url}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            className="inline-flex items-center gap-0.5 font-medium text-amber-700 underline hover:text-amber-900"
-                                          >
-                                            abrir
-                                            <ExternalLink className="h-3 w-3" />
-                                          </a>
+                              com mesmo subTypeId + mesmo processo.
+                              Layout forte vermelho/laranja pra destacar e
+                              interromper o fluxo natural do operador. */}
+                          {!isRemoved && payload.subTypeId && (duplicatesBySubtype[payload.subTypeId]?.length ?? 0) > 0 && (() => {
+                            const dups = duplicatesBySubtype[payload.subTypeId!] ?? [];
+                            return (
+                              <div className="mx-4 mt-3 overflow-hidden rounded-lg border-2 border-red-400 bg-gradient-to-br from-red-50 to-orange-50 shadow-sm">
+                                {/* Faixa superior com contador grande */}
+                                <div className="flex items-center gap-3 border-b-2 border-red-300 bg-red-100 px-4 py-2.5">
+                                  <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-red-500 text-white shadow">
+                                    <AlertCircle className="h-5 w-5" />
+                                  </div>
+                                  <div className="flex-1">
+                                    <p className="text-sm font-bold text-red-800">
+                                      {dups.length === 1
+                                        ? "Tarefa duplicada detectada"
+                                        : `${dups.length} tarefas duplicadas detectadas`}
+                                    </p>
+                                    <p className="text-[11px] text-red-700">
+                                      Já existe{dups.length > 1 ? "m" : ""} tarefa{dups.length > 1 ? "s" : ""} em aberto no Legal One com este subtipo para este processo.
+                                    </p>
+                                  </div>
+                                </div>
+                                {/* Lista de tasks existentes */}
+                                <ul className="divide-y divide-red-200 px-4 py-2">
+                                  {dups.map((d: any) => (
+                                    <li key={d.task_id} className="flex items-center gap-3 py-2">
+                                      <div className="min-w-0 flex-1">
+                                        <div className="flex items-center gap-2">
+                                          <span className="rounded bg-red-200 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-red-800">
+                                            {d.status_label}
+                                          </span>
+                                          <span className="text-xs font-semibold text-red-900">
+                                            Tarefa #{d.task_id}
+                                          </span>
+                                        </div>
+                                        {d.description && (
+                                          <p className="mt-1 truncate text-xs text-red-800/90" title={d.description}>
+                                            {d.description}
+                                          </p>
                                         )}
-                                      </li>
-                                    ))}
-                                  </ul>
-                                  <p className="text-[10px] text-amber-800">
-                                    Você pode remover esta tarefa da lista, ou confirmar no envio
-                                    pra agendar mesmo assim.
+                                      </div>
+                                      {d.l1_url && (
+                                        <a
+                                          href={d.l1_url}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="inline-flex flex-shrink-0 items-center gap-1 rounded-md border border-red-500 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 shadow-sm transition-colors hover:bg-red-500 hover:text-white"
+                                        >
+                                          Ver no L1
+                                          <ExternalLink className="h-3.5 w-3.5" />
+                                        </a>
+                                      )}
+                                    </li>
+                                  ))}
+                                </ul>
+                                {/* Rodapé com ação sugerida */}
+                                <div className="flex items-center justify-between gap-2 border-t border-red-200 bg-red-50/80 px-4 py-2">
+                                  <p className="text-[11px] text-red-800">
+                                    Recomendado: remova esta tarefa da lista.
                                   </p>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 border-red-400 bg-white text-xs font-semibold text-red-700 hover:bg-red-500 hover:text-white"
+                                    onClick={() => {
+                                      const next = new Set(removedTaskIndices);
+                                      next.add(idx);
+                                      setRemovedTaskIndices(next);
+                                    }}
+                                  >
+                                    Remover tarefa
+                                  </Button>
                                 </div>
                               </div>
-                            </div>
-                          )}
+                            );
+                          })()}
 
                           {/* Campos do bloco */}
                           {!isRemoved && (() => {
@@ -3882,12 +3937,20 @@ const PublicationsPage = () => {
             </Button>
             <Button
               onClick={handleConfirmSchedule}
-              disabled={scheduling || editedPayloads.length === 0 || removedTaskIndices.size === editedPayloads.length}
+              disabled={
+                scheduling
+                || editedPayloads.length === 0
+                || removedTaskIndices.size === editedPayloads.length
+                || duplicateCheckLoading
+              }
+              title={duplicateCheckLoading ? "Aguardando verificação de duplicatas no L1..." : undefined}
             >
-              {scheduling
+              {scheduling || duplicateCheckLoading
                 ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 : <Send className="mr-2 h-4 w-4" />}
-              Enviar {editedPayloads.length - removedTaskIndices.size} tarefa(s)
+              {duplicateCheckLoading
+                ? "Verificando..."
+                : `Enviar ${editedPayloads.length - removedTaskIndices.size} tarefa(s)`}
             </Button>
           </div>
         </DialogContent>
