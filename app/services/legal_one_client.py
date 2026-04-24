@@ -806,13 +806,160 @@ class LegalOneApiClient:
         self.logger.info("Criando tarefa com payload: %s", clean_payload)
         endpoint = "/Tasks"
         url = f"{self.base_url}{endpoint}"
+        # Zera o último erro pra não vazar informação de uma tentativa anterior.
+        self._last_create_task_error = None
         try:
             response = self._request_with_retry("POST", url, json=clean_payload)
             return response.json()
         except requests.exceptions.HTTPError as exc:
             self.logger.error("Erro HTTP %s ao criar tarefa. Resposta: %s", exc.response.status_code, exc.response.text)
             self.logger.error("Payload enviado que causou o erro:\n%s", json.dumps(clean_payload, indent=2))
+            # Guarda o erro pra que o chamador possa consultar e propagar
+            # uma mensagem detalhada pro operador (via format_last_create_task_error).
+            parsed_detail: Optional[dict] = None
+            try:
+                parsed_detail = exc.response.json()
+            except Exception:  # noqa: BLE001
+                parsed_detail = None
+            self._last_create_task_error = {
+                "status_code": exc.response.status_code,
+                "raw_text": exc.response.text,
+                "parsed": parsed_detail,
+            }
             return None
+
+    # Mapa técnico→operacional pros campos que o L1 reclama.
+    # Chaves são os `target` que vêm na resposta 400 do L1.
+    _L1_FIELD_LABELS_PT = {
+        "status.id": "Status",
+        "publishDate": "Data de publicação",
+        "originOfficeId": "Escritório de origem",
+        "responsibleOfficeId": "Escritório responsável",
+        "typeId": "Tipo da tarefa",
+        "subTypeId": "Subtipo da tarefa",
+        "SubTypeId": "Subtipo da tarefa",
+        "participants": "Participantes",
+        "description": "Descrição",
+        "notes": "Observações",
+        "startDateTime": "Data de início",
+        "endDateTime": "Prazo final",
+        "priority": "Prioridade",
+        "contact.id": "Responsável",
+    }
+
+    # Categorias de problema (classificadas a partir do `code` do L1 e
+    # palavras-chave da mensagem). Cada categoria vira um título legível.
+    @staticmethod
+    def _classify_l1_error_detail(detail: dict) -> str:
+        """
+        Retorna um rótulo de categoria simples baseado no detail do L1:
+          - 'missing' — campo vazio / obrigatório
+          - 'invalid' — valor recusado (formato, fora do catálogo)
+          - 'conflict' — duplicata / concorrência
+          - 'other' — fallback quando não reconhecemos
+        """
+        code = (detail.get("code") or "").lower()
+        msg_lower = (detail.get("message") or "").lower()
+        if code in {"nullvalue", "required", "missing"}:
+            return "missing"
+        if "obrigat" in msg_lower or "required" in msg_lower:
+            return "missing"
+        if code in {"notfound", "invalidvalue", "invalidformat", "validation"}:
+            if "obrigat" in msg_lower:
+                return "missing"
+            return "invalid"
+        if code in {"conflict", "duplicate"}:
+            return "conflict"
+        return "other"
+
+    def _label_field(self, target: str) -> str:
+        """Traduz um `target` do L1 pra rótulo PT-BR. Fallback: o próprio target."""
+        if not target:
+            return ""
+        if target in self._L1_FIELD_LABELS_PT:
+            return self._L1_FIELD_LABELS_PT[target]
+        # Tenta chave base quando o target vem aninhado tipo "participants[0].contact.id"
+        for key, label in self._L1_FIELD_LABELS_PT.items():
+            if target.startswith(key) or target.endswith(key):
+                return label
+        return target
+
+    def format_last_create_task_error(self) -> Optional[str]:
+        """
+        Retorna uma string humana descrevendo o último erro de create_task.
+
+        Formato de saída agrupado por categoria (uma linha por categoria,
+        campos separados por vírgula):
+
+            Campos obrigatórios não enviados: Data de publicação, Escritório de origem
+            Valor inválido: Subtipo da tarefa
+
+        Fallback: HTTP status + trecho do raw_text quando o parse falha.
+        Retorna None quando não há erro registrado.
+        """
+        last = getattr(self, "_last_create_task_error", None)
+        if not last:
+            return None
+        parsed = last.get("parsed") or {}
+        err = parsed.get("error") if isinstance(parsed, dict) else None
+
+        if isinstance(err, dict):
+            details = err.get("details") or []
+            # Agrupa campos por categoria pra dar uma frase por tipo de problema.
+            buckets: dict[str, list[str]] = {
+                "missing": [],
+                "invalid": [],
+                "conflict": [],
+                "other": [],
+            }
+            other_messages: list[str] = []
+            if isinstance(details, list):
+                for d in details:
+                    if not isinstance(d, dict):
+                        continue
+                    target = (d.get("target") or "").strip()
+                    category = self._classify_l1_error_detail(d)
+                    label = self._label_field(target)
+                    if label and category in buckets:
+                        # Evita duplicar o mesmo campo em categorias diferentes
+                        # (L1 às vezes reporta 2 erros pro mesmo field).
+                        if label not in buckets[category]:
+                            buckets[category].append(label)
+                    elif not label:
+                        msg_line = (d.get("message") or "").strip()
+                        if msg_line:
+                            other_messages.append(msg_line)
+
+            lines: list[str] = []
+            if buckets["missing"]:
+                lines.append("Campos obrigatórios não enviados: "
+                             + ", ".join(buckets["missing"]))
+            if buckets["invalid"]:
+                lines.append("Valor inválido em: " + ", ".join(buckets["invalid"]))
+            if buckets["conflict"]:
+                lines.append("Conflito em: " + ", ".join(buckets["conflict"]))
+            if buckets["other"]:
+                lines.append("Verifique: " + ", ".join(buckets["other"]))
+            for extra in other_messages[:3]:
+                # Frases soltas que não conseguimos mapear — mostra em linha
+                # separada mas cortada pra não poluir.
+                lines.append(extra[:200])
+
+            if lines:
+                return "\n".join(lines)
+
+            # Se só veio a mensagem genérica ("Existem erros de validação..."),
+            # mostra ela pra pelo menos ter algum texto.
+            summary = (err.get("message") or "").strip()
+            if summary:
+                return summary
+
+        # Fallback: raw_text truncado
+        raw = (last.get("raw_text") or "").strip()
+        status = last.get("status_code")
+        if raw:
+            return f"HTTP {status}: {raw[:300]}"
+        return f"HTTP {status} (sem corpo legível)."
 
     def get_task_by_id(self, task_id: int) -> Dict[str, Any]:
         self.logger.info("Buscando tarefa ID %s.", task_id)

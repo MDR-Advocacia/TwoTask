@@ -1306,6 +1306,47 @@ const PublicationsPage = () => {
 
   // ─── Scheduling ──────────────────────────────────────────────────────
 
+  // Helper: converte uma mensagem de erro multi-linha (backend retorna com \n
+  // entre categorias tipo "Campos obrigatórios não enviados: X, Y") num nó
+  // JSX com uma linha por item e marcador visual, pra deixar o toast legível
+  // em vez de parágrafo cru.
+  const renderScheduleErrorDescription = (msg: string) => {
+    const lines = (msg || "")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (lines.length === 0) return "Falha no agendamento.";
+    if (lines.length === 1) return lines[0];
+    return (
+      <div className="space-y-1.5 pt-1">
+        {lines.map((line, i) => {
+          // Separa "Título: item1, item2" em heading + bullets quando
+          // houver ":" na linha. Deixa visualmente mais fácil de ler.
+          const colonIdx = line.indexOf(":");
+          if (colonIdx > 0 && colonIdx < line.length - 1) {
+            const heading = line.slice(0, colonIdx).trim();
+            const items = line
+              .slice(colonIdx + 1)
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean);
+            return (
+              <div key={i}>
+                <div className="font-semibold">{heading}</div>
+                <ul className="ml-4 list-disc">
+                  {items.map((item, j) => (
+                    <li key={j}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            );
+          }
+          return <div key={i}>{line}</div>;
+        })}
+      </div>
+    );
+  };
+
   const openScheduleDialog = (group: GroupedRecord) => {
     setScheduleGroup(group);
     const tasks = group.proposed_tasks?.length > 0 ? group.proposed_tasks : (group.proposed_task ? [group.proposed_task] : []);
@@ -1527,7 +1568,16 @@ const PublicationsPage = () => {
       loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj);
       loadStats();
     } catch (err: any) {
-      toast({ title: "Erro ao agendar", description: err.message, variant: "destructive" });
+      // Duration maior pra erros porque o backend agora devolve detalhe
+      // do L1 humanizado (campo faltando, validação, etc.) que o operador
+      // precisa ler. renderScheduleErrorDescription transforma a mensagem
+      // multi-linha numa lista visual com heading + bullets.
+      toast({
+        title: "Erro ao agendar tarefa",
+        description: renderScheduleErrorDescription(err.message),
+        variant: "destructive",
+        duration: 15000,
+      });
     } finally {
       setScheduling(false);
     }
@@ -1624,6 +1674,9 @@ const PublicationsPage = () => {
       title: `${ok} grupo(s) agendado(s)`,
       description: errors.length > 0 ? `Falhas: ${errors.slice(0, 3).join(" | ")}${errors.length > 3 ? ` (+${errors.length - 3})` : ""}` : undefined,
       variant: errors.length > 0 ? "destructive" : "default",
+      // Erros em bulk frequentemente trazem detalhes do L1 (campo faltando,
+      // duplicata, etc.) — operador precisa de tempo pra ler cada linha.
+      duration: errors.length > 0 ? 15000 : 5000,
     });
 
     clearSelection();

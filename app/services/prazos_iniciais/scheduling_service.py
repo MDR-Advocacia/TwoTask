@@ -208,8 +208,13 @@ class PrazosIniciaisSchedulingService:
         )
         created = self.l1_client.create_task(payload)
         if not created or not created.get("id"):
+            # Mensagem humanizada do L1 quando disponível (ex: "Campos
+            # obrigatórios não enviados: Data de publicação"). Fallback
+            # pro genérico com identificador da sugestão.
+            l1_detail = self.l1_client.format_last_create_task_error()
             raise RuntimeError(
-                f"Legal One não retornou id ao criar task da sugestão {sugestao.id}."
+                l1_detail
+                or f"Legal One recusou a criação da tarefa (sugestão #{sugestao.id})."
             )
         task_id = int(created["id"])
 

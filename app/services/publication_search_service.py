@@ -2194,7 +2194,12 @@ class PublicationSearchService:
             self._apply_required_task_defaults(payload)
             created = self.client.create_task(payload)
             if not created or not created.get("id"):
-                raise ValueError("Falha ao criar tarefa no Legal One.")
+                # Se o client conseguiu extrair o que o L1 reclamou, usa
+                # direto a mensagem humana (ex: "Campos obrigatórios não
+                # enviados: Data de publicação, Escritório de origem").
+                # Senão, cai no genérico pra pelo menos dar feedback.
+                l1_detail = self.client.format_last_create_task_error()
+                raise ValueError(l1_detail or "Falha ao criar tarefa no Legal One.")
             task_id = created["id"]
             self.client.link_task_to_lawsuit(
                 task_id,
@@ -2282,7 +2287,12 @@ class PublicationSearchService:
             self._apply_required_task_defaults(payload)
             created = self.client.create_task(payload)
             if not created or not created.get("id"):
-                raise ValueError("Falha ao criar tarefa no Legal One.")
+                # Se o client conseguiu extrair o que o L1 reclamou, usa
+                # direto a mensagem humana (ex: "Campos obrigatórios não
+                # enviados: Data de publicação, Escritório de origem").
+                # Senão, cai no genérico pra pelo menos dar feedback.
+                l1_detail = self.client.format_last_create_task_error()
+                raise ValueError(l1_detail or "Falha ao criar tarefa no Legal One.")
             created_task_ids.append(created["id"])
 
         from app.services.publication_treatment_service import PublicationTreatmentService
