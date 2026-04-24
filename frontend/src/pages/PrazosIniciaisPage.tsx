@@ -1317,7 +1317,7 @@ export default function PrazosIniciaisPage() {
           if (!open) setSelectedId(null);
         }}
       >
-        <DialogContent className="max-h-[92vh] w-[min(95vw,72rem)] overflow-y-auto overflow-x-hidden p-5 sm:p-6">
+        <DialogContent className="!max-w-[min(95vw,72rem)] max-h-[92vh] w-[95vw] overflow-y-auto overflow-x-hidden p-5 sm:p-6">
           <DialogHeader>
             <DialogTitle>Intake #{selectedId}</DialogTitle>
             <DialogDescription>
