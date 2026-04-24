@@ -1157,13 +1157,26 @@ class LegalOneApiClient:
                 f"GetContainer não retornou externalId. Resposta: {container}"
             )
 
-        # Log do path do blob (sem a signature/SAS) pra debug.
+        # Log do path do blob (sem a signature/SAS) + response completo
+        # do GetContainer (em JSON) pra debug.
         try:
             from urllib.parse import urlparse
             _parsed = urlparse(external_id)
             self.logger.info(
-                "GED GetContainer OK: blob_host=%s blob_path=%s temp_file_name=%s",
-                _parsed.netloc, _parsed.path, temp_file_name,
+                "GED GetContainer OK: blob_host=%s blob_path=%s temp_file_name=%s id_from_container=%s size_from_container=%s",
+                _parsed.netloc,
+                _parsed.path,
+                temp_file_name,
+                container.get("id"),
+                container.get("uploadedFileSize"),
+            )
+            self.logger.info(
+                "GED GetContainer FULL RESPONSE (sans SAS signature):\n%s",
+                json.dumps({
+                    **container,
+                    "externalId": f"{_parsed.scheme}://{_parsed.netloc}{_parsed.path}?<SAS>"
+                    if external_id else None,
+                }, indent=2, ensure_ascii=False),
             )
         except Exception:
             pass
@@ -1171,32 +1184,27 @@ class LegalOneApiClient:
         # Passo 2 — PUT bytes direto no Azure Blob. URL já tem SAS
         # embutido; não usamos nossos headers de Authorization aqui.
         #
-        # IMPORTANTE: o content-type DO BLOB no Azure se configura via
-        # header `x-ms-blob-content-type` (nao via `Content-Type`, que
-        # eh ignorado pelo Azure Blob Storage pro payload). Se o L1
-        # valida o content-type do blob antes de aceitar o POST
-        # /Documents, passar so `Content-Type` faz o blob ser salvo com
-        # default `application/octet-stream`, e o L1 responde
-        # "File not found in Storage" (aparentemente usa esse content-type
-        # pra resolver o arquivo).
+        # MINIMALISMO: o Azure Blob Storage PUT exige *apenas*
+        # `x-ms-blob-type: BlockBlob`. Qualquer header a mais (Content-
+        # Type, x-ms-blob-content-type) pode interferir com o que o L1
+        # usa internamente pra indexar o blob.
         try:
             put_response = requests.put(
                 external_id,
                 data=file_bytes,
                 headers={
                     "x-ms-blob-type": "BlockBlob",
-                    "x-ms-blob-content-type": "application/pdf",
-                    "Content-Type": "application/pdf",
                 },
                 timeout=60,
             )
             put_response.raise_for_status()
             self.logger.info(
-                "GED PUT OK: blob=%s status=%s size=%d etag=%s",
+                "GED PUT OK: blob=%s status=%s size=%d etag=%s request_id=%s",
                 temp_file_name,
                 put_response.status_code,
                 len(file_bytes),
                 put_response.headers.get("ETag", "-"),
+                put_response.headers.get("x-ms-request-id", "-"),
             )
         except requests.exceptions.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else "?"
@@ -1206,21 +1214,6 @@ class LegalOneApiClient:
             ) from exc
         except Exception as exc:  # noqa: BLE001
             raise LegalOneGedUploadError(f"Erro ao enviar bytes pro blob: {exc}") from exc
-
-        # Passo 2b — HEAD verification. Confirma que o blob esta no Azure
-        # e visivel via SAS antes de chamar o L1. Se o HEAD falhar, o
-        # problema eh entre o PUT e o Azure (nao entre o L1 e o Azure).
-        try:
-            head_response = requests.head(external_id, timeout=15)
-            self.logger.info(
-                "GED HEAD blob: status=%s content_length=%s content_type=%s last_modified=%s",
-                head_response.status_code,
-                head_response.headers.get("Content-Length", "?"),
-                head_response.headers.get("Content-Type", "?"),
-                head_response.headers.get("Last-Modified", "?"),
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.logger.warning("GED HEAD blob falhou (nao-fatal): %s", exc)
 
         # Passo 3 — POST metadata + relationship + fileUploader.
         #
