@@ -46,6 +46,7 @@ import { MultiSelect } from "@/components/ui/MultiSelect";
 import { Separator } from "@/components/ui/separator";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
+import { apiFetch } from "@/lib/api-client";
 import {
   applyPrazosIniciaisBatch,
   cancelarPrazoInicial,
@@ -234,6 +235,26 @@ export default function PrazosIniciaisPage() {
   // Enums (naturezas, produtos, etc.) pra popular os MultiSelects dos filtros.
   // Carregado 1x no mount — valores vêm do /api/v1/prazos-iniciais/enums.
   const [enums, setEnums] = useState<PrazoInicialEnums | null>(null);
+
+  // Cadastro de escritórios (LegalOneOffice). Usado pra traduzir office_id
+  // do intake/detail pro path hierárquico humano (ex: "MDR Advocacia /
+  // Área operacional / Banco Master / Réu"). Carregado 1x no mount.
+  const [offices, setOffices] = useState<
+    Array<{ id: number; external_id: number; name: string; path: string | null }>
+  >([]);
+
+  // Resolve office_id → rótulo humano. Prefere o path completo; cai pro
+  // name quando o path está vazio; cai pro id quando o escritório não
+  // foi carregado ainda.
+  const officeLabel = useCallback(
+    (id: number | null | undefined): string => {
+      if (!id) return "—";
+      const office = offices.find((o) => o.external_id === id);
+      if (!office) return `#${id}`;
+      return office.path || office.name || `#${id}`;
+    },
+    [offices],
+  );
 
   // Classificação em batch (Sonnet) — Onda 1 manual.
   const [batches, setBatches] = useState<PrazoInicialBatchSummary[]>([]);
@@ -711,6 +732,24 @@ export default function PrazosIniciaisPage() {
       .catch((err) => {
         console.warn("Falha ao carregar enums de prazos iniciais:", err);
       });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Carrega cadastro de escritórios 1x no mount. Usado pra traduzir
+  // office_id em path no modal de detalhes do intake. Silencioso em
+  // falha — sem crashar a tela (cai no fallback "#id").
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch("/api/v1/offices");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled && Array.isArray(data)) setOffices(data);
+      } catch (err) {
+        console.warn("Falha ao carregar escritórios:", err);
+      }
+    })();
     return () => { cancelled = true; };
   }, []);
 
@@ -1278,7 +1317,7 @@ export default function PrazosIniciaisPage() {
           if (!open) setSelectedId(null);
         }}
       >
-        <DialogContent className="max-h-[88vh] max-w-5xl overflow-y-auto">
+        <DialogContent className="max-h-[88vh] w-[95vw] max-w-6xl overflow-y-auto overflow-x-hidden">
           <DialogHeader>
             <DialogTitle>Intake #{selectedId}</DialogTitle>
             <DialogDescription>
@@ -1304,7 +1343,7 @@ export default function PrazosIniciaisPage() {
 
           {detail && !detailLoading ? (
             <div className="space-y-5">
-              <div className="grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-3">
+              <div className="grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-3 [&>div]:min-w-0 [&>div>div]:break-words">
                 <div>
                   <div className="text-xs text-muted-foreground">External ID</div>
                   <div className="break-all font-mono">{detail.external_id}</div>
@@ -1327,9 +1366,14 @@ export default function PrazosIniciaisPage() {
                   <div className="text-xs text-muted-foreground">Processo no Legal One</div>
                   <div>{detail.lawsuit_id ? `lawsuit_id = ${detail.lawsuit_id}` : "Nao resolvido"}</div>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="text-xs text-muted-foreground">Escritorio</div>
-                  <div>{detail.office_id ? `office_id = ${detail.office_id}` : "-"}</div>
+                  <div
+                    className="break-words text-sm"
+                    title={detail.office_id ? `office_id: ${detail.office_id}` : undefined}
+                  >
+                    {officeLabel(detail.office_id)}
+                  </div>
                 </div>
                 <div>
                   <div className="text-xs text-muted-foreground">Natureza</div>
