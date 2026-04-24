@@ -1263,6 +1263,11 @@ class LegalOneApiClient:
             "archive": archive_candidate,
             "description": description or file_name,
             "typeId": type_id,
+            # `repository` o tutorial nao passa, mas o swagger lista
+            # como enum (LegalOne, OneDrive, GoogleDrive, ...). Se o L1
+            # estiver procurando o blob no repositorio errado quando o
+            # campo vem omisso, isso resolve.
+            "repository": "LegalOne",
             "relationships": [
                 {
                     "link": "Litigation",
