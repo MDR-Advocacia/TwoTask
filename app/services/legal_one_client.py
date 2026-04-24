@@ -1136,7 +1136,7 @@ class LegalOneApiClient:
         # Passo 1 — obtém container temp.
         ext = "pdf"
         get_container_endpoint = (
-            f"/Documents/GetContainer(fileExtension='{ext}')"
+            f"/documents/getcontainer(fileExtension='{ext}')"
         )
         get_container_url = f"{self.base_url}{get_container_endpoint}"
         try:
@@ -1243,54 +1243,31 @@ class LegalOneApiClient:
         except Exception as exc:  # noqa: BLE001
             raise LegalOneGedUploadError(f"Erro ao enviar bytes pro blob: {exc}") from exc
 
-        # Passo 3 — POST metadata + relationship + fileUploader.
-        #
-        # ATENÇÃO: os dois modelos do swagger têm campos com mesmo NOME
-        # mas significados diferentes:
-        #
-        #   DocumentUploadModel.externalId  → URL SAS do blob (pra PUT)
-        #   FileUploaderModel.ExternalId    → NOME do arquivo no container
-        #
-        # Se mandarmos a URL SAS gigante em FileUploaderModel.ExternalId,
-        # o OData choka com "Does not support untyped value in non-open
-        # type" (os '&'/'=' da query string da SAS parecem valor tipado).
-        # O correto é passar o `fileName` que o GetContainer retornou
-        # (ex: "cee24743-...pdf") como ExternalId.
-        #
-        # Tutorial OFICIAL da Thomson Reuters ("How to upload a document
-        # through API") publica o payload exato do POST /Documents. A API
-        # real:
-        #   - NAO aceita `fileUploader` (o swagger lista, mas o EDM
-        #     interno nao tem essa property -> rejeita com
-        #     "Does not support untyped value in non-open type").
-        #   - NAO aceita `externalId`/`uploadedFileSize` no top-level
-        #     nem aninhado.
-        #   - usa `fileName` top-level (o MESMO retornado pelo
-        #     GetContainer) como unico ponto de ligacao com o blob.
-        #   - valida em camelCase: `link`, `linkItem`, `id`.
-        #
-        # Exemplo do tutorial (copiado literalmente):
-        #   {
-        #     "fileName": "287edeb8-...docx",
-        #     "archive": "file.docx",
-        #     "typeId": "type_1",
-        #     "description": "...",
-        #     "relationships": [
-        #       { "link": "Service", "linkItem": { "id": 1 } }
-        #     ]
-        #   }
-        post_endpoint = "/Documents"
+        # Passo 3 — POST metadata + relationship, seguindo o DocumentModel
+        # da v10: /documents em lowercase, `fileName` top-level retornado
+        # pelo GetContainer, metadados do tutorial e relationships em
+        # camelCase. `repository`, `fileUploader`, `externalId` e
+        # `uploadedFileSize` nao pertencem ao request body do DocumentModel.
+        post_endpoint = "/documents"
         post_url = f"{self.base_url}{post_endpoint}"
         # L1 rejeita HTTP 400 "Extensao de arquivo invalida" se o `archive`
         # vier sem extensao. Garante que termine com `.{ext}` (default pdf).
         archive_candidate = archive_name or file_name
         if archive_candidate and "." not in os.path.basename(archive_candidate):
             archive_candidate = f"{archive_candidate}.{ext}"
+        metadata_date = f"{datetime.utcnow().replace(microsecond=0).isoformat()}Z"
         payload: Dict[str, Any] = {
             "fileName": temp_file_name,  # mesmo fileName do GetContainer
             "archive": archive_candidate,
-            "description": description or file_name,
             "typeId": type_id,
+            "description": description or file_name,
+            "notes": notes or "",
+            "isPhysicallyStored": False,
+            "phisicalLocalization": "",
+            "author": "OneTask",
+            "beginDate": metadata_date,
+            "endDate": metadata_date,
+            "isModel": False,
             "relationships": [
                 {
                     "link": "Litigation",
@@ -1300,12 +1277,14 @@ class LegalOneApiClient:
                 }
             ],
         }
-        if notes:
-            payload["notes"] = notes
 
         self.logger.info(
-            "GED upload: POST /Documents litigation=%s type=%s size=%d",
+            "GED upload: POST /documents litigation=%s type=%s size=%d",
             litigation_id, type_id, len(file_bytes),
+        )
+        self.logger.info(
+            "GED upload metadata payload:\n%s",
+            json.dumps(payload, indent=2, ensure_ascii=False),
         )
 
         # Retry custom pra 404 "File not found in Storage" — eh erro
@@ -1343,93 +1322,23 @@ class LegalOneApiClient:
                     json.dumps(payload, indent=2, ensure_ascii=False),
                 )
                 raise LegalOneGedUploadError(
-                    f"Falha no POST /Documents: HTTP {last_error_status}. {last_error_body}"
+                    f"Falha no POST /documents: HTTP {last_error_status}. {last_error_body}"
                 ) from exc
             except Exception as exc:  # noqa: BLE001
                 raise LegalOneGedUploadError(f"Erro ao criar registro no GED: {exc}") from exc
         else:
-            # Esgotou os retries de storage miss.
-            today_iso = datetime.utcnow().date().isoformat()
-            tutorial_full_payload = {
-                **payload,
-                "notes": notes or "",
-                "isPhysicallyStored": False,
-                "phisicalLocalization": "",
-                "author": "OneTask",
-                "beginDate": today_iso,
-                "endDate": today_iso,
-                "isModel": False,
-            }
-            self.logger.warning(
-                "GED POST payload oficial esgotou com storage miss. "
-                "Tentando fallback com metadados completos do tutorial."
+            self.logger.error(
+                "GED upload falhou apos retries de storage. Payload v10 enviado:\n%s",
+                json.dumps(payload, indent=2, ensure_ascii=False),
             )
-            self.logger.info(
-                "GED POST fallback tutorial completo payload:\n%s",
-                json.dumps(tutorial_full_payload, indent=2, ensure_ascii=False),
+            raise LegalOneGedUploadError(
+                f"Falha no POST /documents (storage miss persistente): HTTP {last_error_status}. {last_error_body}"
             )
-            try:
-                resp = self._request_with_retry("POST", post_url, json=tutorial_full_payload)
-                created = resp.json() or {}
-                self.logger.info(
-                    "GED POST fallback tutorial completo OK: document_id=%s",
-                    created.get("id"),
-                )
-            except requests.exceptions.HTTPError as tutorial_exc:
-                tutorial_status = tutorial_exc.response.status_code if tutorial_exc.response is not None else "?"
-                tutorial_body = tutorial_exc.response.text[:800] if tutorial_exc.response is not None else ""
-                self.logger.error(
-                    "GED POST fallback tutorial completo falhou: HTTP %s. Body: %s. Payload:\n%s",
-                    tutorial_status,
-                    tutorial_body,
-                    json.dumps(tutorial_full_payload, indent=2, ensure_ascii=False),
-                )
-
-                fallback_payload = {
-                    **payload,
-                    "fileUploader": {
-                        "externalId": temp_file_name,
-                        "fileName": archive_candidate,
-                        "uploadedFileSize": len(file_bytes),
-                    },
-                }
-                self.logger.warning(
-                    "GED POST fallback tutorial completo falhou. "
-                    "Tentando fallback com fileUploader camelCase para diagnostico."
-                )
-                try:
-                    resp = self._request_with_retry("POST", post_url, json=fallback_payload)
-                    created = resp.json() or {}
-                    self.logger.info(
-                        "GED POST fallback fileUploader OK: document_id=%s",
-                        created.get("id"),
-                    )
-                except requests.exceptions.HTTPError as exc:
-                    fallback_status = exc.response.status_code if exc.response is not None else "?"
-                    fallback_body = exc.response.text[:800] if exc.response is not None else ""
-                    self.logger.error(
-                        "GED POST fallback fileUploader falhou: HTTP %s. Body: %s. Payload:\n%s",
-                        fallback_status,
-                        fallback_body,
-                        json.dumps(fallback_payload, indent=2, ensure_ascii=False),
-                    )
-                    self.logger.error(
-                        "GED upload falhou apos retries de storage. Payload oficial enviado:\n%s",
-                        json.dumps(payload, indent=2, ensure_ascii=False),
-                    )
-                    raise LegalOneGedUploadError(
-                        "Falha no POST /Documents "
-                        f"(payload oficial storage miss HTTP {last_error_status}; "
-                        f"fallback tutorial HTTP {tutorial_status}; "
-                        f"fallback fileUploader HTTP {fallback_status}). "
-                        f"Oficial: {last_error_body} | Tutorial: {tutorial_body} | "
-                        f"Fallback: {fallback_body}"
-                    ) from exc
 
         document_id = created.get("id")
         if not document_id:
             raise LegalOneGedUploadError(
-                f"POST /Documents não retornou id. Resposta: {created}"
+                f"POST /documents não retornou id. Resposta: {created}"
             )
         return int(document_id)
 
