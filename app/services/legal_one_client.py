@@ -67,7 +67,14 @@ class _GlobalRateLimiter:
 
 class LegalOneApiClient:
     _session = requests.Session()
-    _CNJ_LOOKUP_BATCH_SIZE = 20
+    # Reduzido de 20 pra 10 porque _cnj_variants gera ate 3 variantes
+    # por CNJ (original + digits puros + formato canonico). Com batch=20
+    # a lista de filter_parts chegava a 60 e o $top excedia o teto de
+    # 30 do endpoint /Lawsuits + /Litigations do L1 — resultado: todo
+    # o precarregamento devolvia 0 processos e o batch de planilha
+    # quebrava com 'Processo nao encontrado no Legal One' em todas as
+    # linhas. Com batch=10, maximo 30 filter_parts -> cabe no limite.
+    _CNJ_LOOKUP_BATCH_SIZE = 10
     _PROCESS_LOOKUP_SELECT = "id,identifierNumber,responsibleOfficeId,creationDate"
     _rate_limiter = _GlobalRateLimiter()
 
@@ -347,8 +354,12 @@ class LegalOneApiClient:
                 "$filter": filter_clause,
                 # $top precisa caber TODAS as variantes — L1 pode devolver
                 # múltiplos matches se variantes do mesmo CNJ coexistirem.
+                # Cap em 30 porque o L1 rejeita top > 30 nos endpoints
+                # /Lawsuits e /Litigations (HTTP 400 "The limit of '30' for
+                # Top query has been exceeded"). A paginacao via nextLink
+                # cuida do raro caso em que ha mais que 30 matches no chunk.
                 "$select": self._PROCESS_LOOKUP_SELECT,
-                "$top": max(len(filter_parts), 1),
+                "$top": min(max(len(filter_parts), 1), 30),
             }
             results = self._paginated_catalog_loader(endpoint, params)
             for item in results:

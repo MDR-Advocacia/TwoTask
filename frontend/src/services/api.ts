@@ -299,6 +299,29 @@ export async function applyPrazosIniciaisBatch(
   return expectJson<PrazoInicialApplyBatchResponse>(response);
 }
 
+/**
+ * Recalcula os agregados globais (valor_total_pedido/estimado/
+ * aprovisionamento/probabilidade_exito_global) a partir dos pedidos
+ * persistidos do intake. Não re-roda Sonnet, não gasta tokens.
+ * Útil pra corrigir intakes órfãos de apply antigo.
+ */
+export async function recomputePrazoInicialGlobals(
+  intakeId: number,
+): Promise<{
+  intake_id: number;
+  valor_total_pedido: number | null;
+  valor_total_estimado: number | null;
+  aprovisionamento_sugerido: number | null;
+  probabilidade_exito_global: string | null;
+  pedidos_count: number;
+}> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/intakes/${intakeId}/recompute-globals`,
+    { method: "POST" },
+  );
+  return expectJson(response);
+}
+
 
 function _buildLegacyQueueParams(
   filters: PrazoInicialLegacyTaskQueueFilters,

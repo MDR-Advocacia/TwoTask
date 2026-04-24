@@ -524,6 +524,41 @@ def get_intake(
     if intake is None:
         raise HTTPException(status_code=404, detail="Intake não encontrado.")
 
+    # Auto-recompute defensivo (Onda 2): se por qualquer motivo os
+    # agregados do intake ficarem dessincronizados dos pedidos (apply
+    # antigo, exception silenciosa, PATCH direto no banco), o GET
+    # reconcilia transparentemente. Custo: 1 passada sobre pedidos já
+    # eager-loaded. Sem I/O extra além do UPDATE quando algo mudou.
+    try:
+        from app.services.classifier.prazos_iniciais_classifier import (
+            PrazosIniciaisBatchClassifier,
+        )
+        clf = PrazosIniciaisBatchClassifier.__new__(PrazosIniciaisBatchClassifier)
+        clf.db = db
+        # Snapshot do estado antes pra só commitar se mudou algo.
+        before = (
+            intake.valor_total_pedido,
+            intake.valor_total_estimado,
+            intake.aprovisionamento_sugerido,
+            intake.probabilidade_exito_global,
+        )
+        clf._compute_intake_globals(intake)
+        after = (
+            intake.valor_total_pedido,
+            intake.valor_total_estimado,
+            intake.aprovisionamento_sugerido,
+            intake.probabilidade_exito_global,
+        )
+        if before != after:
+            db.commit()
+            db.refresh(intake)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Auto-recompute de agregados falhou (intake %s) — seguindo com valores antigos.",
+            intake_id,
+        )
+        db.rollback()
+
     summary = _intake_to_summary(intake)
     sugestoes_sorted = sorted(
         intake.sugestoes or [],
@@ -1697,6 +1732,74 @@ def reanalisar_intake(
         "message": (
             "Intake resetado. Será incluído na próxima janela de classificação."
         ),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Recompute globals (Onda 2): reconsolida agregados do intake a partir
+# dos pedidos atuais SEM re-rodar Sonnet. Útil pra corrigir intakes
+# que ficaram com agregados NULL por apply antigo ou exception
+# silenciosa. Idempotente, barato (sem I/O externo), sem gasto de
+# tokens.
+# ─────────────────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/intakes/{intake_id}/recompute-globals",
+    summary=(
+        "Recalcula valor_total_pedido/estimado/aprovisionamento/"
+        "probabilidade_exito_global a partir dos pedidos já persistidos."
+    ),
+)
+def recompute_intake_globals(
+    intake_id: int,
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    from app.models.prazo_inicial import PrazoInicialIntake
+    from app.services.classifier.prazos_iniciais_classifier import (
+        PrazosIniciaisBatchClassifier,
+    )
+
+    intake = db.get(PrazoInicialIntake, intake_id)
+    if intake is None:
+        raise HTTPException(status_code=404, detail="Intake não encontrado.")
+
+    clf = PrazosIniciaisBatchClassifier.__new__(PrazosIniciaisBatchClassifier)
+    clf.db = db
+    try:
+        clf._compute_intake_globals(intake)
+        db.commit()
+        db.refresh(intake)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.exception(
+            "Recompute globals falhou pro intake %s: %s", intake_id, exc,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Falha ao recalcular agregados: {exc}",
+        )
+
+    return {
+        "intake_id": intake.id,
+        "valor_total_pedido": (
+            float(intake.valor_total_pedido)
+            if intake.valor_total_pedido is not None
+            else None
+        ),
+        "valor_total_estimado": (
+            float(intake.valor_total_estimado)
+            if intake.valor_total_estimado is not None
+            else None
+        ),
+        "aprovisionamento_sugerido": (
+            float(intake.aprovisionamento_sugerido)
+            if intake.aprovisionamento_sugerido is not None
+            else None
+        ),
+        "probabilidade_exito_global": intake.probabilidade_exito_global,
+        "pedidos_count": len(intake.pedidos or []),
     }
 
 

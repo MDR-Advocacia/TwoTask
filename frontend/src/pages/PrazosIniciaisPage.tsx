@@ -55,6 +55,7 @@ import {
   reanalyzePrazoInicial,
   exportPrazosIniciaisXlsx,
   prazoInicialPdfUrl,
+  recomputePrazoInicialGlobals,
   refreshPrazosIniciaisBatch,
   reprocessarPrazoInicialCnj,
   submitPrazosIniciaisClassifyPending,
@@ -361,6 +362,31 @@ export default function PrazosIniciaisPage() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Erro desconhecido";
       toast({ title: "Erro", description: msg, variant: "destructive" });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Recalcula agregados globais (valor total, aprovisionamento, prob. êxito)
+  // a partir dos pedidos atuais. Não reprocessa no Sonnet — é barato e
+  // idempotente. Útil pra corrigir intakes órfãos de apply antigo.
+  const onRecomputeGlobals = async () => {
+    if (!detail) return;
+    setActionLoading(true);
+    try {
+      const result = await recomputePrazoInicialGlobals(detail.id);
+      toast({
+        title: "Totais recalculados",
+        description:
+          result.pedidos_count > 0
+            ? `${result.pedidos_count} pedido(s) somados. Prob. êxito: ${result.probabilidade_exito_global ?? "—"}.`
+            : "Sem pedidos pra agregar — valores ficaram em branco.",
+      });
+      await loadDetail(detail.id);
+      await loadIntakes();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Erro desconhecido";
+      toast({ title: "Erro ao recalcular", description: msg, variant: "destructive" });
     } finally {
       setActionLoading(false);
     }
@@ -1431,6 +1457,20 @@ export default function PrazosIniciaisPage() {
             >
               <XCircle className="mr-2 h-4 w-4" />
               Cancelar intake
+            </Button>
+
+            <Button
+              variant="outline"
+              onClick={onRecomputeGlobals}
+              disabled={!detail || actionLoading || (detail.pedidos?.length ?? 0) === 0}
+              title="Recalcula Valor total / Aprovisionamento / Prob. êxito global a partir dos pedidos já extraídos. Não gasta tokens."
+            >
+              {actionLoading ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-2 h-4 w-4" />
+              )}
+              Recalcular totais
             </Button>
 
             <Button
