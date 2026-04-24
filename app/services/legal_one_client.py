@@ -1180,12 +1180,24 @@ class LegalOneApiClient:
             raise LegalOneGedUploadError(f"Erro ao enviar bytes pro blob: {exc}") from exc
 
         # Passo 3 — POST metadata + relationship + fileUploader.
-        # IMPORTANTE: a doc swagger da Thomson Reuters declara os campos
-        # complexos em PascalCase (Link/LinkItem.Id, ExternalId, etc.),
-        # mas a API OData do tenant (mdradvocacia) rejeita esse formato
-        # com "Does not support untyped value in non-open type". A
-        # convenção que funciona (validada com link_task_to_lawsuit) é
-        # camelCase consistente: linkType/linkId, externalId, etc.
+        #
+        # ATENÇÃO: os dois modelos do swagger têm campos com mesmo NOME
+        # mas significados diferentes:
+        #
+        #   DocumentUploadModel.externalId  → URL SAS do blob (pra PUT)
+        #   FileUploaderModel.ExternalId    → NOME do arquivo no container
+        #
+        # Se mandarmos a URL SAS gigante em FileUploaderModel.ExternalId,
+        # o OData choka com "Does not support untyped value in non-open
+        # type" (os '&'/'=' da query string da SAS parecem valor tipado).
+        # O correto é passar o `fileName` que o GetContainer retornou
+        # (ex: "cee24743-...pdf") como ExternalId.
+        #
+        # Casing: o swagger declara os campos complexos em PascalCase
+        # (ExternalId/FileName/UploadedFileSize, Link/LinkItem). Mantemos
+        # PascalCase no FileUploaderModel por ser o que o swagger exige,
+        # e camelCase em relationships[].linkType/linkId por ser o que o
+        # link_task_to_lawsuit (em uso na prod) já valida funcionando.
         post_endpoint = "/Documents"
         post_url = f"{self.base_url}{post_endpoint}"
         payload: Dict[str, Any] = {
@@ -1194,9 +1206,9 @@ class LegalOneApiClient:
             "typeId": type_id,
             "fileName": temp_file_name,
             "fileUploader": {
-                "externalId": external_id,
-                "fileName": file_name,
-                "uploadedFileSize": len(file_bytes),
+                "ExternalId": temp_file_name,  # NOME no container, NÃO a URL SAS
+                "FileName": file_name,
+                "UploadedFileSize": len(file_bytes),
             },
             "relationships": [
                 {
