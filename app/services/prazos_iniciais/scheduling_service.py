@@ -294,9 +294,12 @@ class PrazosIniciaisSchedulingService:
             )
 
         file_name = intake.pdf_filename_original or f"habilitacao-{intake.id}.pdf"
+        # L1 exige que o `archive` tenha extensao de arquivo (valida
+        # "Extensao de arquivo invalida" se faltar). Usamos .pdf porque
+        # todo upload desse caminho eh PDF.
         archive_name = (
-            f"Habilitação — {intake.cnj_number}" if intake.cnj_number
-            else f"Habilitação intake #{intake.id}"
+            f"Habilitação — {intake.cnj_number}.pdf" if intake.cnj_number
+            else f"Habilitação intake #{intake.id}.pdf"
         )
         description = (
             f"Habilitação nos autos (intake Flow #{intake.id}) — "

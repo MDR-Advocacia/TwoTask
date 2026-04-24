@@ -1217,9 +1217,14 @@ class LegalOneApiClient:
         #   }
         post_endpoint = "/Documents"
         post_url = f"{self.base_url}{post_endpoint}"
+        # L1 rejeita HTTP 400 "Extensao de arquivo invalida" se o `archive`
+        # vier sem extensao. Garante que termine com `.{ext}` (default pdf).
+        archive_candidate = archive_name or file_name
+        if archive_candidate and "." not in os.path.basename(archive_candidate):
+            archive_candidate = f"{archive_candidate}.{ext}"
         payload: Dict[str, Any] = {
             "fileName": temp_file_name,  # mesmo fileName do GetContainer
-            "archive": archive_name or file_name,
+            "archive": archive_candidate,
             "description": description or file_name,
             "typeId": type_id,
             "relationships": [
