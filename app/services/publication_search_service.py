@@ -1050,6 +1050,30 @@ class PublicationSearchService:
             desc = desc[: self._DESCRIPTION_MAX_CHARS - 1].rstrip() + "…"
         payload["description"] = desc
 
+    def _apply_required_task_defaults(self, payload: dict) -> None:
+        """
+        Garante que todo payload enviado pro L1 tenha os campos que a API
+        considera obrigatórios: `status.id` e `originOfficeId`. O proposer
+        padrão (_render_proposal) já preenche ambos, mas quando o frontend
+        manda `payload_override` (modal de confirmar/editar tarefa) pode
+        acontecer dele vir sem esses campos — L1 devolve 400.
+
+        Regras:
+        - `status.id` ausente ou malformado → default 0 (igual _render_proposal).
+        - `originOfficeId` ausente → herda de `responsibleOfficeId` quando
+          presente; senão fica sem, pra preservar o erro explícito caso não
+          tenha office em lugar nenhum (melhor falhar cedo).
+
+        Modifica o `payload` in-place.
+        """
+        # status — precisa ser objeto {"id": <int>}
+        status_val = payload.get("status")
+        if not isinstance(status_val, dict) or status_val.get("id") is None:
+            payload["status"] = {"id": 0}
+        # originOfficeId — herda de responsibleOfficeId se ausente
+        if not payload.get("originOfficeId") and payload.get("responsibleOfficeId"):
+            payload["originOfficeId"] = payload["responsibleOfficeId"]
+
     def _render_proposal(self, rec: PublicationRecord, tmpl, lawsuit_responsible: dict = None) -> dict:
         """Monta o dict de payload de tarefa baseado no template + record."""
         from datetime import date as date_cls, timedelta
@@ -1972,6 +1996,7 @@ class PublicationSearchService:
         created_task_ids: list[int] = []
         for payload in payloads:
             self._enforce_description_limit(payload)
+            self._apply_required_task_defaults(payload)
             created = self.client.create_task(payload)
             if not created or not created.get("id"):
                 raise ValueError("Falha ao criar tarefa no Legal One.")
@@ -2054,6 +2079,7 @@ class PublicationSearchService:
         created_task_ids: list[int] = []
         for payload in payloads:
             self._enforce_description_limit(payload)
+            self._apply_required_task_defaults(payload)
             created = self.client.create_task(payload)
             if not created or not created.get("id"):
                 raise ValueError("Falha ao criar tarefa no Legal One.")
