@@ -4,6 +4,29 @@ const { chromium } = require('playwright');
 
 const STATUS_UPLOADED = 'uploaded';
 const STATUS_ERROR = 'error';
+const ALLOWED_EXTENSIONS = new Set([
+  'doc',
+  'docx',
+  'xls',
+  'xlsx',
+  'ppt',
+  'pptx',
+  'pdf',
+  'png',
+  'jpg',
+  'jpeg',
+  'bmp',
+  'gif',
+  'txt',
+  'rtf',
+  'eml',
+  'msg',
+  'zip',
+  'rar',
+  '7z',
+  'html',
+  'htm',
+]);
 
 function parseArgs(argv) {
   const args = {};
@@ -52,6 +75,23 @@ function sanitizeFileSegment(value) {
     .replace(/^_+|_+$/g, '')
     .slice(0, 80);
   return normalized || 'item';
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeDisplayName(value) {
+  const parsed = path.parse(String(value || 'habilitacao.pdf'));
+  const extension = parsed.ext || '.pdf';
+  const stem = (parsed.name || 'habilitacao')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\w.-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 120);
+  return `${stem || 'habilitacao'}${extension.toLowerCase()}`;
 }
 
 async function waitForPageSettle(page, delayMs = 0) {
@@ -241,7 +281,10 @@ async function createLoggedInSession(loginConfig) {
   const launchOptions = { headless: true };
   if (process.env.PLAYWRIGHT_CHANNEL) launchOptions.channel = process.env.PLAYWRIGHT_CHANNEL;
   const browser = await chromium.launch(launchOptions);
-  const context = await browser.newContext({ acceptDownloads: true });
+  const context = await browser.newContext({
+    acceptDownloads: true,
+    viewport: { width: 1440, height: 900 },
+  });
   await context.route('**/*', (route) => {
     const resourceType = route.request().resourceType();
     if (resourceType === 'image' || resourceType === 'media' || resourceType === 'font') {
@@ -450,50 +493,211 @@ async function verifyUpload(page, item, detailsUrl) {
   };
 }
 
+async function assertNoLegalOneValidationErrors(page) {
+  const errors = await page
+    .locator('.validation-summary-errors, .field-validation-error')
+    .allTextContents()
+    .catch(() => []);
+  const visibleErrors = errors.map((text) => text.trim()).filter(Boolean);
+  if (visibleErrors.length) {
+    throw new Error(`Erros do Legal One: ${visibleErrors.join(' | ')}`);
+  }
+}
+
+async function openCreateArquivo(page, item, webBaseUrl, loginConfig) {
+  const matterId = item.lawsuitId;
+  const detailsGedUrl = `${webBaseUrl}/processos/processos/DetailsGED/${matterId}`;
+  const createUrl = `${webBaseUrl}/processos/Arquivos/CreateArquivo/${matterId}?returnUrl=${encodeURIComponent(`/processos/processos/DetailsGED/${matterId}`)}`;
+
+  const response = await page.goto(createUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
+  await waitForPageSettle(page, 3000);
+
+  let context = await capturePageContext(page);
+  if (isAuthenticationPage(context)) {
+    await login(page, { ...loginConfig, returnUrl: createUrl });
+    await waitForPageSettle(page, 3000);
+    context = await capturePageContext(page);
+  }
+
+  const status = response ? response.status() : null;
+  if (status && status >= 400) {
+    throw new Error(`CreateArquivo retornou HTTP ${status}`);
+  }
+  if (/\/login|loginonepass|signon\.thomsonreuters/i.test(page.url())) {
+    throw new Error('Sessao expirada ao abrir CreateArquivo.');
+  }
+  if (/acesso negado|processo n[aã]o encontrado|not found|forbidden/i.test(context.bodyStart || '')) {
+    throw new Error(
+      `CreateArquivo sem permissao ou processo nao encontrado | url=${context.url} | body=${(context.bodyStart || '').slice(0, 500)}`,
+    );
+  }
+  if (!/\/processos\/Arquivos\/CreateArquivo\//i.test(page.url())) {
+    throw new Error(`URL inesperada ao abrir formulario GED: ${page.url()}`);
+  }
+
+  return { createUrl, detailsGedUrl };
+}
+
+async function uploadFileWithFineUploader(page, filePath) {
+  const extension = path.extname(filePath).replace('.', '').toLowerCase();
+  if (!ALLOWED_EXTENSIONS.has(extension)) {
+    throw new Error(`Extensao ${extension} nao permitida pelo GED.`);
+  }
+
+  await page.setInputFiles('input[type=file][name="qqfile"], input[type=file]', filePath);
+  await page.waitForSelector('.qq-upload-list .qq-upload-success', { timeout: 120000 });
+  const failedCount = await page.locator('.qq-upload-list .qq-upload-fail').count().catch(() => 0);
+  if (failedCount) {
+    const failedText = await page.locator('.qq-upload-list .qq-upload-fail').allTextContents().catch(() => []);
+    throw new Error(`Upload falhou no Fine Uploader: ${failedText.join(' | ')}`);
+  }
+
+  const hasFile = page.locator('#FileAzure_HasFile');
+  if ((await hasFile.count().catch(() => 0)) > 0) {
+    const value = await hasFile.inputValue().catch(() => '');
+    if (!/^true$/i.test(value)) {
+      throw new Error(`Fine Uploader terminou, mas #FileAzure_HasFile=${value || '<vazio>'}`);
+    }
+  }
+}
+
+async function expandLookupTree(page, tree) {
+  for (let guard = 0; guard < 20; guard += 1) {
+    const collapsed = tree.locator(
+      'tr.expandable.collapsed .expander, tr.collapsed .expander, tr .expander:not(.expanded)',
+    );
+    const count = await collapsed.count().catch(() => 0);
+    if (!count) return;
+    await collapsed.first().click({ timeout: 5000 }).catch(() => null);
+    await page.waitForTimeout(250);
+  }
+}
+
+async function selectGedType(page, tipoPath = ['Documento', 'Habilitação']) {
+  await page.locator('#lookup_tipo .lookup-show').click({ timeout: 30000 });
+  const tree = page.locator('.lookup-dropdown table.treeTable');
+  await tree.waitFor({ state: 'visible', timeout: 10000 });
+  await expandLookupTree(page, tree);
+
+  const leaf = tipoPath[tipoPath.length - 1] || 'Habilitação';
+  const leafPattern = new RegExp(`^\\s*${escapeRegExp(leaf)}\\s*$`, 'i');
+  const parent = tipoPath.length > 1 ? tipoPath[tipoPath.length - 2] : null;
+  let cell = tree.locator('td', { hasText: leafPattern }).first();
+
+  if (parent) {
+    const parentPattern = new RegExp(escapeRegExp(parent), 'i');
+    const anchoredRow = tree
+      .locator('tr', {
+        has: page.locator('td', { hasText: leafPattern }),
+      })
+      .filter({ hasText: parentPattern })
+      .first();
+    if ((await anchoredRow.count().catch(() => 0)) > 0) {
+      cell = anchoredRow.locator('td', { hasText: leafPattern }).first();
+    }
+  }
+
+  await cell.click({ timeout: 30000 });
+  const tipoId = await page.locator('#TipoId').inputValue({ timeout: 10000 }).catch(() => '');
+  const tipoText = await page.locator('#TipoText').inputValue({ timeout: 10000 }).catch(() => '');
+  if (!tipoId || !/habilita/i.test(tipoText)) {
+    throw new Error(`Tipo GED nao selecionado corretamente: TipoId=${tipoId || '<vazio>'} TipoText=${tipoText || '<vazio>'}`);
+  }
+  return { tipoId, tipoText };
+}
+
+async function fillGedForm(page, item, displayArchiveName) {
+  const description = item.description || displayArchiveName;
+  if ((await page.locator('#Descricao').count().catch(() => 0)) > 0) {
+    await page.locator('#Descricao').fill(description);
+  }
+
+  const nameWithoutExtension = path.parse(displayArchiveName).name;
+  if ((await page.locator('#Nome').count().catch(() => 0)) > 0) {
+    await page.evaluate((value) => {
+      const input = document.getElementById('Nome');
+      if (!input) return;
+      input.value = value;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }, nameWithoutExtension);
+  }
+
+  const observation = item.observation || item.observacao || item.notes;
+  if (observation) {
+    await page.getByText('Observações', { exact: true }).click({ timeout: 5000 }).catch(() => null);
+    if ((await page.locator('#Observacao').count().catch(() => 0)) > 0) {
+      await page.locator('#Observacao').fill(String(observation));
+    }
+  }
+
+  return { descriptionFilled: description, nameFilled: nameWithoutExtension };
+}
+
+async function saveAndCloseGedForm(page, matterId) {
+  const saveButton = page.getByRole('button', { name: /Salvar e fechar/i });
+  const fallback = page.locator('input[type=submit][value*="Salvar"], button:has-text("Salvar")').first();
+  const clickable = (await saveButton.count().catch(() => 0)) > 0 ? saveButton.first() : fallback;
+
+  await Promise.all([
+    page.waitForURL(new RegExp(`/processos/processos/DetailsGED/${matterId}`, 'i'), { timeout: 60000 }).catch(async () => {
+      await waitForPageSettle(page, 5000);
+    }),
+    clickable.click({ timeout: 30000 }),
+  ]);
+
+  await assertNoLegalOneValidationErrors(page);
+  if (/\/login/i.test(page.url())) {
+    throw new Error('Sessao expirada apos salvar arquivo GED.');
+  }
+}
+
+async function getRecentAttachmentId(page, displayArchiveName, tipo = 'Habilitação') {
+  const nameStem = path.parse(displayArchiveName).name;
+  const typedRow = page
+    .locator('table tr', { has: page.locator('td', { hasText: new RegExp(tipo, 'i') }) })
+    .filter({ hasText: nameStem })
+    .first();
+  let link = typedRow.locator('a[href*="/Arquivos/Details/"]').first();
+
+  if ((await link.count().catch(() => 0)) === 0) {
+    link = page.locator('table a[href*="/Arquivos/Details/"]', { hasText: nameStem }).first();
+  }
+
+  await link.waitFor({ state: 'visible', timeout: 15000 });
+  const href = await link.getAttribute('href');
+  const match = href ? href.match(/\/Arquivos\/Details\/(\d+)/i) : null;
+  return {
+    documentId: match ? Number(match[1]) : null,
+    href,
+    nameStem,
+  };
+}
+
 async function uploadGedDocument(session, item, webBaseUrl, loginConfig) {
   if (!fs.existsSync(item.pdfPath)) {
     throw new Error(`PDF nao encontrado: ${item.pdfPath}`);
   }
 
-  const detailsUrl = await openLawsuit(session.page, item, webBaseUrl, loginConfig);
-  const uploadArea = await discoverUploadArea(session.page);
-  if (!uploadArea) {
-    throw new Error('Nao encontrei aba/link de documentos, GED, arquivos ou anexos no processo.');
-  }
-
-  const trigger = await triggerNewDocumentFlow(session.page);
-  if (!trigger) {
-    throw new Error('Nao encontrei botao/link para adicionar ou enviar documento.');
-  }
-
-  const fileInputFound = await setFirstFileInput(session.page, item.pdfPath);
-  if (!fileInputFound) {
-    throw new Error('Nao encontrei input[type=file] apos abrir o fluxo de upload.');
-  }
-
-  const metadata = await fillUploadMetadata(session.page, item);
-  const submitButton = await submitUpload(session.page);
-  if (!submitButton) {
-    throw new Error('Nao encontrei botao para salvar/enviar o documento.');
-  }
-
-  const verification = await verifyUpload(session.page, item, detailsUrl);
-  if (!verification.matched) {
-    throw new Error(
-      `Upload submetido mas nao consegui verificar o documento na tela | url=${verification.page.url} | body=${(verification.page.bodyStart || '').slice(0, 600)}`,
-    );
-  }
+  const displayArchiveName = normalizeDisplayName(item.archive || path.basename(item.pdfPath));
+  const { createUrl, detailsGedUrl } = await openCreateArquivo(session.page, item, webBaseUrl, loginConfig);
+  await uploadFileWithFineUploader(session.page, item.pdfPath);
+  const selectedType = await selectGedType(session.page, item.tipoPath || item.typePath || ['Documento', 'Habilitação']);
+  const metadata = await fillGedForm(session.page, item, displayArchiveName);
+  await saveAndCloseGedForm(session.page, item.lawsuitId);
+  const attachment = await getRecentAttachmentId(session.page, displayArchiveName);
 
   return {
     status: STATUS_UPLOADED,
     response: {
-      detailsUrl,
-      uploadArea,
-      trigger,
+      createUrl,
+      detailsGedUrl,
+      displayArchiveName,
+      selectedType,
       metadata,
-      submitButton,
-      verification,
-      documentId: verification.documentId,
+      attachment,
+      documentId: attachment.documentId,
+      pageUrl: session.page.url(),
     },
   };
 }
