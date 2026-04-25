@@ -496,46 +496,75 @@ async function submitCancellation(page, item) {
     const submitButtonSelector =
       'form:has(#StatusId) button[type="submit"]:has-text("Salvar e fechar")';
 
+    // Handler do modal "Alerta" do Novajus (ex: "A data de Inicio... eh
+    // anterior a data atual. Deseja salvar mesmo assim?") com botoes
+    // Nao/Sim. Esse modal eh um modal HTML custom (nao window.confirm),
+    // entao precisamos detecta-lo e clicar em "Sim" via DOM. Roda em
+    // paralelo com o click no Salvar — fica patrulhando por alguns
+    // segundos pra detectar o modal aparecer.
+    const alertModalSelectors = [
+      // Botoes "Sim" em containers de dialog comuns
+      'div[role="dialog"] button:has-text("Sim")',
+      'div[role="alertdialog"] button:has-text("Sim")',
+      '.modal button:has-text("Sim")',
+      '.ui-dialog-buttonpane button:has-text("Sim")',
+      '.jconfirm .jconfirm-buttons button.btn-confirm',
+      '.jconfirm .jconfirm-buttons button.btn-blue',
+      // Tambem aceita "OK"/"Confirmar" em modal de alerta
+      'div[role="dialog"] button:has-text("OK")',
+      'div[role="dialog"] button:has-text("Confirmar")',
+    ];
+
+    const watchAlertModal = async () => {
+      // Patrulha por ate 8s detectando o modal aparecer e clicando "Sim"
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline) {
+        for (const sel of alertModalSelectors) {
+          try {
+            const handle = await page.$(sel);
+            if (handle) {
+              const visible = await handle.isVisible().catch(() => false);
+              if (visible) {
+                await handle.click({ timeout: 2000 }).catch(() => {});
+                return true;
+              }
+            }
+          } catch (_) {
+            // proximo selector
+          }
+        }
+        await page.waitForTimeout(150);
+      }
+      return false;
+    };
+
     let navigationError = null;
     try {
+      // Inicia patrulha do modal ANTES do click pra nao perder o
+      // momento que ele aparece (pode ser muito rapido).
+      const modalPromise = watchAlertModal();
       await Promise.all([
         page.waitForNavigation({ waitUntil: 'load', timeout: 60000 }),
         page.click(submitButtonSelector, { timeout: 10000 }),
       ]);
+      // Garante que a patrulha terminou (ja navegou — provavelmente nao
+      // teve modal, ou foi clicado).
+      await modalPromise.catch(() => false);
     } catch (err) {
       navigationError = err && err.message ? err.message : String(err);
 
-      // Se a navegacao nao aconteceu, pode ter aparecido um modal
-      // jQuery/jConfirm pedindo confirmacao. Tenta aceitar.
-      // Seletores escopados a containers especificos de dialog —
-      // evitamos `.modal-dialog` e `:first-child` porque podem casar
-      // com banners/tooltips do proprio Novajus e clicar errado.
-      // Timeout reduzido pra 800ms cada (no flow normal nao aparece
-      // dialog — vimos `dialogCount: 0` na investigacao).
-      const jconfirmSelectors = [
-        '.jconfirm .jconfirm-buttons button.btn-confirm',
-        '.jconfirm .jconfirm-buttons button.btn-blue',
-        '.ui-dialog-buttonpane button:has-text("Sim")',
-        '.ui-dialog-buttonpane button:has-text("OK")',
-        'div[role="dialog"] button:has-text("Sim")',
-        'div[role="dialog"] button:has-text("Confirmar")',
-      ];
-      for (const sel of jconfirmSelectors) {
+      // Fallback: se o waitForNavigation expirou, tenta achar o modal
+      // de novo (pode ter aparecido depois do timeout).
+      const modalClicked = await watchAlertModal().catch(() => false);
+      if (modalClicked) {
         try {
-          const handle = await page.waitForSelector(sel, {
-            timeout: 800,
-            state: 'visible',
+          await page.waitForNavigation({
+            waitUntil: 'load',
+            timeout: 30000,
           });
-          if (handle) {
-            await Promise.all([
-              page.waitForNavigation({ waitUntil: 'load', timeout: 30000 }).catch(() => null),
-              handle.click({ timeout: 2000 }).catch(() => {}),
-            ]);
-            navigationError = null;
-            break;
-          }
+          navigationError = null;
         } catch (_) {
-          // proximo selector
+          // segue com erro original
         }
       }
     }

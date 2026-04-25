@@ -684,42 +684,43 @@ class LegacyTaskCancellationService:
                 "details_url": urls["details_url"],
             }
 
-        # Cancelamento via API L1: PATCH /tasks/{id} com {"statusId": 3}.
-        # Substitui o RPA Playwright (cancel-legacy-task.js) que tinha
-        # problemas com widgets, validacoes server-side e form submit
-        # nativo. O PATCH parcial so atualiza o statusId e o servidor
-        # MVC nao roda validacao de outros campos obrigatorios.
-        runner_state = "completed"
-        runner_item_status: str
-        runner_error: Optional[str] = None
-        api_success = False
-        try:
-            api_success = self.client.update_task_status(
-                task_id=int(resolved_task_id),
-                status_id=int(target_status_id),
-            )
-        except Exception as exc:  # noqa: BLE001
-            runner_error = f"api_exception: {exc}"
-            logger.exception(
-                "legacy_task_queue.cancel_task.api_exception task_id=%s",
-                resolved_task_id,
-            )
+        # Cancelamento via RPA Playwright. A API REST recusa PATCH /tasks
+        # quando a task eh oriunda de Workflow ("O id informado eh oriundo
+        # de um modelo de procedimento do Workflow, altere o registro
+        # pelo Legal One"). Pela UI web funciona normalmente.
+        runner_items = self._build_runner_items(
+            cnj_number=normalized_cnj,
+            lawsuit_id=resolved_lawsuit_id,
+            task=selected_task,
+            target_status_id=target_status_id,
+            target_status_text=target_status_text,
+        )
+        paths = self._build_run_paths(resolved_task_id)
+        payload = self._run_runner(
+            paths=paths,
+            runner_items=runner_items,
+            max_attempts=max_attempts,
+        )
 
-        if api_success:
-            success = True
-            runner_item_status = "cancelled"
-            reason = "cancelled"
+        items = payload.get("items") or []
+        item_payload = items[0] if items else {}
+        runner_item_status = item_payload.get("status")
+        runner_state = payload.get("state")
+        runner_error = item_payload.get("error") or payload.get("error")
+
+        success = (
+            runner_state == "completed"
+            and runner_item_status in RUNNER_SUCCESS_STATUSES
+        )
+
+        if success:
+            reason = runner_item_status
         else:
-            success = False
-            runner_item_status = "error"
-            if runner_error is None:
-                runner_error = (
-                    f"PATCH /tasks/{resolved_task_id} retornou status nao-OK "
-                    f"(statusId pretendido: {target_status_id})."
-                )
-            # Classifica como falha de infra/api pra alimentar o circuit
-            # breaker (consistente com auth_failure/timeout do antigo RPA).
-            reason = "api_error"
+            reason = self._classify_runner_error(
+                runner_state=runner_state,
+                runner_item_status=runner_item_status,
+                runner_error=runner_error,
+            )
 
         return {
             "success": success,
@@ -734,15 +735,13 @@ class LegacyTaskCancellationService:
             "target_status_text": target_status_text,
             "runner_state": runner_state,
             "runner_item_status": runner_item_status,
-            "runner_response": (
-                {"verifiedStatusId": int(target_status_id)} if api_success else None
-            ),
+            "runner_response": item_payload.get("response"),
             "runner_error": runner_error,
-            "process_exit_code": 0 if api_success else 1,
-            "status_file_path": None,
-            "log_file_path": None,
-            "error_log_file_path": None,
-            "artifacts_dir": None,
+            "process_exit_code": payload.get("process_exit_code"),
+            "status_file_path": str(paths.status),
+            "log_file_path": str(paths.log),
+            "error_log_file_path": str(paths.error_log),
+            "artifacts_dir": str(paths.artifacts),
             "edit_url": urls["edit_url"],
             "details_url": urls["details_url"],
         }
