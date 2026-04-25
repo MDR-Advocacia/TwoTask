@@ -1003,6 +1003,49 @@ class LegalOneApiClient:
         response = self._request_with_retry("GET", url)
         return response.json()
 
+    def update_task_status(self, task_id: int, status_id: int) -> bool:
+        """
+        Atualiza apenas o `statusId` de uma tarefa via PATCH parcial.
+
+        Endpoint: PATCH /tasks/{id}
+        Body: {"statusId": <novo_id>}
+
+        Retorna True se HTTP 204 (esperado pelo swagger) ou 200; False
+        em caso de erro. Levanta exception em falhas de rede/auth.
+
+        Status IDs do L1 (Tasks):
+            0 = Pendente
+            1 = Cumprido
+            2 = Nao cumprido
+            3 = Cancelado
+            4 = Iniciado
+            5 = Reagendado
+        """
+        self.logger.info(
+            "Atualizando status da tarefa %s -> %s via PATCH /tasks/{id}",
+            task_id, status_id,
+        )
+        endpoint = f"/tasks/{task_id}"
+        url = f"{self.base_url}{endpoint}"
+        payload = {"statusId": int(status_id)}
+        try:
+            response = self._request_with_retry("PATCH", url, json=payload)
+            if response.status_code in (200, 204):
+                return True
+            self.logger.warning(
+                "PATCH /tasks/%s retornou status inesperado: %s. Body: %s",
+                task_id, response.status_code, (response.text or "")[:300],
+            )
+            return False
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else "?"
+            body = exc.response.text[:400] if exc.response is not None else ""
+            self.logger.error(
+                "Falha PATCH /tasks/%s -> statusId=%s: HTTP %s. %s",
+                task_id, status_id, status, body,
+            )
+            return False
+
     def get_task_relationships(self, task_id: int) -> List[Dict[str, Any]]:
         self.logger.info("Buscando relacionamentos da tarefa ID %s.", task_id)
         endpoint = f"/tasks/{task_id}/relationships"
