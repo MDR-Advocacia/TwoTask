@@ -651,6 +651,7 @@ class PrazosIniciaisSchedulingService:
                 commit=False,
                 legacy_task_type_external_id=legacy_task_type_external_id,
                 legacy_task_subtype_external_id=legacy_task_subtype_external_id,
+                force_queue=True,
             )
 
         self.db.commit()
