@@ -435,210 +435,190 @@ async function waitForTaskEditForm(page, editUrl, loginConfig) {
 }
 
 async function submitCancellation(page, item) {
-  return page.evaluate(async (currentItem) => {
-    const normalizeText = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-    const textFromHtml = (html) => {
-      const doc = new DOMParser().parseFromString(html, 'text/html');
-      return doc.body ? doc.body.innerText || '' : '';
-    };
+  // 1) Le status atual via DOM (campo hidden #StatusId)
+  const currentStatusId = await page
+    .$eval('#StatusId', (el) => el.value)
+    .catch(() => null);
+  const currentStatusText = await page
+    .$eval('#StatusText', (el) => el.value)
+    .catch(() => '');
 
-    // Coleta mensagens APENAS dentro do summary de validacao do form
-    // (nao varre o body inteiro). O HTML completo do Novajus tem dezenas
-    // de strings que combinam com /erro/i, /campo/i e /preencha/i em
-    // templates de outros widgets — varrer geral gera falso-positivo.
-    const collectFormMessages = (doc) => {
-      const selectors = [
-        '.validation-summary-errors li',
-        '.validation-summary-errors',
-        '.field-validation-error',
-        '.alert-danger',
-        '.alert-warning',
-      ];
-      const messages = [];
-      for (const selector of selectors) {
-        for (const node of doc.querySelectorAll(selector)) {
-          const message = normalizeText(node.innerText || node.textContent || '');
-          if (message && message.length > 2) messages.push(message);
-        }
-      }
-      return [...new Set(messages)].slice(0, 12);
+  if (currentStatusId !== null && String(currentStatusId) === String(item.targetStatusId)) {
+    return {
+      alreadyCancelled: true,
+      currentStatusId,
+      currentStatusText,
+      verifiedStatusId: currentStatusId,
+      verifiedStatusText: currentStatusText,
     };
+  }
 
-    // Identifica o form pela presenca do `#StatusId`. Mais robusto que
-    // filtrar por action — a rota real eh `/processos/tarefas/Edit`.
+  // 2) Patch DOM: seta StatusId/StatusText e copia EnvolvidoId ->
+  // EnvolvidoEfetivoId (replica o efeito do widget JS de Status). NAO
+  // submetemos via fetch — o submit eh feito no passo 4 pelo click no
+  // botao, que dispara o submit nativo do form (com Origin/Referer/
+  // cookies que o servidor MVC espera).
+  await page.evaluate((currentItem) => {
     let form = null;
-    try {
-      form = document.querySelector('form:has(#StatusId)');
-    } catch (_) {}
+    try { form = document.querySelector('form:has(#StatusId)'); } catch (_) {}
     if (!form) {
-      const statusIdInput = document.getElementById('StatusId');
-      if (statusIdInput && statusIdInput.closest) {
-        form = statusIdInput.closest('form');
-      }
+      const sel = document.getElementById('StatusId');
+      if (sel && sel.closest) form = sel.closest('form');
     }
-    if (!form) {
-      form = Array.from(document.querySelectorAll('form')).find((candidate) => {
-        const act = (candidate.getAttribute('action') || '').toLowerCase();
-        return act.includes('/tarefas/edit') || act.includes('/agenda/tarefas/edit');
-      });
-    }
-    if (!form) {
-      throw new Error('Main task edit form not found');
-    }
+    if (!form) throw new Error('form:has(#StatusId) not found in patch step');
 
-    const currentStatusId =
-      form.querySelector('#StatusId')?.value ||
-      form.querySelector('[name="StatusId"]')?.value ||
-      null;
-    const currentStatusText =
-      form.querySelector('#StatusText')?.value ||
-      form.querySelector('[name="StatusText"]')?.value ||
-      '';
-
-    if (String(currentStatusId) === String(currentItem.targetStatusId)) {
-      return {
-        alreadyCancelled: true,
-        currentStatusId,
-        currentStatusText,
-        verifiedStatusId: currentStatusId,
-        verifiedStatusText: currentStatusText,
-      };
-    }
-
-    // Atualiza o hidden de Status no DOM (replica o efeito do clique no
-    // lookup widget — tr[data-val-id="3"] seta StatusId/StatusText).
-    const sIdInput =
-      form.querySelector('#StatusId') || form.querySelector('[name="StatusId"]');
-    const sTextInput =
-      form.querySelector('#StatusText') || form.querySelector('[name="StatusText"]');
+    const sIdInput = form.querySelector('#StatusId');
+    const sTextInput = form.querySelector('#StatusText');
     if (sIdInput) sIdInput.value = String(currentItem.targetStatusId);
     if (sTextInput) sTextInput.value = String(currentItem.targetStatusText || '');
 
-    // CRITICAL FIX: o widget de Status, ao mudar pra Cancelado, copia
-    // Envolvidos[<guid>].EnvolvidoId -> Envolvidos[<guid>].EnvolvidoEfetivoId
-    // pra registrar quem efetivou a cancelacao. Sem isso o servidor recusa
-    // o save (mensagens de validacao podem aparecer fora do summary
-    // explicito, gerando ruido no parser).
-    const envolvidoIdInputs = form.querySelectorAll('input[name$=".EnvolvidoId"]');
-    envolvidoIdInputs.forEach((envInput) => {
+    form.querySelectorAll('input[name$=".EnvolvidoId"]').forEach((envInput) => {
       const m = envInput.name.match(/^(Envolvidos\[[^\]]+\])\.EnvolvidoId$/);
       if (!m) return;
-      const prefix = m[1];
-      const efetivoInput = form.querySelector(`input[name="${prefix}.EnvolvidoEfetivoId"]`);
-      if (efetivoInput && !efetivoInput.value) {
-        efetivoInput.value = envInput.value;
-      }
+      const efetivo = form.querySelector(`input[name="${m[1]}.EnvolvidoEfetivoId"]`);
+      if (efetivo && !efetivo.value) efetivo.value = envInput.value;
     });
+  }, item);
 
-    // Coleta TODOS os campos do form (ja com Status e EnvolvidoEfetivoId
-    // sincronizados acima).
-    const params = new URLSearchParams();
-    const elements = form.querySelectorAll('input, select, textarea, button');
-    for (const element of elements) {
-      const tag = element.tagName.toUpperCase();
-      const type = (element.getAttribute('type') || '').toLowerCase();
-      const name = element.getAttribute('name') || '';
-      if (!name || element.disabled) continue;
+  // 3) Aceita window.confirm/alert nativos (quem dispara o submit pode
+  // pedir confirmacao via dialog nativo).
+  const nativeDialogHandler = (dialog) => {
+    dialog.accept().catch(() => {});
+  };
+  page.on('dialog', nativeDialogHandler);
 
-      if (tag === 'BUTTON') {
-        if (type === 'submit' && name === 'ButtonSave') {
-          params.set(name, element.value || '0');
-        }
-        continue;
-      }
+  try {
+    // 4) Click nativo no Salvar e fechar + waitForNavigation. O submit
+    // do form gera um POST do navegador com TODOS os headers
+    // (Origin/Referer/Cookies) que o servidor MVC do Novajus espera.
+    let navigationError = null;
+    try {
+      await Promise.all([
+        page.waitForNavigation({ waitUntil: 'load', timeout: 60000 }),
+        page.click('button[name="ButtonSave"]', { timeout: 10000 }),
+      ]);
+    } catch (err) {
+      navigationError = err && err.message ? err.message : String(err);
 
-      if ((type === 'checkbox' || type === 'radio') && !element.checked) {
-        continue;
-      }
-
-      if (tag === 'SELECT' && element.multiple) {
-        const selected = Array.from(element.options).filter((option) => option.selected);
-        if (!selected.length) {
-          params.append(name, '');
-        } else {
-          for (const option of selected) {
-            params.append(name, option.value);
+      // Se a navegacao nao aconteceu, pode ter aparecido um modal
+      // jQuery jConfirm pedindo confirmacao do cancelamento. Tenta
+      // aceitar e aguarda navegacao novamente.
+      const jconfirmSelectors = [
+        '.jconfirm .jconfirm-buttons button.btn-confirm',
+        '.jconfirm .jconfirm-buttons button.btn-blue',
+        '.jconfirm .jconfirm-buttons button:first-child',
+        '.modal-dialog button:has-text("Sim")',
+        '.modal-dialog button:has-text("OK")',
+        '.modal-dialog button:has-text("Confirmar")',
+        '.ui-dialog-buttonpane button:has-text("Sim")',
+        '.ui-dialog-buttonpane button:has-text("OK")',
+        'div[role="dialog"] button:has-text("Sim")',
+        'div[role="dialog"] button:has-text("OK")',
+      ];
+      for (const sel of jconfirmSelectors) {
+        try {
+          const handle = await page.waitForSelector(sel, { timeout: 1500 });
+          if (handle) {
+            await Promise.all([
+              page.waitForNavigation({ waitUntil: 'load', timeout: 30000 }).catch(() => null),
+              handle.click({ timeout: 2000 }).catch(() => {}),
+            ]);
+            navigationError = null;
+            break;
           }
+        } catch (_) {
+          // proximo selector
         }
-        continue;
       }
-
-      params.append(name, element.value ?? '');
     }
 
-    // Sanity: forca StatusId/Text/ButtonSave (em caso de input duplicado
-    // ou qualquer encoding edge).
-    params.set('StatusId', String(currentItem.targetStatusId));
-    params.set('StatusText', String(currentItem.targetStatusText || ''));
-    params.set('ButtonSave', '0');
-
-    const actionUrl = new URL(form.getAttribute('action'), window.location.href).href;
-    const postResponse = await fetch(actionUrl, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
-      body: params.toString(),
-      redirect: 'follow',
-    });
-    const postHtml = await postResponse.text();
-    const postDoc = new DOMParser().parseFromString(postHtml, 'text/html');
-    const postText = textFromHtml(postHtml);
-
-    // Heuristica de sucesso pos-fix: se o servidor redirecionou pra fora
-    // do /tarefas/Edit (ex: voltou pra DetailsCompromissosTarefas/Index),
-    // considera sucesso e nao varre msgs de erro.
-    const postUrlLower = (postResponse.url || '').toLowerCase();
+    // 5) Verifica sucesso pela URL final do navegador. Quando o save
+    // funciona, o servidor responde 302 -> /Details... (ou similar).
+    // Quando algo recusa o save, fica em /tarefas/Edit ou redireciona
+    // pra rota de erro como /CreateFromProcesso/.
+    const finalUrl = page.url();
+    const finalUrlLower = finalUrl.toLowerCase();
     const looksLikeSuccess =
-      postResponse.status >= 200 &&
-      postResponse.status < 400 &&
-      !postUrlLower.includes('/tarefas/edit');
+      !finalUrlLower.includes('/tarefas/edit') &&
+      !finalUrlLower.includes('createfromprocesso');
 
-    const postMessages = looksLikeSuccess ? [] : collectFormMessages(postDoc);
+    // 6) Verify confiavel: re-busca a edit URL via fetch (no contexto
+    // logado da page) pra confirmar StatusId persistido = 3.
+    const verify = await page.evaluate(async (currentItem) => {
+      const normalizeText = (v) => String(v || '').replace(/\s+/g, ' ').trim();
+      const textFromHtml = (html) => {
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        return doc.body ? doc.body.innerText || '' : '';
+      };
+      const collectFormMessages = (doc) => {
+        const selectors = [
+          '.validation-summary-errors li',
+          '.validation-summary-errors',
+          '.field-validation-error',
+          '.alert-danger',
+          '.alert-warning',
+        ];
+        const messages = [];
+        for (const selector of selectors) {
+          for (const node of doc.querySelectorAll(selector)) {
+            const m = normalizeText(node.innerText || node.textContent || '');
+            if (m && m.length > 2) messages.push(m);
+          }
+        }
+        return [...new Set(messages)].slice(0, 12);
+      };
 
-    // Verify confiavel: re-busca a edit URL e le o StatusId persistido.
-    const verifyResponse = await fetch(currentItem.editUrl, {
-      method: 'GET',
-      credentials: 'include',
-      headers: { Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },
-    });
-    const verifyHtml = await verifyResponse.text();
-    const verifyDoc = new DOMParser().parseFromString(verifyHtml, 'text/html');
-    const verifyMessages = collectFormMessages(verifyDoc);
-    const verifiedStatusId =
-      verifyDoc.querySelector('#StatusId')?.value ||
-      verifyDoc.querySelector('[name="StatusId"]')?.value ||
-      null;
-    const verifiedStatusText =
-      verifyDoc.querySelector('#StatusText')?.value ||
-      verifyDoc.querySelector('[name="StatusText"]')?.value ||
-      '';
+      const verifyResponse = await fetch(currentItem.editUrl, {
+        method: 'GET',
+        credentials: 'include',
+        headers: { Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },
+      });
+      const verifyHtml = await verifyResponse.text();
+      const verifyDoc = new DOMParser().parseFromString(verifyHtml, 'text/html');
+      const verifyMessages = collectFormMessages(verifyDoc);
+      const verifiedStatusId =
+        verifyDoc.querySelector('#StatusId')?.value ||
+        verifyDoc.querySelector('[name="StatusId"]')?.value ||
+        null;
+      const verifiedStatusText =
+        verifyDoc.querySelector('#StatusText')?.value ||
+        verifyDoc.querySelector('[name="StatusText"]')?.value ||
+        '';
 
-    const detailsResponse = await fetch(currentItem.detailsUrl, {
-      method: 'GET',
-      credentials: 'include',
-      headers: { Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },
-    });
-    const detailsHtml = await detailsResponse.text();
-    const detailsText = textFromHtml(detailsHtml);
+      const detailsResponse = await fetch(currentItem.detailsUrl, {
+        method: 'GET',
+        credentials: 'include',
+        headers: { Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },
+      });
+      const detailsHtml = await detailsResponse.text();
+      const detailsText = textFromHtml(detailsHtml);
+
+      return {
+        verifyStatus: verifyResponse.status,
+        verifyMessages,
+        verifiedStatusId,
+        verifiedStatusText,
+        detailsStatus: detailsResponse.status,
+        detailsHasTargetText: detailsText
+          .toLowerCase()
+          .includes(String(currentItem.targetStatusText || '').toLowerCase()),
+        detailsPreview: detailsText.slice(0, 1500),
+      };
+    }, item);
 
     return {
       alreadyCancelled: false,
-      postStatus: postResponse.status,
-      postUrl: postResponse.url,
-      postLooksLikeSuccess: looksLikeSuccess,
-      postMessages,
-      verifyStatus: verifyResponse.status,
-      verifyMessages,
-      verifiedStatusId,
-      verifiedStatusText,
-      detailsStatus: detailsResponse.status,
-      detailsHasTargetText: detailsText
-        .toLowerCase()
-        .includes(String(currentItem.targetStatusText || '').toLowerCase()),
-      detailsPreview: detailsText.slice(0, 1500),
-      postPreview: postText.slice(0, 1500),
+      navigationError,
+      finalUrl,
+      looksLikeSuccess,
+      ...verify,
+      postMessages: [],
     };
-  }, item);
+  } finally {
+    try {
+      page.off('dialog', nativeDialogHandler);
+    } catch (_) {}
+  }
 }
 
 async function cancelTask(session, item, loginConfig) {
