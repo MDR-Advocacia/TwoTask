@@ -723,6 +723,13 @@ class LegacyTaskCancellationService:
         try:
             task_after = self.client.get_task_by_id(int(resolved_task_id))
             api_verified_status = self._to_int(task_after.get("statusId"))
+            logger.info(
+                "legacy_task_queue.cancel_task.api_verify task_id=%s api_statusId=%s target=%s runner_reports=%s",
+                resolved_task_id,
+                api_verified_status,
+                target_status_id,
+                runner_item_status,
+            )
         except Exception as exc:  # noqa: BLE001
             api_verify_error = str(exc)
             logger.warning(
