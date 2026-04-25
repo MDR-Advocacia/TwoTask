@@ -708,14 +708,65 @@ class LegacyTaskCancellationService:
         runner_state = payload.get("state")
         runner_error = item_payload.get("error") or payload.get("error")
 
-        success = (
+        runner_reports_success = (
             runner_state == "completed"
             and runner_item_status in RUNNER_SUCCESS_STATUSES
         )
 
-        if success:
-            reason = runner_item_status
+        # Verificacao AUTORITATIVA via API L1: o GET /Tasks/{id} eh a
+        # FONTE DA VERDADE. O runner pode mentir — o `liveStatusIdAfterSubmit`
+        # eh so o valor do form na pagina renderizada de volta pelo
+        # servidor, e NAO prova que persistiu. Aprendemos isso na
+        # marra: form mostrava StatusId=3 mas o L1 nao salvou.
+        api_verified_status: Optional[int] = None
+        api_verify_error: Optional[str] = None
+        try:
+            task_after = self.client.get_task_by_id(int(resolved_task_id))
+            api_verified_status = self._to_int(task_after.get("statusId"))
+        except Exception as exc:  # noqa: BLE001
+            api_verify_error = str(exc)
+            logger.warning(
+                "legacy_task_queue.cancel_task.api_verify_failed task_id=%s err=%s",
+                resolved_task_id, exc,
+            )
+
+        api_confirms_target = (
+            api_verified_status is not None
+            and int(api_verified_status) == int(target_status_id)
+        )
+        api_says_not_target = (
+            api_verified_status is not None
+            and int(api_verified_status) != int(target_status_id)
+        )
+
+        # Decisao de sucesso:
+        #  - Se a API L1 confirma que statusId == target -> SUCESSO.
+        #  - Se a API L1 retornou statusId != target -> FALHA, ignorando
+        #    o que o runner reportou (runner ja "mentiu" antes).
+        #  - Se a API L1 falhou em retornar (network/auth) -> cai pro
+        #    runner_reports_success como fallback (best-effort).
+        if api_confirms_target:
+            success = True
+        elif api_says_not_target:
+            success = False
         else:
+            # API nao conseguiu verificar — usa o runner como fallback.
+            success = runner_reports_success
+
+        if success:
+            reason = (
+                runner_item_status
+                if runner_reports_success and runner_item_status in RUNNER_SUCCESS_STATUSES
+                else "cancelled"
+            )
+        else:
+            # Se a API nos disse que nao bateu o status, registra isso
+            # como o erro real (pra UI mostrar em vez do erro do runner).
+            if api_says_not_target:
+                runner_error = (
+                    f"API L1 confirma statusId={api_verified_status} "
+                    f"(esperado {target_status_id}). Save nao persistiu."
+                )
             reason = self._classify_runner_error(
                 runner_state=runner_state,
                 runner_item_status=runner_item_status,
