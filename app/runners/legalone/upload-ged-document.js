@@ -575,7 +575,7 @@ async function uploadFileWithFineUploader(page, filePath) {
         const success = document.querySelectorAll('.qq-upload-list .qq-upload-success').length;
         const fileName = document.querySelector('#FileAzure_FileName, #FileAzure_Name, input[name="FileAzure.FileName"]');
         const fileId = document.querySelector('#FileAzure_FileId, #FileAzure_Id, input[name="FileAzure.FileId"], input[name="FileAzure.Id"]');
-        if (!hasFile && success > 0) return 'ready';
+        if (success > 0) return 'ready';
         if (success > 0 && ((fileName && fileName.value) || (fileId && fileId.value))) return 'ready';
 
         return false;
@@ -598,15 +598,8 @@ async function uploadFileWithFineUploader(page, filePath) {
     throw new Error(`Upload falhou no Fine Uploader: ${uploadState.uploaderText || '<sem detalhe>'}`);
   }
 
-  if (
-    uploadState.hasFile !== null &&
-    !/^true$/i.test(uploadState.hasFile || '') &&
-    !uploadState.fileName &&
-    !uploadState.fileId
-  ) {
-    throw new Error(
-      `Fine Uploader nao confirmou arquivo no formulario: ${JSON.stringify(uploadState)}`,
-    );
+  if (uploadState.successCount <= 0 && !uploadState.fileName && !uploadState.fileId) {
+    throw new Error(`Fine Uploader nao confirmou arquivo no formulario: ${JSON.stringify(uploadState)}`);
   }
 
   return uploadState;
