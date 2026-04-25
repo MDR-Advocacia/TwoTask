@@ -886,14 +886,42 @@ async function submitCancellationViaBatchModal(page, item, loginConfig) {
     await page.click(labelSelector, { timeout: 5000 });
   }
 
-  // 3) Clica na engrenagem do toolbar (popover de acoes em lote)
-  await page.click('.toolbar-default-action .popover-menu-button', {
-    timeout: 8000,
-  });
+  // 3) Clica na engrenagem do toolbar (popover de acoes em lote).
+  // A engrenagem eh um <div class="popover-menu-button"> dentro de
+  // <div class="popover-button-wrapper toolbar-default-action">.
+  // O click dispara um handler JS que muda o style do <ul> de
+  // `display: none` -> `display: block` (mostrando o popover).
+  const gearSelector = '.toolbar-default-action .popover-menu-button';
+  await page.waitForSelector(gearSelector, { timeout: 8000 });
 
-  // 4) Clica em "Alterar" no menu que abriu
-  await page.waitForSelector('#toolbar-item', { timeout: 5000 });
-  await page.click('#toolbar-item a', { timeout: 5000 });
+  // Tenta abrir o popover. Se o primeiro click nao abrir, tenta de novo.
+  let popoverOpen = false;
+  for (let attempt = 1; attempt <= 3 && !popoverOpen; attempt += 1) {
+    await page.click(gearSelector, { timeout: 5000 });
+    try {
+      // Espera o popover (.popover-menu-list) ficar visible
+      await page.waitForFunction(
+        () => {
+          const lists = document.querySelectorAll('.popover-menu-list');
+          for (const l of lists) {
+            if (l.offsetParent !== null) return true;
+          }
+          return false;
+        },
+        null,
+        { timeout: 2000 },
+      );
+      popoverOpen = true;
+    } catch (_) {
+      // tenta de novo
+    }
+  }
+  if (!popoverOpen) {
+    throw new Error('Engrenagem do toolbar nao abriu o popover apos 3 tentativas.');
+  }
+
+  // 4) Clica em "Alterar" dentro do popover aberto
+  await page.click('.popover-menu-list:visible #toolbar-item a', { timeout: 5000 });
 
   // 5) Modal aparece — espera o lookup "Campo" estar interativo
   await page.waitForSelector('[id="CampoText"]:visible', { timeout: 10000 });
