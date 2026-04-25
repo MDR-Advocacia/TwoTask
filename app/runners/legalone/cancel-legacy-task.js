@@ -476,6 +476,38 @@ async function submitCancellation(page, item) {
     { timeout: 5000 },
   );
 
+  //   2d) Preenche os custom fields mandatorios (Sim/Não) com "Não".
+  // Tasks de Workflow tem campos personalizados obrigatorios que
+  // ficam com value "default" no DOM mas o server continua recusando
+  // ate o JS do widget rodar (clicar na opcao). O wrapper desses
+  // mandatorios tem `class="lookup-validation-error"`; o opcional
+  // ("Produto") nao tem.
+  const customLookupIds = await page.evaluate(() => {
+    return Array.from(
+      document.querySelectorAll(
+        '.lookup-validation-error[data-val-control="lookup"]',
+      ),
+    )
+      .map((d) => d.id)
+      .filter(Boolean);
+  });
+  for (const lookupId of customLookupIds) {
+    try {
+      const showSelector = `[id="${lookupId}"] .lookup-show`;
+      await page.click(showSelector, { timeout: 2000 });
+      await page.waitForSelector('.lookup-dropdown', { timeout: 3000 });
+      // Clica na linha "Não" do dropdown (.lookup-dropdown eh injetado
+      // no body, valido enquanto esse dropdown estiver aberto).
+      const naoSelector =
+        '.lookup-dropdown tbody tr:has(td:has-text("Não")), ' +
+        '.lookup-dropdown tbody tr:has(td:has-text("Nao"))';
+      await page.click(naoSelector, { timeout: 2000 });
+      await page.waitForTimeout(150);
+    } catch (_) {
+      // Lookup pode nao ter opcao "Não" (ex: lookup nao binario) — pula.
+    }
+  }
+
   // 3) Aceita window.confirm/alert nativos (quem dispara o submit pode
   // pedir confirmacao via dialog nativo).
   const nativeDialogHandler = (dialog) => {
