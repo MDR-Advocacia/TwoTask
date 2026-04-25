@@ -498,19 +498,28 @@ async function submitCancellation(page, item) {
 
     // Handler do modal "Alerta" do Novajus (ex: "A data de Inicio... eh
     // anterior a data atual. Deseja salvar mesmo assim?") com botoes
-    // Nao/Sim. Esse modal eh um modal HTML custom (nao window.confirm),
-    // entao precisamos detecta-lo e clicar em "Sim" via DOM. Roda em
-    // paralelo com o click no Salvar — fica patrulhando por alguns
-    // segundos pra detectar o modal aparecer.
+    // Nao/Sim. Esse modal usa jQuery.alerts (lib antiga) — estrutura:
+    //   <div id="popup_container">
+    //     <h1 id="popup_title">Alerta</h1>
+    //     <div id="popup_content">
+    //       <div id="popup_message">...</div>
+    //       <div id="popup_panel">
+    //         <input type="button" id="popup_ok" value="Sim">
+    //         <input type="button" id="popup_cancel" value="Nao">
+    //       </div>
+    //     </div>
+    //   </div>
+    // Seletor primario: `#popup_ok`. Os outros sao fallbacks defensivos.
     const alertModalSelectors = [
-      // Botoes "Sim" em containers de dialog comuns
+      // Modal jQuery.alerts do Novajus — id estavel
+      '#popup_ok',
+      // Fallbacks pra outros tipos de modal (defensivos)
       'div[role="dialog"] button:has-text("Sim")',
       'div[role="alertdialog"] button:has-text("Sim")',
       '.modal button:has-text("Sim")',
       '.ui-dialog-buttonpane button:has-text("Sim")',
       '.jconfirm .jconfirm-buttons button.btn-confirm',
       '.jconfirm .jconfirm-buttons button.btn-blue',
-      // Tambem aceita "OK"/"Confirmar" em modal de alerta
       'div[role="dialog"] button:has-text("OK")',
       'div[role="dialog"] button:has-text("Confirmar")',
     ];
