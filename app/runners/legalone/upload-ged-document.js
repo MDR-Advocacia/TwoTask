@@ -751,26 +751,54 @@ async function saveAndCloseGedForm(page, matterId) {
   }
 }
 
-async function getRecentAttachmentId(page, displayArchiveName, tipo = 'Habilitação') {
+async function getRecentAttachmentId(page, displayArchiveName, item, tipo = 'Habilitação') {
   const nameStem = path.parse(displayArchiveName).name;
-  const typedRow = page
-    .locator('table tr', { has: page.locator('td', { hasText: new RegExp(tipo, 'i') }) })
-    .filter({ hasText: nameStem })
-    .first();
-  let link = typedRow.locator('a[href*="/Arquivos/Details/"]').first();
+  await page.locator('table a[href*="/Arquivos/Details/"]').first().waitFor({ timeout: 20000 }).catch(() => null);
 
-  if ((await link.count().catch(() => 0)) === 0) {
-    link = page.locator('table a[href*="/Arquivos/Details/"]', { hasText: nameStem }).first();
-  }
+  return page.evaluate(
+    ({ expectedStem, expectedTipo, cnj }) => {
+      const normalize = (value) =>
+        String(value || '')
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase();
+      const cnjDigits = String(cnj || '').replace(/\D/g, '');
+      const anchors = Array.from(document.querySelectorAll('table a[href*="/Arquivos/Details/"]'));
+      const candidates = anchors.map((anchor, index) => {
+        const row = anchor.closest('tr');
+        const href = anchor.getAttribute('href') || '';
+        const text = (anchor.textContent || '').trim();
+        const rowText = (row?.textContent || '').trim();
+        const idMatch = href.match(/\/Arquivos\/Details\/(\d+)/i);
+        const normalizedRow = normalize(rowText);
+        const normalizedText = normalize(`${text} ${rowText}`);
+        let score = 0;
+        if (normalizedText.includes(normalize(expectedStem))) score += 5;
+        if (normalizedRow.includes(normalize(expectedTipo))) score += 3;
+        if (cnjDigits && normalizedText.replace(/\D/g, '').includes(cnjDigits.slice(-8))) score += 2;
+        return {
+          index,
+          href,
+          text,
+          rowText,
+          documentId: idMatch ? Number(idMatch[1]) : null,
+          score,
+        };
+      });
 
-  await link.waitFor({ state: 'visible', timeout: 15000 });
-  const href = await link.getAttribute('href');
-  const match = href ? href.match(/\/Arquivos\/Details\/(\d+)/i) : null;
-  return {
-    documentId: match ? Number(match[1]) : null,
-    href,
-    nameStem,
-  };
+      candidates.sort((left, right) => right.score - left.score || left.index - right.index);
+      const chosen = candidates[0] || null;
+      return {
+        documentId: chosen?.documentId || null,
+        href: chosen?.href || null,
+        nameStem: expectedStem,
+        matchedBy: chosen?.score > 0 ? 'scored-table-link' : chosen ? 'first-table-link' : 'none',
+        chosen,
+        candidates: candidates.slice(0, 10),
+      };
+    },
+    { expectedStem: nameStem, expectedTipo: tipo, cnj: item.cnj },
+  );
 }
 
 async function uploadGedDocument(session, item, webBaseUrl, loginConfig) {
@@ -784,7 +812,7 @@ async function uploadGedDocument(session, item, webBaseUrl, loginConfig) {
   const selectedType = await selectGedType(session.page, item.tipoPath || item.typePath || ['Documento', 'Habilitação']);
   const metadata = await fillGedForm(session.page, item, displayArchiveName);
   await saveAndCloseGedForm(session.page, item.lawsuitId);
-  const attachment = await getRecentAttachmentId(session.page, displayArchiveName);
+  const attachment = await getRecentAttachmentId(session.page, displayArchiveName, item);
 
   return {
     status: STATUS_UPLOADED,
