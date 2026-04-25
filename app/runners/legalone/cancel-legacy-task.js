@@ -309,23 +309,76 @@ async function closeSession(session) {
   await session.browser?.close().catch(() => {});
 }
 
+async function dismissCookieBanner(page) {
+  // Banner Thomson Reuters intercepta cliques. Tenta fechar antes de
+  // procurar o form. No-op se nao tiver o banner.
+  try {
+    for (const frame of page.frames()) {
+      const accept = await frame
+        .$('text=/Aceito esta pol[ií]tica/i')
+        .catch(() => null);
+      if (accept) {
+        await accept.click({ timeout: 2000 }).catch(() => {});
+        await page.waitForTimeout(250);
+        return true;
+      }
+    }
+  } catch (_) {}
+  return false;
+}
+
+async function findFormInAnyFrame(page, selector) {
+  // Novajus pode renderizar o conteudo da tela de edit dentro de um
+  // iframe. page.$(selector) so olha o main frame; este helper busca
+  // em main + todos os iframes.
+  for (const frame of page.frames()) {
+    try {
+      const handle = await frame.$(selector);
+      if (handle) return { frame, handle };
+    } catch (_) {}
+  }
+  return null;
+}
+
+function describeFrames(page) {
+  try {
+    return page
+      .frames()
+      .map((f) => {
+        try {
+          return `${f.name() || '<root>'}:${(f.url() || '').slice(0, 120)}`;
+        } catch (_) {
+          return '<err>';
+        }
+      })
+      .join(' || ');
+  } catch (_) {
+    return '<frames unreadable>';
+  }
+}
+
 async function waitForTaskEditForm(page, editUrl, loginConfig) {
   let lastContext = null;
   const formSelector = 'form[action*="/agenda/Tarefas/Edit"], form[action*="/processos/tarefas/edittarefa"], form[action*="/processos/Tarefas/EditTarefa"], form[action*="/Processos/Tarefas/EditTarefa"]';
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     await page.goto(editUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
+    await dismissCookieBanner(page);
+
+    // 1) tentativa rapida no main frame
     const fastHandle = await page
       .waitForSelector(formSelector, { timeout: 5000 })
       .catch(() => null);
     if (fastHandle) {
-      return;
+      return { target: page, frame: page.mainFrame() };
     }
 
+    // 2) aguarda networkidle e busca em qualquer frame (main + iframes)
     await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-    const settledHandle = await page.$(formSelector);
-    if (settledHandle) {
-      return;
+    await dismissCookieBanner(page);
+    let found = await findFormInAnyFrame(page, formSelector);
+    if (found) {
+      return { target: found.frame, frame: found.frame };
     }
 
     lastContext = await capturePageContext(page);
@@ -334,15 +387,16 @@ async function waitForTaskEditForm(page, editUrl, loginConfig) {
       continue;
     }
 
+    // 3) ultima chance: espera mais um tico e tenta de novo
     await page.waitForTimeout(1500);
-    const lateHandle = await page.$(formSelector);
-    if (lateHandle) {
-      return;
+    found = await findFormInAnyFrame(page, formSelector);
+    if (found) {
+      return { target: found.frame, frame: found.frame };
     }
   }
 
   throw new Error(
-    `Task edit form not found | url=${lastContext?.url || editUrl} | title=${lastContext?.title || ''} | body=${(lastContext?.bodyStart || '').slice(0, 400)}`,
+    `Task edit form not found | url=${lastContext?.url || editUrl} | title=${lastContext?.title || ''} | frames=${describeFrames(page)} | body=${(lastContext?.bodyStart || '').slice(0, 400)}`,
   );
 }
 
@@ -524,8 +578,11 @@ async function submitCancellation(page, item) {
 
 async function cancelTask(session, item, loginConfig) {
   const editUrl = item.editUrl;
-  await waitForTaskEditForm(session.page, editUrl, loginConfig);
-  const response = await submitCancellation(session.page, item);
+  // waitForTaskEditForm devolve o frame (main ou iframe) onde o form foi
+  // encontrado. submitCancellation roda evaluate nesse frame, nao na
+  // session.page, pra garantir que `document` aponte pro form correto.
+  const { target } = await waitForTaskEditForm(session.page, editUrl, loginConfig);
+  const response = await submitCancellation(target, item);
 
   if (response.alreadyCancelled) {
     return {
