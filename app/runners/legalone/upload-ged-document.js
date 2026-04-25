@@ -764,7 +764,7 @@ async function getRecentAttachmentId(page, displayArchiveName, item, tipo = 'Hab
   const nameStem = path.parse(displayArchiveName).name;
   const expectedDate = item.expectedUploadDate || todayBrDate(item.timeZone || 'America/Fortaleza');
   const expectedTipo = item.expectedAttachmentType || tipo;
-  await page.locator('table a[href*="/Arquivos/Details/"]').first().waitFor({ timeout: 20000 }).catch(() => null);
+  await page.locator('table tr').filter({ hasText: expectedTipo }).first().waitFor({ timeout: 20000 }).catch(() => null);
 
   return page.evaluate(
     ({ expectedStem, expectedTipo, expectedDate, cnj }) => {
@@ -774,13 +774,16 @@ async function getRecentAttachmentId(page, displayArchiveName, item, tipo = 'Hab
           .replace(/[\u0300-\u036f]/g, '')
           .toLowerCase();
       const cnjDigits = String(cnj || '').replace(/\D/g, '');
-      const anchors = Array.from(document.querySelectorAll('table a[href*="/Arquivos/Details/"]'));
-      const candidates = anchors.map((anchor, index) => {
-        const row = anchor.closest('tr');
-        const href = anchor.getAttribute('href') || '';
-        const text = (anchor.textContent || '').trim();
-        const rowText = (row?.textContent || '').trim();
-        const idMatch = href.match(/\/Arquivos\/Details\/(\d+)/i);
+      const rows = Array.from(document.querySelectorAll('table tr')).filter((row) => {
+        const rowText = (row.textContent || '').trim();
+        return rowText && !/Anexado\/gerado em|Descri[cç][aã]o\/Nome|Tipo de arquivo/i.test(rowText);
+      });
+      const candidates = rows.map((row, index) => {
+        const anchor = row.querySelector('a[href*="/Arquivos/Details/"]') || row.querySelector('a[href]');
+        const href = anchor?.getAttribute('href') || '';
+        const text = (anchor?.textContent || '').trim();
+        const rowText = (row.textContent || '').trim();
+        const idMatch = href.match(/\/Arquivos\/Details\/(\d+)/i) || rowText.match(/\/Arquivos\/Details\/(\d+)/i);
         const normalizedRow = normalize(rowText);
         const normalizedText = normalize(`${text} ${rowText}`);
         const hasExpectedType = normalizedRow.includes(normalize(expectedTipo));
