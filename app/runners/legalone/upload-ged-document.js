@@ -94,6 +94,15 @@ function normalizeDisplayName(value) {
   return `${stem || 'habilitacao'}${extension.toLowerCase()}`;
 }
 
+function todayBrDate(timeZone = 'America/Fortaleza') {
+  return new Intl.DateTimeFormat('pt-BR', {
+    timeZone,
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(new Date());
+}
+
 async function waitForPageSettle(page, delayMs = 0) {
   await page.waitForLoadState('domcontentloaded', { timeout: 120000 }).catch(() => {});
   if (delayMs > 0) await page.waitForTimeout(delayMs);
@@ -753,10 +762,12 @@ async function saveAndCloseGedForm(page, matterId) {
 
 async function getRecentAttachmentId(page, displayArchiveName, item, tipo = 'Habilitação') {
   const nameStem = path.parse(displayArchiveName).name;
+  const expectedDate = item.expectedUploadDate || todayBrDate(item.timeZone || 'America/Fortaleza');
+  const expectedTipo = item.expectedAttachmentType || tipo;
   await page.locator('table a[href*="/Arquivos/Details/"]').first().waitFor({ timeout: 20000 }).catch(() => null);
 
   return page.evaluate(
-    ({ expectedStem, expectedTipo, cnj }) => {
+    ({ expectedStem, expectedTipo, expectedDate, cnj }) => {
       const normalize = (value) =>
         String(value || '')
           .normalize('NFD')
@@ -772,9 +783,13 @@ async function getRecentAttachmentId(page, displayArchiveName, item, tipo = 'Hab
         const idMatch = href.match(/\/Arquivos\/Details\/(\d+)/i);
         const normalizedRow = normalize(rowText);
         const normalizedText = normalize(`${text} ${rowText}`);
+        const hasExpectedType = normalizedRow.includes(normalize(expectedTipo));
+        const hasExpectedDate = rowText.includes(expectedDate);
         let score = 0;
+        if (hasExpectedType && hasExpectedDate) score += 20;
+        if (hasExpectedDate) score += 8;
+        if (hasExpectedType) score += 6;
         if (normalizedText.includes(normalize(expectedStem))) score += 5;
-        if (normalizedRow.includes(normalize(expectedTipo))) score += 3;
         if (cnjDigits && normalizedText.replace(/\D/g, '').includes(cnjDigits.slice(-8))) score += 2;
         return {
           index,
@@ -783,21 +798,27 @@ async function getRecentAttachmentId(page, displayArchiveName, item, tipo = 'Hab
           rowText,
           documentId: idMatch ? Number(idMatch[1]) : null,
           score,
+          hasExpectedType,
+          hasExpectedDate,
         };
       });
 
       candidates.sort((left, right) => right.score - left.score || left.index - right.index);
       const chosen = candidates[0] || null;
+      const confirmed = Boolean(chosen?.hasExpectedType && chosen?.hasExpectedDate);
       return {
         documentId: chosen?.documentId || null,
         href: chosen?.href || null,
         nameStem: expectedStem,
-        matchedBy: chosen?.score > 0 ? 'scored-table-link' : chosen ? 'first-table-link' : 'none',
+        expectedTipo,
+        expectedDate,
+        confirmed,
+        matchedBy: confirmed ? 'type-and-date' : chosen?.score > 0 ? 'scored-table-link' : chosen ? 'first-table-link' : 'none',
         chosen,
         candidates: candidates.slice(0, 10),
       };
     },
-    { expectedStem: nameStem, expectedTipo: tipo, cnj: item.cnj },
+    { expectedStem: nameStem, expectedTipo, expectedDate, cnj: item.cnj },
   );
 }
 
@@ -813,6 +834,11 @@ async function uploadGedDocument(session, item, webBaseUrl, loginConfig) {
   const metadata = await fillGedForm(session.page, item, displayArchiveName);
   await saveAndCloseGedForm(session.page, item.lawsuitId);
   const attachment = await getRecentAttachmentId(session.page, displayArchiveName, item);
+  if (!attachment.confirmed) {
+    throw new Error(
+      `Upload salvo, mas nao confirmei linha GED por tipo/data: ${JSON.stringify(attachment)}`,
+    );
+  }
 
   return {
     status: STATUS_UPLOADED,

@@ -170,6 +170,8 @@ class GedRpaUploadService:
             "archive": archive_name,
             "description": description,
             "typeId": type_id,
+            "expectedUploadDate": self._utcnow().astimezone().strftime("%d/%m/%Y"),
+            "expectedAttachmentType": "Habilitação",
         }
         paths.input.write_text(
             json.dumps(item, indent=2, ensure_ascii=False),
