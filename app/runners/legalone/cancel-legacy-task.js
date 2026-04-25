@@ -453,35 +453,28 @@ async function submitCancellation(page, item) {
     };
   }
 
-  // 2) Patch DOM: seta StatusId/StatusText e copia EnvolvidoId ->
-  // EnvolvidoEfetivoId (replica o efeito do widget JS de Status). NAO
-  // submetemos via fetch — o submit eh feito no passo 4 pelo click no
-  // botao, que dispara o submit nativo do form (com Origin/Referer/
-  // cookies que o servidor MVC espera).
-  await page.evaluate((currentItem) => {
-    let form = null;
-    try { form = document.querySelector('form:has(#StatusId)'); } catch (_) {}
-    if (!form) {
-      const sel = document.getElementById('StatusId');
-      if (sel && sel.closest) form = sel.closest('form');
-    }
-    if (!form) throw new Error('form:has(#StatusId) not found in patch step');
+  // 2) Clica no widget de Status como um humano faria. O JS do widget
+  // cuida de tudo: seta StatusId/StatusText, copia EnvolvidoId pra
+  // EnvolvidoEfetivoId, dispara eventos. Zero patch manual de DOM.
+  //   2a) Abre o dropdown via .lookup-show (NAO o icone (i) de info nem
+  //       o lookup-filter que abre modal de busca).
+  await page.click('#LookupStatusCompromissoTarefa .lookup-show', { timeout: 10000 });
 
-    const sIdInput = form.querySelector('#StatusId');
-    const sTextInput = form.querySelector('#StatusText');
-    if (sIdInput) sIdInput.value = String(currentItem.targetStatusId);
-    if (sTextInput) sTextInput.value = String(currentItem.targetStatusText || '');
+  //   2b) O dropdown eh injetado no <body>, classe .lookup-dropdown.
+  //       Clica na linha cuja data-val-id eh o targetStatusId.
+  const targetRowSelector = `.lookup-dropdown tbody tr[data-val-id="${item.targetStatusId}"]`;
+  await page.waitForSelector(targetRowSelector, { timeout: 8000 });
+  await page.click(targetRowSelector, { timeout: 5000 });
 
-    form.querySelectorAll('input[name$=".EnvolvidoId"]').forEach((envInput) => {
-      const m = envInput.name.match(/^(Envolvidos\[[^\]]+\])\.EnvolvidoId$/);
-      if (!m) return;
-      const efetivoSelector = `input[name="${m[1]}.EnvolvidoEfetivoId"]`;
-      const efetivo = form.querySelector(efetivoSelector);
-      if (efetivo && !efetivo.value && envInput.value) {
-        efetivo.value = envInput.value;
-      }
-    });
-  }, item);
+  //   2c) Confirma que o hidden mudou — sanidade antes de submeter.
+  await page.waitForFunction(
+    (tgtId) => {
+      const el = document.getElementById('StatusId');
+      return el && String(el.value) === String(tgtId);
+    },
+    String(item.targetStatusId),
+    { timeout: 5000 },
+  );
 
   // 3) Aceita window.confirm/alert nativos (quem dispara o submit pode
   // pedir confirmacao via dialog nativo).
