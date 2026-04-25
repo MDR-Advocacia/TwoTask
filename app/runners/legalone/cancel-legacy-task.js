@@ -919,62 +919,68 @@ async function submitCancellationViaBatchModal(page, item, loginConfig) {
     throw new Error('Engrenagem do toolbar nao abriu o popover apos 3 tentativas.');
   }
 
-  // 4) Clica em "Alterar" dentro do popover aberto (escopado ao thead)
+  // 4) Clica em "Alterar" dentro do popover aberto (escopado ao thead).
+  // Aguarda o <li id="toolbar-item"> ficar VISIBLE — depende do <ul>
+  // pai ter saido de display:none.
+  await page.waitForSelector('#toolbar-item:visible', { timeout: 5000 });
   await page.click(
     'table.webgrid thead ul.action-right-list.popover-menu-list #toolbar-item a',
     { timeout: 5000 },
   );
 
-  // 5) Modal aparece — espera o lookup "Campo" estar interativo
-  await page.waitForSelector('[id="CampoText"]:visible', { timeout: 10000 });
+  // 5) Modal monta — aguarda body > div.modal ficar visivel + perder
+  // a classe widget-loading no .toolbar-modal-content
+  await page.waitForSelector('body > div.modal', {
+    state: 'visible',
+    timeout: 15000,
+  });
+  await page
+    .waitForFunction(
+      () => {
+        const content = document.querySelector('.toolbar-modal-content');
+        return content && !content.classList.contains('widget-loading');
+      },
+      null,
+      { timeout: 10000 },
+    )
+    .catch(() => {});
 
-  //   5a) Preenche "Campo" com "Status" via autocomplete
-  await page.click('[id="CampoText"]', { timeout: 5000 });
-  await page.fill('[id="CampoText"]', '');
-  await page.type('[id="CampoText"]', 'Status', { delay: 60 });
-  await page.waitForSelector('ul.ac_results:visible li', { timeout: 5000 });
-  // Clica na linha "Status" exata (evita pegar "StatusEnvolvido" ou similar)
-  const statusOptionSelector =
-    'ul.ac_results li:has-text("Status"):not(:has-text("Envolvido")):not(:has-text("Lote"))';
-  // Fallback: pega a primeira opcao que tem texto "Status" exato
-  let optionClicked = false;
-  try {
-    await page.click(statusOptionSelector, { timeout: 3000 });
-    optionClicked = true;
-  } catch (_) {
-    // fallback: primeira li que tenha "Status"
-    await page.click('ul.ac_results li:has-text("Status")', { timeout: 3000 });
-    optionClicked = true;
-  }
-  if (!optionClicked) {
-    throw new Error('Nao consegui escolher "Status" no lookup Campo.');
-  }
+  //   5a) Campo = Status. Lookup customizado: NAO funciona via
+  //   autocomplete sintetico (testado). Usar o botao .lookup-show
+  //   que abre o dropdown como tabela, depois clicar na <tr> com
+  //   data-val-id="0" (Status). IDs documentados pelo investigador:
+  //   Status=0, Descricao=1, Local=2, Executante=3, Responsavel=4,
+  //   Solicitante=5, Escritorio origem=6, Escritorio responsavel=7,
+  //   Etiquetas=12.
+  await page.click('#LookupCampo .lookup-show', { timeout: 5000 });
+  await page.click(
+    '.lookup-dropdown.lookup-inside-modal:visible tr[data-val-id="0"]',
+    { timeout: 5000 },
+  );
 
-  //   5b) Aguarda o lookup "Para" (#LookupStatusLote) ficar VISIVEL.
-  // Quando "Campo" eh "Status", o JS do modal muda o style do
-  // wrapper de `display: none` -> `display: block` (e tambem do
-  // <div class="row"> ancestral). Nao usa class .disabled.
+  //   5b) Aguarda o lookup "Para" (#LookupStatusLote) ficar VISIVEL —
+  //   ele soh aparece quando "Campo" = Status.
   await page.waitForFunction(
     () => {
       const wrapper = document.getElementById('LookupStatusLote');
-      if (!wrapper) return false;
-      // offsetParent eh null quando o elemento ou algum ancestral tem
-      // display:none. Isso cobre o caso do <div class="row"> pai.
-      return wrapper.offsetParent !== null;
+      return wrapper && wrapper.offsetParent !== null;
     },
     null,
     { timeout: 10000 },
   );
 
-  //   5c) Preenche "Para" com "Cancelado" via autocomplete
-  await page.click('#LookupStatusLote [id="StatusText"]', { timeout: 5000 });
-  await page.fill('#LookupStatusLote [id="StatusText"]', '');
-  await page.type('#LookupStatusLote [id="StatusText"]', 'Cancelado', { delay: 60 });
-  await page.waitForSelector('ul.ac_results:visible li', { timeout: 5000 });
-  await page.click('ul.ac_results li:has-text("Cancelado")', { timeout: 5000 });
+  //   5c) Para = Cancelado. Mesmo padrao: .lookup-show -> tr[data-val-id="3"].
+  //   Status IDs: Pendente=0, Cumprido=1, Nao cumprido=2, Cancelado=3,
+  //   Iniciado=4, Reagendado=5.
+  await page.click('#LookupStatusLote .lookup-show', { timeout: 5000 });
+  await page.click(
+    `.lookup-dropdown.lookup-inside-modal:visible tr[data-val-id="${item.targetStatusId}"]`,
+    { timeout: 5000 },
+  );
 
-  // 6) Clica em Salvar
-  await page.click('button.toolbar-modal-submit', { timeout: 5000 });
+  // 6) Clica em Salvar — o botao submit aparece DUAS vezes no DOM
+  // (um eh 0x0 invisivel). Filtra pelo visivel.
+  await page.click('button.toolbar-modal-submit:visible', { timeout: 5000 });
 
   // 7) Aguarda o modal fechar (sumir do DOM ou virar invisible)
   await page
