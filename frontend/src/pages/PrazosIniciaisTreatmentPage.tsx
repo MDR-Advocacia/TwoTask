@@ -123,7 +123,10 @@ function resolveTaskLink(item: PrazoInicialLegacyTaskCancelQueueItem): string | 
 }
 
 function isItemReprocessable(item: PrazoInicialLegacyTaskCancelQueueItem) {
-  return item.queue_status === "FALHA" || item.queue_status === "CANCELADO";
+  // Permite reprocessar tudo que NAO eh PENDENTE (ja na fila esperando o
+  // worker pegar). Inclui CONCLUIDO (caso de sucesso falso onde a task
+  // continua pendente no L1) e PROCESSANDO (preso por crash de worker).
+  return item.queue_status !== "PENDENTE";
 }
 
 function isItemCancellable(item: PrazoInicialLegacyTaskCancelQueueItem) {
