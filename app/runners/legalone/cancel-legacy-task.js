@@ -868,45 +868,44 @@ async function submitCancellationViaBatchModal(page, item, loginConfig) {
     throw new Error('Nao consegui abrir DetailsCompromissosTarefas (auth loop).');
   }
 
-  // 2) Marca o checkbox da task. O <input type="checkbox"> real eh
-  // hidden via CSS — o Novajus exibe um <label for="grid_check_...">
-  // clicavel em cima. Clicar no label dispara o toggle do checkbox.
-  const labelSelector = `label[for="grid_check_${item.taskId}"]`;
-  const checkboxSelector = `[id="grid_check_${item.taskId}"]`;
-  // Aguarda o checkbox estar attached ao DOM (pode estar hidden).
+  // 2) Marca o checkbox da task. Use o <input class="grid_check"
+  // data-val="<taskId>"> direto — `.click()` funciona mesmo com o
+  // input estilizado/escondido por CSS (o handler de change do Novajus
+  // dispara via JS independente da visibilidade visual).
+  const checkboxSelector = `input.grid_check[data-val="${item.taskId}"]`;
   await page.waitForSelector(checkboxSelector, {
     state: 'attached',
     timeout: 15000,
   });
-  // Verifica se ja nao esta marcado pra nao desmarcar acidentalmente
   const alreadyChecked = await page
     .$eval(checkboxSelector, (el) => el.checked)
     .catch(() => false);
   if (!alreadyChecked) {
-    await page.click(labelSelector, { timeout: 5000 });
+    // Force click ignora visibilidade — o input eh hidden via CSS mas
+    // o handler JS escuta clicks no proprio input.
+    await page.click(checkboxSelector, { force: true, timeout: 5000 });
   }
 
-  // 3) Clica na engrenagem do toolbar (popover de acoes em lote).
-  // A engrenagem eh um <div class="popover-menu-button"> dentro de
-  // <div class="popover-button-wrapper toolbar-default-action">.
-  // O click dispara um handler JS que muda o style do <ul> de
-  // `display: none` -> `display: block` (mostrando o popover).
-  const gearSelector = '.toolbar-default-action .popover-menu-button';
+  // 3) Clica na engrenagem do toolbar da grid (popover de acoes em lote).
+  // O seletor PRECISA ser escopado a `table.webgrid thead` — existem
+  // outros `.popover-button-wrapper.toolbar-default-action` em outros
+  // lugares da pagina (sidebar, etc). Sem o escopo, o click vai pro
+  // wrapper errado e o popover certo nunca abre.
+  const gearSelector =
+    'table.webgrid thead .popover-button-wrapper.toolbar-default-action .toolbar-action-right.popover-menu-button';
   await page.waitForSelector(gearSelector, { timeout: 8000 });
 
-  // Tenta abrir o popover. Se o primeiro click nao abrir, tenta de novo.
   let popoverOpen = false;
   for (let attempt = 1; attempt <= 3 && !popoverOpen; attempt += 1) {
     await page.click(gearSelector, { timeout: 5000 });
     try {
-      // Espera o popover (.popover-menu-list) ficar visible
+      // Espera o <ul> do popover (no thead) ficar visible
       await page.waitForFunction(
         () => {
-          const lists = document.querySelectorAll('.popover-menu-list');
-          for (const l of lists) {
-            if (l.offsetParent !== null) return true;
-          }
-          return false;
+          const ul = document.querySelector(
+            'table.webgrid thead ul.action-right-list.popover-menu-list',
+          );
+          return ul && ul.offsetParent !== null;
         },
         null,
         { timeout: 2000 },
@@ -920,8 +919,11 @@ async function submitCancellationViaBatchModal(page, item, loginConfig) {
     throw new Error('Engrenagem do toolbar nao abriu o popover apos 3 tentativas.');
   }
 
-  // 4) Clica em "Alterar" dentro do popover aberto
-  await page.click('.popover-menu-list:visible #toolbar-item a', { timeout: 5000 });
+  // 4) Clica em "Alterar" dentro do popover aberto (escopado ao thead)
+  await page.click(
+    'table.webgrid thead ul.action-right-list.popover-menu-list #toolbar-item a',
+    { timeout: 5000 },
+  );
 
   // 5) Modal aparece — espera o lookup "Campo" estar interativo
   await page.waitForSelector('[id="CampoText"]:visible', { timeout: 10000 });
