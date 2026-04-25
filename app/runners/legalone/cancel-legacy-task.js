@@ -868,12 +868,23 @@ async function submitCancellationViaBatchModal(page, item, loginConfig) {
     throw new Error('Nao consegui abrir DetailsCompromissosTarefas (auth loop).');
   }
 
-  // 2) Marca o checkbox da task
+  // 2) Marca o checkbox da task. O <input type="checkbox"> real eh
+  // hidden via CSS — o Novajus exibe um <label for="grid_check_...">
+  // clicavel em cima. Clicar no label dispara o toggle do checkbox.
+  const labelSelector = `label[for="grid_check_${item.taskId}"]`;
   const checkboxSelector = `[id="grid_check_${item.taskId}"]`;
-  await page.waitForSelector(checkboxSelector, { timeout: 15000 });
-  // Usa .check() do Playwright pra garantir o estado checked (evita
-  // double-click se ja estiver marcado).
-  await page.check(checkboxSelector, { timeout: 5000 });
+  // Aguarda o checkbox estar attached ao DOM (pode estar hidden).
+  await page.waitForSelector(checkboxSelector, {
+    state: 'attached',
+    timeout: 15000,
+  });
+  // Verifica se ja nao esta marcado pra nao desmarcar acidentalmente
+  const alreadyChecked = await page
+    .$eval(checkboxSelector, (el) => el.checked)
+    .catch(() => false);
+  if (!alreadyChecked) {
+    await page.click(labelSelector, { timeout: 5000 });
+  }
 
   // 3) Clica na engrenagem do toolbar (popover de acoes em lote)
   await page.click('.toolbar-default-action .popover-menu-button', {
