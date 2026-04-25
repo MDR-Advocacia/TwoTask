@@ -477,11 +477,21 @@ async function submitCancellation(page, item) {
   );
 
   //   2d) Preenche os custom fields mandatorios (Sim/Não) com "Não".
-  // Tasks de Workflow tem campos personalizados obrigatorios que
-  // ficam com value "default" no DOM mas o server continua recusando
-  // ate o JS do widget rodar (clicar na opcao). O wrapper desses
-  // mandatorios tem `class="lookup-validation-error"`; o opcional
-  // ("Produto") nao tem.
+  // Tasks de Workflow tem campos personalizados obrigatorios. Os hidden
+  // `_Id` que aparecem com value (203881, 203883...) sao IDs do
+  // CustomField (definicao), NAO do valor escolhido — por isso o server
+  // ainda reclama "Campo obrigatorio".
+  //
+  // Pra popular `_Id` corretamente, o JS do widget jQuery UI autocomplete
+  // precisa rodar:
+  //   1. focus no `_Value`
+  //   2. digita "Não" disparando input/keydown/keyup
+  //   3. autocomplete abre (ul.ac_results)
+  //   4. clica na opcao "Não" da lista (popula _Id)
+  //   5. blur pra validar
+  //
+  // Filtramos por `.lookup-validation-error` — os mandatorios. O
+  // "Produto" (opcional) nao tem essa classe.
   const customLookupIds = await page.evaluate(() => {
     return Array.from(
       document.querySelectorAll(
@@ -493,18 +503,40 @@ async function submitCancellation(page, item) {
   });
   for (const lookupId of customLookupIds) {
     try {
-      const showSelector = `[id="${lookupId}"] .lookup-show`;
-      await page.click(showSelector, { timeout: 2000 });
-      await page.waitForSelector('.lookup-dropdown', { timeout: 3000 });
-      // Clica na linha "Não" do dropdown (.lookup-dropdown eh injetado
-      // no body, valido enquanto esse dropdown estiver aberto).
-      const naoSelector =
-        '.lookup-dropdown tbody tr:has(td:has-text("Não")), ' +
-        '.lookup-dropdown tbody tr:has(td:has-text("Nao"))';
+      // <id>_Lookup -> <id>_Value e <id>_Id
+      const valueInputId = lookupId.replace(/_Lookup$/, '_Value');
+      const valueSelector = `[id="${valueInputId}"]`;
+
+      // 1) Focus + limpa qualquer texto que estiver
+      await page.click(valueSelector, { timeout: 2000 });
+      await page.fill(valueSelector, '');
+
+      // 2) Digita "Não" devagar pra disparar keydown/keyup que aciona
+      // o autocomplete jQuery UI.
+      await page.type(valueSelector, 'Não', { delay: 60 });
+
+      // 3) Espera ul.ac_results aparecer com a sugestao
+      await page.waitForSelector('ul.ac_results:visible li', {
+        timeout: 3000,
+      });
+
+      // 4) Clica na opcao "Não" — o JS do widget popula `_Id` aqui
+      const naoSelector = 'ul.ac_results li:has-text("Não"), ul.ac_results li:has-text("Nao")';
       await page.click(naoSelector, { timeout: 2000 });
+
+      // 5) Dispara blur explicito pra validar (caso o widget dependa)
+      await page.evaluate((id) => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          el.blur();
+          el.dispatchEvent(new Event('blur', { bubbles: true }));
+        }
+      }, valueInputId);
+
       await page.waitForTimeout(150);
     } catch (_) {
-      // Lookup pode nao ter opcao "Não" (ex: lookup nao binario) — pula.
+      // Lookup pode nao ter opcao "Não" — pula sem quebrar o fluxo.
     }
   }
 
