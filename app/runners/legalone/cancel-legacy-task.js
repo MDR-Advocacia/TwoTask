@@ -475,8 +475,11 @@ async function submitCancellation(page, item) {
     form.querySelectorAll('input[name$=".EnvolvidoId"]').forEach((envInput) => {
       const m = envInput.name.match(/^(Envolvidos\[[^\]]+\])\.EnvolvidoId$/);
       if (!m) return;
-      const efetivo = form.querySelector(`input[name="${m[1]}.EnvolvidoEfetivoId"]`);
-      if (efetivo && !efetivo.value) efetivo.value = envInput.value;
+      const efetivoSelector = `input[name="${m[1]}.EnvolvidoEfetivoId"]`;
+      const efetivo = form.querySelector(efetivoSelector);
+      if (efetivo && !efetivo.value && envInput.value) {
+        efetivo.value = envInput.value;
+      }
     });
   }, item);
 
@@ -491,33 +494,45 @@ async function submitCancellation(page, item) {
     // 4) Click nativo no Salvar e fechar + waitForNavigation. O submit
     // do form gera um POST do navegador com TODOS os headers
     // (Origin/Referer/Cookies) que o servidor MVC do Novajus espera.
+    //
+    // ATENCAO: o botao "Salvar e fechar" eh um <button type="submit">
+    // SEM atributo name. O `name="ButtonSave"` no form pertence a um
+    // <input type="hidden">, nao ao botao. Identificamos o botao pelo
+    // texto visivel, escopado pelo form que tem #StatusId, pra evitar
+    // colisao com botoes "Salvar" de outros widgets/modais.
+    const submitButtonSelector =
+      'form:has(#StatusId) button[type="submit"]:has-text("Salvar e fechar")';
+
     let navigationError = null;
     try {
       await Promise.all([
         page.waitForNavigation({ waitUntil: 'load', timeout: 60000 }),
-        page.click('button[name="ButtonSave"]', { timeout: 10000 }),
+        page.click(submitButtonSelector, { timeout: 10000 }),
       ]);
     } catch (err) {
       navigationError = err && err.message ? err.message : String(err);
 
       // Se a navegacao nao aconteceu, pode ter aparecido um modal
-      // jQuery jConfirm pedindo confirmacao do cancelamento. Tenta
-      // aceitar e aguarda navegacao novamente.
+      // jQuery/jConfirm pedindo confirmacao. Tenta aceitar.
+      // Seletores escopados a containers especificos de dialog —
+      // evitamos `.modal-dialog` e `:first-child` porque podem casar
+      // com banners/tooltips do proprio Novajus e clicar errado.
+      // Timeout reduzido pra 800ms cada (no flow normal nao aparece
+      // dialog — vimos `dialogCount: 0` na investigacao).
       const jconfirmSelectors = [
         '.jconfirm .jconfirm-buttons button.btn-confirm',
         '.jconfirm .jconfirm-buttons button.btn-blue',
-        '.jconfirm .jconfirm-buttons button:first-child',
-        '.modal-dialog button:has-text("Sim")',
-        '.modal-dialog button:has-text("OK")',
-        '.modal-dialog button:has-text("Confirmar")',
         '.ui-dialog-buttonpane button:has-text("Sim")',
         '.ui-dialog-buttonpane button:has-text("OK")',
         'div[role="dialog"] button:has-text("Sim")',
-        'div[role="dialog"] button:has-text("OK")',
+        'div[role="dialog"] button:has-text("Confirmar")',
       ];
       for (const sel of jconfirmSelectors) {
         try {
-          const handle = await page.waitForSelector(sel, { timeout: 1500 });
+          const handle = await page.waitForSelector(sel, {
+            timeout: 800,
+            state: 'visible',
+          });
           if (handle) {
             await Promise.all([
               page.waitForNavigation({ waitUntil: 'load', timeout: 30000 }).catch(() => null),
@@ -576,6 +591,26 @@ async function submitCancellation(page, item) {
       const verifyHtml = await verifyResponse.text();
       const verifyDoc = new DOMParser().parseFromString(verifyHtml, 'text/html');
       const verifyMessages = collectFormMessages(verifyDoc);
+
+      // Extrai pares (campo, mensagem) das `<span class="field-validation-error"
+      // data-valmsg-for="<NAME>">` — diagnostico cirurgico em vez de "Campo
+      // obrigatorio" repetido N vezes sem dizer qual campo.
+      const formErrors = Array.from(
+        verifyDoc.querySelectorAll('span.field-validation-error[data-valmsg-for]'),
+      )
+        .map((el) => ({
+          field: el.getAttribute('data-valmsg-for') || '',
+          message: (el.textContent || '').trim(),
+        }))
+        .filter((e) => e.message && e.field);
+
+      // Mensagens de topo agregadas (`.validation-summary-errors li`).
+      const validationSummary = Array.from(
+        verifyDoc.querySelectorAll('.validation-summary-errors li'),
+      )
+        .map((li) => (li.textContent || '').trim())
+        .filter(Boolean);
+
       const verifiedStatusId =
         verifyDoc.querySelector('#StatusId')?.value ||
         verifyDoc.querySelector('[name="StatusId"]')?.value ||
@@ -596,6 +631,8 @@ async function submitCancellation(page, item) {
       return {
         verifyStatus: verifyResponse.status,
         verifyMessages,
+        formErrors,
+        validationSummary,
         verifiedStatusId,
         verifiedStatusText,
         detailsStatus: detailsResponse.status,
@@ -638,11 +675,21 @@ async function cancelTask(session, item, loginConfig) {
   }
 
   if (String(response.verifiedStatusId) !== String(item.targetStatusId)) {
-    throw new Error(
+    // Prioriza formErrors (campo:mensagem) que diagnostica QUAL campo
+    // foi recusado. Cai pra summary, depois msgs gerais, depois fallback.
+    const formErrorsDetail =
+      response.formErrors && response.formErrors.length
+        ? response.formErrors
+            .map((e) => `${e.field}: ${e.message}`)
+            .join(' | ')
+        : null;
+    const errorDetail =
+      formErrorsDetail ||
+      response.validationSummary?.join(' | ') ||
       response.verifyMessages?.join(' | ') ||
       response.postMessages?.join(' | ') ||
-      `Status verification failed for task ${item.taskId}: expected ${item.targetStatusId}, got ${response.verifiedStatusId}`,
-    );
+      `Status verification failed for task ${item.taskId}: expected ${item.targetStatusId}, got ${response.verifiedStatusId}`;
+    throw new Error(errorDetail);
   }
 
   return {
