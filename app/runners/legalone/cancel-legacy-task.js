@@ -442,64 +442,34 @@ async function submitCancellation(page, item) {
       return doc.body ? doc.body.innerText || '' : '';
     };
 
-    const collectMessages = (doc, text) => {
+    // Coleta mensagens APENAS dentro do summary de validacao do form
+    // (nao varre o body inteiro). O HTML completo do Novajus tem dezenas
+    // de strings que combinam com /erro/i, /campo/i e /preencha/i em
+    // templates de outros widgets — varrer geral gera falso-positivo.
+    const collectFormMessages = (doc) => {
       const selectors = [
+        '.validation-summary-errors li',
         '.validation-summary-errors',
         '.field-validation-error',
         '.alert-danger',
         '.alert-warning',
-        '.alert',
-        '.message-error',
-        '.message-warning',
-        '.error-message',
-        '.warning-message',
-        '#msgErro',
-        '#mensagemErro',
-        '#mensagem',
       ];
       const messages = [];
-
       for (const selector of selectors) {
         for (const node of doc.querySelectorAll(selector)) {
           const message = normalizeText(node.innerText || node.textContent || '');
-          if (message && message.length > 2) {
-            messages.push(message);
-          }
+          if (message && message.length > 2) messages.push(message);
         }
       }
-
-      if (!messages.length) {
-        const patterns = [
-          /nao[^.\n]{0,180}/ig,
-          /erro[^.\n]{0,180}/ig,
-          /obrigat[^\n.]{0,180}/ig,
-          /invalid[^\n.]{0,180}/ig,
-          /preencha[^.\n]{0,180}/ig,
-          /campo[^.\n]{0,180}/ig,
-        ];
-
-        for (const pattern of patterns) {
-          for (const match of text.matchAll(pattern)) {
-            const snippet = normalizeText(match[0]);
-            if (snippet && snippet.length > 2) {
-              messages.push(snippet);
-            }
-          }
-        }
-      }
-
       return [...new Set(messages)].slice(0, 12);
     };
 
-    // Identifica o form pela presenca do `#StatusId` (hidden do lookup
-    // widget de status). Mais robusto que filtrar por action — a rota
-    // real eh `/processos/tarefas/Edit`, mas isso pode mudar.
+    // Identifica o form pela presenca do `#StatusId`. Mais robusto que
+    // filtrar por action — a rota real eh `/processos/tarefas/Edit`.
     let form = null;
     try {
       form = document.querySelector('form:has(#StatusId)');
-    } catch (_) {
-      // browser sem suporte a CSS :has — fallback manual
-    }
+    } catch (_) {}
     if (!form) {
       const statusIdInput = document.getElementById('StatusId');
       if (statusIdInput && statusIdInput.closest) {
@@ -507,7 +477,6 @@ async function submitCancellation(page, item) {
       }
     }
     if (!form) {
-      // ultimo fallback: action contem /tarefas/Edit (case-insensitive)
       form = Array.from(document.querySelectorAll('form')).find((candidate) => {
         const act = (candidate.getAttribute('action') || '').toLowerCase();
         return act.includes('/tarefas/edit') || act.includes('/agenda/tarefas/edit');
@@ -536,6 +505,33 @@ async function submitCancellation(page, item) {
       };
     }
 
+    // Atualiza o hidden de Status no DOM (replica o efeito do clique no
+    // lookup widget — tr[data-val-id="3"] seta StatusId/StatusText).
+    const sIdInput =
+      form.querySelector('#StatusId') || form.querySelector('[name="StatusId"]');
+    const sTextInput =
+      form.querySelector('#StatusText') || form.querySelector('[name="StatusText"]');
+    if (sIdInput) sIdInput.value = String(currentItem.targetStatusId);
+    if (sTextInput) sTextInput.value = String(currentItem.targetStatusText || '');
+
+    // CRITICAL FIX: o widget de Status, ao mudar pra Cancelado, copia
+    // Envolvidos[<guid>].EnvolvidoId -> Envolvidos[<guid>].EnvolvidoEfetivoId
+    // pra registrar quem efetivou a cancelacao. Sem isso o servidor recusa
+    // o save (mensagens de validacao podem aparecer fora do summary
+    // explicito, gerando ruido no parser).
+    const envolvidoIdInputs = form.querySelectorAll('input[name$=".EnvolvidoId"]');
+    envolvidoIdInputs.forEach((envInput) => {
+      const m = envInput.name.match(/^(Envolvidos\[[^\]]+\])\.EnvolvidoId$/);
+      if (!m) return;
+      const prefix = m[1];
+      const efetivoInput = form.querySelector(`input[name="${prefix}.EnvolvidoEfetivoId"]`);
+      if (efetivoInput && !efetivoInput.value) {
+        efetivoInput.value = envInput.value;
+      }
+    });
+
+    // Coleta TODOS os campos do form (ja com Status e EnvolvidoEfetivoId
+    // sincronizados acima).
     const params = new URLSearchParams();
     const elements = form.querySelectorAll('input, select, textarea, button');
     for (const element of elements) {
@@ -570,8 +566,10 @@ async function submitCancellation(page, item) {
       params.append(name, element.value ?? '');
     }
 
+    // Sanity: forca StatusId/Text/ButtonSave (em caso de input duplicado
+    // ou qualquer encoding edge).
     params.set('StatusId', String(currentItem.targetStatusId));
-    params.set('StatusText', currentItem.targetStatusText);
+    params.set('StatusText', String(currentItem.targetStatusText || ''));
     params.set('ButtonSave', '0');
 
     const actionUrl = new URL(form.getAttribute('action'), window.location.href).href;
@@ -580,12 +578,24 @@ async function submitCancellation(page, item) {
       credentials: 'include',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
       body: params.toString(),
+      redirect: 'follow',
     });
     const postHtml = await postResponse.text();
     const postDoc = new DOMParser().parseFromString(postHtml, 'text/html');
     const postText = textFromHtml(postHtml);
-    const postMessages = collectMessages(postDoc, postText);
 
+    // Heuristica de sucesso pos-fix: se o servidor redirecionou pra fora
+    // do /tarefas/Edit (ex: voltou pra DetailsCompromissosTarefas/Index),
+    // considera sucesso e nao varre msgs de erro.
+    const postUrlLower = (postResponse.url || '').toLowerCase();
+    const looksLikeSuccess =
+      postResponse.status >= 200 &&
+      postResponse.status < 400 &&
+      !postUrlLower.includes('/tarefas/edit');
+
+    const postMessages = looksLikeSuccess ? [] : collectFormMessages(postDoc);
+
+    // Verify confiavel: re-busca a edit URL e le o StatusId persistido.
     const verifyResponse = await fetch(currentItem.editUrl, {
       method: 'GET',
       credentials: 'include',
@@ -593,8 +603,7 @@ async function submitCancellation(page, item) {
     });
     const verifyHtml = await verifyResponse.text();
     const verifyDoc = new DOMParser().parseFromString(verifyHtml, 'text/html');
-    const verifyText = textFromHtml(verifyHtml);
-    const verifyMessages = collectMessages(verifyDoc, verifyText);
+    const verifyMessages = collectFormMessages(verifyDoc);
     const verifiedStatusId =
       verifyDoc.querySelector('#StatusId')?.value ||
       verifyDoc.querySelector('[name="StatusId"]')?.value ||
@@ -616,13 +625,16 @@ async function submitCancellation(page, item) {
       alreadyCancelled: false,
       postStatus: postResponse.status,
       postUrl: postResponse.url,
+      postLooksLikeSuccess: looksLikeSuccess,
       postMessages,
       verifyStatus: verifyResponse.status,
       verifyMessages,
       verifiedStatusId,
       verifiedStatusText,
       detailsStatus: detailsResponse.status,
-      detailsHasTargetText: detailsText.toLowerCase().includes(String(currentItem.targetStatusText || '').toLowerCase()),
+      detailsHasTargetText: detailsText
+        .toLowerCase()
+        .includes(String(currentItem.targetStatusText || '').toLowerCase()),
       detailsPreview: detailsText.slice(0, 1500),
       postPreview: postText.slice(0, 1500),
     };
@@ -631,11 +643,12 @@ async function submitCancellation(page, item) {
 
 async function cancelTask(session, item, loginConfig) {
   const editUrl = item.editUrl;
-  // waitForTaskEditForm devolve o frame (main ou iframe) onde o form foi
-  // encontrado. submitCancellation roda evaluate nesse frame, nao na
-  // session.page, pra garantir que `document` aponte pro form correto.
-  const { target } = await waitForTaskEditForm(session.page, editUrl, loginConfig);
-  const response = await submitCancellation(target, item);
+  // O form do edit esta sempre no main frame (verificado em prod). O
+  // submitCancellation faz UI clicks e usa page.on('dialog') pra aceitar
+  // popups nativos — ambos exigem a `Page`, nao um Frame. Por isso
+  // passamos session.page direto.
+  await waitForTaskEditForm(session.page, editUrl, loginConfig);
+  const response = await submitCancellation(session.page, item);
 
   if (response.alreadyCancelled) {
     return {
