@@ -547,15 +547,28 @@ async function submitCancellation(page, item) {
       }
     }
 
-    // 5) Verifica sucesso pela URL final do navegador. Quando o save
-    // funciona, o servidor responde 302 -> /Details... (ou similar).
-    // Quando algo recusa o save, fica em /tarefas/Edit ou redireciona
-    // pra rota de erro como /CreateFromProcesso/.
+    // 5) Captura URL final do navegador + preview do conteudo que o
+    // servidor retornou pos-submit. O finalUrl sozinho nao eh prova de
+    // sucesso (pode redirecionar pra erro silencioso); usamos pra
+    // diagnostico no log quando algo der errado.
     const finalUrl = page.url();
     const finalUrlLower = finalUrl.toLowerCase();
     const looksLikeSuccess =
       !finalUrlLower.includes('/tarefas/edit') &&
       !finalUrlLower.includes('createfromprocesso');
+
+    // Captura preview do body atual (apos navegacao do submit) — ajuda
+    // a ver se caiu numa tela de "tarefa nao encontrada", "sessao
+    // expirada", lista do processo, etc. Tudo o que ajude a entender
+    // o que o servidor fez com o submit.
+    const postPreview = await page
+      .evaluate(() => {
+        const title = document.title || '';
+        const bodyText = (document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 1500);
+        return `[title=${title}] ${bodyText}`;
+      })
+      .catch(() => '');
+    const postUrl = finalUrl;
 
     // 6) Verify confiavel: re-busca a edit URL via fetch (no contexto
     // logado da page) pra confirmar StatusId persistido = 3.
@@ -647,6 +660,8 @@ async function submitCancellation(page, item) {
       alreadyCancelled: false,
       navigationError,
       finalUrl,
+      postUrl,
+      postPreview,
       looksLikeSuccess,
       ...verify,
       postMessages: [],
@@ -674,21 +689,31 @@ async function cancelTask(session, item, loginConfig) {
     };
   }
 
+  // Sucesso eh APENAS quando o re-fetch da editUrl retorna StatusId
+  // igual ao target. Tentamos um fallback heuristico antes mas confirmou
+  // falso-positivo em prod (submit redireciona mas task continua Pendente).
   if (String(response.verifiedStatusId) !== String(item.targetStatusId)) {
-    // Prioriza formErrors (campo:mensagem) que diagnostica QUAL campo
-    // foi recusado. Cai pra summary, depois msgs gerais, depois fallback.
     const formErrorsDetail =
       response.formErrors && response.formErrors.length
         ? response.formErrors
             .map((e) => `${e.field}: ${e.message}`)
             .join(' | ')
         : null;
+    // Inclui finalUrl + preview da pagina pos-submit pra diagnostico:
+    // ajuda a entender se redirecionou pra erro/login/lista/etc.
+    const diagnostic =
+      `finalUrl=${response.finalUrl || '?'}` +
+      ` postUrl=${response.postUrl || '?'}` +
+      ` looksLikeSuccess=${response.looksLikeSuccess}` +
+      (response.postPreview
+        ? ` postPreview="${String(response.postPreview).slice(0, 300).replace(/\s+/g, ' ')}"`
+        : '');
     const errorDetail =
       formErrorsDetail ||
       response.validationSummary?.join(' | ') ||
       response.verifyMessages?.join(' | ') ||
       response.postMessages?.join(' | ') ||
-      `Status verification failed for task ${item.taskId}: expected ${item.targetStatusId}, got ${response.verifiedStatusId}`;
+      `Status verification failed for task ${item.taskId}: expected ${item.targetStatusId}, got ${response.verifiedStatusId} | ${diagnostic}`;
     throw new Error(errorDetail);
   }
 
