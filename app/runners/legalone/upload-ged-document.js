@@ -607,12 +607,27 @@ async function uploadFileWithFineUploader(page, filePath) {
 
 async function expandLookupTree(page, tree) {
   for (let guard = 0; guard < 20; guard += 1) {
-    const collapsed = tree.locator(
-      'tr.expandable.collapsed .expander, tr.collapsed .expander, tr .expander:not(.expanded)',
-    );
-    const count = await collapsed.count().catch(() => 0);
-    if (!count) return;
-    await collapsed.first().click({ timeout: 5000 }).catch(() => null);
+    const expanded = await page.evaluate(() => {
+      const dropdown = document.querySelector('.lookup-dropdown table.treeTable');
+      if (!dropdown) return 0;
+      const candidates = Array.from(
+        dropdown.querySelectorAll(
+          'tr.collapsed .expander, tr.expandable.collapsed .expander, tr.parent.collapsed .expander, .expander:not(.expanded), .collapsed [class*="expand"]',
+        ),
+      );
+      let count = 0;
+      for (const node of candidates) {
+        const style = window.getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        if (style.display === 'none' || style.visibility === 'hidden' || rect.width === 0 || rect.height === 0) continue;
+        node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+        node.click();
+        count += 1;
+      }
+      return count;
+    });
+    if (!expanded) return;
     await page.waitForTimeout(250);
   }
 }
@@ -623,25 +638,65 @@ async function selectGedType(page, tipoPath = ['Documento', 'Habilitação']) {
   await tree.waitFor({ state: 'visible', timeout: 10000 });
   await expandLookupTree(page, tree);
 
-  const leaf = tipoPath[tipoPath.length - 1] || 'Habilitação';
-  const leafPattern = new RegExp(`^\\s*${escapeRegExp(leaf)}\\s*$`, 'i');
-  const parent = tipoPath.length > 1 ? tipoPath[tipoPath.length - 2] : null;
-  let cell = tree.locator('td', { hasText: leafPattern }).first();
+  const selected = await page.evaluate(({ pathParts }) => {
+    const leaf = String(pathParts[pathParts.length - 1] || 'Habilitação').trim().toLowerCase();
+    const parent = pathParts.length > 1 ? String(pathParts[pathParts.length - 2]).trim().toLowerCase() : '';
+    const dropdown = document.querySelector('.lookup-dropdown table.treeTable');
+    if (!dropdown) return { clicked: false, reason: 'lookup-dropdown table.treeTable ausente' };
 
-  if (parent) {
-    const parentPattern = new RegExp(escapeRegExp(parent), 'i');
-    const anchoredRow = tree
-      .locator('tr', {
-        has: page.locator('td', { hasText: leafPattern }),
-      })
-      .filter({ hasText: parentPattern })
-      .first();
-    if ((await anchoredRow.count().catch(() => 0)) > 0) {
-      cell = anchoredRow.locator('td', { hasText: leafPattern }).first();
+    const isVisible = (element) => {
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    };
+
+    const cells = Array.from(dropdown.querySelectorAll('td')).filter(
+      (cell) => (cell.textContent || '').trim().toLowerCase() === leaf,
+    );
+    const visibleCells = cells.filter(isVisible);
+    const parentAnchored = visibleCells.find((cell) => {
+      if (!parent) return false;
+      let row = cell.closest('tr');
+      for (let hops = 0; row && hops < 20; hops += 1) {
+        const rowText = (row.textContent || '').trim().toLowerCase();
+        if (rowText.includes(parent)) return true;
+        const classes = Array.from(row.classList);
+        const parentClass = classes.find((name) => name.startsWith('child-of-'));
+        if (!parentClass) break;
+        const parentId = parentClass.slice('child-of-'.length);
+        row = dropdown.querySelector(`tr#${CSS.escape(parentId)}, tr.${CSS.escape(parentId)}`);
+      }
+      return false;
+    });
+    const cell = parentAnchored || visibleCells[0] || cells[0];
+    if (!cell) {
+      return {
+        clicked: false,
+        reason: `tipo nao encontrado: ${leaf}`,
+        candidates: Array.from(dropdown.querySelectorAll('td'))
+          .map((node) => (node.textContent || '').trim())
+          .filter(Boolean)
+          .slice(0, 80),
+      };
     }
+
+    cell.scrollIntoView({ block: 'center', inline: 'nearest' });
+    cell.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+    cell.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+    cell.click();
+    return {
+      clicked: true,
+      text: (cell.textContent || '').trim(),
+      visible: isVisible(cell),
+      rowText: (cell.closest('tr')?.textContent || '').trim(),
+    };
+  }, { pathParts: tipoPath });
+
+  if (!selected.clicked) {
+    throw new Error(`Tipo GED nao clicado: ${JSON.stringify(selected)}`);
   }
 
-  await cell.click({ timeout: 30000 });
+  await page.waitForTimeout(800);
   const tipoId = await page.locator('#TipoId').inputValue({ timeout: 10000 }).catch(() => '');
   const tipoText = await page.locator('#TipoText').inputValue({ timeout: 10000 }).catch(() => '');
   if (!tipoId || !/habilita/i.test(tipoText)) {
