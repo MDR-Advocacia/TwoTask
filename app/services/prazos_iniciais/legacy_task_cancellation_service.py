@@ -694,7 +694,7 @@ class LegacyTaskCancellationService:
         runner_error: Optional[str] = None
         api_success = False
         try:
-            api_success = self.l1_client.update_task_status(
+            api_success = self.client.update_task_status(
                 task_id=int(resolved_task_id),
                 status_id=int(target_status_id),
             )
