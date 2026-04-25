@@ -544,21 +544,72 @@ async function uploadFileWithFineUploader(page, filePath) {
     throw new Error(`Extensao ${extension} nao permitida pelo GED.`);
   }
 
+  const readUploadState = () => page.evaluate(() => {
+    const read = (selector) => {
+      const element = document.querySelector(selector);
+      return element ? element.value || element.textContent || '' : null;
+    };
+    return {
+      hasFile: read('#FileAzure_HasFile'),
+      fileName: read('#FileAzure_FileName, #FileAzure_Name, input[name="FileAzure.FileName"]'),
+      fileId: read('#FileAzure_FileId, #FileAzure_Id, input[name="FileAzure.FileId"], input[name="FileAzure.Id"]'),
+      successCount: document.querySelectorAll('.qq-upload-list .qq-upload-success').length,
+      failCount: document.querySelectorAll('.qq-upload-list .qq-upload-fail').length,
+      uploaderText: Array.from(document.querySelectorAll('.qq-upload-list li'))
+        .map((node) => (node.innerText || node.textContent || '').trim())
+        .filter(Boolean)
+        .join(' | '),
+    };
+  });
+
   await page.setInputFiles('input[type=file][name="qqfile"], input[type=file]', filePath);
-  await page.waitForSelector('.qq-upload-list .qq-upload-success', { timeout: 120000 });
-  const failedCount = await page.locator('.qq-upload-list .qq-upload-fail').count().catch(() => 0);
-  if (failedCount) {
-    const failedText = await page.locator('.qq-upload-list .qq-upload-fail').allTextContents().catch(() => []);
-    throw new Error(`Upload falhou no Fine Uploader: ${failedText.join(' | ')}`);
+  try {
+    await page.waitForFunction(
+      () => {
+        const failed = document.querySelectorAll('.qq-upload-list .qq-upload-fail').length;
+        if (failed > 0) return 'failed';
+
+        const hasFile = document.querySelector('#FileAzure_HasFile');
+        if (hasFile && /^true$/i.test(hasFile.value || '')) return 'ready';
+
+        const success = document.querySelectorAll('.qq-upload-list .qq-upload-success').length;
+        const fileName = document.querySelector('#FileAzure_FileName, #FileAzure_Name, input[name="FileAzure.FileName"]');
+        const fileId = document.querySelector('#FileAzure_FileId, #FileAzure_Id, input[name="FileAzure.FileId"], input[name="FileAzure.Id"]');
+        if (!hasFile && success > 0) return 'ready';
+        if (success > 0 && ((fileName && fileName.value) || (fileId && fileId.value))) return 'ready';
+
+        return false;
+      },
+      null,
+      { timeout: 120000, polling: 500 },
+    );
+  } catch (error) {
+    const uploadState = await readUploadState().catch(() => null);
+    throw new Error(
+      `Fine Uploader nao ficou pronto em 120s: ${JSON.stringify(uploadState)} | ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
 
-  const hasFile = page.locator('#FileAzure_HasFile');
-  if ((await hasFile.count().catch(() => 0)) > 0) {
-    const value = await hasFile.inputValue().catch(() => '');
-    if (!/^true$/i.test(value)) {
-      throw new Error(`Fine Uploader terminou, mas #FileAzure_HasFile=${value || '<vazio>'}`);
-    }
+  const uploadState = await readUploadState();
+
+  if (uploadState.failCount > 0) {
+    throw new Error(`Upload falhou no Fine Uploader: ${uploadState.uploaderText || '<sem detalhe>'}`);
   }
+
+  if (
+    uploadState.hasFile !== null &&
+    !/^true$/i.test(uploadState.hasFile || '') &&
+    !uploadState.fileName &&
+    !uploadState.fileId
+  ) {
+    throw new Error(
+      `Fine Uploader nao confirmou arquivo no formulario: ${JSON.stringify(uploadState)}`,
+    );
+  }
+
+  return uploadState;
 }
 
 async function expandLookupTree(page, tree) {
@@ -681,7 +732,7 @@ async function uploadGedDocument(session, item, webBaseUrl, loginConfig) {
 
   const displayArchiveName = normalizeDisplayName(item.archive || path.basename(item.pdfPath));
   const { createUrl, detailsGedUrl } = await openCreateArquivo(session.page, item, webBaseUrl, loginConfig);
-  await uploadFileWithFineUploader(session.page, item.pdfPath);
+  const uploadState = await uploadFileWithFineUploader(session.page, item.pdfPath);
   const selectedType = await selectGedType(session.page, item.tipoPath || item.typePath || ['Documento', 'Habilitação']);
   const metadata = await fillGedForm(session.page, item, displayArchiveName);
   await saveAndCloseGedForm(session.page, item.lawsuitId);
@@ -693,6 +744,7 @@ async function uploadGedDocument(session, item, webBaseUrl, loginConfig) {
       createUrl,
       detailsGedUrl,
       displayArchiveName,
+      uploadState,
       selectedType,
       metadata,
       attachment,
