@@ -868,23 +868,24 @@ async function submitCancellationViaBatchModal(page, item, loginConfig) {
     throw new Error('Nao consegui abrir DetailsCompromissosTarefas (auth loop).');
   }
 
-  // 2) Marca o checkbox da task. Use o <input class="grid_check"
-  // data-val="<taskId>"> direto — `.click()` funciona mesmo com o
-  // input estilizado/escondido por CSS (o handler de change do Novajus
-  // dispara via JS independente da visibilidade visual).
+  // 2) Marca o checkbox da task. O <input> eh hidden via CSS, entao
+  // page.click() (mesmo com force) recusa. Solucao: chamar el.click()
+  // direto via evaluate — o metodo nativo do DOM dispara o handler
+  // independente de visibilidade. Idempotente (so clica se nao marcado).
   const checkboxSelector = `input.grid_check[data-val="${item.taskId}"]`;
   await page.waitForSelector(checkboxSelector, {
     state: 'attached',
     timeout: 15000,
   });
-  const alreadyChecked = await page
-    .$eval(checkboxSelector, (el) => el.checked)
-    .catch(() => false);
-  if (!alreadyChecked) {
-    // Force click ignora visibilidade — o input eh hidden via CSS mas
-    // o handler JS escuta clicks no proprio input.
-    await page.click(checkboxSelector, { force: true, timeout: 5000 });
-  }
+  await page.evaluate((tid) => {
+    const cb = document.querySelector(`input.grid_check[data-val="${tid}"]`);
+    if (!cb) {
+      throw new Error(`Checkbox grid_check[data-val="${tid}"] nao encontrado.`);
+    }
+    if (!cb.checked) {
+      cb.click(); // dispara o handler nativo + change event
+    }
+  }, String(item.taskId));
 
   // 3) Clica na engrenagem do toolbar da grid (popover de acoes em lote).
   // O seletor PRECISA ser escopado a `table.webgrid thead` — existem
