@@ -832,14 +832,140 @@ async function submitCancellation(page, item) {
   }
 }
 
+async function submitCancellationViaBatchModal(page, item, loginConfig) {
+  // Fluxo:
+  //   1. Goto detailsUrl (lista de tasks do processo)
+  //   2. Marca checkbox da task alvo (#grid_check_{taskId})
+  //   3. Clica na engrenagem do toolbar (.toolbar-default-action .popover-menu-button)
+  //   4. Clica em "Alterar" (#toolbar-item a)
+  //   5. No modal "Alterando compromisso(s) e tarefa(s)":
+  //      a. Preenche o lookup "Campo" com "Status"
+  //      b. Aguarda lookup "Para" (#LookupStatusLote) habilitar
+  //      c. Preenche o lookup "Para" com "Cancelado"
+  //   6. Clica em Salvar (button.toolbar-modal-submit)
+  //   7. Aguarda fechar modal (toast/redirect/networkidle)
+
+  const detailsUrl = item.detailsUrl;
+  if (!detailsUrl) {
+    throw new Error('detailsUrl ausente no item — nao consigo abrir lista de tasks.');
+  }
+
+  // 1) Goto + dispense cookie banner + autenticacao se necessario
+  let loaded = false;
+  for (let attempt = 1; attempt <= 3 && !loaded; attempt += 1) {
+    await page.goto(detailsUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
+    await dismissCookieBanner(page);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+
+    const ctx = await capturePageContext(page);
+    if (isAuthenticationPage(ctx)) {
+      await login(page, loginConfig);
+      continue;
+    }
+    loaded = true;
+  }
+  if (!loaded) {
+    throw new Error('Nao consegui abrir DetailsCompromissosTarefas (auth loop).');
+  }
+
+  // 2) Marca o checkbox da task
+  const checkboxSelector = `[id="grid_check_${item.taskId}"]`;
+  await page.waitForSelector(checkboxSelector, { timeout: 15000 });
+  // Usa .check() do Playwright pra garantir o estado checked (evita
+  // double-click se ja estiver marcado).
+  await page.check(checkboxSelector, { timeout: 5000 });
+
+  // 3) Clica na engrenagem do toolbar (popover de acoes em lote)
+  await page.click('.toolbar-default-action .popover-menu-button', {
+    timeout: 8000,
+  });
+
+  // 4) Clica em "Alterar" no menu que abriu
+  await page.waitForSelector('#toolbar-item', { timeout: 5000 });
+  await page.click('#toolbar-item a', { timeout: 5000 });
+
+  // 5) Modal aparece — espera o lookup "Campo" estar interativo
+  await page.waitForSelector('[id="CampoText"]:visible', { timeout: 10000 });
+
+  //   5a) Preenche "Campo" com "Status" via autocomplete
+  await page.click('[id="CampoText"]', { timeout: 5000 });
+  await page.fill('[id="CampoText"]', '');
+  await page.type('[id="CampoText"]', 'Status', { delay: 60 });
+  await page.waitForSelector('ul.ac_results:visible li', { timeout: 5000 });
+  // Clica na linha "Status" exata (evita pegar "StatusEnvolvido" ou similar)
+  const statusOptionSelector =
+    'ul.ac_results li:has-text("Status"):not(:has-text("Envolvido")):not(:has-text("Lote"))';
+  // Fallback: pega a primeira opcao que tem texto "Status" exato
+  let optionClicked = false;
+  try {
+    await page.click(statusOptionSelector, { timeout: 3000 });
+    optionClicked = true;
+  } catch (_) {
+    // fallback: primeira li que tenha "Status"
+    await page.click('ul.ac_results li:has-text("Status")', { timeout: 3000 });
+    optionClicked = true;
+  }
+  if (!optionClicked) {
+    throw new Error('Nao consegui escolher "Status" no lookup Campo.');
+  }
+
+  //   5b) Aguarda o lookup "Para" (#LookupStatusLote) ficar habilitado
+  await page.waitForFunction(
+    () => {
+      const wrapper = document.getElementById('LookupStatusLote');
+      if (!wrapper) return false;
+      const inner = wrapper.querySelector('.lookup');
+      if (!inner) return false;
+      return !inner.classList.contains('disabled');
+    },
+    null,
+    { timeout: 10000 },
+  );
+
+  //   5c) Preenche "Para" com "Cancelado" via autocomplete
+  await page.click('#LookupStatusLote [id="StatusText"]', { timeout: 5000 });
+  await page.fill('#LookupStatusLote [id="StatusText"]', '');
+  await page.type('#LookupStatusLote [id="StatusText"]', 'Cancelado', { delay: 60 });
+  await page.waitForSelector('ul.ac_results:visible li', { timeout: 5000 });
+  await page.click('ul.ac_results li:has-text("Cancelado")', { timeout: 5000 });
+
+  // 6) Clica em Salvar
+  await page.click('button.toolbar-modal-submit', { timeout: 5000 });
+
+  // 7) Aguarda o modal fechar (sumir do DOM ou virar invisible)
+  await page
+    .waitForFunction(
+      () => {
+        const modal = document.querySelector('.toolbar-modal-submit');
+        if (!modal) return true;
+        const visible = modal.offsetParent !== null;
+        return !visible;
+      },
+      null,
+      { timeout: 30000 },
+    )
+    .catch(() => {});
+  // Aguarda networkidle pra dar tempo do servidor processar
+  await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+
+  return {
+    alreadyCancelled: false,
+    finalUrl: page.url(),
+    submitMethod: 'batch_modal',
+  };
+}
+
 async function cancelTask(session, item, loginConfig) {
-  const editUrl = item.editUrl;
-  // O form do edit esta sempre no main frame (verificado em prod). O
-  // submitCancellation faz UI clicks e usa page.on('dialog') pra aceitar
-  // popups nativos — ambos exigem a `Page`, nao um Frame. Por isso
-  // passamos session.page direto.
-  await waitForTaskEditForm(session.page, editUrl, loginConfig);
-  const response = await submitCancellation(session.page, item);
+  // Cancelamento via tela de "Compromissos e tarefas" do processo
+  // (DetailsCompromissosTarefas) usando o modal "Alterar em lote". Esse
+  // caminho EVITA a tela de edit individual da task — logo NAO sofre
+  // com custom fields obrigatorios, EnvolvidoEfetivoId, popup "data
+  // anterior", validacao de Workflow, etc. Cancela direto.
+  const response = await submitCancellationViaBatchModal(
+    session.page,
+    item,
+    loginConfig,
+  );
 
   if (response.alreadyCancelled) {
     return {
@@ -848,34 +974,11 @@ async function cancelTask(session, item, loginConfig) {
     };
   }
 
-  // Sucesso eh APENAS quando o re-fetch da editUrl retorna StatusId
-  // igual ao target. Tentamos um fallback heuristico antes mas confirmou
-  // falso-positivo em prod (submit redireciona mas task continua Pendente).
-  if (String(response.verifiedStatusId) !== String(item.targetStatusId)) {
-    const formErrorsDetail =
-      response.formErrors && response.formErrors.length
-        ? response.formErrors
-            .map((e) => `${e.field}: ${e.message}`)
-            .join(' | ')
-        : null;
-    // Inclui finalUrl + preview da pagina pos-submit pra diagnostico:
-    // ajuda a entender se redirecionou pra erro/login/lista/etc.
-    const diagnostic =
-      `finalUrl=${response.finalUrl || '?'}` +
-      ` looksLikeSuccess=${response.looksLikeSuccess}` +
-      ` liveStatusIdAfterSubmit=${response.liveStatusIdAfterSubmit ?? 'null'}` +
-      (response.postPreview
-        ? ` postPreview="${String(response.postPreview).slice(0, 400).replace(/\s+/g, ' ')}"`
-        : '');
-    const errorDetail =
-      formErrorsDetail ||
-      response.validationSummary?.join(' | ') ||
-      response.verifyMessages?.join(' | ') ||
-      response.postMessages?.join(' | ') ||
-      `Status verification failed for task ${item.taskId}: expected ${item.targetStatusId}, got ${response.verifiedStatusId} | ${diagnostic}`;
-    throw new Error(errorDetail);
-  }
-
+  // Se nao deu exception ate aqui, o submit do modal "Alterar em lote"
+  // foi clicado sem erro. A verificacao AUTORITATIVA de cancelamento
+  // acontece no Python (`get_task_by_id` via API L1) — esse runner so
+  // reporta que o fluxo de UI executou. Se o save nao persistiu, o
+  // Python detecta pelo statusId retornado pela API e marca FAILED.
   return {
     status: RUNNER_STATUS_CANCELLED,
     response,
