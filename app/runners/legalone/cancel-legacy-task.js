@@ -909,14 +909,17 @@ async function submitCancellationViaBatchModal(page, item, loginConfig) {
     throw new Error('Nao consegui escolher "Status" no lookup Campo.');
   }
 
-  //   5b) Aguarda o lookup "Para" (#LookupStatusLote) ficar habilitado
+  //   5b) Aguarda o lookup "Para" (#LookupStatusLote) ficar VISIVEL.
+  // Quando "Campo" eh "Status", o JS do modal muda o style do
+  // wrapper de `display: none` -> `display: block` (e tambem do
+  // <div class="row"> ancestral). Nao usa class .disabled.
   await page.waitForFunction(
     () => {
       const wrapper = document.getElementById('LookupStatusLote');
       if (!wrapper) return false;
-      const inner = wrapper.querySelector('.lookup');
-      if (!inner) return false;
-      return !inner.classList.contains('disabled');
+      // offsetParent eh null quando o elemento ou algum ancestral tem
+      // display:none. Isso cobre o caso do <div class="row"> pai.
+      return wrapper.offsetParent !== null;
     },
     null,
     { timeout: 10000 },
