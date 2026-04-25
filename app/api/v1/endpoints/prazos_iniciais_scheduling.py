@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -33,7 +34,31 @@ from app.services.prazos_iniciais.scheduling_service import (
     PrazosIniciaisSchedulingService,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/prazos-iniciais", tags=["Prazos Iniciais"])
+
+
+def _run_reprocess_in_background(intake_id: int) -> None:
+    """
+    Executa o RPA de cancelamento imediatamente, em background, pra um
+    intake especifico. Usado pelo botao "Reprocessar" no UI — assim o
+    operador nao precisa esperar o tick periodico (~60s).
+
+    Cria propria sessao do banco porque a do request fecha junto com
+    a resposta HTTP.
+    """
+    db = SessionLocal()
+    try:
+        service = PrazosIniciaisLegacyTaskQueueService(db)
+        service.process_pending_items(limit=1, intake_id=intake_id)
+    except Exception:
+        logger.exception(
+            "legacy_task_queue.reprocess_background_failed intake_id=%s",
+            intake_id,
+        )
+    finally:
+        db.close()
 
 
 def _intake_to_summary(intake: PrazoInicialIntake) -> dict:
@@ -354,9 +379,10 @@ def legacy_task_cancel_queue_metrics(
 @router.post(
     "/legacy-task-cancel-queue/items/{item_id}/reprocessar",
     response_model=QueueItemActionResponse,
-    summary="Marca um item da fila como PENDENTE pra ser reprocessado pelo worker.",
+    summary="Reprocessa um item da fila imediatamente (em background).",
 )
 def reprocess_legacy_task_cancel_item(
+    background_tasks: BackgroundTasks,
     item_id: int = Path(..., ge=1),
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
@@ -365,6 +391,15 @@ def reprocess_legacy_task_cancel_item(
     item = service.reprocess_item(item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Item não encontrado.")
+
+    # Dispara o RPA imediatamente em background — operador nao precisa
+    # esperar o tick periodico (~60s) do worker. A resposta HTTP retorna
+    # rapido com o item ja em PENDING; o cancelamento real acontece
+    # logo em seguida em outra thread.
+    intake_id = item.get("intake_id") if isinstance(item, dict) else None
+    if intake_id:
+        background_tasks.add_task(_run_reprocess_in_background, int(intake_id))
+
     return QueueItemActionResponse(item=item)
 
 

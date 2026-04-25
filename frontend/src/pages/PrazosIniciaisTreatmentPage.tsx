@@ -354,8 +354,8 @@ export default function PrazosIniciaisTreatmentPage() {
       await reprocessPrazosIniciaisLegacyTaskCancelItem(itemId);
       await loadData();
       toast({
-        title: "Item reenviado para a fila",
-        description: `Item #${itemId} voltou para o status PENDENTE; o worker vai pegá-lo no próximo tick.`,
+        title: "Reprocessamento iniciado",
+        description: `Item #${itemId} voltou para PENDENTE e o RPA foi disparado em background. Atualize a lista em alguns segundos pra ver o resultado.`,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Não foi possível reprocessar o item.";
