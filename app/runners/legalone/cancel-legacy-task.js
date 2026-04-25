@@ -557,17 +557,57 @@ async function submitCancellation(page, item) {
       !finalUrlLower.includes('/tarefas/edit') &&
       !finalUrlLower.includes('createfromprocesso');
 
-    // Captura preview do body atual (apos navegacao do submit) — ajuda
-    // a ver se caiu numa tela de "tarefa nao encontrada", "sessao
-    // expirada", lista do processo, etc. Tudo o que ajude a entender
-    // o que o servidor fez com o submit.
-    const postPreview = await page
+    // Captura erros + StatusId DIRETAMENTE na pagina pos-submit.
+    // Quando o servidor recusa o save, re-renderiza o form na mesma
+    // URL com .validation-summary-errors ou .field-validation-error
+    // [data-valmsg-for] inline. Re-fetchar a editUrl depois falha em
+    // capturar isso (URL muda de contexto). Tudo o que importa esta
+    // na pagina ATUAL.
+    const postPageInspection = await page
       .evaluate(() => {
         const title = document.title || '';
-        const bodyText = (document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 1500);
-        return `[title=${title}] ${bodyText}`;
+        const bodyText = (document.body?.innerText || '')
+          .replace(/\s+/g, ' ')
+          .trim();
+
+        const validationSummary = Array.from(
+          document.querySelectorAll('.validation-summary-errors li'),
+        )
+          .map((li) => (li.textContent || '').trim())
+          .filter(Boolean);
+
+        const formErrors = Array.from(
+          document.querySelectorAll('span.field-validation-error[data-valmsg-for]'),
+        )
+          .map((el) => ({
+            field: el.getAttribute('data-valmsg-for') || '',
+            message: (el.textContent || '').trim(),
+          }))
+          .filter((e) => e.message && e.field);
+
+        // Tenta ler o StatusId atual no form (se ainda existe).
+        const liveStatusId =
+          document.querySelector('#StatusId')?.value ||
+          document.querySelector('[name="StatusId"]')?.value ||
+          null;
+
+        return {
+          title,
+          bodyPreview: bodyText.slice(0, 800),
+          validationSummary,
+          formErrors,
+          liveStatusId,
+        };
       })
-      .catch(() => '');
+      .catch(() => ({
+        title: '',
+        bodyPreview: '',
+        validationSummary: [],
+        formErrors: [],
+        liveStatusId: null,
+      }));
+
+    const postPreview = `[title=${postPageInspection.title}] ${postPageInspection.bodyPreview}`;
     const postUrl = finalUrl;
 
     // 6) Verify confiavel: re-busca a edit URL via fetch (no contexto
@@ -656,6 +696,23 @@ async function submitCancellation(page, item) {
       };
     }, item);
 
+    // Merge dos erros: prioriza os capturados na pagina ATUAL pos-submit
+    // (quando o servidor recusa, ele re-renderiza la). Cai pra os do
+    // verify (re-fetch da edit URL) como fallback.
+    const mergedFormErrors =
+      (postPageInspection.formErrors && postPageInspection.formErrors.length
+        ? postPageInspection.formErrors
+        : verify.formErrors) || [];
+    const mergedValidationSummary =
+      (postPageInspection.validationSummary && postPageInspection.validationSummary.length
+        ? postPageInspection.validationSummary
+        : verify.validationSummary) || [];
+    // Se a pagina atual ainda tem #StatusId com o targetId, eh sucesso —
+    // sobrescreve verifiedStatusId que pode ter vindo null do re-fetch.
+    const liveMatchesTarget =
+      postPageInspection.liveStatusId &&
+      String(postPageInspection.liveStatusId) === String(item.targetStatusId);
+
     return {
       alreadyCancelled: false,
       navigationError,
@@ -664,6 +721,13 @@ async function submitCancellation(page, item) {
       postPreview,
       looksLikeSuccess,
       ...verify,
+      // Sobrescreve com os erros/status da pagina atual (mais autoritativos).
+      formErrors: mergedFormErrors,
+      validationSummary: mergedValidationSummary,
+      verifiedStatusId: liveMatchesTarget
+        ? postPageInspection.liveStatusId
+        : verify.verifiedStatusId,
+      liveStatusIdAfterSubmit: postPageInspection.liveStatusId,
       postMessages: [],
     };
   } finally {
@@ -703,10 +767,10 @@ async function cancelTask(session, item, loginConfig) {
     // ajuda a entender se redirecionou pra erro/login/lista/etc.
     const diagnostic =
       `finalUrl=${response.finalUrl || '?'}` +
-      ` postUrl=${response.postUrl || '?'}` +
       ` looksLikeSuccess=${response.looksLikeSuccess}` +
+      ` liveStatusIdAfterSubmit=${response.liveStatusIdAfterSubmit ?? 'null'}` +
       (response.postPreview
-        ? ` postPreview="${String(response.postPreview).slice(0, 300).replace(/\s+/g, ' ')}"`
+        ? ` postPreview="${String(response.postPreview).slice(0, 400).replace(/\s+/g, ' ')}"`
         : '');
     const errorDetail =
       formErrorsDetail ||
