@@ -951,6 +951,17 @@ async function submitCancellationViaBatchModal(page, item, loginConfig) {
   // Aguarda networkidle pra dar tempo do servidor processar
   await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
 
+  // 8) Re-acessa o detailsUrl pra forcar refresh — garante que a UI
+  // exibe o estado atualizado da task (em caso de qualquer cache do
+  // proprio Novajus) e da tempo do servidor terminar de processar.
+  // O Python depois valida via API L1 GET /Tasks/{id}.
+  try {
+    await page.goto(detailsUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+  } catch (_) {
+    // Refresh eh best-effort; nao impede o sucesso.
+  }
+
   return {
     alreadyCancelled: false,
     finalUrl: page.url(),
