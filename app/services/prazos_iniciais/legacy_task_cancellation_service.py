@@ -317,12 +317,32 @@ class LegacyTaskCancellationService:
             artifacts=run_dir / "artifacts",
         )
 
-    def _build_task_urls(self, task_id: int) -> dict[str, str]:
+    def _build_task_urls(
+        self,
+        task_id: int,
+        lawsuit_id: Optional[int] = None,
+    ) -> dict[str, str]:
         web_base_url = (
             os.getenv("LEGAL_ONE_WEB_URL")
             or os.getenv("LEGALONE_WEB_URL")
             or DEFAULT_LEGAL_ONE_WEB_BASE_URL
         ).rstrip("/")
+        if lawsuit_id is not None:
+            details_relative = (
+                f"/processos/processos/DetailsCompromissosTarefas/{lawsuit_id}"
+                "?renderOnlySection=True"
+            )
+            details_url = f"{web_base_url}{details_relative}"
+            edit_url = (
+                f"{web_base_url}/processos/tarefas/edittarefa/{task_id}"
+                f"?parentId={lawsuit_id}&tipoContexto=1"
+                f"&returnUrl={quote(details_relative, safe='')}"
+            )
+            return {
+                "edit_url": edit_url,
+                "details_url": details_url,
+            }
+
         details_relative = (
             f"/agenda/tarefas/DetailsCompromissoTarefa/{task_id}"
             "?currentPage=1&hasNavigation=True"
@@ -470,7 +490,7 @@ class LegacyTaskCancellationService:
         if task_id is None:
             raise ValueError("A tarefa selecionada nao possui ID valido.")
 
-        urls = self._build_task_urls(task_id)
+        urls = self._build_task_urls(task_id, lawsuit_id=lawsuit_id)
         return [
             {
                 "index": 1,

@@ -311,18 +311,19 @@ async function closeSession(session) {
 
 async function waitForTaskEditForm(page, editUrl, loginConfig) {
   let lastContext = null;
+  const formSelector = 'form[action*="/agenda/Tarefas/Edit"], form[action*="/processos/tarefas/edittarefa"], form[action*="/processos/Tarefas/EditTarefa"], form[action*="/Processos/Tarefas/EditTarefa"]';
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     await page.goto(editUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
     const fastHandle = await page
-      .waitForSelector('form[action*="/agenda/Tarefas/Edit"]', { timeout: 5000 })
+      .waitForSelector(formSelector, { timeout: 5000 })
       .catch(() => null);
     if (fastHandle) {
       return;
     }
 
     await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-    const settledHandle = await page.$('form[action*="/agenda/Tarefas/Edit"]');
+    const settledHandle = await page.$(formSelector);
     if (settledHandle) {
       return;
     }
@@ -334,7 +335,7 @@ async function waitForTaskEditForm(page, editUrl, loginConfig) {
     }
 
     await page.waitForTimeout(1500);
-    const lateHandle = await page.$('form[action*="/agenda/Tarefas/Edit"]');
+    const lateHandle = await page.$(formSelector);
     if (lateHandle) {
       return;
     }
