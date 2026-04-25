@@ -359,7 +359,13 @@ function describeFrames(page) {
 
 async function waitForTaskEditForm(page, editUrl, loginConfig) {
   let lastContext = null;
-  const formSelector = 'form[action*="/agenda/Tarefas/Edit"], form[action*="/processos/tarefas/edittarefa"], form[action*="/processos/Tarefas/EditTarefa"], form[action*="/Processos/Tarefas/EditTarefa"]';
+  // Action real do form Novajus eh "/processos/tarefas/Edit" (singular,
+  // sem 'tarefa' no final, com querystring returnUrl). MAS o form nao
+  // tem id nem name, e o action pode mudar com upgrades. O jeito mais
+  // robusto: identificar o form pela presenca do hidden `#StatusId`
+  // (campo do widget de lookup que so existe na tela de edit de tarefa).
+  // CSS :has() funciona no Chromium recente do Playwright.
+  const formSelector = 'form:has(#StatusId), form[action*="/processos/tarefas/Edit"], form[action*="/agenda/Tarefas/Edit"]';
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     await page.goto(editUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
@@ -395,8 +401,36 @@ async function waitForTaskEditForm(page, editUrl, loginConfig) {
     }
   }
 
+  // Antes de falhar, faz inventario de TODOS os forms da pagina pra
+  // descobrir o action real (nosso seletor pode estar desatualizado).
+  let formInventory = '<no-forms>';
+  try {
+    const inventory = [];
+    for (const frame of page.frames()) {
+      const items = await frame
+        .evaluate(() => {
+          return Array.from(document.querySelectorAll('form')).map((f) => ({
+            action: f.getAttribute('action') || '',
+            method: f.getAttribute('method') || '',
+            id: f.getAttribute('id') || '',
+            name: f.getAttribute('name') || '',
+            children: f.querySelectorAll('input, select, textarea, button').length,
+          }));
+        })
+        .catch(() => []);
+      for (const it of items) {
+        inventory.push(
+          `[${frame.name() || '<root>'}] action=${it.action} method=${it.method} id=${it.id} name=${it.name} fields=${it.children}`,
+        );
+      }
+    }
+    if (inventory.length) {
+      formInventory = inventory.join(' || ');
+    }
+  } catch (_) {}
+
   throw new Error(
-    `Task edit form not found | url=${lastContext?.url || editUrl} | title=${lastContext?.title || ''} | frames=${describeFrames(page)} | body=${(lastContext?.bodyStart || '').slice(0, 400)}`,
+    `Task edit form not found | url=${lastContext?.url || editUrl} | title=${lastContext?.title || ''} | frames=${describeFrames(page)} | forms=${formInventory} | body=${(lastContext?.bodyStart || '').slice(0, 3000)}`,
   );
 }
 
@@ -457,9 +491,28 @@ async function submitCancellation(page, item) {
       return [...new Set(messages)].slice(0, 12);
     };
 
-    const form = Array.from(document.querySelectorAll('form')).find((candidate) =>
-      (candidate.getAttribute('action') || '').includes('/agenda/Tarefas/Edit'),
-    );
+    // Identifica o form pela presenca do `#StatusId` (hidden do lookup
+    // widget de status). Mais robusto que filtrar por action — a rota
+    // real eh `/processos/tarefas/Edit`, mas isso pode mudar.
+    let form = null;
+    try {
+      form = document.querySelector('form:has(#StatusId)');
+    } catch (_) {
+      // browser sem suporte a CSS :has — fallback manual
+    }
+    if (!form) {
+      const statusIdInput = document.getElementById('StatusId');
+      if (statusIdInput && statusIdInput.closest) {
+        form = statusIdInput.closest('form');
+      }
+    }
+    if (!form) {
+      // ultimo fallback: action contem /tarefas/Edit (case-insensitive)
+      form = Array.from(document.querySelectorAll('form')).find((candidate) => {
+        const act = (candidate.getAttribute('action') || '').toLowerCase();
+        return act.includes('/tarefas/edit') || act.includes('/agenda/tarefas/edit');
+      });
+    }
     if (!form) {
       throw new Error('Main task edit form not found');
     }
