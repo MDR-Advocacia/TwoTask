@@ -237,6 +237,28 @@ export async function cancelarPrazoInicial(
   return expectJson<PrazoInicialIntakeSummary>(response);
 }
 
+/**
+ * HARD DELETE de um intake (admin only). Apaga registro + PDF + cascata.
+ * Usado pra reinjetar o mesmo processo do zero durante testes. Vai virar
+ * arquivamento depois.
+ */
+export async function deletePrazoInicialIntake(intakeId: number): Promise<void> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/intakes/${intakeId}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok && response.status !== 204) {
+    let detail = "Falha ao deletar intake.";
+    try {
+      const data = await response.json();
+      detail = data?.detail || detail;
+    } catch (_) {
+      // sem body
+    }
+    throw new Error(detail);
+  }
+}
+
 
 /**
  * Constrói a URL absoluta do PDF do intake (usada como `href` do link "Ver PDF").

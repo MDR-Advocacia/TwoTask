@@ -52,6 +52,7 @@ import {
   cancelarPrazoInicial,
   confirmarAgendamentoPrazoInicial,
   fetchPrazoInicialDetail,
+  deletePrazoInicialIntake,
   fetchPrazosIniciaisBatches,
   fetchPrazosIniciaisEnums,
   fetchPrazosIniciaisIntakes,
@@ -64,6 +65,7 @@ import {
   reprocessarPrazoInicialCnj,
   submitPrazosIniciaisClassifyPending,
 } from "@/services/api";
+import { useAuth } from "@/hooks/useAuth";
 import type {
   PrazoInicialBatchSummary,
   PrazoInicialEnums,
@@ -192,6 +194,7 @@ function isConfirmableStatus(status: string): boolean {
 
 export default function PrazosIniciaisPage() {
   const { toast } = useToast();
+  const { isAdmin } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
   // Filtros - os "appliedXxx" são os que efetivamente vão pro GET, os
@@ -446,6 +449,37 @@ export default function PrazosIniciaisPage() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Erro desconhecido";
       toast({ title: "Erro", description: msg, variant: "destructive" });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // HARD DELETE — admin only. Apaga intake + cascata + PDF fisico. Usado
+  // pra reinjetar o mesmo processo do zero durante testes. Vai virar
+  // arquivamento (soft delete) depois.
+  const onDeleteIntake = async () => {
+    if (!detail) return;
+    if (
+      !confirm(
+        `DELETAR intake #${detail.id} (${detail.cnj_number || "sem CNJ"})?\n\n` +
+          "Esta ação é IRREVERSÍVEL e remove o registro, sugestões, pedidos\n" +
+          "e PDF do disco. Use apenas em ambiente de teste.",
+      )
+    ) {
+      return;
+    }
+    setActionLoading(true);
+    try {
+      await deletePrazoInicialIntake(detail.id);
+      toast({
+        title: "Intake deletado",
+        description: `Intake #${detail.id} removido permanentemente.`,
+      });
+      setSelectedId(null);
+      await loadIntakes();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Erro desconhecido";
+      toast({ title: "Erro ao deletar", description: msg, variant: "destructive" });
     } finally {
       setActionLoading(false);
     }
@@ -1738,24 +1772,6 @@ export default function PrazosIniciaisPage() {
 
           <DialogFooter className="flex-wrap justify-end gap-2 sm:space-x-0">
             <Button
-              variant="outline"
-              onClick={onReprocessarCnj}
-              disabled={
-                !detail ||
-                actionLoading ||
-                !(detail.status === "RECEBIDO" || detail.status === "PROCESSO_NAO_ENCONTRADO")
-              }
-              title="Disponivel apenas em RECEBIDO / PROCESSO_NAO_ENCONTRADO"
-            >
-              {actionLoading ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <RefreshCw className="mr-2 h-4 w-4" />
-              )}
-              Reprocessar CNJ
-            </Button>
-
-            <Button
               variant="destructive"
               onClick={onCancelar}
               disabled={!detail || actionLoading || detail.status === "CANCELADO" || detail.status === "CONCLUIDO"}
@@ -1795,38 +1811,18 @@ export default function PrazosIniciaisPage() {
                 : "Finalizar sem providência"}
             </Button>
 
-            <Button
-              variant="outline"
-              onClick={onRecomputeGlobals}
-              disabled={!detail || actionLoading || (detail.pedidos?.length ?? 0) === 0}
-              title="Recalcula Valor total / Aprovisionamento / Prob. êxito global a partir dos pedidos já extraídos. Não gasta tokens."
-            >
-              {actionLoading ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <RefreshCw className="mr-2 h-4 w-4" />
-              )}
-              Recalcular totais
-            </Button>
-
-            <Button
-              variant="outline"
-              onClick={onReanalisar}
-              disabled={
-                !detail ||
-                actionLoading ||
-                detail.status === "RECEBIDO" ||
-                detail.status === "EM_CLASSIFICACAO"
-              }
-              title="Apaga sugestões/pedidos atuais e reclassifica no próximo batch"
-            >
-              {actionLoading ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <RefreshCw className="mr-2 h-4 w-4" />
-              )}
-              Reanalisar
-            </Button>
+            {isAdmin && (
+              <Button
+                variant="destructive"
+                onClick={onDeleteIntake}
+                disabled={!detail || actionLoading}
+                title="HARD DELETE — admin only. Apaga intake + cascata + PDF. Use só em testes."
+                className="bg-red-700 hover:bg-red-800"
+              >
+                <XCircle className="mr-2 h-4 w-4" />
+                Deletar
+              </Button>
+            )}
 
             <Button variant="secondary" onClick={() => setSelectedId(null)}>
               Fechar

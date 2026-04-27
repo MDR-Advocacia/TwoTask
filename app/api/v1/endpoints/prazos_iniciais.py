@@ -809,6 +809,52 @@ def cancel_intake(
     return _intake_to_summary(intake)
 
 
+@router.delete(
+    "/intakes/{intake_id}",
+    status_code=204,
+    summary="HARD DELETE de um intake (admin only). Apaga registro + PDF + cascata.",
+)
+def delete_intake_admin(
+    intake_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth_security.get_current_user),
+):
+    """
+    Apaga fisicamente o intake (e tudo em cascata via ondelete=CASCADE:
+    sugestoes, pedidos, legacy_task_queue). Tambem deleta o PDF fisico.
+
+    Usado durante testes pra reinjetar o mesmo processo do zero. Vai
+    virar arquivamento depois — esse endpoint sera removido / trocado
+    por soft delete.
+
+    SOMENTE admins podem chamar. `require_permission` nao basta porque
+    qualquer usuario com `can_use_prazos_iniciais` passaria por ele.
+    """
+    if getattr(current_user, "role", "user") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Apenas administradores podem deletar intakes.",
+        )
+
+    intake = db.get(PrazoInicialIntake, intake_id)
+    if intake is None:
+        raise HTTPException(status_code=404, detail="Intake não encontrado.")
+
+    # Best-effort: deleta PDF fisico antes de apagar a row no banco.
+    pdf_path = getattr(intake, "pdf_path", None)
+    if pdf_path:
+        try:
+            from app.services.prazos_iniciais import storage as pdf_storage
+            pdf_storage.delete_pdf(pdf_path)
+        except Exception:
+            # Nao impede o delete do intake. Worker de cleanup pega depois.
+            pass
+
+    db.delete(intake)
+    db.commit()
+    return None
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Trigger e batches de classificação
 # ═══════════════════════════════════════════════════════════════════════
