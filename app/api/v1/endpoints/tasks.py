@@ -443,6 +443,7 @@ def get_data_for_task_form(db: Session = Depends(get_db)):
     task_types_query = (
         db.query(LegalOneTaskType)
         .options(joinedload(LegalOneTaskType.subtypes))
+        .filter(LegalOneTaskType.is_active == True)  # noqa: E712
         .order_by(LegalOneTaskType.name)
         .all()
     )
@@ -453,6 +454,7 @@ def get_data_for_task_form(db: Session = Depends(get_db)):
             sub_types=[
                 SubTypeSchema(id=sub.id, external_id=sub.external_id, name=sub.name)
                 for sub in sorted(parent.subtypes, key=lambda item: item.name)
+                if sub.is_active
             ],
         )
         for parent in task_types_query
