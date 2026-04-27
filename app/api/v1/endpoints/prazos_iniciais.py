@@ -77,45 +77,6 @@ from app.services.prazos_iniciais.storage import (
 logger = logging.getLogger(__name__)
 
 
-# ─── Helpers privados de parsing CSV ─────────────────────────────────
-# Usados pelos filtros multi-valor (status, treated_by_user_id, etc.).
-# Espelham os helpers de `publication_search_service` mas mantemos uma
-# cópia local pra evitar dependência cruzada API → service.
-
-def _parse_csv_ints(raw) -> list[int]:
-    """
-    Aceita None, str ("5,8"), int, ou lista[int|str]. Retorna lista de
-    inteiros descartando entradas inválidas (não bloqueia a request).
-    """
-    if raw is None:
-        return []
-    if isinstance(raw, int):
-        return [raw]
-    if isinstance(raw, list):
-        out: list[int] = []
-        for item in raw:
-            try:
-                out.append(int(item))
-            except (TypeError, ValueError):
-                continue
-        return out
-    out: list[int] = []
-    for chunk in str(raw).split(","):
-        chunk = chunk.strip()
-        if chunk.isdigit() or (chunk.startswith("-") and chunk[1:].isdigit()):
-            out.append(int(chunk))
-    return out
-
-
-def _parse_csv_strs(raw) -> list[str]:
-    """Aceita None, str ("a,b") ou lista. Retorna lista filtrada de strings."""
-    if raw is None:
-        return []
-    if isinstance(raw, list):
-        return [str(x).strip() for x in raw if str(x).strip()]
-    return [chunk.strip() for chunk in str(raw).split(",") if chunk.strip()]
-
-
 # ═══════════════════════════════════════════════════════════════════════
 # Schemas Pydantic
 # ═══════════════════════════════════════════════════════════════════════
@@ -1873,8 +1834,6 @@ def export_intakes_xlsx(
     from openpyxl.utils import get_column_letter
     from app.models.prazo_inicial import PrazoInicialIntake
     from app.models.prazo_inicial_pedido import PrazoInicialPedido
-    from app.models.legal_one import LegalOneOffice
-    from app.services.publication_search_service import uf_from_cnj
     from datetime import datetime
 
     q = db.query(PrazoInicialIntake)
@@ -1888,20 +1847,6 @@ def export_intakes_xlsx(
         q = q.filter(PrazoInicialIntake.received_at < date_to + "T99")
 
     intakes = q.order_by(PrazoInicialIntake.received_at.desc()).all()
-
-    # Pré-carrega path dos escritórios pra mostrar a hierarquia completa
-    # (mesmo padrão das outras telas — o `name` é só a folha).
-    office_external_ids = {
-        i.office_id for i in intakes if i.office_id is not None
-    }
-    office_paths: dict[int, str] = {}
-    if office_external_ids:
-        offices = (
-            db.query(LegalOneOffice)
-            .filter(LegalOneOffice.external_id.in_(office_external_ids))
-            .all()
-        )
-        office_paths = {o.external_id: (o.path or o.name) for o in offices}
 
     wb = Workbook()
     header_font = Font(bold=True, color="FFFFFF")
@@ -1924,8 +1869,8 @@ def export_intakes_xlsx(
     ws = wb.active
     ws.title = "Resumo"
     resumo_cols = [
-        "Intake ID", "CNJ", "UF", "Status", "Natureza", "Produto",
-        "Escritório responsável", "Lawsuit ID",
+        "Intake ID", "CNJ", "Status", "Natureza", "Produto",
+        "Escritório ID", "Lawsuit ID",
         "Prob. Êxito Global",
         "Valor Total Pedido", "Valor Total Estimado",
         "Aprovisionamento Sugerido",
@@ -1935,37 +1880,28 @@ def export_intakes_xlsx(
     ]
     _write_header(ws, resumo_cols)
     for i, intake in enumerate(intakes, start=2):
-        office_label = (
-            office_paths.get(intake.office_id, str(intake.office_id))
-            if intake.office_id is not None
-            else ""
-        )
         ws.cell(row=i, column=1, value=intake.id)
         ws.cell(row=i, column=2, value=intake.cnj_number)
-        ws.cell(row=i, column=3, value=uf_from_cnj(intake.cnj_number) or "")
-        ws.cell(row=i, column=4, value=intake.status)
-        ws.cell(row=i, column=5, value=intake.natureza_processo)
-        ws.cell(row=i, column=6, value=intake.produto)
-        ws.cell(row=i, column=7, value=office_label)
-        ws.cell(row=i, column=8, value=intake.lawsuit_id)
-        ws.cell(row=i, column=9, value=intake.probabilidade_exito_global)
-        ws.cell(row=i, column=10, value=float(intake.valor_total_pedido) if intake.valor_total_pedido is not None else None)
-        ws.cell(row=i, column=11, value=float(intake.valor_total_estimado) if intake.valor_total_estimado is not None else None)
-        ws.cell(row=i, column=12, value=float(intake.aprovisionamento_sugerido) if intake.aprovisionamento_sugerido is not None else None)
-        ws.cell(row=i, column=13, value=intake.analise_estrategica)
-        ws.cell(row=i, column=14, value=intake.agravo_processo_origem_cnj)
-        ws.cell(row=i, column=15, value=intake.received_at.isoformat() if intake.received_at else None)
-        ws.cell(row=i, column=16, value=intake.updated_at.isoformat() if intake.updated_at else None)
+        ws.cell(row=i, column=3, value=intake.status)
+        ws.cell(row=i, column=4, value=intake.natureza_processo)
+        ws.cell(row=i, column=5, value=intake.produto)
+        ws.cell(row=i, column=6, value=intake.office_id)
+        ws.cell(row=i, column=7, value=intake.lawsuit_id)
+        ws.cell(row=i, column=8, value=intake.probabilidade_exito_global)
+        ws.cell(row=i, column=9, value=float(intake.valor_total_pedido) if intake.valor_total_pedido is not None else None)
+        ws.cell(row=i, column=10, value=float(intake.valor_total_estimado) if intake.valor_total_estimado is not None else None)
+        ws.cell(row=i, column=11, value=float(intake.aprovisionamento_sugerido) if intake.aprovisionamento_sugerido is not None else None)
+        ws.cell(row=i, column=12, value=intake.analise_estrategica)
+        ws.cell(row=i, column=13, value=intake.agravo_processo_origem_cnj)
+        ws.cell(row=i, column=14, value=intake.received_at.isoformat() if intake.received_at else None)
+        ws.cell(row=i, column=15, value=intake.updated_at.isoformat() if intake.updated_at else None)
     _autofit(ws, resumo_cols)
-    # Larguras específicas: análise estratégica ocupa mais espaço.
-    ws.column_dimensions[get_column_letter(7)].width = 36   # escritório (path)
-    ws.column_dimensions[get_column_letter(13)].width = 60  # análise estratégica
+    ws.column_dimensions[get_column_letter(12)].width = 60  # análise estratégica
 
     # ── Aba 2: Sugestões (1 linha por sugestão) ──
     ws2 = wb.create_sheet(title="Sugestões")
     sug_cols = [
-        "Sugestão ID", "Intake ID", "CNJ", "UF", "Escritório responsável",
-        "Tipo Prazo", "Subtipo",
+        "Sugestão ID", "Intake ID", "CNJ", "Tipo Prazo", "Subtipo",
         "Data Base", "Prazo Dias", "Prazo Tipo",
         "Data Final Calculada",
         "Prazo Fatal Data", "Prazo Fatal Fundamentação",
@@ -1976,36 +1912,27 @@ def export_intakes_xlsx(
     _write_header(ws2, sug_cols)
     row = 2
     for intake in intakes:
-        intake_uf = uf_from_cnj(intake.cnj_number) or ""
-        intake_office = (
-            office_paths.get(intake.office_id, str(intake.office_id))
-            if intake.office_id is not None
-            else ""
-        )
         for s in intake.sugestoes:
             ws2.cell(row=row, column=1, value=s.id)
             ws2.cell(row=row, column=2, value=intake.id)
             ws2.cell(row=row, column=3, value=intake.cnj_number)
-            ws2.cell(row=row, column=4, value=intake_uf)
-            ws2.cell(row=row, column=5, value=intake_office)
-            ws2.cell(row=row, column=6, value=s.tipo_prazo)
-            ws2.cell(row=row, column=7, value=s.subtipo)
-            ws2.cell(row=row, column=8, value=s.data_base.isoformat() if s.data_base else None)
-            ws2.cell(row=row, column=9, value=s.prazo_dias)
-            ws2.cell(row=row, column=10, value=s.prazo_tipo)
-            ws2.cell(row=row, column=11, value=s.data_final_calculada.isoformat() if s.data_final_calculada else None)
-            ws2.cell(row=row, column=12, value=s.prazo_fatal_data.isoformat() if s.prazo_fatal_data else None)
-            ws2.cell(row=row, column=13, value=s.prazo_fatal_fundamentacao)
-            ws2.cell(row=row, column=14, value=s.prazo_base_decisao)
-            ws2.cell(row=row, column=15, value=s.audiencia_data.isoformat() if s.audiencia_data else None)
-            ws2.cell(row=row, column=16, value=s.audiencia_hora.isoformat() if s.audiencia_hora else None)
-            ws2.cell(row=row, column=17, value=s.audiencia_link)
-            ws2.cell(row=row, column=18, value=s.confianca)
-            ws2.cell(row=row, column=19, value=s.justificativa)
-            ws2.cell(row=row, column=20, value=s.review_status)
+            ws2.cell(row=row, column=4, value=s.tipo_prazo)
+            ws2.cell(row=row, column=5, value=s.subtipo)
+            ws2.cell(row=row, column=6, value=s.data_base.isoformat() if s.data_base else None)
+            ws2.cell(row=row, column=7, value=s.prazo_dias)
+            ws2.cell(row=row, column=8, value=s.prazo_tipo)
+            ws2.cell(row=row, column=9, value=s.data_final_calculada.isoformat() if s.data_final_calculada else None)
+            ws2.cell(row=row, column=10, value=s.prazo_fatal_data.isoformat() if s.prazo_fatal_data else None)
+            ws2.cell(row=row, column=11, value=s.prazo_fatal_fundamentacao)
+            ws2.cell(row=row, column=12, value=s.prazo_base_decisao)
+            ws2.cell(row=row, column=13, value=s.audiencia_data.isoformat() if s.audiencia_data else None)
+            ws2.cell(row=row, column=14, value=s.audiencia_hora.isoformat() if s.audiencia_hora else None)
+            ws2.cell(row=row, column=15, value=s.audiencia_link)
+            ws2.cell(row=row, column=16, value=s.confianca)
+            ws2.cell(row=row, column=17, value=s.justificativa)
+            ws2.cell(row=row, column=18, value=s.review_status)
             row += 1
     _autofit(ws2, sug_cols)
-    ws2.column_dimensions[get_column_letter(5)].width = 36  # escritório
 
     # ── Aba 3: Pedidos (1 linha por pedido) ──
     ws3 = wb.create_sheet(title="Pedidos")
