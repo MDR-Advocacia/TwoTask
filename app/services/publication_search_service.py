@@ -1301,10 +1301,18 @@ class PublicationSearchService:
                 # Sem horario: usa 23:59:59 BRT como fallback (fim do dia)
                 due_iso = _brt_to_utc_z(rec.audiencia_data, "23:59:59")
         else:
-            # Sem audiencia: usa prazo padrao
+            # Sem audiencia: usa prazo padrao em DIAS ÚTEIS (CPC).
+            # `due_business_days` no template é contado em dias úteis —
+            # sábados, domingos e feriados nacionais não incrementam o
+            # contador. Antes usávamos `timedelta(days=N)` (dias corridos),
+            # o que dava vencimentos no fim de semana e era processualmente
+            # incorreto.
+            from app.services.prazos_iniciais.prazo_calculator import (
+                add_business_days,
+            )
             due_ref = getattr(tmpl, "due_date_reference", "publication") or "publication"
             due_base = date_cls.today() if due_ref == "today" else base_date
-            due_date = due_base + timedelta(days=tmpl.due_business_days or 5)
+            due_date = add_business_days(due_base, tmpl.due_business_days or 5)
             due_iso = _brt_to_utc_z(due_date.isoformat(), "23:59:59")
 
         publish_iso = _brt_to_utc_z(base_date.isoformat(), "00:00:00")
