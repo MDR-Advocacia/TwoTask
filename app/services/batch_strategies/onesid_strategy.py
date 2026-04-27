@@ -32,6 +32,12 @@ class OnesidStrategy(BaseStrategy):
         except (ValueError, TypeError):
             raise ValueError(f"Data inválida (esperado DD/MM/YYYY): {date_str}")
 
+    def _same_day_deadline_iso(self) -> str:
+        local_tz = ZoneInfo("America/Sao_Paulo")
+        current_date = datetime.now(local_tz).date()
+        aware_date = datetime.combine(current_date, time(23, 59, 59)).replace(tzinfo=local_tz)
+        return aware_date.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
     async def process_batch(self, request: BatchTaskCreationRequest, execution_log: BatchExecution) -> dict:
         """
         Recebe o lote, salva os dados crus no banco e dispara o processamento item a item.
@@ -86,15 +92,16 @@ class OnesidStrategy(BaseStrategy):
         try:
             # --- 1. Extração e Validação ---
             cnj = item_payload.get("numero_processo")
-            prazo = item_payload.get("prazo") 
-            descricao = item_payload.get("descricao", "")
-            id_responsavel_onesid = item_payload.get("id_responsavel") # Opcional
+            descricao = item_payload.get("observacao") or item_payload.get("descricao") or ""
+            id_responsavel_onesid = item_payload.get("id_responsavel")
 
-            if not cnj or not prazo:
-                raise ValueError("Campos obrigatórios 'numero_processo' e 'prazo' estão faltando.")
+            if not cnj:
+                raise ValueError("Campo obrigatorio 'numero_processo' esta faltando.")
+            if id_responsavel_onesid in (None, ""):
+                raise ValueError("Campo obrigatorio 'id_responsavel' esta faltando.")
 
             # --- 2. Preparação de Dados ---
-            deadline_iso = self._parse_onesid_date(prazo)
+            deadline_iso = self._same_day_deadline_iso()
             publish_date = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
             # --- 3. Busca no Legal One ---
@@ -109,7 +116,7 @@ class OnesidStrategy(BaseStrategy):
 
             # --- 4. Montagem do Payload ---
             task_payload = {
-                "description": f"ONESID: {descricao}",
+                "description": f"ONESID: {descricao}" if descricao else "ONESID",
                 "priority": "Normal",
                 "startDateTime": deadline_iso,
                 "endDateTime": deadline_iso,
@@ -122,14 +129,12 @@ class OnesidStrategy(BaseStrategy):
                 "participants": []
             }
 
-            # Adiciona responsável se vier no payload
-            if id_responsavel_onesid:
-                task_payload["participants"].append({
-                    "contact": {"id": id_responsavel_onesid},
-                    "isResponsible": True,
-                    "isExecuter": True,
-                    "isRequester": True
-                })
+            task_payload["participants"].append({
+                "contact": {"id": id_responsavel_onesid},
+                "isResponsible": True,
+                "isExecuter": True,
+                "isRequester": True
+            })
 
             # --- 5. Criação da Tarefa ---
             created_task = self.client.create_task(task_payload)
