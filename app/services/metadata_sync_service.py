@@ -175,43 +175,101 @@ class MetadataSyncService:
                 )
                 return False
 
-            subtypes_map: dict[int, list[dict]] = {}
-            for sub_data in all_subtypes_data:
-                parent_id = sub_data.get("parentTypeId")
-                if not parent_id:
-                    continue
-                subtypes_map.setdefault(parent_id, []).append(sub_data)
-
             with self.db.begin_nested():
-                self.logger.info("Limpando tabelas antigas de tipos e subtipos...")
-                self.db.query(LegalOneTaskSubType).delete()
-                self.db.query(LegalOneTaskType).delete()
+                self.logger.info("Atualizando tipos e subtipos sem remover registros referenciados...")
 
-                parent_objects: list[LegalOneTaskType] = []
+                existing_types = {
+                    task_type.external_id: task_type
+                    for task_type in self.db.query(LegalOneTaskType).all()
+                }
+                existing_subtypes = {
+                    subtype.external_id: subtype
+                    for subtype in self.db.query(LegalOneTaskSubType).all()
+                }
+
+                active_parent_ids: set[int] = set()
+                created_parent_count = 0
+                updated_parent_count = 0
+
                 for parent_data in parent_types_data:
-                    parent_obj = LegalOneTaskType(
-                        external_id=parent_data["id"],
-                        name=parent_data["name"],
-                        is_active=True,
-                    )
+                    external_id = parent_data.get("id")
+                    name = parent_data.get("name")
+                    if external_id is None or not name:
+                        continue
 
-                    for child_data in subtypes_map.get(parent_data["id"], []):
-                        parent_obj.subtypes.append(
-                            LegalOneTaskSubType(
-                                external_id=child_data["id"],
-                                name=child_data["name"],
-                                parent_type_external_id=child_data["parentTypeId"],
-                                is_active=True,
-                            )
+                    active_parent_ids.add(external_id)
+                    task_type = existing_types.get(external_id)
+                    if task_type:
+                        task_type.name = name
+                        task_type.is_active = True
+                        updated_parent_count += 1
+                    else:
+                        task_type = LegalOneTaskType(
+                            external_id=external_id,
+                            name=name,
+                            is_active=True,
                         )
+                        self.db.add(task_type)
+                        existing_types[external_id] = task_type
+                        created_parent_count += 1
 
-                    parent_objects.append(parent_obj)
+                for external_id, task_type in existing_types.items():
+                    if external_id not in active_parent_ids:
+                        task_type.is_active = False
+
+                self.db.flush()
+
+                active_subtype_ids: set[int] = set()
+                created_subtype_count = 0
+                updated_subtype_count = 0
+                skipped_subtype_count = 0
+
+                for child_data in all_subtypes_data:
+                    external_id = child_data.get("id")
+                    name = child_data.get("name")
+                    parent_id = child_data.get("parentTypeId")
+                    if external_id is None or not name or parent_id is None:
+                        skipped_subtype_count += 1
+                        continue
+                    if parent_id not in active_parent_ids:
+                        skipped_subtype_count += 1
+                        continue
+
+                    active_subtype_ids.add(external_id)
+                    subtype = existing_subtypes.get(external_id)
+                    if subtype:
+                        subtype.name = name
+                        subtype.parent_type_external_id = parent_id
+                        subtype.is_active = True
+                        updated_subtype_count += 1
+                    else:
+                        subtype = LegalOneTaskSubType(
+                            external_id=external_id,
+                            name=name,
+                            parent_type_external_id=parent_id,
+                            is_active=True,
+                        )
+                        self.db.add(subtype)
+                        existing_subtypes[external_id] = subtype
+                        created_subtype_count += 1
+
+                for external_id, subtype in existing_subtypes.items():
+                    if external_id not in active_subtype_ids:
+                        subtype.is_active = False
 
                 self.logger.info(
-                    "Adicionando %s tipos de tarefa pai com seus subtipos a sessao.",
-                    len(parent_objects),
+                    "Tipos sincronizados: %s criados, %s atualizados, %s inativados.",
+                    created_parent_count,
+                    updated_parent_count,
+                    len(existing_types) - len(active_parent_ids),
                 )
-                self.db.add_all(parent_objects)
+                self.logger.info(
+                    "Subtipos sincronizados: %s criados, %s atualizados, %s inativados, %s ignorados.",
+                    created_subtype_count,
+                    updated_subtype_count,
+                    len(existing_subtypes) - len(active_subtype_ids),
+                    skipped_subtype_count,
+                )
 
             self.db.commit()
             self.logger.info("Sincronizacao de tipos e subtipos concluida com sucesso.")

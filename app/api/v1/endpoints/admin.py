@@ -210,7 +210,9 @@ def get_cache_status(db: Session = Depends(get_db)):
     users_count = db.query(sa_func.count(LegalOneUser.id)).filter(
         LegalOneUser.is_active == True  # noqa: E712
     ).scalar() or 0
-    task_types_count = db.query(sa_func.count(LegalOneTaskType.id)).scalar() or 0
+    task_types_count = db.query(sa_func.count(LegalOneTaskType.id)).filter(
+        LegalOneTaskType.is_active == True  # noqa: E712
+    ).scalar() or 0
 
     # ── Índices por escritório ──
     sync_states = db.query(OfficeLawsuitSync).all()
@@ -289,6 +291,8 @@ def get_task_types_grouped(db: Session = Depends(get_db)):
     task_types = db.query(LegalOneTaskType).options(
         joinedload(LegalOneTaskType.subtypes),
         joinedload(LegalOneTaskType.squads),
+    ).filter(
+        LegalOneTaskType.is_active == True  # noqa: E712
     ).order_by(LegalOneTaskType.name).all()
     custom_group_names = {group.id: group.name for group in db.query(TaskParentGroup).all()}
 
@@ -302,6 +306,7 @@ def get_task_types_grouped(db: Session = Depends(get_db)):
                 squad_ids=squad_ids,
             )
             for sub_type in sorted(task_type.subtypes, key=lambda item: item.name)
+            if sub_type.is_active
         ]
 
         response_data.append(
@@ -347,7 +352,10 @@ def associate_task_types(payload: TaskTypeAssociationPayload, db: Session = Depe
     if len(squads) != len(set(payload.squad_ids)):
         raise HTTPException(status_code=404, detail="Um ou mais squads nao foram encontrados.")
 
-    task_types = db.query(LegalOneTaskType).filter(LegalOneTaskType.id.in_(payload.task_type_ids)).all()
+    task_types = db.query(LegalOneTaskType).filter(
+        LegalOneTaskType.id.in_(payload.task_type_ids),
+        LegalOneTaskType.is_active == True,  # noqa: E712
+    ).all()
     if len(task_types) != len(set(payload.task_type_ids)):
         raise HTTPException(status_code=404, detail="Um ou mais tipos de tarefa nao foram encontrados.")
 
