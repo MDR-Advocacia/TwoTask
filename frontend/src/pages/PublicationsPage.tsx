@@ -274,6 +274,11 @@ interface Classification {
   audiencia_data?: string | null;
   audiencia_hora?: string | null;
   audiencia_link?: string | null;
+  // Prazo fatal — identificado pelo classificador a partir do texto da
+  // publicação (CPC). Null quando a publicação NÃO abre prazo.
+  prazo_dias?: number | null;
+  prazo_tipo?: "util" | "corrido" | null;
+  prazo_fundamentacao?: string | null;
 }
 
 interface PublicationRecord {
@@ -3444,6 +3449,29 @@ const PublicationsPage = () => {
                     </a>
                   </div>
                 )}
+                {/* Prazo fatal — vem da classificação primária (Classification.prazo_*).
+                    Mostramos quando o classificador identificou que a publicação
+                    abre prazo processual. Tipo "util" indica contagem em dias
+                    úteis (CPC art. 219); "corrido" indica exceção legal. */}
+                {(() => {
+                  const cls = selectedRecord.classifications?.[0];
+                  if (!cls?.prazo_dias) return null;
+                  const tipoLabel = cls.prazo_tipo === "corrido" ? "corridos" : "úteis";
+                  return (
+                    <div className="col-span-2">
+                      <span className="font-medium text-muted-foreground">Prazo fatal: </span>
+                      <span className="inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-800">
+                        <Clock className="h-3 w-3" />
+                        {cls.prazo_dias} dia{cls.prazo_dias === 1 ? "" : "s"} {tipoLabel}
+                      </span>
+                      {cls.prazo_fundamentacao && (
+                        <p className="mt-1 text-xs text-muted-foreground italic">
+                          {cls.prazo_fundamentacao}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
                 {selectedRecord.legal_one_update_id && (
                   <div className="col-span-2">
                     <span className="font-medium text-muted-foreground">Publicação no Legal One: </span>
@@ -3474,13 +3502,49 @@ const PublicationsPage = () => {
                   <p className="mt-1 whitespace-pre-wrap text-[15px] leading-relaxed">{selectedRecord.notes}</p>
                 </div>
               )}
-              <div className="flex gap-2 pt-2">
+              <div className="flex flex-wrap gap-2 pt-2">
                 {selectedRecord.status !== "AGENDADO" && selectedRecord.status !== "IGNORADO" && (
-                  <Button size="sm" variant="outline"
-                    onClick={() => { handleIgnoreRecord(selectedRecord.id); setDetailOpen(false); }}>
-                    <EyeOff className="mr-1 h-3.5 w-3.5" />
-                    Ignorar publicação
-                  </Button>
+                  <>
+                    {/* Confirmar agendamento — abre o modal de scheduling
+                        com o grupo correspondente ao record. Procura entre
+                        os grupos da página atual: por lawsuit_id se houver,
+                        ou pelo próprio record.id (grupos no-lawsuit). */}
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        const groups = grouped?.groups || [];
+                        const group = groups.find((g) => {
+                          if (selectedRecord.linked_lawsuit_id != null) {
+                            return g.lawsuit_id === selectedRecord.linked_lawsuit_id;
+                          }
+                          // Grupo no-lawsuit: contém só esse record.
+                          return (
+                            g.lawsuit_id == null &&
+                            g.records.some((r) => r.id === selectedRecord.id)
+                          );
+                        });
+                        if (!group) {
+                          toast({
+                            title: "Não foi possível abrir o agendamento",
+                            description:
+                              "O grupo desta publicação não está na página atual. Volte pra listagem e tente de lá.",
+                            variant: "destructive",
+                          });
+                          return;
+                        }
+                        setDetailOpen(false);
+                        openScheduleDialog(group);
+                      }}
+                    >
+                      <Check className="mr-1 h-3.5 w-3.5" />
+                      Confirmar agendamento
+                    </Button>
+                    <Button size="sm" variant="outline"
+                      onClick={() => { handleIgnoreRecord(selectedRecord.id); setDetailOpen(false); }}>
+                      <EyeOff className="mr-1 h-3.5 w-3.5" />
+                      Ignorar publicação
+                    </Button>
+                  </>
                 )}
               </div>
             </div>

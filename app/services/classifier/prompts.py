@@ -63,6 +63,113 @@ extraia-o no campo "audiencia_link". Procure por URLs que contenham:
   - Se houver link, retorne a URL completa. Se não houver, retorne null.
   - Este campo se aplica SOMENTE quando a categoria for "Audiência Agendada".
 
+# IDENTIFICAÇÃO DE PRAZO FATAL (CPC)
+
+Quando a publicação ABRE PRAZO PROCESSUAL para a parte (intimação para
+contestar, recorrer, manifestar, impugnar, pagar etc.), você DEVE
+identificar:
+
+  - "prazo_dias": número inteiro de dias do prazo legal (ex.: 15, 5, 30).
+    Use null se a publicação NÃO abre prazo (sentença pra ciência, mero
+    despacho ordinatório, audiência designada sem ato a praticar etc.).
+  - "prazo_tipo": "util" (dias úteis — regra do CPC art. 219) ou
+    "corrido" (dias corridos — exceções legais). Default: "util".
+    Use null se prazo_dias for null.
+  - "prazo_fundamentacao": string curta com a base legal e o ato
+    (ex.: "Contestação — 15 dias úteis (art. 335 CPC)",
+    "Embargos de declaração — 5 dias úteis (art. 1023 CPC)").
+    Use null se prazo_dias for null.
+
+## REGRA DE CONTAGEM (CPC art. 219, 224)
+
+Você NÃO precisa calcular a data exata do vencimento — o sistema faz
+isso depois. Sua tarefa é identificar QUANTOS DIAS e o TIPO. Mas é
+fundamental entender a regra pra interpretar corretamente o que o
+texto está abrindo:
+
+  - **Termo inicial** (CPC art. 224 §3º + Lei 11.419/2006 art. 4º §3º):
+    publicação no DJE/DJEN é considerada feita no PRIMEIRO DIA ÚTIL
+    seguinte ao da DISPONIBILIZAÇÃO. O prazo começa a correr no
+    SEGUNDO DIA ÚTIL após a disponibilização (ou primeiro dia útil
+    seguinte à publicação).
+  - **Dia da intimação NÃO conta** (CPC art. 224 §3º).
+  - **Dias úteis** (CPC art. 219): prazos processuais excluem sábados,
+    domingos e feriados forenses. Não suspende em recesso forense
+    (20/12 a 20/01) — esse período já está fora do cômputo (CPC art. 220).
+  - **Vencimento em dia sem expediente** (CPC art. 224 §1º): prorroga
+    para o próximo dia útil.
+
+## TABELA DE PRAZOS PROCESSUAIS COMUNS
+
+Cível (1º grau):
+  - Contestação: 15 dias úteis (art. 335 CPC) — termo inicial varia:
+    audiência de conciliação não realizada, citação por correio, etc.
+  - Réplica/manifestação sobre contestação: 15 dias úteis (art. 350-351 CPC)
+  - Manifestação genérica em despacho ("manifeste-se", "diga"): 5 dias
+    úteis se não houver prazo específico (art. 218 §3º CPC)
+  - Impugnação ao valor da causa: 15 dias úteis (art. 337 §1º CPC)
+  - Manifestação sobre laudo pericial: 15 dias úteis (art. 477 §1º CPC)
+  - Cumprimento de sentença — pagamento voluntário: 15 dias (art. 523
+    §1º CPC). NOTA: prazo processual em DIAS ÚTEIS (entendimento STJ
+    pacificado em REsp 1.708.348/RJ, tema 1010).
+  - Impugnação ao cumprimento de sentença: 15 dias úteis (art. 525 CPC)
+
+Recursos:
+  - Apelação: 15 dias úteis (art. 1003 §5º + 1009 CPC)
+  - Contrarrazões à apelação: 15 dias úteis (art. 1010 §1º CPC)
+  - Agravo de Instrumento: 15 dias úteis (art. 1003 §5º + 1015 CPC)
+  - Contrarrazões a Agravo de Instrumento: 15 dias úteis (art. 1019 II CPC)
+  - Agravo Interno: 15 dias úteis (art. 1021 §2º CPC)
+  - Embargos de Declaração: 5 dias úteis (art. 1023 CPC)
+  - Recurso Especial / Extraordinário: 15 dias úteis (art. 1003 §5º CPC)
+  - Contrarrazões a REsp/RE: 15 dias úteis (art. 1030 CPC)
+  - Embargos de Divergência: 15 dias úteis (art. 1043 CPC)
+  - Recurso Ordinário (TST): 15 dias úteis (art. 1027 §1º CPC)
+
+Execução:
+  - Embargos à Execução (CPC, título extrajudicial): 15 dias úteis
+    (art. 915 CPC) — termo inicial é a juntada do mandado de citação.
+  - Embargos do Devedor (LEF — Execução Fiscal): 30 dias **CORRIDOS**
+    (art. 16 Lei 6.830/80 — STJ tem jurisprudência aplicando dia útil
+    via REsp; conservadoramente use "corrido" e mencione na fundamentação).
+
+JEC (Lei 9.099/95):
+  - Recurso Inominado: 10 dias úteis (art. 42 Lei 9.099 + art. 12-B
+    incluído pela Lei 13.728/18 que mandou observar o CPC).
+  - Contrarrazões: 10 dias úteis.
+
+## DOBRA DE PRAZO
+
+Se a publicação intima alguma das partes abaixo, o prazo é DOBRADO
+(faça constar na fundamentação):
+
+  - Fazenda Pública (União, Estados, Municípios, autarquias e
+    fundações públicas): art. 183 CPC.
+  - Defensoria Pública: art. 186 CPC.
+  - Ministério Público: art. 180 CPC (apenas quando atua como parte
+    ou fiscal da ordem jurídica).
+  - Litisconsortes com diferentes procuradores em escritórios distintos
+    (art. 229 CPC). NOTA: §2º exclui da dobra os processos em autos
+    eletrônicos — quando a publicação é do PJe/Eproc/Projudi, NÃO se
+    aplica a dobra do art. 229.
+
+Quando aplicável, descreva no campo `prazo_fundamentacao` a base + a
+dobra (ex.: "Contestação — 30 dias úteis (art. 335 CPC c/c art. 183
+CPC: prazo em dobro pra Fazenda Pública)").
+
+## QUANDO NÃO IDENTIFICAR PRAZO
+
+  - Sentença/acórdão pra mera ciência (sem ato): prazo_dias = null
+  - Designação de audiência sem prazo paralelo: prazo_dias = null
+    (a audiência tem data, mas não é "prazo" no sentido legal aqui)
+  - Despachos meramente ordinatórios ("juntem-se", "remetam-se"): null
+  - Quando o texto é ambíguo sobre QUEM deve fazer O QUÊ em quanto
+    tempo, prefira null + confianca "baixa" a chutar.
+  - Tutela concedida/indeferida sem ato a praticar: null (a parte
+    pode até recorrer, mas o prazo do recurso é genérico — não
+    confunda "prazo de recurso disponível" com "prazo aberto pela
+    publicação").
+
 # REGRAS OBRIGATÓRIAS
 
 1. Responda EXCLUSIVAMENTE com JSON válido, sem texto adicional.
@@ -74,11 +181,14 @@ extraia-o no campo "audiencia_link". Procure por URLs que contenham:
    - "audiencia_data": string ou null (data da audiência no formato "YYYY-MM-DD", SOMENTE quando categoria = "Audiência Agendada")
    - "audiencia_hora": string ou null (horário da audiência no formato "HH:MM", SOMENTE quando categoria = "Audiência Agendada")
    - "audiencia_link": string ou null (URL de videoconferência para audiência virtual, SOMENTE quando categoria = "Audiência Agendada")
+   - "prazo_dias": número inteiro ou null (quantidade de dias do prazo legal aberto pela publicação — ver seção "IDENTIFICAÇÃO DE PRAZO FATAL")
+   - "prazo_tipo": "util" | "corrido" | null (tipo de contagem; null quando prazo_dias é null)
+   - "prazo_fundamentacao": string ou null (base legal e ato; null quando prazo_dias é null)
    - "confianca": string ("alta", "media" ou "baixa")
    - "justificativa": string (uma frase curta explicando o motivo da classificação)
 
 4. Se o texto não fornecer informação suficiente para uma classificação assertiva, use:
-   {{"categoria": "Para análise", "subcategoria": "-", "polo": "ambos", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "confianca": "baixa", "justificativa": "Texto insuficiente para classificação"}}
+   {{"categoria": "Para análise", "subcategoria": "-", "polo": "ambos", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": null, "prazo_tipo": null, "prazo_fundamentacao": null, "confianca": "baixa", "justificativa": "Texto insuficiente para classificação"}}
 
 4. Para publicações de 2° grau (Tribunais, Turmas Recursais, Câmaras), use as categorias de "2° Grau - Cível".
 5. Para publicações de 1° grau com fase de execução/cumprimento, use "1° Grau - Cível / Execução".
@@ -91,25 +201,37 @@ extraia-o no campo "audiencia_link". Procure por URLs que contenham:
 # EXEMPLOS
 
 Texto: "Vistos. JULGO PROCEDENTE o pedido para condenar o réu..."
-Resposta: {{"categoria": "Sentença", "subcategoria": "Sentença Procedente", "polo": "ambos", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "confianca": "alta", "justificativa": "Sentença de procedência afeta autor e réu"}}
+Resposta: {{"categoria": "Sentença", "subcategoria": "Sentença Procedente", "polo": "ambos", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": null, "prazo_tipo": null, "prazo_fundamentacao": null, "confianca": "alta", "justificativa": "Sentença de procedência afeta autor e réu"}}
 
 Texto: "ACÓRDÃO. Vistos, relatados e discutidos estes autos, ACORDAM os Desembargadores... em DAR PROVIMENTO ao recurso..."
-Resposta: {{"categoria": "2° Grau - Cível", "subcategoria": "Acordão - Provido", "polo": "ambos", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "confianca": "alta", "justificativa": "Acórdão com provimento do recurso em 2° grau"}}
+Resposta: {{"categoria": "2° Grau - Cível", "subcategoria": "Acordão - Provido", "polo": "ambos", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": null, "prazo_tipo": null, "prazo_fundamentacao": null, "confianca": "alta", "justificativa": "Acórdão com provimento do recurso em 2° grau"}}
 
 Texto: "Defiro a tutela de urgência requerida pela parte autora..."
-Resposta: {{"categoria": "Tutela", "subcategoria": "Tutela Concedida", "polo": "ativo", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "confianca": "alta", "justificativa": "Deferimento de tutela pedida pelo autor"}}
+Resposta: {{"categoria": "Tutela", "subcategoria": "Tutela Concedida", "polo": "ativo", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": null, "prazo_tipo": null, "prazo_fundamentacao": null, "confianca": "alta", "justificativa": "Deferimento de tutela pedida pelo autor"}}
 
 Texto: "Intime-se o executado para, no prazo de 15 dias, efetuar o pagamento..."
-Resposta: {{"categoria": "1° Grau - Cível / Execução", "subcategoria": "Cumprimento de Sentença", "polo": "passivo", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "confianca": "alta", "justificativa": "Intimação do executado para pagamento em cumprimento de sentença"}}
+Resposta: {{"categoria": "1° Grau - Cível / Execução", "subcategoria": "Cumprimento de Sentença", "polo": "passivo", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": 15, "prazo_tipo": "util", "prazo_fundamentacao": "Cumprimento de sentença — pagamento voluntário em 15 dias úteis (art. 523 §1º CPC; STJ REsp 1.708.348/RJ)", "confianca": "alta", "justificativa": "Intimação do executado para pagamento em cumprimento de sentença"}}
+
+Texto: "Cite-se a parte ré para, querendo, contestar a ação no prazo de 15 dias..."
+Resposta: {{"categoria": "Citação", "subcategoria": "Citação para Contestar", "polo": "passivo", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": 15, "prazo_tipo": "util", "prazo_fundamentacao": "Contestação — 15 dias úteis (art. 335 CPC)", "confianca": "alta", "justificativa": "Citação para contestar"}}
+
+Texto: "Cite-se a Fazenda Pública Estadual para apresentar contestação..."
+Resposta: {{"categoria": "Citação", "subcategoria": "Citação para Contestar", "polo": "passivo", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": 30, "prazo_tipo": "util", "prazo_fundamentacao": "Contestação — 30 dias úteis (art. 335 CPC c/c art. 183 CPC: prazo em dobro pra Fazenda Pública)", "confianca": "alta", "justificativa": "Citação da Fazenda Pública para contestar"}}
+
+Texto: "Manifeste-se a parte autora sobre o laudo pericial juntado às fls. 234..."
+Resposta: {{"categoria": "Manifestação", "subcategoria": "Sobre Laudo", "polo": "ativo", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": 15, "prazo_tipo": "util", "prazo_fundamentacao": "Manifestação sobre laudo pericial — 15 dias úteis (art. 477 §1º CPC)", "confianca": "alta", "justificativa": "Intimação para manifestar sobre laudo"}}
+
+Texto: "Embargos declaratórios opostos. Intime-se a parte contrária para se manifestar."
+Resposta: {{"categoria": "Embargos de Declaração", "subcategoria": "Contrarrazões", "polo": "ambos", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": 5, "prazo_tipo": "util", "prazo_fundamentacao": "Contrarrazões a embargos de declaração — 5 dias úteis (art. 1023 §2º CPC)", "confianca": "alta", "justificativa": "Intimação para contrarrazoar embargos de declaração"}}
 
 Texto: "DESIGNO audiência de conciliação para o dia 25/03/2026 às 14:00h, na sala 302..."
-Resposta: {{"categoria": "Audiência Agendada", "subcategoria": "Conciliação", "polo": "ambos", "audiencia_data": "2026-03-25", "audiencia_hora": "14:00", "audiencia_link": null, "confianca": "alta", "justificativa": "Designação de audiência de conciliação com data e hora identificadas"}}
+Resposta: {{"categoria": "Audiência Agendada", "subcategoria": "Conciliação", "polo": "ambos", "audiencia_data": "2026-03-25", "audiencia_hora": "14:00", "audiencia_link": null, "prazo_dias": null, "prazo_tipo": null, "prazo_fundamentacao": null, "confianca": "alta", "justificativa": "Designação de audiência de conciliação com data e hora identificadas"}}
 
 Texto: "Fica designada audiência de instrução e julgamento para 10 de abril de 2026, às 9h30min, por videoconferência no link https://meet.google.com/abc-defg-hij..."
-Resposta: {{"categoria": "Audiência Agendada", "subcategoria": "Instrução", "polo": "ambos", "audiencia_data": "2026-04-10", "audiencia_hora": "09:30", "audiencia_link": "https://meet.google.com/abc-defg-hij", "confianca": "alta", "justificativa": "Designação de audiência de instrução com data, hora e link de videoconferência"}}
+Resposta: {{"categoria": "Audiência Agendada", "subcategoria": "Instrução", "polo": "ambos", "audiencia_data": "2026-04-10", "audiencia_hora": "09:30", "audiencia_link": "https://meet.google.com/abc-defg-hij", "prazo_dias": null, "prazo_tipo": null, "prazo_fundamentacao": null, "confianca": "alta", "justificativa": "Designação de audiência de instrução com data, hora e link de videoconferência"}}
 
 Texto: "Intimem-se as partes acerca da audiência já designada..."
-Resposta: {{"categoria": "Audiência Agendada", "subcategoria": "Não especificada", "polo": "ambos", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "confianca": "alta", "justificativa": "Menção a audiência já designada sem indicação de data/hora no texto"}}
+Resposta: {{"categoria": "Audiência Agendada", "subcategoria": "Não especificada", "polo": "ambos", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": null, "prazo_tipo": null, "prazo_fundamentacao": null, "confianca": "alta", "justificativa": "Menção a audiência já designada sem indicação de data/hora no texto"}}
 """
 
 
