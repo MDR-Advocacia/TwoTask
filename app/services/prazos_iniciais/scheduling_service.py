@@ -356,6 +356,8 @@ class PrazosIniciaisSchedulingService:
         intake_id: int,
         confirmed_suggestions: Optional[list[ConfirmedSuggestionInput]],
         confirmed_by_email: str,
+        confirmed_by_user_id: Optional[int] = None,
+        confirmed_by_name: Optional[str] = None,
         enqueue_legacy_task_cancellation: bool = True,
         legacy_task_type_external_id: int = DEFAULT_LEGACY_TASK_TYPE_EXTERNAL_ID,
         legacy_task_subtype_external_id: int = DEFAULT_LEGACY_TASK_SUBTYPE_EXTERNAL_ID,
@@ -462,42 +464,15 @@ class PrazosIniciaisSchedulingService:
                     f"Falha ao criar tarefa no Legal One (intake {intake_id}): {exc}"
                 ) from exc
 
-        # ── FASE 2.5 — upload do PDF da habilitação no GED ──
-        # Só executa se AINDA não foi feito (idempotência via ged_document_id
-        # no próprio intake). Atomic: se falhar, intake vai pra
-        # ERRO_AGENDAMENTO e NÃO enfileira cancelamento da legada. As
-        # tasks L1 criadas na FASE 2 ficam (são idempotentes por
-        # sugestao.created_task_id no retry).
-        if not intake.ged_document_id:
-            try:
-                document_id = self._upload_habilitacao_to_ged(intake)
-                intake.ged_document_id = int(document_id)
-                intake.ged_uploaded_at = self._utcnow()
-                # FASE 4 — cleanup imediato do PDF local. Cron defensivo
-                # pega caso esta chamada falhe (ged OK mas file delete falha).
-                self._cleanup_local_pdf(intake)
-                self.db.commit()  # Persiste ged_* + pdf_path zerado cedo
-            except LegalOneGedUploadError as exc:
-                self.db.rollback()
-                intake = self._load_intake(intake_id)
-                if intake is not None:
-                    intake.status = INTAKE_STATUS_SCHEDULE_ERROR
-                    intake.error_message = (
-                        f"GED upload falhou: {str(exc)[:500]}"
-                    )
-                    self.db.commit()
-                logger.exception(
-                    "prazos_iniciais.confirm_intake_scheduling: GED falhou "
-                    "(intake_id=%s). Tasks L1 ja criadas: %s. "
-                    "Operador precisa reclicar 'Confirmar' — etapa é idempotente.",
-                    intake_id, l1_created_ids,
-                )
-                raise RuntimeError(
-                    f"Falha no upload da habilitação no GED do Legal One: {exc}"
-                ) from exc
+        # ── FASE 2.5 — DESACOPLADO (Onda 3 #5) ──
+        # GED upload + cleanup do PDF local migrou pra
+        # `dispatch_treatment_web` (chamado manualmente da Tratamento Web ou
+        # automaticamente pelo worker periódico). Aqui só marcamos
+        # `dispatch_pending=True` no fim da FASE 3 — o disparo acontece
+        # depois, em transação separada.
 
         # ── FASE 3 — persiste review_status e promove intake ──
-        # Só chega aqui se a FASE 2 e FASE 2.5 completaram sem exceção.
+        # Só chega aqui se a FASE 2 completou sem exceção.
         confirmed_ids: list[int] = []
         created_task_ids: list[int] = []
         for sugestao, entry in selected:
@@ -514,28 +489,30 @@ class PrazosIniciaisSchedulingService:
 
         intake.status = INTAKE_STATUS_SCHEDULED
         intake.error_message = None
+        # Registra QUEM tratou finalisticamente o intake (pin011)
+        intake.treated_by_user_id = confirmed_by_user_id
+        intake.treated_by_email = confirmed_by_email
+        intake.treated_by_name = confirmed_by_name
+        intake.treated_at = now
 
-        queue_item = None
-        if enqueue_legacy_task_cancellation:
-            queue_item = self.queue_service.sync_item_from_intake(
-                intake,
-                commit=False,
-                legacy_task_type_external_id=legacy_task_type_external_id,
-                legacy_task_subtype_external_id=legacy_task_subtype_external_id,
-            )
+        # Onda 3 #5 — Disparo desacoplado: GED + enqueue cancel acontecem
+        # depois, via `dispatch_treatment_web`. Marca pendente aqui.
+        # O parâmetro `enqueue_legacy_task_cancellation` é mantido na
+        # assinatura por compat, mas vira no-op aqui (o disparo é sempre
+        # diferido). Se alguém setar False explicitamente, ainda assim
+        # marcamos pendente — o operador decide depois se aciona.
+        intake.dispatch_pending = True
+        intake.dispatched_at = None
+        intake.dispatch_error_message = None
 
         self.db.commit()
         self.db.refresh(intake)
-        if queue_item is not None:
-            self.db.refresh(queue_item)
 
         return {
             "intake": intake,
             "confirmed_suggestion_ids": confirmed_ids,
             "created_task_ids": created_task_ids,
-            "legacy_task_cancellation_item": (
-                self.queue_service._item_to_dict(queue_item) if queue_item else None
-            ),
+            "legacy_task_cancellation_item": None,  # diferido — Onda 3 #5
         }
 
     # ──────────────────────────────────────────────
@@ -567,6 +544,8 @@ class PrazosIniciaisSchedulingService:
         *,
         intake_id: int,
         confirmed_by_email: str,
+        confirmed_by_user_id: Optional[int] = None,
+        confirmed_by_name: Optional[str] = None,
         notes: Optional[str] = None,
         enqueue_legacy_task_cancellation: bool = True,
         legacy_task_type_external_id: int = DEFAULT_LEGACY_TASK_TYPE_EXTERNAL_ID,
@@ -601,35 +580,19 @@ class PrazosIniciaisSchedulingService:
                 "Reprocesse o CNJ antes ou cancele o intake."
             )
 
-        # ── Fase 1 — Upload GED (idempotente) ──
-        try:
-            if not intake.ged_document_id:
-                document_id = self._upload_habilitacao_to_ged(intake)
-                intake.ged_document_id = int(document_id)
-                intake.ged_uploaded_at = self._utcnow()
-                self._cleanup_local_pdf(intake)
-        except LegalOneGedUploadError as exc:
-            self.db.rollback()
-            intake = self._load_intake(intake_id)
-            if intake is not None:
-                # Não troca pra ERRO_AGENDAMENTO pq não é agendamento —
-                # mantém o status atual e grava o erro pra operador ver.
-                intake.error_message = (
-                    f"Finalizar sem providência: GED upload falhou: {str(exc)[:500]}"
-                )
-                self.db.commit()
-            logger.exception(
-                "finalize_without_scheduling: GED falhou (intake_id=%s): %s",
-                intake_id, exc,
-            )
-            raise RuntimeError(
-                f"Falha no upload da habilitação no GED do Legal One: {exc}"
-            ) from exc
+        # ── Fase 1 — DESACOPLADO (Onda 3 #5) ──
+        # GED upload migrou pra `dispatch_treatment_web`. Aqui só
+        # transicionamos o status + marcamos `dispatch_pending=True`.
 
         # ── Fase 2 — Status + metadados de auditoria ──
         now = self._utcnow()
         intake.status = INTAKE_STATUS_COMPLETED_WITHOUT_PROVIDENCE
         intake.error_message = None
+        # Registra QUEM tratou finalisticamente o intake (pin011)
+        intake.treated_by_user_id = confirmed_by_user_id
+        intake.treated_by_email = confirmed_by_email
+        intake.treated_by_name = confirmed_by_name
+        intake.treated_at = now
         # Anexa notas de auditoria em metadata_json sem sobrescrever
         # o que já tem lá (metadata livre da automação externa).
         if notes:
@@ -643,9 +606,116 @@ class PrazosIniciaisSchedulingService:
                 })
                 intake.metadata_json = meta
 
-        # ── Fase 3 — Fila de cancelamento da task legada ──
-        queue_item = None
-        if enqueue_legacy_task_cancellation:
+        # ── Fase 3 — Marca pendente de disparo (Onda 3 #5) ──
+        # Fila de cancelamento da legada migrou pra `dispatch_treatment_web`.
+        intake.dispatch_pending = True
+        intake.dispatched_at = None
+        intake.dispatch_error_message = None
+
+        self.db.commit()
+        self.db.refresh(intake)
+
+        logger.info(
+            "intake %s finalizado sem providencia por %s — dispatch_pending=True",
+            intake_id, confirmed_by_email,
+        )
+
+        return {
+            "intake": intake,
+            "legacy_task_cancellation_item": None,  # diferido — Onda 3 #5
+        }
+
+    # ──────────────────────────────────────────────
+    # Onda 3 #5 — Disparo desacoplado: Tratamento Web
+    # ──────────────────────────────────────────────
+    # Após o operador confirmar (ou finalizar sem providência) o intake
+    # no HITL, o status vai pra AGENDADO/CONCLUIDO_SEM_PROVIDENCIA com
+    # `dispatch_pending=True`. O disparo de GED + cancel da legada
+    # acontece aqui — chamado:
+    #   • Manualmente, via botão "Disparar agora" na Tratamento Web
+    #   • Automaticamente, via worker periódico (Onda 3 #6) com batch_limit
+    #
+    # Idempotente: GED upload pula se `ged_document_id` já existe;
+    # enqueue cancel é idempotente via queue_service.sync_item_from_intake.
+    # Se algum passo falhar, mantém `dispatch_pending=True` e grava o erro
+    # em `dispatch_error_message` pra retry posterior.
+
+    def dispatch_treatment_web(
+        self,
+        *,
+        intake_id: int,
+        legacy_task_type_external_id: int = DEFAULT_LEGACY_TASK_TYPE_EXTERNAL_ID,
+        legacy_task_subtype_external_id: int = DEFAULT_LEGACY_TASK_SUBTYPE_EXTERNAL_ID,
+    ) -> dict:
+        """Executa o disparo desacoplado: GED upload + enqueue cancel.
+
+        Pré-condições:
+          - intake.dispatch_pending == True (caso contrário, no-op)
+          - intake.lawsuit_id setado (GED exige vínculo a processo)
+          - intake.status em {AGENDADO, CONCLUIDO_SEM_PROVIDENCIA} —
+            os únicos terminais que disparam tratamento web
+
+        Comportamento:
+          - GED upload (idempotente via ged_document_id)
+          - Cleanup do PDF local após GED
+          - Enqueue na fila de cancelamento da legada (force_queue=True)
+          - Marca dispatch_pending=False, dispatched_at=now
+          - Em erro: dispatch_pending fica True, dispatch_error_message
+            recebe o motivo, exception é re-levantada
+        """
+        intake = self._load_intake(intake_id)
+        if intake is None:
+            raise ValueError("Intake não encontrado.")
+
+        if not intake.dispatch_pending:
+            # Idempotente: já disparado.
+            return {
+                "intake": intake,
+                "legacy_task_cancellation_item": None,
+                "skipped": True,
+                "reason": "dispatch_pending=False (já disparado)",
+            }
+
+        if intake.status not in (
+            INTAKE_STATUS_SCHEDULED,
+            INTAKE_STATUS_COMPLETED_WITHOUT_PROVIDENCE,
+        ):
+            raise RuntimeError(
+                "Disparo só é permitido em AGENDADO ou "
+                f"CONCLUIDO_SEM_PROVIDENCIA. Status atual: {intake.status}."
+            )
+
+        if not intake.lawsuit_id:
+            raise RuntimeError(
+                "Intake sem lawsuit_id — GED do L1 exige vínculo a processo."
+            )
+
+        # ── Fase 1 — Upload GED (idempotente) ──
+        try:
+            if not intake.ged_document_id:
+                document_id = self._upload_habilitacao_to_ged(intake)
+                intake.ged_document_id = int(document_id)
+                intake.ged_uploaded_at = self._utcnow()
+                self._cleanup_local_pdf(intake)
+                self.db.commit()
+        except LegalOneGedUploadError as exc:
+            self.db.rollback()
+            intake = self._load_intake(intake_id)
+            if intake is not None:
+                intake.dispatch_error_message = (
+                    f"GED upload falhou: {str(exc)[:500]}"
+                )
+                self.db.commit()
+            logger.exception(
+                "dispatch_treatment_web: GED falhou (intake_id=%s): %s",
+                intake_id, exc,
+            )
+            raise RuntimeError(
+                f"Falha no upload da habilitação no GED do Legal One: {exc}"
+            ) from exc
+
+        # ── Fase 2 — Enqueue cancel da legada (idempotente) ──
+        try:
             queue_item = self.queue_service.sync_item_from_intake(
                 intake,
                 commit=False,
@@ -653,6 +723,26 @@ class PrazosIniciaisSchedulingService:
                 legacy_task_subtype_external_id=legacy_task_subtype_external_id,
                 force_queue=True,
             )
+        except Exception as exc:  # noqa: BLE001
+            self.db.rollback()
+            intake = self._load_intake(intake_id)
+            if intake is not None:
+                intake.dispatch_error_message = (
+                    f"Enqueue cancel falhou: {str(exc)[:500]}"
+                )
+                self.db.commit()
+            logger.exception(
+                "dispatch_treatment_web: enqueue cancel falhou (intake_id=%s): %s",
+                intake_id, exc,
+            )
+            raise RuntimeError(
+                f"Falha ao enfileirar cancelamento da legada: {exc}"
+            ) from exc
+
+        # ── Fase 3 — Marca como disparado ──
+        intake.dispatch_pending = False
+        intake.dispatched_at = self._utcnow()
+        intake.dispatch_error_message = None
 
         self.db.commit()
         self.db.refresh(intake)
@@ -660,9 +750,8 @@ class PrazosIniciaisSchedulingService:
             self.db.refresh(queue_item)
 
         logger.info(
-            "intake %s finalizado sem providencia por %s (ged=%s, legacy_queue=%s)",
+            "dispatch_treatment_web ok (intake_id=%s, ged=%s, legacy_queue=%s)",
             intake_id,
-            confirmed_by_email,
             intake.ged_document_id,
             queue_item.id if queue_item else None,
         )
@@ -672,4 +761,5 @@ class PrazosIniciaisSchedulingService:
             "legacy_task_cancellation_item": (
                 self.queue_service._item_to_dict(queue_item) if queue_item else None
             ),
+            "skipped": False,
         }

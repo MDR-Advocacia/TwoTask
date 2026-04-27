@@ -162,6 +162,8 @@ def confirm_intake_scheduling(
             ]
             or None,
             confirmed_by_email=current_user.email,
+            confirmed_by_user_id=current_user.id,
+            confirmed_by_name=getattr(current_user, "name", None),
             enqueue_legacy_task_cancellation=payload.enqueue_legacy_task_cancellation,
             legacy_task_type_external_id=payload.legacy_task_type_external_id,
             legacy_task_subtype_external_id=payload.legacy_task_subtype_external_id,
@@ -176,9 +178,9 @@ def confirm_intake_scheduling(
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    if payload.enqueue_legacy_task_cancellation:
-        background_tasks.add_task(_process_legacy_task_queue_for_intake, intake_id)
-
+    # Onda 3 #5 — Disparo desacoplado: GED + cancel da legada NÃO são
+    # acionados aqui. O intake fica AGENDADO + dispatch_pending=True. O
+    # operador (ou worker periódico) aciona via /dispatch-treatment-web.
     return ConfirmSchedulingResponse(
         intake=_intake_to_summary(result["intake"]),
         confirmed_suggestion_ids=result["confirmed_suggestion_ids"],
@@ -237,6 +239,8 @@ def finalize_without_providence(
         result = service.finalize_without_scheduling(
             intake_id=intake_id,
             confirmed_by_email=current_user.email,
+            confirmed_by_user_id=current_user.id,
+            confirmed_by_name=getattr(current_user, "name", None),
             notes=payload.notes,
             enqueue_legacy_task_cancellation=payload.enqueue_legacy_task_cancellation,
             legacy_task_type_external_id=payload.legacy_task_type_external_id,
@@ -252,9 +256,8 @@ def finalize_without_providence(
         status_code = 502 if "Legal One" in detail or "GED" in detail else 422
         raise HTTPException(status_code=status_code, detail=detail) from exc
 
-    if payload.enqueue_legacy_task_cancellation:
-        background_tasks.add_task(_process_legacy_task_queue_for_intake, intake_id)
-
+    # Onda 3 #5 — Disparo desacoplado: GED + cancel não são acionados
+    # aqui. Intake fica CONCLUIDO_SEM_PROVIDENCIA + dispatch_pending=True.
     return FinalizeWithoutProvidenceResponse(
         intake=_intake_to_summary(result["intake"]),
         legacy_task_cancellation_item=result["legacy_task_cancellation_item"],
@@ -483,3 +486,127 @@ def export_legacy_task_cancel_queue(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ────────────────────────────────────────────────────────────────
+# Onda 3 #5 — Dispatch Treatment Web (desacoplado)
+# ────────────────────────────────────────────────────────────────
+
+class DispatchTreatmentWebResponse(BaseModel):
+    """Resposta do POST /intakes/{id}/dispatch-treatment-web.
+
+    `skipped` indica que o intake já estava com dispatch_pending=False
+    (idempotente). `intake` traz o estado atualizado.
+    """
+    intake: dict
+    legacy_task_cancellation_item: Optional[dict] = None
+    skipped: bool = False
+    reason: Optional[str] = None
+
+
+@router.post(
+    "/intakes/{intake_id}/dispatch-treatment-web",
+    response_model=DispatchTreatmentWebResponse,
+    summary=(
+        "Dispara o tratamento web (GED upload + enqueue cancel da legacy) "
+        "de um intake AGENDADO/CONCLUIDO_SEM_PROVIDENCIA."
+    ),
+)
+def dispatch_treatment_web(
+    background_tasks: BackgroundTasks,
+    intake_id: int = Path(..., ge=1),
+    legacy_task_type_external_id: int = Query(
+        default=DEFAULT_LEGACY_TASK_TYPE_EXTERNAL_ID, ge=1,
+    ),
+    legacy_task_subtype_external_id: int = Query(
+        default=DEFAULT_LEGACY_TASK_SUBTYPE_EXTERNAL_ID, ge=1,
+    ),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    service = PrazosIniciaisSchedulingService(db)
+    try:
+        result = service.dispatch_treatment_web(
+            intake_id=intake_id,
+            legacy_task_type_external_id=legacy_task_type_external_id,
+            legacy_task_subtype_external_id=legacy_task_subtype_external_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        detail = str(exc)
+        # Falhas de Legal One/GED viram 502 (upstream); resto é regra
+        # de negócio (status incompatível, lawsuit_id ausente).
+        status_code = 502 if (
+            "Legal One" in detail or "GED" in detail or "enfileirar" in detail
+        ) else 422
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+
+    # Após disparo, processa imediatamente a fila daquele intake em
+    # background pra encurtar latência percebida pelo operador.
+    if not result.get("skipped"):
+        background_tasks.add_task(_process_legacy_task_queue_for_intake, intake_id)
+
+    return DispatchTreatmentWebResponse(
+        intake=_intake_to_summary(result["intake"]),
+        legacy_task_cancellation_item=result.get("legacy_task_cancellation_item"),
+        skipped=bool(result.get("skipped", False)),
+        reason=result.get("reason"),
+    )
+
+
+@router.post(
+    "/intakes/dispatch-pending/process-batch",
+    summary=(
+        "Dispara em lote os intakes com dispatch_pending=True (idempotente, "
+        "ordem cronológica). batch_limit controla quantos por chamada."
+    ),
+)
+def dispatch_pending_intakes_batch(
+    background_tasks: BackgroundTasks,
+    batch_limit: int = Query(default=10, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    """Endpoint usado tanto pelo botão "Disparar todos" da Tratamento Web
+    quanto pelo worker periódico (Onda 3 #6)."""
+    from app.models.prazo_inicial import PrazoInicialIntake
+
+    pending_ids = (
+        db.query(PrazoInicialIntake.id)
+        .filter(PrazoInicialIntake.dispatch_pending.is_(True))
+        .order_by(PrazoInicialIntake.treated_at.asc().nullslast())
+        .limit(batch_limit)
+        .all()
+    )
+    intake_ids = [row[0] for row in pending_ids]
+
+    service = PrazosIniciaisSchedulingService(db)
+    success: list[int] = []
+    failed: list[dict] = []
+    skipped: list[int] = []
+
+    for iid in intake_ids:
+        try:
+            result = service.dispatch_treatment_web(intake_id=iid)
+            if result.get("skipped"):
+                skipped.append(iid)
+            else:
+                success.append(iid)
+                background_tasks.add_task(
+                    _process_legacy_task_queue_for_intake, iid,
+                )
+        except Exception as exc:  # noqa: BLE001
+            failed.append({"intake_id": iid, "error": str(exc)[:300]})
+            # Loop continua — falhas individuais não interrompem o lote.
+            continue
+
+    return {
+        "candidates": len(intake_ids),
+        "success_count": len(success),
+        "skipped_count": len(skipped),
+        "failure_count": len(failed),
+        "success_ids": success,
+        "skipped_ids": skipped,
+        "failed": failed,
+    }

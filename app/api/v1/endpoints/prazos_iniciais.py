@@ -185,6 +185,16 @@ class IntakeSummary(BaseModel):
     received_at: datetime
     updated_at: datetime
     sugestoes_count: int
+    # Tratado por (pin011) — quem confirmou agendamentos OU finalizou
+    # sem providência. NULL enquanto intake estiver em fluxo.
+    treated_by_user_id: Optional[int] = None
+    treated_by_email: Optional[str] = None
+    treated_by_name: Optional[str] = None
+    treated_at: Optional[datetime] = None
+    # Disparo desacoplado (pin012, Onda 3 #5).
+    dispatch_pending: bool = False
+    dispatched_at: Optional[datetime] = None
+    dispatch_error_message: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -397,6 +407,13 @@ def _intake_to_summary(intake: PrazoInicialIntake) -> IntakeSummary:
         received_at=intake.received_at,
         updated_at=intake.updated_at,
         sugestoes_count=len(intake.sugestoes or []),
+        treated_by_user_id=intake.treated_by_user_id,
+        treated_by_email=intake.treated_by_email,
+        treated_by_name=intake.treated_by_name,
+        treated_at=intake.treated_at,
+        dispatch_pending=bool(getattr(intake, "dispatch_pending", False)),
+        dispatched_at=getattr(intake, "dispatched_at", None),
+        dispatch_error_message=getattr(intake, "dispatch_error_message", None),
     )
 
 
@@ -537,6 +554,14 @@ def list_intakes(
         default=None,
         description="Filtra intakes de um batch de classificação específico.",
     ),
+    treated_by_user_id: Optional[str] = Query(
+        default=None,
+        description="CSV de user_ids: '5,8'. Filtra por quem confirmou/finalizou.",
+    ),
+    dispatch_pending: Optional[bool] = Query(
+        default=None,
+        description="true = só pendentes de disparo (Tratamento Web); false = já disparados; omitido = ambos.",
+    ),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -622,6 +647,24 @@ def list_intakes(
     # Batch de classificação
     if batch_id is not None:
         query = query.filter(PrazoInicialIntake.classification_batch_id == batch_id)
+
+    # Tratado por (CSV de user_ids)
+    treated_by_ids = _parse_csv_ints(treated_by_user_id)
+    if treated_by_ids:
+        if len(treated_by_ids) == 1:
+            query = query.filter(
+                PrazoInicialIntake.treated_by_user_id == treated_by_ids[0]
+            )
+        else:
+            query = query.filter(
+                PrazoInicialIntake.treated_by_user_id.in_(treated_by_ids)
+            )
+
+    # Onda 3 #5 — pendentes de disparo (Tratamento Web)
+    if dispatch_pending is True:
+        query = query.filter(PrazoInicialIntake.dispatch_pending.is_(True))
+    elif dispatch_pending is False:
+        query = query.filter(PrazoInicialIntake.dispatch_pending.is_(False))
 
     total = query.count()
     items = (

@@ -197,6 +197,12 @@ export async function fetchPrazosIniciaisIntakes(
   if (typeof filters.batch_id === "number") {
     params.set("batch_id", String(filters.batch_id));
   }
+  if (filters.treated_by_user_id) {
+    params.set("treated_by_user_id", filters.treated_by_user_id);
+  }
+  if (typeof filters.dispatch_pending === "boolean") {
+    params.set("dispatch_pending", String(filters.dispatch_pending));
+  }
   if (typeof filters.limit === "number") params.set("limit", String(filters.limit));
   if (typeof filters.offset === "number") params.set("offset", String(filters.offset));
 
@@ -257,6 +263,50 @@ export async function deletePrazoInicialIntake(intakeId: number): Promise<void> 
     }
     throw new Error(detail);
   }
+}
+
+
+/**
+ * Onda 3 #5 — dispara o tratamento web (GED + enqueue cancel da legacy)
+ * de um intake AGENDADO/CONCLUIDO_SEM_PROVIDENCIA. Idempotente — se
+ * `dispatch_pending` já estiver false, retorna `skipped:true`.
+ */
+export async function dispatchPrazoInicialTreatmentWeb(
+  intakeId: number,
+): Promise<{
+  intake: PrazoInicialIntakeSummary;
+  legacy_task_cancellation_item: unknown | null;
+  skipped: boolean;
+  reason?: string | null;
+}> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/intakes/${intakeId}/dispatch-treatment-web`,
+    { method: "POST" },
+  );
+  return expectJson(response);
+}
+
+
+/**
+ * Onda 3 #5/#6 — dispara em lote N intakes pendentes em ordem cronológica.
+ * Usado pelo botão "Disparar todos" e pelo worker periódico configurável.
+ */
+export async function dispatchPrazoInicialPendingBatch(
+  batchLimit: number = 10,
+): Promise<{
+  candidates: number;
+  success_count: number;
+  skipped_count: number;
+  failure_count: number;
+  success_ids: number[];
+  skipped_ids: number[];
+  failed: { intake_id: number; error: string }[];
+}> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/intakes/dispatch-pending/process-batch?batch_limit=${batchLimit}`,
+    { method: "POST" },
+  );
+  return expectJson(response);
 }
 
 

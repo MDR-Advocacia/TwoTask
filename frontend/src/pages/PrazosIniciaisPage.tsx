@@ -51,6 +51,8 @@ import {
   applyPrazosIniciaisBatch,
   cancelarPrazoInicial,
   confirmarAgendamentoPrazoInicial,
+  dispatchPrazoInicialPendingBatch,
+  dispatchPrazoInicialTreatmentWeb,
   fetchPrazoInicialDetail,
   deletePrazoInicialIntake,
   fetchPrazosIniciaisBatches,
@@ -451,6 +453,75 @@ export default function PrazosIniciaisPage() {
       toast({ title: "Erro", description: msg, variant: "destructive" });
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  // Onda 3 #5 — Disparo do tratamento web (GED + cancel da legada) de
+  // um intake AGENDADO/CONCLUIDO_SEM_PROVIDENCIA com dispatch_pending=true.
+  // Idempotente: backend retorna skipped:true se já foi disparado.
+  const [dispatchingIntakeId, setDispatchingIntakeId] = useState<number | null>(
+    null,
+  );
+  const [isBatchDispatching, setIsBatchDispatching] = useState(false);
+
+  const onDispatchIntake = async (intakeId: number) => {
+    setDispatchingIntakeId(intakeId);
+    try {
+      const result = await dispatchPrazoInicialTreatmentWeb(intakeId);
+      if (result.skipped) {
+        toast({
+          title: "Já disparado",
+          description: result.reason || "Intake não estava pendente.",
+        });
+      } else {
+        toast({
+          title: "Disparo concluído",
+          description: `Intake #${intakeId}: GED enviado e cancel da legada enfileirado.`,
+        });
+      }
+      await loadIntakes();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Erro desconhecido";
+      toast({
+        title: "Falha no disparo",
+        description: msg,
+        variant: "destructive",
+      });
+    } finally {
+      setDispatchingIntakeId(null);
+    }
+  };
+
+  const onDispatchPendingBatch = async () => {
+    setIsBatchDispatching(true);
+    try {
+      const result = await dispatchPrazoInicialPendingBatch(10);
+      const lines = [
+        `${result.success_count} disparado(s)`,
+        result.skipped_count ? `${result.skipped_count} já disparado(s)` : null,
+        result.failure_count ? `${result.failure_count} falha(s)` : null,
+      ].filter(Boolean);
+      toast({
+        title: "Disparo em lote",
+        description:
+          `${result.candidates} candidato(s). ${lines.join(" · ")}` +
+          (result.failure_count
+            ? `\n\nFalhas: ${result.failed
+                .map((f) => `#${f.intake_id}: ${f.error}`)
+                .join(" | ")}`
+            : ""),
+        variant: result.failure_count ? "destructive" : "default",
+      });
+      await loadIntakes();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Erro desconhecido";
+      toast({
+        title: "Falha ao disparar lote",
+        description: msg,
+        variant: "destructive",
+      });
+    } finally {
+      setIsBatchDispatching(false);
     }
   };
 
@@ -856,6 +927,62 @@ export default function PrazosIniciaisPage() {
     [loadBatches, loadIntakes, toast],
   );
 
+  // ─── Polling automático dos batches em processamento ──────────────────
+  // Quando há batches ENVIADO/EM_PROCESSAMENTO, refresca status a cada 15s.
+  // Quando algum vira PRONTO/READY, aplica resultados automaticamente.
+  // Botões manuais (Atualizar status / Aplicar resultados) seguem como
+  // fallback pra falhas pontuais ou re-aplicação.
+  useEffect(() => {
+    const inFlight = batches.filter(
+      (b) => b.status === "ENVIADO" || b.status === "EM_PROCESSAMENTO",
+    );
+    const ready = batches.filter(
+      (b) => b.status === "PRONTO" || b.status === "READY",
+    );
+
+    // Auto-aplicar batches prontos (1 por vez pra evitar duplicidade).
+    if (ready.length > 0) {
+      const next = ready[0];
+      // Sentinela: só dispara se ninguém estiver aplicando outro batch.
+      if (batchActionId === null) {
+        // setBatchActionId protege contra re-entrada.
+        setBatchActionId(next.id);
+        applyPrazosIniciaisBatch(next.id)
+          .then((result) => {
+            toast({
+              title: "Resultados aplicados (auto)",
+              description: `Batch #${next.id}: ${result.succeeded} OK, ${result.total_sugestoes} sugestões.`,
+            });
+            return Promise.all([loadBatches(), loadIntakes()]);
+          })
+          .catch((err) => {
+            toast({
+              title: "Falha ao aplicar (auto)",
+              description: err instanceof Error ? err.message : "Erro desconhecido.",
+              variant: "destructive",
+            });
+          })
+          .finally(() => setBatchActionId(null));
+      }
+      return;
+    }
+
+    // Sem batches em vôo → não precisa polling.
+    if (inFlight.length === 0) return;
+
+    const intervalId = window.setInterval(() => {
+      // Refresca todos os batches em vôo. Falhas individuais são
+      // silenciosas — o tick seguinte tenta de novo.
+      Promise.all(
+        inFlight.map((b) => refreshPrazosIniciaisBatch(b.id).catch(() => null)),
+      ).then(() => {
+        loadBatches();
+      });
+    }, 15000);
+
+    return () => window.clearInterval(intervalId);
+  }, [batches, batchActionId, loadBatches, loadIntakes, toast]);
+
   // Contagem de pendentes na grade visível (usado como badge no botão).
   const pendingCount = useMemo(
     () => items.filter((i) => i.status === "PRONTO_PARA_CLASSIFICAR").length,
@@ -894,6 +1021,18 @@ export default function PrazosIniciaisPage() {
                 {pendingCount}
               </Badge>
             )}
+          </Button>
+          <Button
+            variant="outline"
+            className="w-full sm:w-auto"
+            onClick={onDispatchPendingBatch}
+            disabled={isBatchDispatching}
+            title="Dispara em lote os próximos 10 intakes pendentes (GED + cancel da legada)"
+          >
+            {isBatchDispatching ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : null}
+            Disparar próximos 10
           </Button>
           <Button
             variant="outline"
@@ -1302,21 +1441,58 @@ export default function PrazosIniciaisPage() {
                           {item.natureza_processo || "Natureza pendente"}
                           {item.produto ? ` · ${item.produto}` : ""}
                         </div>
+                        {item.treated_by_name ? (
+                          <div className="text-xs text-muted-foreground">
+                            Tratado por <span className="font-medium text-foreground/80">{item.treated_by_name}</span>
+                            {item.treated_at ? ` em ${formatDateTime(item.treated_at)}` : ""}
+                          </div>
+                        ) : null}
                       </div>
                     </TableCell>
                     <TableCell>
                       <Badge variant={statusBadgeVariant(item.status)}>{STATUS_LABEL[item.status] ?? item.status}</Badge>
+                      {item.dispatch_pending ? (
+                        <div className="mt-1">
+                          <Badge variant="outline" className="bg-amber-50 text-amber-800 border-amber-300">
+                            Pendente disparo
+                          </Badge>
+                        </div>
+                      ) : null}
                       {item.error_message ? (
                         <div className="mt-1 max-w-[220px] truncate text-xs text-muted-foreground" title={item.error_message}>
                           {item.error_message}
                         </div>
                       ) : null}
+                      {item.dispatch_error_message ? (
+                        <div
+                          className="mt-1 max-w-[220px] truncate text-xs text-destructive"
+                          title={item.dispatch_error_message}
+                        >
+                          Disparo: {item.dispatch_error_message}
+                        </div>
+                      ) : null}
                     </TableCell>
                     <TableCell className="text-right">{item.sugestoes_count}</TableCell>
                     <TableCell className="text-right">
-                      <Button size="sm" variant="outline" onClick={() => setSelectedId(item.id)}>
-                        Detalhes
-                      </Button>
+                      <div className="flex flex-col gap-1 items-end">
+                        <Button size="sm" variant="outline" onClick={() => setSelectedId(item.id)}>
+                          Detalhes
+                        </Button>
+                        {item.dispatch_pending ? (
+                          <Button
+                            size="sm"
+                            variant="default"
+                            disabled={dispatchingIntakeId === item.id}
+                            onClick={() => onDispatchIntake(item.id)}
+                            title="Sobe habilitação no GED + cancela task legada"
+                          >
+                            {dispatchingIntakeId === item.id ? (
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            ) : null}
+                            Disparar
+                          </Button>
+                        ) : null}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}

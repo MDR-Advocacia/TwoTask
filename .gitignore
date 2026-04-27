@@ -80,3 +80,6 @@ Desktop.ini
 *.swo
 Dockerfile copy.frontend
 legal-one-firms-brazil-api.json
+
+# Dados de teste locais (PDFs + JSONs de intake pra testes manuais)
+test-data/

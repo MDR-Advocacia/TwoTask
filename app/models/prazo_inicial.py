@@ -25,6 +25,7 @@ from sqlalchemy import (
     String,
     Text,
     Time,
+    text,
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -169,6 +170,27 @@ class PrazoInicialIntake(Base):
     aprovisionamento_sugerido = Column(Numeric(14, 2), nullable=True)
     probabilidade_exito_global = Column(String(16), nullable=True)
     analise_estrategica = Column(Text, nullable=True)
+
+    # Quem tratou finalisticamente o intake — preenchido quando o operador
+    # confirma agendamentos OU finaliza sem providência (pin011). NULL
+    # enquanto o intake estiver em fluxo. Usado pra "Tratado por: <nome>"
+    # na listagem do HITL e pra filtro por operador.
+    treated_by_user_id = Column(Integer, nullable=True, index=True)
+    treated_by_email = Column(String(255), nullable=True)
+    treated_by_name = Column(String(255), nullable=True)
+    treated_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Disparo desacoplado de GED + cancel da legacy task (pin012, Onda 3 #5).
+    # Após confirmar/finalizar, o intake fica AGENDADO ou
+    # CONCLUIDO_SEM_PROVIDENCIA com `dispatch_pending=True`. O disparo
+    # acontece via botão manual ("Disparar agora") na Tratamento Web ou
+    # via worker periódico configurável. Quando GED+enqueue cancel
+    # completam com sucesso, vira False + dispatched_at preenchido.
+    dispatch_pending = Column(
+        Boolean, nullable=False, server_default=text("false"), index=True,
+    )
+    dispatched_at = Column(DateTime(timezone=True), nullable=True)
+    dispatch_error_message = Column(Text, nullable=True)
 
     received_at = Column(
         DateTime(timezone=True),
