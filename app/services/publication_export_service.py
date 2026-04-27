@@ -26,7 +26,8 @@ from app.models.publication_search import RECORD_STATUS_OBSOLETE, PublicationRec
 EXPORT_COLUMNS: list[tuple[str, str, int]] = [
     # (chave interna, título, largura aproximada em caracteres)
     ("processo", "Processo (CNJ)", 24),
-    ("escritorio", "Escritório", 28),
+    ("uf", "UF", 6),
+    ("escritorio", "Escritório responsável", 36),
     ("publication_date", "Data da Publicação", 20),
     ("creation_date", "Data no Ajus", 20),
     ("status", "Status", 14),
@@ -118,6 +119,7 @@ def _row_for_record(
     cls = _primary_classification(record)
     return {
         "processo": record.linked_lawsuit_cnj or "",
+        "uf": record.uf or "",
         "escritorio": (
             office_names.get(record.linked_office_id, "")
             if record.linked_office_id is not None
@@ -183,6 +185,9 @@ def export_records_grouped_xlsx(
     )
 
     # Pré-carrega nomes de escritórios para mapear id → nome sem N+1.
+    # Preferimos `path` (hierarquia completa, ex.: "MDR / Filial BA / Cível")
+    # em vez de `name` (folha) — é o padrão usado em outras telas e dá
+    # contexto ao operador sobre onde o escritório se encaixa na estrutura.
     office_ids = {r.linked_office_id for r in records if r.linked_office_id is not None}
     office_names: dict[int, str] = {}
     if office_ids:
@@ -191,7 +196,7 @@ def export_records_grouped_xlsx(
             .filter(LegalOneOffice.external_id.in_(office_ids))
             .all()
         )
-        office_names = {o.external_id: o.name for o in offices}
+        office_names = {o.external_id: (o.path or o.name) for o in offices}
 
     wb = Workbook()
     ws = wb.active
