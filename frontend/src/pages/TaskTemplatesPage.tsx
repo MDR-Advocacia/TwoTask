@@ -308,6 +308,49 @@ const TaskTemplatesPage = () => {
     return taskTypes.find((t) => String(t.external_id) === typeId)?.subtypes ?? [];
   };
 
+  /**
+   * Retorna o conjunto de subtype external_ids (number) que JÁ estão em uso
+   * pra mesma chave de classificação (category + subcategory + office)
+   * — seja por outros blocos do form atual OU por templates "irmãos"
+   * já existentes no banco (excluindo o template em edição).
+   *
+   * Usado pra desabilitar opções no Select de subtype dos blocos extras,
+   * evitando o 409 de duplicata exata do backend.
+   */
+  const subtypesInUseForBlock = (blockIdx: number): Set<number> => {
+    const used = new Set<number>();
+
+    // 1. Subtypes em uso em OUTROS blocos do form atual.
+    form.taskBlocks.forEach((b, i) => {
+      if (i === blockIdx) return;
+      if (b.task_subtype_external_id) {
+        used.add(parseInt(b.task_subtype_external_id));
+      }
+    });
+
+    // 2. Subtypes em uso em templates "irmãos" no banco — mesma
+    // category + subcategory + office_external_id.
+    // Em modo edição: exclui o próprio template. Em criação multi-office,
+    // checamos contra cada office; aqui consideramos só o primeiro
+    // selecionado (caso multi-office, o duplicate-check do backend ainda
+    // protege).
+    const officeRaw = form.office_external_ids[0] ?? "_global";
+    const officeValue: number | null =
+      officeRaw === "_global" || officeRaw === "" ? null : parseInt(officeRaw);
+
+    templates.forEach((tmpl) => {
+      if (editingId && tmpl.id === editingId) return; // não conta a si mesmo
+      if (tmpl.category !== form.category) return;
+      const tmplSub = tmpl.subcategory ?? "";
+      const formSub = form.subcategory ?? "";
+      if (tmplSub !== formSub) return;
+      if ((tmpl.office_external_id ?? null) !== officeValue) return;
+      used.add(tmpl.task_subtype_external_id);
+    });
+
+    return used;
+  };
+
   const categorySubcategories = useMemo(() => {
     if (!form.category) return [];
     const entry = categories.find((c) => c.category === form.category);
@@ -461,13 +504,28 @@ const TaskTemplatesPage = () => {
       return { ...prev, taskBlocks: blocks };
     });
 
-  /** Adiciona um novo bloco de tarefa (copia o último como base) */
+  /**
+   * Adiciona um novo bloco de tarefa.
+   *
+   * Copia o último bloco como base de ergonomia, MAS limpa
+   * `task_subtype_external_id` (e o `task_type_external_id` parent)
+   * pra forçar o operador a escolher um subtype diferente.
+   *
+   * Se mantivéssemos o subtype copiado, o POST do bloco extra colidiria
+   * com o template existente (mesma chave classificação + office +
+   * subtype) e o operador veria 409 sem saber por quê.
+   */
   const addTaskBlock = () =>
     setForm((prev) => ({
       ...prev,
       taskBlocks: [
         ...prev.taskBlocks,
-        { ...prev.taskBlocks[prev.taskBlocks.length - 1], name: "" },
+        {
+          ...prev.taskBlocks[prev.taskBlocks.length - 1],
+          name: "",
+          task_type_external_id: "",
+          task_subtype_external_id: "",
+        },
       ],
     }));
 
@@ -513,6 +571,26 @@ const TaskTemplatesPage = () => {
   };
 
   const handleSave = async () => {
+    // Pre-flight: detecta subtypes duplicados ENTRE blocos do form, e entre
+    // blocos do form e templates irmãos no banco. Se acharmos, abortamos
+    // antes de bater no backend e mostramos mensagem específica (em vez de
+    // 409 genérico que não diz qual bloco está colidindo).
+    const seen = new Map<number, number>(); // subtype_external_id → blockIdx
+    for (let i = 0; i < form.taskBlocks.length; i++) {
+      const sub = form.taskBlocks[i].task_subtype_external_id;
+      if (!sub) continue;
+      const subId = parseInt(sub);
+      if (seen.has(subId)) {
+        toast({
+          title: "Subtipos duplicados",
+          description: `Tarefa ${seen.get(subId)! + 1} e Tarefa ${i + 1} usam o mesmo subtipo. Cada tarefa precisa de um subtipo diferente.`,
+          variant: "destructive",
+        });
+        return;
+      }
+      seen.set(subId, i);
+    }
+
     if (!form.category || form.taskBlocks.length === 0) {
       toast({
         title: "Campos obrigatórios",
@@ -2066,6 +2144,7 @@ const TaskTemplatesPage = () => {
 
               {form.taskBlocks.map((block, idx) => {
                 const blockSubtypes = getSubtypesForBlock(idx);
+                const usedSubtypes = subtypesInUseForBlock(idx);
                 return (
                   <div
                     key={idx}
@@ -2136,11 +2215,31 @@ const TaskTemplatesPage = () => {
                             <SelectValue placeholder="Selecione..." />
                           </SelectTrigger>
                           <SelectContent>
-                            {blockSubtypes.map((s) => (
-                              <SelectItem key={s.external_id} value={String(s.external_id)}>
-                                {s.name}
-                              </SelectItem>
-                            ))}
+                            {blockSubtypes.map((s) => {
+                              // Subtipos já em uso (no form ou em irmãos do
+                              // banco) ficam desabilitados pra evitar 409 de
+                              // duplicata exata. Exceção: o próprio valor
+                              // selecionado neste bloco continua selecionável
+                              // (evita "presa" no estado).
+                              const isUsedElsewhere =
+                                usedSubtypes.has(s.external_id) &&
+                                String(s.external_id) !==
+                                  block.task_subtype_external_id;
+                              return (
+                                <SelectItem
+                                  key={s.external_id}
+                                  value={String(s.external_id)}
+                                  disabled={isUsedElsewhere}
+                                >
+                                  {s.name}
+                                  {isUsedElsewhere ? (
+                                    <span className="ml-2 text-xs text-muted-foreground">
+                                      (já em uso)
+                                    </span>
+                                  ) : null}
+                                </SelectItem>
+                              );
+                            })}
                           </SelectContent>
                         </Select>
                       </div>
