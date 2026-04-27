@@ -223,12 +223,16 @@ export function TemplateFormDialog({
       ...prev,
       taskBlocks: [
         ...prev.taskBlocks,
-        // Copia o último bloco (ergonomia: usuário tipicamente quer config
-        // similar) mas zera o nome pra forçar revisão. Não copia is_active
-        // pra novo bloco começar ativo por default.
+        // Copia o último bloco como base de ergonomia (responsável,
+        // prioridade, prazo etc. costumam ser parecidos), MAS limpa
+        // task_type_id + task_subtype_external_id pra forçar escolha
+        // consciente. Sem isso, o backend retornaria 409 de duplicata
+        // exata (mesma chave classificação + mesmo subtype) ao salvar.
         {
           ...prev.taskBlocks[prev.taskBlocks.length - 1],
           name: "",
+          task_type_id: "",
+          task_subtype_external_id: "",
         },
       ],
     }));
@@ -266,6 +270,28 @@ export function TemplateFormDialog({
     return parent ? parent.sub_types : [];
   };
 
+  /**
+   * Subtypes em uso por OUTROS blocos do form atual. Se o operador tentar
+   * selecionar um já em uso, o backend retornaria 409. Marcamos o item
+   * como `(já em uso)` e disabled no Select pra evitar a tentativa.
+   *
+   * Cobre só duplicatas dentro do form. Duplicatas com templates "irmãos"
+   * já existentes no banco (mesma chave classificação + office, subtype
+   * diferente) ainda podem dar 409 — pra cobrir esse caso, a página
+   * admin precisaria passar a lista de irmãos como prop. Fica como
+   * follow-up se aparecer no uso real.
+   */
+  const subtypesInUseByOtherBlocks = (blockIdx: number): Set<string> => {
+    const used = new Set<string>();
+    form.taskBlocks.forEach((b, i) => {
+      if (i === blockIdx) return;
+      if (b.task_subtype_external_id) {
+        used.add(b.task_subtype_external_id);
+      }
+    });
+    return used;
+  };
+
   // ─── Validação ────────────────────────────────────────────────────
 
   const validate = (): string | null => {
@@ -279,6 +305,22 @@ export function TemplateFormDialog({
       }
     }
     if (form.taskBlocks.length === 0) return "Adicione pelo menos uma tarefa.";
+
+    // Pre-flight: detecta subtypes duplicados ENTRE blocos do form. Cada
+    // tarefa precisa de um subtype diferente — o backend rejeita
+    // duplicata exata na chave (tipo_prazo, subtipo, natureza, office,
+    // task_subtype) com 409, e a mensagem genérica não diz qual bloco
+    // está colidindo.
+    const seenSubtypes = new Map<string, number>();
+    for (let i = 0; i < form.taskBlocks.length; i++) {
+      const sub = form.taskBlocks[i].task_subtype_external_id;
+      if (!sub) continue;
+      if (seenSubtypes.has(sub)) {
+        const firstIdx = seenSubtypes.get(sub)!;
+        return `Tarefa ${firstIdx + 1} e Tarefa ${i + 1} usam o mesmo subtipo de task. Cada tarefa precisa de um subtipo diferente.`;
+      }
+      seenSubtypes.set(sub, i);
+    }
 
     for (let i = 0; i < form.taskBlocks.length; i++) {
       const b = form.taskBlocks[i];
@@ -559,6 +601,7 @@ export function TemplateFormDialog({
 
               {form.taskBlocks.map((block, idx) => {
                 const blockSubtypes = subtypesForBlock(block);
+                const usedSubtypes = subtypesInUseByOtherBlocks(idx);
                 const selectedUser = users.find(
                   (u) =>
                     String(u.external_id) ===
@@ -660,14 +703,29 @@ export function TemplateFormDialog({
                             <SelectValue placeholder="Selecione..." />
                           </SelectTrigger>
                           <SelectContent>
-                            {blockSubtypes.map((st) => (
-                              <SelectItem
-                                key={st.external_id}
-                                value={String(st.external_id)}
-                              >
-                                {st.name}
-                              </SelectItem>
-                            ))}
+                            {blockSubtypes.map((st) => {
+                              // Subtype já em uso em outro bloco do form?
+                              // Desabilita pra evitar 409 no submit. Mantém
+                              // selecionável o valor que já está NESTE bloco
+                              // (não fica "preso" no estado).
+                              const alreadyUsed =
+                                usedSubtypes.has(String(st.external_id)) &&
+                                String(st.external_id) !== block.task_subtype_external_id;
+                              return (
+                                <SelectItem
+                                  key={st.external_id}
+                                  value={String(st.external_id)}
+                                  disabled={alreadyUsed}
+                                >
+                                  {st.name}
+                                  {alreadyUsed ? (
+                                    <span className="ml-2 text-xs text-muted-foreground">
+                                      (já em uso)
+                                    </span>
+                                  ) : null}
+                                </SelectItem>
+                              );
+                            })}
                           </SelectContent>
                         </Select>
                       </div>
