@@ -677,6 +677,8 @@ const PublicationsPage = () => {
   // Busca livre por CNJ — backend faz match tolerante por dígitos, então o
   // usuário pode digitar "0000161", "161-07", ou o CNJ inteiro com máscara.
   const [filterCnj, setFilterCnj] = useState<string>("");
+  // CSV de user_ids (LegalOneUser.id) — operador que cadastrou (scheduled_by_user_id).
+  const [filterScheduledBy, setFilterScheduledBy] = useState<string>("");
   // Controla se o painel de filtros está expandido no mobile (no desktop fica sempre visível via md:block)
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [groupPage, setGroupPage] = useState(0);
@@ -834,7 +836,7 @@ const PublicationsPage = () => {
   }, []);
 
   const loadGrouped = useCallback(async (
-    page = 0, status = "", officeId = "", dateFrom = "", dateTo = "", category = "", ufParam = "", vinculoParam = "", naturezaParam = "", poloParam = "", cnjParam = "",
+    page = 0, status = "", officeId = "", dateFrom = "", dateTo = "", category = "", ufParam = "", vinculoParam = "", naturezaParam = "", poloParam = "", cnjParam = "", scheduledByParam = "",
   ) => {
     try {
       let url = `${API}/records/grouped?limit=${groupPageSize}&offset=${page * groupPageSize}`;
@@ -848,6 +850,7 @@ const PublicationsPage = () => {
       if (naturezaParam) url += `&natureza=${encodeURIComponent(naturezaParam)}`;
       if (poloParam) url += `&polo=${encodeURIComponent(poloParam)}`;
       if (cnjParam) url += `&cnj_search=${encodeURIComponent(cnjParam)}`;
+      if (scheduledByParam) url += `&scheduled_by_user_id=${encodeURIComponent(scheduledByParam)}`;
       const res = await apiFetch(url);
       if (res.ok) setGrouped(await res.json());
     } catch { /* ignore */ }
@@ -865,6 +868,7 @@ const PublicationsPage = () => {
       if (filterCategory) params.set("category", filterCategory);
       if (filterUf) params.set("uf", filterUf);
       if (filterPolo) params.set("polo", filterPolo);
+      if (filterScheduledBy) params.set("scheduled_by_user_id", filterScheduledBy);
       const qs = params.toString();
       const url = `${API}/records/grouped/export${qs ? `?${qs}` : ""}`;
 
@@ -992,7 +996,7 @@ const PublicationsPage = () => {
     loadTaskMeta();
     loadStats();
     loadSearches();
-    loadGrouped(0, "", "", "", "", "", "", "", "", "", "");
+    loadGrouped(0, "", "", "", "", "", "", "", "", "", "", "");
     loadBatches();
     loadSavedFilters();
   }, []);
@@ -1015,7 +1019,7 @@ const PublicationsPage = () => {
     loadGrouped(
       0, filterStatus, filterOffice, filterDateFrom, filterDateTo,
       filterCategory, filterUf, filterVinculo, filterNatureza,
-      filterPolo, filterCnj,
+      filterPolo, filterCnj, filterScheduledBy,
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupPageSize]);
@@ -1063,7 +1067,7 @@ const PublicationsPage = () => {
       clearInterval(t);
       // Quando polling para (busca terminou), recarrega dados
       loadStats();
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj, filterScheduledBy);
     };
   }, [activeSearch?.id]);
 
@@ -1093,7 +1097,7 @@ const PublicationsPage = () => {
       }
       toast({ title: "Busca iniciada", description: "Acompanhe o progresso no histórico." });
       [3000, 8000, 15000, 30000].forEach((delay) => {
-        setTimeout(() => { loadSearches(); loadStats(); loadGrouped(0, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj); }, delay);
+        setTimeout(() => { loadSearches(); loadStats(); loadGrouped(0, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj, filterScheduledBy); }, delay);
       });
     } catch (err: any) {
       setError(err.message);
@@ -1103,7 +1107,7 @@ const PublicationsPage = () => {
   };
 
   const handleFilterChange = (
-    status: string, officeId: string, dateFrom?: string, dateTo?: string, category?: string, ufParam?: string, vinculoParam?: string, naturezaParam?: string, poloParam?: string, cnjParam?: string,
+    status: string, officeId: string, dateFrom?: string, dateTo?: string, category?: string, ufParam?: string, vinculoParam?: string, naturezaParam?: string, poloParam?: string, cnjParam?: string, scheduledByParam?: string,
   ) => {
     setFilterStatus(status);
     setFilterOffice(officeId);
@@ -1115,6 +1119,7 @@ const PublicationsPage = () => {
     if (naturezaParam !== undefined) setFilterNatureza(naturezaParam);
     if (poloParam !== undefined) setFilterPolo(poloParam);
     if (cnjParam !== undefined) setFilterCnj(cnjParam);
+    if (scheduledByParam !== undefined) setFilterScheduledBy(scheduledByParam);
     const df = dateFrom ?? filterDateFrom;
     const dt = dateTo ?? filterDateTo;
     const cat = category ?? filterCategory;
@@ -1123,15 +1128,16 @@ const PublicationsPage = () => {
     const nat = naturezaParam ?? filterNatureza;
     const pol = poloParam ?? filterPolo;
     const cnj = cnjParam ?? filterCnj;
+    const sb = scheduledByParam ?? filterScheduledBy;
     setGroupPage(0);
     setSelectedGroupKeys(new Set());
-    loadGrouped(0, status, officeId, df, dt, cat, uf, vin, nat, pol, cnj);
+    loadGrouped(0, status, officeId, df, dt, cat, uf, vin, nat, pol, cnj, sb);
   };
 
   const handleGroupPageChange = (newPage: number) => {
     setGroupPage(newPage);
     setSelectedGroupKeys(new Set());
-    loadGrouped(newPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj);
+    loadGrouped(newPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj, filterScheduledBy);
   };
 
   const handleIgnoreRecord = async (recordId: number) => {
@@ -1142,7 +1148,7 @@ const PublicationsPage = () => {
         body: JSON.stringify({ status: "IGNORADO" }),
       });
       toast({ title: "Registro ignorado" });
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj, filterScheduledBy);
       loadStats();
     } catch { /* ignore */ }
   };
@@ -1174,7 +1180,7 @@ const PublicationsPage = () => {
         title: "Reclassificado",
         description: `${category}${subcategory ? " → " + subcategory : ""} aplicado a ${recordIds.length} publicação(ões). Proposta de tarefa atualizada.`,
       });
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj, filterScheduledBy);
       loadStats();
     } catch (err: any) {
       toast({ title: "Erro", description: err.message, variant: "destructive" });
@@ -1222,7 +1228,7 @@ const PublicationsPage = () => {
       }
       toast({ title: "Feedback registrado", description: "Obrigado! O classificador vai aprender com essa correção." });
       setFeedbackOpen(false);
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj, filterScheduledBy);
     } catch (err: any) {
       toast({ title: "Erro", description: err.message, variant: "destructive" });
     } finally {
@@ -1231,7 +1237,7 @@ const PublicationsPage = () => {
   };
 
   const handleRefreshAll = () => {
-    loadStats(); loadSearches(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj); loadBatches();
+    loadStats(); loadSearches(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj, filterScheduledBy); loadBatches();
     if (insightsOpen) loadInsights(insightPeriod);
   };
 
@@ -1301,7 +1307,7 @@ const PublicationsPage = () => {
       });
       // Pequeno polling para refletir o efeito na UI
       [3000, 8000, 20000].forEach((delay) => {
-        setTimeout(() => { loadBatches(); loadStats(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj); }, delay);
+        setTimeout(() => { loadBatches(); loadStats(); loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj, filterScheduledBy); }, delay);
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1370,7 +1376,7 @@ const PublicationsPage = () => {
         description: `Propostas sendo reconstruídas (escopo: ${scopeLabel}). Atualize em instantes.`,
       });
       setTimeout(() => {
-        loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj);
+        loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj, filterScheduledBy);
       }, 3000);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1644,7 +1650,7 @@ const PublicationsPage = () => {
       });
       setScheduleOpen(false);
       setRemovedTaskIndices(new Set());
-      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj);
+      loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj, filterScheduledBy);
       loadStats();
     } catch (err: any) {
       // Duration maior pra erros porque o backend agora devolve detalhe
@@ -1760,7 +1766,7 @@ const PublicationsPage = () => {
 
     clearSelection();
     setBulkProcessing(false);
-    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj);
+    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj, filterScheduledBy);
     loadStats();
   };
 
@@ -1801,7 +1807,7 @@ const PublicationsPage = () => {
 
     clearSelection();
     setBulkProcessing(false);
-    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj);
+    loadGrouped(groupPage, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj, filterScheduledBy);
     loadStats();
   };
 
@@ -1832,6 +1838,16 @@ const PublicationsPage = () => {
       return Array.from(set).sort();
     }
     return filterUf ? filterUf.split(",").filter(Boolean) : [];
+  })();
+
+  // Operadores ("Cadastrado por") que aparecem nos resultados da query
+  // atual. Backend envia `available_scheduled_by` em /records/grouped —
+  // ignora o próprio filtro pra não sumir opções ao selecionar uma.
+  const availableScheduledBy: { user_id: number; name: string; email: string }[] = (() => {
+    const raw = (grouped as unknown as {
+      available_scheduled_by?: { user_id: number; name: string; email: string }[];
+    } | null)?.available_scheduled_by;
+    return Array.isArray(raw) ? raw : [];
   })();
 
   // O filtro UF agora é server-side, então os grupos já vêm filtrados.
@@ -2735,6 +2751,33 @@ const PublicationsPage = () => {
                 />
               </div>
 
+              {/* Filtro "Cadastrado por" — operador que finalizou o
+                  agendamento (PublicationRecord.scheduled_by_user_id). Vem
+                  do campo `available_scheduled_by` da resposta /records/grouped,
+                  que respeita os outros filtros mas ignora o próprio
+                  scheduled_by_user_id pra não sumir opções. */}
+              <div className="space-y-1">
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Cadastrado por</Label>
+                <MultiSelect
+                  options={availableScheduledBy.map((u) => ({
+                    value: String(u.user_id),
+                    label: u.name || u.email || `Usuário #${u.user_id}`,
+                  }))}
+                  defaultValue={filterScheduledBy ? filterScheduledBy.split(",").filter(Boolean) : []}
+                  onValueChange={(vals) =>
+                    handleFilterChange(
+                      filterStatus, filterOffice,
+                      undefined, undefined, undefined, undefined,
+                      undefined, undefined, undefined, undefined,
+                      vals.join(","),
+                    )
+                  }
+                  placeholder="Todos"
+                  className="h-8 min-w-[200px] text-xs"
+                  maxCount={2}
+                />
+              </div>
+
               <div className="space-y-1">
                 <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Período (captura)</Label>
                 <div className="flex items-center gap-1">
@@ -2816,14 +2859,15 @@ const PublicationsPage = () => {
               </div>
 
               {/* Botão limpar filtros (aparece quando há filtros ativos) */}
-              {(filterStatus || filterOffice || filterCategory || filterUf || filterVinculo || filterNatureza || filterPolo || filterDateFrom || filterDateTo || filterCnj) && (
+              {(filterStatus || filterOffice || filterCategory || filterUf || filterVinculo || filterNatureza || filterPolo || filterDateFrom || filterDateTo || filterCnj || filterScheduledBy) && (
                 <Button
                   variant="ghost"
                   size="sm"
                   className="h-8 text-xs text-muted-foreground"
                   onClick={() => {
                     setFilterCnj("");
-                    handleFilterChange("", "", "", "", "", "", "", "", "", "");
+                    setFilterScheduledBy("");
+                    handleFilterChange("", "", "", "", "", "", "", "", "", "", "");
                   }}
                 >
                   <XCircle className="h-3.5 w-3.5 mr-1" />

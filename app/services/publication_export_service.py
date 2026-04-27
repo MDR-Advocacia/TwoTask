@@ -31,6 +31,7 @@ EXPORT_COLUMNS: list[tuple[str, str, int]] = [
     ("publication_date", "Data da Publicação", 20),
     ("creation_date", "Data no Ajus", 20),
     ("status", "Status", 14),
+    ("scheduled_by", "Cadastrado por", 24),
     ("category", "Classificação", 24),
     ("subcategory", "Subclassificação", 24),
     ("polo", "Polo", 10),
@@ -45,7 +46,10 @@ EXPORT_COLUMNS: list[tuple[str, str, int]] = [
 ]
 
 
-def _apply_filters(query, *, search_id, status, linked_office_id, date_from, date_to, category, polo=None):
+def _apply_filters(
+    query, *, search_id, status, linked_office_id, date_from, date_to,
+    category, polo=None, scheduled_by_user_id=None,
+):
     query = query.filter(PublicationRecord.is_duplicate == False)  # noqa: E712
     if search_id is not None:
         query = query.filter(PublicationRecord.search_id == search_id)
@@ -64,6 +68,14 @@ def _apply_filters(query, *, search_id, status, linked_office_id, date_from, dat
         query = query.filter(PublicationRecord.category == category)
     if polo:
         query = query.filter(PublicationRecord.polo == polo.strip().lower())
+    # scheduled_by_user_id aceita CSV ("5,8"). Converte e aplica IN/=.
+    if scheduled_by_user_id:
+        ids = [int(x) for x in str(scheduled_by_user_id).split(",") if x.strip().isdigit()]
+        if ids:
+            if len(ids) == 1:
+                query = query.filter(PublicationRecord.scheduled_by_user_id == ids[0])
+            else:
+                query = query.filter(PublicationRecord.scheduled_by_user_id.in_(ids))
     return query
 
 
@@ -128,6 +140,9 @@ def _row_for_record(
         "publication_date": record.publication_date or "",
         "creation_date": record.creation_date or "",
         "status": record.status or "",
+        "scheduled_by": (
+            record.scheduled_by_name or record.scheduled_by_email or ""
+        ),
         "category": record.category or "",
         "subcategory": record.subcategory or "",
         "polo": record.polo or "",
@@ -157,6 +172,7 @@ def export_records_grouped_xlsx(
     category: Optional[str] = None,
     uf: Optional[str] = None,
     polo: Optional[str] = None,
+    scheduled_by_user_id: Optional[str] = None,
 ) -> tuple[bytes, str]:
     """Gera o XLSX e devolve ``(bytes, filename)``."""
 
@@ -170,6 +186,7 @@ def export_records_grouped_xlsx(
         date_to=date_to,
         category=category,
         polo=polo,
+        scheduled_by_user_id=scheduled_by_user_id,
     )
     # Filtro UF via coluna materializada (SQL) — antes era em memória.
     if uf:
@@ -247,6 +264,7 @@ def export_records_grouped_xlsx(
         ("category", category or ""),
         ("uf", uf or ""),
         ("polo", polo or ""),
+        ("scheduled_by_user_id", scheduled_by_user_id or ""),
     ]
     for row_idx, (label, value) in enumerate(meta_rows, start=1):
         meta.cell(row=row_idx, column=1, value=label).font = Font(bold=True)

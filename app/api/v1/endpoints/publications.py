@@ -546,6 +546,7 @@ def list_records_grouped(
     natureza: Optional[str] = Query(None, description="Filtra por natureza do processo (ex.: Embargos à Execução)."),
     polo: Optional[str] = Query(None, description="Filtra por polo indicado (ativo, passivo, ambos)."),
     cnj_search: Optional[str] = Query(None, description="Busca tolerante por CNJ (match por dígitos, ignora máscara)."),
+    scheduled_by_user_id: Optional[str] = Query(None, description="CSV de user_ids do operador que cadastrou (Cadastrado por)."),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     service: PublicationSearchService = Depends(_get_service),
@@ -563,6 +564,7 @@ def list_records_grouped(
         natureza=natureza,
         polo=polo,
         cnj_search=cnj_search,
+        scheduled_by_user_id=scheduled_by_user_id,
         limit=limit,
         offset=offset,
     )
@@ -578,6 +580,7 @@ def export_records_grouped(
     category: Optional[str] = Query(None, description="Classificação primária."),
     uf: Optional[str] = Query(None, description="UF/região derivada do CNJ."),
     polo: Optional[str] = Query(None, description="Filtra por polo indicado (ativo, passivo, ambos)."),
+    scheduled_by_user_id: Optional[str] = Query(None, description="CSV de user_ids do operador que cadastrou."),
     db: Session = Depends(get_db),
 ):
     """
@@ -596,6 +599,7 @@ def export_records_grouped(
         category=category,
         uf=uf,
         polo=polo,
+        scheduled_by_user_id=scheduled_by_user_id,
     )
     return Response(
         content=content,

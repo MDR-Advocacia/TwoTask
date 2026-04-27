@@ -1508,6 +1508,7 @@ class PublicationSearchService:
         natureza: Optional[str] = None,
         polo: Optional[str] = None,
         cnj_search: Optional[str] = None,
+        scheduled_by_user_id: Optional[str] = None,
     ):
         """Query base reutilizada por list_records_grouped e contagens."""
         query = self.db.query(PublicationRecord).filter(PublicationRecord.is_duplicate == False)  # noqa: E712
@@ -1569,6 +1570,18 @@ class PublicationSearchService:
                 query = query.filter(PublicationRecord.polo == polo_list[0])
             else:
                 query = query.filter(PublicationRecord.polo.in_(polo_list))
+        # Cadastrado por (scheduled_by_user_id) — CSV de user_ids do
+        # operador que finalizou o agendamento da publicação.
+        scheduled_by_ids = _parse_csv_ints(scheduled_by_user_id)
+        if scheduled_by_ids:
+            if len(scheduled_by_ids) == 1:
+                query = query.filter(
+                    PublicationRecord.scheduled_by_user_id == scheduled_by_ids[0]
+                )
+            else:
+                query = query.filter(
+                    PublicationRecord.scheduled_by_user_id.in_(scheduled_by_ids)
+                )
         # Busca por CNJ: match tolerante por dígitos (ignora máscara do usuário).
         # Comparamos a forma só-dígitos dos dois lados, assim "0000161-07.2026..."
         # e "000016107202680500" casam sem precisar normalizar o input.
@@ -1650,6 +1663,7 @@ class PublicationSearchService:
         natureza: Optional[str] = None,
         polo: Optional[str] = None,
         cnj_search: Optional[str] = None,
+        scheduled_by_user_id: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
@@ -1667,6 +1681,7 @@ class PublicationSearchService:
             category=category, uf=uf,
             vinculo=vinculo, natureza=natureza,
             polo=polo, cnj_search=cnj_search,
+            scheduled_by_user_id=scheduled_by_user_id,
         )
 
         # ─── Etapa 1: contar e paginar grupos (lawsuit_ids distintos) ───
@@ -1706,6 +1721,7 @@ class PublicationSearchService:
             uf=None,  # ignora o filtro de UF aqui — é o que queremos descobrir
             vinculo=vinculo, natureza=natureza,
             polo=polo, cnj_search=cnj_search,
+            scheduled_by_user_id=scheduled_by_user_id,
         )
         available_ufs = [
             row[0] for row in uf_query
@@ -1715,6 +1731,34 @@ class PublicationSearchService:
             .order_by(PublicationRecord.uf)
             .all()
             if row[0]
+        ]
+
+        # Operadores que aparecem como "Cadastrado por" — alimenta o
+        # multiselect do filtro. Mesma lógica do UF: ignora o próprio
+        # filtro pra que as opções não sumam após marcar uma. Devolve
+        # tuplas {user_id, name, email} pra o frontend renderizar bonito.
+        scheduled_by_query = self._base_publication_query(
+            search_id=search_id, status=status,
+            linked_office_id=linked_office_id,
+            date_from=date_from, date_to=date_to,
+            category=category, uf=uf,
+            vinculo=vinculo, natureza=natureza,
+            polo=polo, cnj_search=cnj_search,
+            scheduled_by_user_id=None,  # ignora pra descobrir todos
+        )
+        available_scheduled_by = [
+            {"user_id": r[0], "name": r[1] or "", "email": r[2] or ""}
+            for r in scheduled_by_query
+            .with_entities(
+                PublicationRecord.scheduled_by_user_id,
+                PublicationRecord.scheduled_by_name,
+                PublicationRecord.scheduled_by_email,
+            )
+            .filter(PublicationRecord.scheduled_by_user_id.isnot(None))
+            .distinct()
+            .order_by(PublicationRecord.scheduled_by_name)
+            .all()
+            if r[0] is not None
         ]
 
         # Busca as group_keys da página atual
@@ -1735,6 +1779,7 @@ class PublicationSearchService:
                 "limit": limit,
                 "groups": [],
                 "available_ufs": available_ufs,
+                "available_scheduled_by": available_scheduled_by,
             }
 
         # ─── Etapa 2: carrega records só dos grupos da página ───────
@@ -1754,6 +1799,7 @@ class PublicationSearchService:
             category=category, uf=uf,
             vinculo=vinculo, natureza=natureza,
             polo=polo, cnj_search=cnj_search,
+            scheduled_by_user_id=scheduled_by_user_id,
         )
 
         # Filtro: records que pertencem aos grupos da página
@@ -1802,6 +1848,7 @@ class PublicationSearchService:
             "limit": limit,
             "groups": grouped_list,
             "available_ufs": available_ufs,
+            "available_scheduled_by": available_scheduled_by,
         }
 
     def get_record(self, record_id: int) -> dict[str, Any]:
