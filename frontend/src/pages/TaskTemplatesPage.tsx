@@ -126,7 +126,7 @@ interface TaskTemplate {
   task_subtype_external_id: number;
   task_subtype_name: string | null;
   task_type_name: string | null;
-  responsible_user_external_id: number;
+  responsible_user_external_id: number | null;
   responsible_user_name: string | null;
   priority: string;
   due_business_days: number;
@@ -140,6 +140,7 @@ interface TaskTemplate {
 
 /** Um bloco de tarefa dentro do formulário (pode haver N por classificação) */
 const BLANK_TASK_BLOCK = {
+  id: undefined as number | undefined,
   name: "",
   task_type_external_id: "", // helper, not sent to API
   task_subtype_external_id: "",
@@ -301,6 +302,11 @@ const TaskTemplatesPage = () => {
     });
   }, [templates, filterOffice, filterCategory]);
 
+  const newTaskBlockCount = useMemo(
+    () => form.taskBlocks.filter((block) => !block.id).length,
+    [form.taskBlocks],
+  );
+
   /** Retorna os subtipos disponíveis para o tipo escolhido num bloco específico */
   const getSubtypesForBlock = (blockIdx: number): TaskSubtype[] => {
     const typeId = form.taskBlocks[blockIdx]?.task_type_external_id;
@@ -319,6 +325,11 @@ const TaskTemplatesPage = () => {
    */
   const subtypesInUseForBlock = (blockIdx: number): Set<number> => {
     const used = new Set<number>();
+    const formTemplateIds = new Set(
+      form.taskBlocks
+        .map((block) => block.id)
+        .filter((id): id is number => id !== undefined),
+    );
 
     // 1. Subtypes em uso em OUTROS blocos do form atual.
     form.taskBlocks.forEach((b, i) => {
@@ -339,7 +350,7 @@ const TaskTemplatesPage = () => {
       officeRaw === "_global" || officeRaw === "" ? null : parseInt(officeRaw);
 
     templates.forEach((tmpl) => {
-      if (editingId && tmpl.id === editingId) return; // não conta a si mesmo
+      if (formTemplateIds.has(tmpl.id)) return;
       if (tmpl.category !== form.category) return;
       const tmplSub = tmpl.subcategory ?? "";
       const formSub = form.subcategory ?? "";
@@ -522,6 +533,7 @@ const TaskTemplatesPage = () => {
         ...prev.taskBlocks,
         {
           ...prev.taskBlocks[prev.taskBlocks.length - 1],
+          id: undefined,
           name: "",
           task_type_external_id: "",
           task_subtype_external_id: "",
@@ -545,27 +557,47 @@ const TaskTemplatesPage = () => {
     setDialogOpen(true);
   };
 
-  const openEdit = (tmpl: TaskTemplate) => {
+  const taskBlockFromTemplate = (tmpl: TaskTemplate): TaskBlock => {
     const parentType = taskTypes.find((tt) =>
       tt.subtypes.some((s) => s.external_id === tmpl.task_subtype_external_id)
     );
+
+    return {
+      id: tmpl.id,
+      name: tmpl.name,
+      task_type_external_id: parentType ? String(parentType.external_id) : "",
+      task_subtype_external_id: String(tmpl.task_subtype_external_id),
+      responsible_user_external_id:
+        tmpl.responsible_user_external_id === null
+          ? ""
+          : String(tmpl.responsible_user_external_id),
+      priority: tmpl.priority,
+      due_business_days: String(tmpl.due_business_days),
+      due_date_reference: tmpl.due_date_reference || "publication",
+      description_template: tmpl.description_template ?? "",
+      notes_template: tmpl.notes_template ?? "",
+      is_active: tmpl.is_active,
+    };
+  };
+
+  const openEdit = (tmpl: TaskTemplate) => {
+    const officeValue = tmpl.office_external_id ?? null;
+    const siblingTemplates = templates
+      .filter((candidate) => {
+        if (candidate.id === tmpl.id) return true;
+        if (!candidate.is_active) return false;
+        if (candidate.category !== tmpl.category) return false;
+        if ((candidate.subcategory ?? "") !== (tmpl.subcategory ?? "")) return false;
+        return (candidate.office_external_id ?? null) === officeValue;
+      })
+      .sort((a, b) => a.id - b.id);
+
     setEditingId(tmpl.id);
     setForm({
       category: tmpl.category,
       subcategory: tmpl.subcategory ?? "",
       office_external_ids: [tmpl.office_external_id === null ? "_global" : String(tmpl.office_external_id)],
-      taskBlocks: [{
-        name: tmpl.name,
-        task_type_external_id: parentType ? String(parentType.external_id) : "",
-        task_subtype_external_id: String(tmpl.task_subtype_external_id),
-        responsible_user_external_id: String(tmpl.responsible_user_external_id),
-        priority: tmpl.priority,
-        due_business_days: String(tmpl.due_business_days),
-        due_date_reference: tmpl.due_date_reference || "publication",
-        description_template: tmpl.description_template ?? "",
-        notes_template: tmpl.notes_template ?? "",
-        is_active: tmpl.is_active,
-      }],
+      taskBlocks: siblingTemplates.map(taskBlockFromTemplate),
     });
     setDialogOpen(true);
   };
@@ -652,43 +684,41 @@ const TaskTemplatesPage = () => {
         const editOfficeRaw = form.office_external_ids[0] ?? "_global";
         const editOfficeValue =
           editOfficeRaw === "_global" || editOfficeRaw === "" ? null : parseInt(editOfficeRaw);
-        //  - bloco 0 → PUT no registro existente (editingId)
-        //  - blocos 1..N (adicionados via "Adicionar tarefa") → POST como
-        //    novos registros compartilhando categoria + subcategoria + escritório.
-        const firstPayload = buildPayload(form.taskBlocks[0], 0, editOfficeValue);
-        const putRes = await apiFetch(`${API}/${editingId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(firstPayload),
-        });
-        if (!putRes.ok) {
-          const data = await putRes.json().catch(() => ({}));
-          throw new Error(data.detail || "Erro ao atualizar template.");
-        }
-
+        // Blocos carregados do banco têm id e são atualizados.
+        // Blocos adicionados no modal não têm id e viram novos templates.
+        let updatedCount = 0;
         const addedNames: string[] = [];
-        for (let idx = 1; idx < form.taskBlocks.length; idx++) {
-          const payload = buildPayload(form.taskBlocks[idx], idx, editOfficeValue);
-          const res = await apiFetch(`${API}/`, {
-            method: "POST",
+        for (let idx = 0; idx < form.taskBlocks.length; idx++) {
+          const block = form.taskBlocks[idx];
+          const payload = buildPayload(block, idx, editOfficeValue);
+          const templateId = block.id;
+          const res = await apiFetch(templateId ? `${API}/${templateId}` : `${API}/`, {
+            method: templateId ? "PUT" : "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
           });
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
-            throw new Error(data.detail || `Erro ao criar tarefa ${idx + 1}.`);
+            throw new Error(data.detail || `Erro ao salvar tarefa ${idx + 1}.`);
           }
-          const created_item = await res.json();
-          addedNames.push(created_item.name ?? payload.name);
+          const savedItem = await res.json();
+          if (templateId) {
+            updatedCount += 1;
+          } else {
+            addedNames.push(savedItem.name ?? payload.name);
+          }
         }
 
         if (addedNames.length > 0) {
           toast({
-            title: `Template atualizado e ${addedNames.length} tarefa${addedNames.length > 1 ? "s" : ""} adicionada${addedNames.length > 1 ? "s" : ""}`,
-            description: `Atualizada: "${firstPayload.name}" • Novas: ${addedNames.join(" • ")}`,
+            title: `${updatedCount} tarefa${updatedCount !== 1 ? "s" : ""} atualizada${updatedCount !== 1 ? "s" : ""} e ${addedNames.length} adicionada${addedNames.length !== 1 ? "s" : ""}`,
+            description: `Novas: ${addedNames.join(" • ")}`,
           });
         } else {
-          toast({ title: "Template atualizado", description: `"${firstPayload.name}" salvo com sucesso.` });
+          toast({
+            title: "Template atualizado",
+            description: `${updatedCount} tarefa${updatedCount !== 1 ? "s" : ""} salva${updatedCount !== 1 ? "s" : ""} com sucesso.`,
+          });
         }
       } else {
         // Criação: cria um registro POR ESCRITÓRIO selecionado e POR bloco.
@@ -2125,7 +2155,7 @@ const TaskTemplatesPage = () => {
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <p className="text-sm font-semibold">
-                  Tarefas a criar{" "}
+                  {editingId ? "Tarefas do template" : "Tarefas a criar"}{" "}
                   <span className="font-normal text-muted-foreground">
                     ({form.taskBlocks.length})
                   </span>
@@ -2156,12 +2186,12 @@ const TaskTemplatesPage = () => {
                         <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
                           Tarefa {idx + 1}
                         </p>
-                        {editingId && idx === 0 && (
+                        {editingId && block.id && (
                           <Badge variant="outline" className="text-[10px] h-4 px-1.5">
                             Editando existente
                           </Badge>
                         )}
-                        {editingId && idx > 0 && (
+                        {editingId && !block.id && (
                           <Badge variant="secondary" className="text-[10px] h-4 px-1.5">
                             Nova
                           </Badge>
@@ -2169,7 +2199,7 @@ const TaskTemplatesPage = () => {
                       </div>
                       {/* Em edição, não deixa remover o bloco original — use o
                           botão de excluir na lista principal para isso. */}
-                      {form.taskBlocks.length > 1 && !(editingId && idx === 0) && (
+                      {form.taskBlocks.length > 1 && !(editingId && block.id) && (
                         <button
                           type="button"
                           onClick={() => removeTaskBlock(idx)}
@@ -2382,8 +2412,8 @@ const TaskTemplatesPage = () => {
                 <Check className="mr-2 h-4 w-4" />
               )}
               {editingId
-                ? form.taskBlocks.length > 1
-                  ? `Salvar alterações + criar ${form.taskBlocks.length - 1} nova${form.taskBlocks.length - 1 > 1 ? "s" : ""}`
+                ? newTaskBlockCount > 0
+                  ? `Salvar alterações + criar ${newTaskBlockCount} nova${newTaskBlockCount > 1 ? "s" : ""}`
                   : "Salvar alterações"
                 : `Criar template (${form.taskBlocks.length} tarefa${form.taskBlocks.length > 1 ? "s" : ""})`}
             </Button>
