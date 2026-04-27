@@ -24,7 +24,11 @@ prazos e devolver um JSON estruturado.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Optional
+
+
+logger = logging.getLogger(__name__)
 
 
 # ─── System prompt ────────────────────────────────────────────────────
@@ -279,9 +283,35 @@ def build_user_message(
       `{"codigo": "DANOS_MORAIS", "nome": "Danos Morais",
         "naturezas": "Cível;Consumidor;..."}`. Quando fornecida, é
       anexada à mensagem pra o modelo escolher DENTRE esses códigos.
+
+    Antes de serializar, o payload passa pelo `sanitize_for_classification`
+    (intake_sanitizer): drop de campos redundantes, limpeza de boilerplate
+    de PJe, re-classificação de `document_kind` pelo label declarado.
+    Os JSONs do banco não são alterados — sanitização vive só aqui.
     """
-    capa_text = _safe_json_dumps(capa_json)
-    integra_text = _safe_json_dumps(integra_json)
+    # Sanitização local antes de mandar pro Sonnet — reduz ~18% de tokens
+    # e corrige falsos positivos de document_kind. Ver intake_sanitizer.py.
+    from app.services.classifier.intake_sanitizer import (
+        estimate_reduction,
+        sanitize_for_classification,
+    )
+
+    try:
+        stats = estimate_reduction(capa_json, integra_json, None)
+        logger.info(
+            "intake_sanitizer: %s -> %s chars (-%.1f%% / -%d chars)",
+            stats["before_chars"], stats["after_chars"],
+            stats["saved_pct"], stats["saved_chars"],
+        )
+    except Exception:  # noqa: BLE001
+        # Observabilidade não pode quebrar o fluxo. Loga e segue.
+        logger.exception("intake_sanitizer: falha ao medir redução")
+
+    capa_clean, integra_clean, _ = sanitize_for_classification(
+        capa_json, integra_json, None,
+    )
+    capa_text = _safe_json_dumps(capa_clean)
+    integra_text = _safe_json_dumps(integra_clean)
 
     tipos_section = ""
     if tipos_pedido_disponiveis:
