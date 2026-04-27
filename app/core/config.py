@@ -112,6 +112,15 @@ class Settings(BaseSettings):
     prazos_iniciais_legacy_task_circuit_breaker_threshold: int = 3
     prazos_iniciais_legacy_task_circuit_breaker_cooldown_minutes: int = 10
 
+    # ── Disparo periódico do tratamento web (Onda 3 #6) ─────────────────
+    # Worker que varre intakes com `dispatch_pending=True` e dispara
+    # GED upload + enqueue cancel da legada em ordem cronológica.
+    # Desligado por padrão até a TI validar — operador pode disparar
+    # manualmente pelo botão "Disparar próximos 10".
+    prazos_iniciais_dispatch_enabled: bool = False
+    prazos_iniciais_dispatch_interval_seconds: int = 300
+    prazos_iniciais_dispatch_batch_limit: int = 10
+
     # ── Batch Tasks (OneSid, OneRequest, etc.) ────────────────────────
     # Chave(s) que autenticam as automações externas no endpoint
     # /api/v1/tasks/batch-create. Separado do JWT do operador pq o

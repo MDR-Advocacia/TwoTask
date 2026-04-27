@@ -84,6 +84,7 @@ class PrazosIniciaisLegacyTaskQueueService:
         commit: bool = True,
         legacy_task_type_external_id: int = DEFAULT_LEGACY_TASK_TYPE_EXTERNAL_ID,
         legacy_task_subtype_external_id: int = DEFAULT_LEGACY_TASK_SUBTYPE_EXTERNAL_ID,
+        force_queue: bool = False,
     ) -> Optional[PrazoInicialLegacyTaskCancellationItem]:
         """
         Garante que um intake AGENDADO tenha um item pendente na fila de
@@ -94,7 +95,7 @@ class PrazosIniciaisLegacyTaskQueueService:
         now = self._utcnow()
         item = intake.legacy_task_cancellation_item
         should_queue = (
-            intake.status == INTAKE_STATUS_SCHEDULED
+            (force_queue or intake.status == INTAKE_STATUS_SCHEDULED)
             and (intake.lawsuit_id is not None or bool(intake.cnj_number))
         )
 

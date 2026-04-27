@@ -42,26 +42,35 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { MultiSelect } from "@/components/ui/MultiSelect";
 import { Separator } from "@/components/ui/separator";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
+import { apiFetch } from "@/lib/api-client";
 import {
   applyPrazosIniciaisBatch,
   cancelarPrazoInicial,
   confirmarAgendamentoPrazoInicial,
+  dispatchPrazoInicialPendingBatch,
+  dispatchPrazoInicialTreatmentWeb,
   fetchPrazoInicialDetail,
+  deletePrazoInicialIntake,
   fetchPrazosIniciaisBatches,
+  fetchPrazosIniciaisEnums,
   fetchPrazosIniciaisIntakes,
+  finalizarPrazoInicialSemProvidencia,
   reanalyzePrazoInicial,
   exportPrazosIniciaisXlsx,
-  prazoInicialPdfUrl,
+  fetchPrazoInicialPdfBlob,
   recomputePrazoInicialGlobals,
   refreshPrazosIniciaisBatch,
   reprocessarPrazoInicialCnj,
   submitPrazosIniciaisClassifyPending,
 } from "@/services/api";
+import { useAuth } from "@/hooks/useAuth";
 import type {
   PrazoInicialBatchSummary,
+  PrazoInicialEnums,
   PrazoInicialIntakeDetail,
   PrazoInicialIntakeStatus,
   PrazoInicialIntakeSummary,
@@ -79,6 +88,7 @@ const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "CLASSIFICADO", label: "Classificado" },
   { value: "EM_REVISAO", label: "Em revisao" },
   { value: "AGENDADO", label: "Agendado" },
+  { value: "CONCLUIDO_SEM_PROVIDENCIA", label: "Concluido sem providencia" },
   { value: "GED_ENVIADO", label: "GED enviado" },
   { value: "CONCLUIDO", label: "Concluido" },
   { value: "ERRO_CLASSIFICACAO", label: "Erro na classificacao" },
@@ -186,12 +196,31 @@ function isConfirmableStatus(status: string): boolean {
 
 export default function PrazosIniciaisPage() {
   const { toast } = useToast();
+  const { isAdmin } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const [statusFilter, setStatusFilter] = useState("__all__");
+  // Filtros - os "appliedXxx" são os que efetivamente vão pro GET, os
+  // "xxxFilter" são os que o operador está editando antes de clicar "Aplicar".
+  // Multi-select filtros guardam CSV (ex "CLASSIFICADO,AGENDADO").
+  const [statusFilter, setStatusFilter] = useState("");           // CSV
   const [cnjFilter, setCnjFilter] = useState("");
-  const [appliedStatus, setAppliedStatus] = useState("__all__");
+  const [officeFilter, setOfficeFilter] = useState("");           // CSV de ids
+  const [naturezaFilter, setNaturezaFilter] = useState("");       // CSV
+  const [produtoFilter, setProdutoFilter] = useState("");         // CSV
+  const [probExitoFilter, setProbExitoFilter] = useState("");     // CSV
+  const [dateFromFilter, setDateFromFilter] = useState("");
+  const [dateToFilter, setDateToFilter] = useState("");
+  const [hasErrorFilter, setHasErrorFilter] = useState<"__all__" | "com" | "sem">("__all__");
+
+  const [appliedStatus, setAppliedStatus] = useState("");
   const [appliedCnj, setAppliedCnj] = useState("");
+  const [appliedOffice, setAppliedOffice] = useState("");
+  const [appliedNatureza, setAppliedNatureza] = useState("");
+  const [appliedProduto, setAppliedProduto] = useState("");
+  const [appliedProbExito, setAppliedProbExito] = useState("");
+  const [appliedDateFrom, setAppliedDateFrom] = useState("");
+  const [appliedDateTo, setAppliedDateTo] = useState("");
+  const [appliedHasError, setAppliedHasError] = useState<"__all__" | "com" | "sem">("__all__");
   const [offset, setOffset] = useState(0);
 
   const [items, setItems] = useState<PrazoInicialIntakeSummary[]>([]);
@@ -208,6 +237,30 @@ export default function PrazosIniciaisPage() {
   const [selectedSuggestions, setSelectedSuggestions] = useState<Record<number, boolean>>({});
   const [createdTaskIds, setCreatedTaskIds] = useState<Record<number, string>>({});
 
+  // Enums (naturezas, produtos, etc.) pra popular os MultiSelects dos filtros.
+  // Carregado 1x no mount — valores vêm do /api/v1/prazos-iniciais/enums.
+  const [enums, setEnums] = useState<PrazoInicialEnums | null>(null);
+
+  // Cadastro de escritórios (LegalOneOffice). Usado pra traduzir office_id
+  // do intake/detail pro path hierárquico humano (ex: "MDR Advocacia /
+  // Área operacional / Banco Master / Réu"). Carregado 1x no mount.
+  const [offices, setOffices] = useState<
+    Array<{ id: number; external_id: number; name: string; path: string | null }>
+  >([]);
+
+  // Resolve office_id → rótulo humano. Prefere o path completo; cai pro
+  // name quando o path está vazio; cai pro id quando o escritório não
+  // foi carregado ainda.
+  const officeLabel = useCallback(
+    (id: number | null | undefined): string => {
+      if (!id) return "—";
+      const office = offices.find((o) => o.external_id === id);
+      if (!office) return `#${id}`;
+      return office.path || office.name || `#${id}`;
+    },
+    [offices],
+  );
+
   // Classificação em batch (Sonnet) — Onda 1 manual.
   const [batches, setBatches] = useState<PrazoInicialBatchSummary[]>([]);
   const [batchesLoading, setBatchesLoading] = useState(false);
@@ -220,9 +273,20 @@ export default function PrazosIniciaisPage() {
       setLoadError(null);
       try {
         const nextOffset = resetPage ? 0 : offset;
+        const has_error =
+          appliedHasError === "com" ? true
+          : appliedHasError === "sem" ? false
+          : undefined;
         const payload = await fetchPrazosIniciaisIntakes({
-          status: appliedStatus !== "__all__" ? appliedStatus : undefined,
+          status: appliedStatus || undefined,
           cnj_number: appliedCnj || undefined,
+          office_id: appliedOffice || undefined,
+          natureza_processo: appliedNatureza || undefined,
+          produto: appliedProduto || undefined,
+          probabilidade_exito_global: appliedProbExito || undefined,
+          date_from: appliedDateFrom || undefined,
+          date_to: appliedDateTo || undefined,
+          has_error,
           limit: PAGE_SIZE,
           offset: nextOffset,
         });
@@ -235,7 +299,11 @@ export default function PrazosIniciaisPage() {
         setIsLoading(false);
       }
     },
-    [appliedCnj, appliedStatus, offset],
+    [
+      appliedCnj, appliedStatus, appliedOffice, appliedNatureza,
+      appliedProduto, appliedProbExito, appliedDateFrom, appliedDateTo,
+      appliedHasError, offset,
+    ],
   );
 
   const loadDetail = useCallback(async (intakeId: number) => {
@@ -326,14 +394,35 @@ export default function PrazosIniciaisPage() {
   const onAplicarFiltros = () => {
     setAppliedStatus(statusFilter);
     setAppliedCnj(cnjFilter.trim());
+    setAppliedOffice(officeFilter);
+    setAppliedNatureza(naturezaFilter);
+    setAppliedProduto(produtoFilter);
+    setAppliedProbExito(probExitoFilter);
+    setAppliedDateFrom(dateFromFilter);
+    setAppliedDateTo(dateToFilter);
+    setAppliedHasError(hasErrorFilter);
     setOffset(0);
   };
 
   const onLimparFiltros = () => {
-    setStatusFilter("__all__");
+    setStatusFilter("");
     setCnjFilter("");
-    setAppliedStatus("__all__");
+    setOfficeFilter("");
+    setNaturezaFilter("");
+    setProdutoFilter("");
+    setProbExitoFilter("");
+    setDateFromFilter("");
+    setDateToFilter("");
+    setHasErrorFilter("__all__");
+    setAppliedStatus("");
     setAppliedCnj("");
+    setAppliedOffice("");
+    setAppliedNatureza("");
+    setAppliedProduto("");
+    setAppliedProbExito("");
+    setAppliedDateFrom("");
+    setAppliedDateTo("");
+    setAppliedHasError("__all__");
     setOffset(0);
   };
 
@@ -364,6 +453,177 @@ export default function PrazosIniciaisPage() {
       toast({ title: "Erro", description: msg, variant: "destructive" });
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  // Onda 3 #5 — Disparo do tratamento web (GED + cancel da legada) de
+  // um intake AGENDADO/CONCLUIDO_SEM_PROVIDENCIA com dispatch_pending=true.
+  // Idempotente: backend retorna skipped:true se já foi disparado.
+  const [dispatchingIntakeId, setDispatchingIntakeId] = useState<number | null>(
+    null,
+  );
+  const [isBatchDispatching, setIsBatchDispatching] = useState(false);
+
+  const onDispatchIntake = async (intakeId: number) => {
+    setDispatchingIntakeId(intakeId);
+    try {
+      const result = await dispatchPrazoInicialTreatmentWeb(intakeId);
+      if (result.skipped) {
+        toast({
+          title: "Já disparado",
+          description: result.reason || "Intake não estava pendente.",
+        });
+      } else {
+        toast({
+          title: "Disparo concluído",
+          description: `Intake #${intakeId}: GED enviado e cancel da legada enfileirado.`,
+        });
+      }
+      await loadIntakes();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Erro desconhecido";
+      toast({
+        title: "Falha no disparo",
+        description: msg,
+        variant: "destructive",
+      });
+    } finally {
+      setDispatchingIntakeId(null);
+    }
+  };
+
+  const onDispatchPendingBatch = async () => {
+    setIsBatchDispatching(true);
+    try {
+      const result = await dispatchPrazoInicialPendingBatch(10);
+      const lines = [
+        `${result.success_count} disparado(s)`,
+        result.skipped_count ? `${result.skipped_count} já disparado(s)` : null,
+        result.failure_count ? `${result.failure_count} falha(s)` : null,
+      ].filter(Boolean);
+      toast({
+        title: "Disparo em lote",
+        description:
+          `${result.candidates} candidato(s). ${lines.join(" · ")}` +
+          (result.failure_count
+            ? `\n\nFalhas: ${result.failed
+                .map((f) => `#${f.intake_id}: ${f.error}`)
+                .join(" | ")}`
+            : ""),
+        variant: result.failure_count ? "destructive" : "default",
+      });
+      await loadIntakes();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Erro desconhecido";
+      toast({
+        title: "Falha ao disparar lote",
+        description: msg,
+        variant: "destructive",
+      });
+    } finally {
+      setIsBatchDispatching(false);
+    }
+  };
+
+  // HARD DELETE — admin only. Apaga intake + cascata + PDF fisico. Usado
+  // pra reinjetar o mesmo processo do zero durante testes. Vai virar
+  // arquivamento (soft delete) depois.
+  const onDeleteIntake = async () => {
+    if (!detail) return;
+    if (
+      !confirm(
+        `DELETAR intake #${detail.id} (${detail.cnj_number || "sem CNJ"})?\n\n` +
+          "Esta ação é IRREVERSÍVEL e remove o registro, sugestões, pedidos\n" +
+          "e PDF do disco. Use apenas em ambiente de teste.",
+      )
+    ) {
+      return;
+    }
+    setActionLoading(true);
+    try {
+      await deletePrazoInicialIntake(detail.id);
+      toast({
+        title: "Intake deletado",
+        description: `Intake #${detail.id} removido permanentemente.`,
+      });
+      setSelectedId(null);
+      await loadIntakes();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Erro desconhecido";
+      toast({ title: "Erro ao deletar", description: msg, variant: "destructive" });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Finaliza o intake sem criar tarefa no L1 (Caminho A). Sobe habilitação
+  // pro GED, cancela task legada, marca CONCLUIDO_SEM_PROVIDENCIA. Usado
+  // quando operador determina que o processo não exige providência do
+  // banco (sentença improcedente transitada, arquivamento, etc.).
+  const onFinalizeWithoutProvidence = async () => {
+    if (!detail) return;
+    const isRetry = detail.status === "CONCLUIDO_SEM_PROVIDENCIA";
+    const promptTitle = isRetry
+      ? `Retentar finalização do intake #${detail.id}?`
+      : `Finalizar intake #${detail.id} SEM criar tarefa no Legal One?`;
+    const promptBody = isRetry
+      ? "O intake já está CONCLUIDO_SEM_PROVIDENCIA. Reexecutar os passos pode\n" +
+        "ajudar se algum falhou na primeira vez (ex.: GED upload, cancelamento\n" +
+        "da legada). Idempotente — passos já concluídos são pulados.\n\n" +
+        "Opcional: digite um motivo da retentativa abaixo."
+      : "Isso vai:\n" +
+        "  • Subir a habilitação pro GED do processo no L1\n" +
+        "  • Cancelar a task legada 'Agendar Prazos'\n" +
+        "  • Marcar o intake como CONCLUIDO_SEM_PROVIDENCIA\n\n" +
+        "Opcional: digite um motivo abaixo (aparece na trilha de auditoria) " +
+        "ou deixe vazio e clique OK pra confirmar. Cancelar interrompe a ação.";
+    const notes = window.prompt(`${promptTitle}\n\n${promptBody}`, "");
+    if (notes === null) return;  // usuário apertou Cancel
+
+    setActionLoading(true);
+    try {
+      await finalizarPrazoInicialSemProvidencia(detail.id, {
+        notes: notes.trim() || null,
+      });
+      toast({
+        title: "Intake finalizado sem providência",
+        description:
+          "Habilitação enviada ao GED, task legada entrou na fila de cancelamento.",
+      });
+      await Promise.all([loadDetail(detail.id), loadIntakes()]);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Erro desconhecido";
+      toast({
+        title: "Falha ao finalizar",
+        description: msg,
+        variant: "destructive",
+        duration: 15000,
+      });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Baixa o PDF da habilitação autenticado (via apiFetch) e abre numa nova
+  // aba usando Object URL. Anchor <a href target="_blank"> direto nao
+  // funciona porque o browser nao envia o header Authorization do JWT em
+  // navegacoes — resultado seria 401 'Not authenticated'.
+  const onOpenPdfInNewTab = async () => {
+    if (!detail) return;
+    try {
+      const blob = await fetchPrazoInicialPdfBlob(detail.id);
+      const objectUrl = URL.createObjectURL(blob);
+      // Abre e agenda revoke depois de um tempinho (browser ainda precisa
+      // carregar o conteúdo antes de revogarmos).
+      window.open(objectUrl, "_blank", "noopener,noreferrer");
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Erro desconhecido";
+      toast({
+        title: "Falha ao abrir PDF",
+        description: msg,
+        variant: "destructive",
+      });
     }
   };
 
@@ -568,6 +828,36 @@ export default function PrazosIniciaisPage() {
     loadBatches();
   }, [loadBatches]);
 
+  // Carrega enums 1x no mount. Usado pra popular os MultiSelects de
+  // Natureza/Produto/Probabilidade nos filtros.
+  useEffect(() => {
+    let cancelled = false;
+    fetchPrazosIniciaisEnums()
+      .then((e) => { if (!cancelled) setEnums(e); })
+      .catch((err) => {
+        console.warn("Falha ao carregar enums de prazos iniciais:", err);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Carrega cadastro de escritórios 1x no mount. Usado pra traduzir
+  // office_id em path no modal de detalhes do intake. Silencioso em
+  // falha — sem crashar a tela (cai no fallback "#id").
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch("/api/v1/offices");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled && Array.isArray(data)) setOffices(data);
+      } catch (err) {
+        console.warn("Falha ao carregar escritórios:", err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const handleClassifyPending = useCallback(async () => {
     setClassifyingPending(true);
     try {
@@ -637,6 +927,62 @@ export default function PrazosIniciaisPage() {
     [loadBatches, loadIntakes, toast],
   );
 
+  // ─── Polling automático dos batches em processamento ──────────────────
+  // Quando há batches ENVIADO/EM_PROCESSAMENTO, refresca status a cada 15s.
+  // Quando algum vira PRONTO/READY, aplica resultados automaticamente.
+  // Botões manuais (Atualizar status / Aplicar resultados) seguem como
+  // fallback pra falhas pontuais ou re-aplicação.
+  useEffect(() => {
+    const inFlight = batches.filter(
+      (b) => b.status === "ENVIADO" || b.status === "EM_PROCESSAMENTO",
+    );
+    const ready = batches.filter(
+      (b) => b.status === "PRONTO" || b.status === "READY",
+    );
+
+    // Auto-aplicar batches prontos (1 por vez pra evitar duplicidade).
+    if (ready.length > 0) {
+      const next = ready[0];
+      // Sentinela: só dispara se ninguém estiver aplicando outro batch.
+      if (batchActionId === null) {
+        // setBatchActionId protege contra re-entrada.
+        setBatchActionId(next.id);
+        applyPrazosIniciaisBatch(next.id)
+          .then((result) => {
+            toast({
+              title: "Resultados aplicados (auto)",
+              description: `Batch #${next.id}: ${result.succeeded} OK, ${result.total_sugestoes} sugestões.`,
+            });
+            return Promise.all([loadBatches(), loadIntakes()]);
+          })
+          .catch((err) => {
+            toast({
+              title: "Falha ao aplicar (auto)",
+              description: err instanceof Error ? err.message : "Erro desconhecido.",
+              variant: "destructive",
+            });
+          })
+          .finally(() => setBatchActionId(null));
+      }
+      return;
+    }
+
+    // Sem batches em vôo → não precisa polling.
+    if (inFlight.length === 0) return;
+
+    const intervalId = window.setInterval(() => {
+      // Refresca todos os batches em vôo. Falhas individuais são
+      // silenciosas — o tick seguinte tenta de novo.
+      Promise.all(
+        inFlight.map((b) => refreshPrazosIniciaisBatch(b.id).catch(() => null)),
+      ).then(() => {
+        loadBatches();
+      });
+    }, 15000);
+
+    return () => window.clearInterval(intervalId);
+  }, [batches, batchActionId, loadBatches, loadIntakes, toast]);
+
   // Contagem de pendentes na grade visível (usado como badge no botão).
   const pendingCount = useMemo(
     () => items.filter((i) => i.status === "PRONTO_PARA_CLASSIFICAR").length,
@@ -675,6 +1021,18 @@ export default function PrazosIniciaisPage() {
                 {pendingCount}
               </Badge>
             )}
+          </Button>
+          <Button
+            variant="outline"
+            className="w-full sm:w-auto"
+            onClick={onDispatchPendingBatch}
+            disabled={isBatchDispatching}
+            title="Dispara em lote os próximos 10 intakes pendentes (GED + cancel da legada)"
+          >
+            {isBatchDispatching ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : null}
+            Disparar próximos 10
           </Button>
           <Button
             variant="outline"
@@ -850,48 +1208,158 @@ export default function PrazosIniciaisPage() {
             <Filter className="h-4 w-4" />
             Filtros
           </CardTitle>
-          <CardDescription>Filtre por status do intake ou por numero CNJ, com ou sem mascara.</CardDescription>
+          <CardDescription>
+            Multi-seleção na maioria dos campos. Use Ctrl/Cmd pra marcar várias opções.
+            Clique em <span className="font-semibold">Aplicar</span> (ou Enter no CNJ) pra executar a busca.
+          </CardDescription>
         </CardHeader>
-        <CardContent>
-          <div className="grid gap-4 md:grid-cols-[1fr_1fr_auto_auto_auto]">
+        <CardContent className="space-y-4">
+          {/* ── Linha 1: Status, Natureza, Produto ──────────────────── */}
+          <div className="grid gap-3 md:grid-cols-3">
             <div className="space-y-1">
-              <Label htmlFor="pin-status">Status</Label>
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger id="pin-status">
-                  <SelectValue placeholder="Todos os status" />
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Status
+              </Label>
+              <MultiSelect
+                options={STATUS_OPTIONS
+                  .filter((o) => o.value !== "__all__")
+                  .map((o) => ({ value: o.value, label: o.label }))}
+                defaultValue={statusFilter ? statusFilter.split(",").filter(Boolean) : []}
+                onValueChange={(vals) => setStatusFilter(vals.join(","))}
+                placeholder="Todos"
+                className="h-9 text-sm"
+                maxCount={2}
+              />
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Natureza do processo
+              </Label>
+              <MultiSelect
+                options={(enums?.naturezas ?? []).map((n) => ({ value: n, label: n }))}
+                defaultValue={naturezaFilter ? naturezaFilter.split(",").filter(Boolean) : []}
+                onValueChange={(vals) => setNaturezaFilter(vals.join(","))}
+                placeholder={enums ? "Todas" : "Carregando..."}
+                className="h-9 text-sm"
+                maxCount={2}
+              />
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Produto
+              </Label>
+              <MultiSelect
+                options={(enums?.produtos ?? []).map((p) => ({ value: p, label: p }))}
+                defaultValue={produtoFilter ? produtoFilter.split(",").filter(Boolean) : []}
+                onValueChange={(vals) => setProdutoFilter(vals.join(","))}
+                placeholder={enums ? "Todos" : "Carregando..."}
+                className="h-9 text-sm"
+                maxCount={2}
+              />
+            </div>
+          </div>
+
+          {/* ── Linha 2: Prob. êxito, Erro, Escritório ──────────────── */}
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="space-y-1">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Probabilidade de êxito global
+              </Label>
+              <MultiSelect
+                options={[
+                  { value: "remota", label: "Remota" },
+                  { value: "possivel", label: "Possível" },
+                  { value: "provavel", label: "Provável" },
+                ]}
+                defaultValue={probExitoFilter ? probExitoFilter.split(",").filter(Boolean) : []}
+                onValueChange={(vals) => setProbExitoFilter(vals.join(","))}
+                placeholder="Todas"
+                className="h-9 text-sm"
+                maxCount={3}
+              />
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Mensagem de erro
+              </Label>
+              <Select value={hasErrorFilter} onValueChange={(v) => setHasErrorFilter(v as "__all__" | "com" | "sem")}>
+                <SelectTrigger className="h-9 text-sm">
+                  <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {STATUS_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
+                  <SelectItem value="__all__">Qualquer</SelectItem>
+                  <SelectItem value="com">Só com erro</SelectItem>
+                  <SelectItem value="sem">Só sem erro</SelectItem>
                 </SelectContent>
               </Select>
             </div>
 
             <div className="space-y-1">
-              <Label htmlFor="pin-cnj">CNJ</Label>
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Escritório (IDs)
+              </Label>
+              <Input
+                placeholder="CSV de IDs. Ex.: 61,62"
+                value={officeFilter}
+                onChange={(e) => setOfficeFilter(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") onAplicarFiltros(); }}
+                className="h-9 text-sm"
+              />
+            </div>
+          </div>
+
+          {/* ── Linha 3: CNJ, Período, Botões ───────────────────────── */}
+          <div className="grid gap-3 md:grid-cols-[2fr_1fr_1fr_auto_auto_auto]">
+            <div className="space-y-1">
+              <Label htmlFor="pin-cnj" className="text-xs uppercase tracking-wide text-muted-foreground">
+                CNJ
+              </Label>
               <Input
                 id="pin-cnj"
-                placeholder="Ex.: 0072837-30.2026.8.05.0001"
+                placeholder="Com ou sem máscara — match por dígitos"
                 value={cnjFilter}
                 onChange={(event) => setCnjFilter(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") onAplicarFiltros();
-                }}
+                onKeyDown={(event) => { if (event.key === "Enter") onAplicarFiltros(); }}
+                className="h-9 text-sm"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Recebido de
+              </Label>
+              <Input
+                type="date"
+                value={dateFromFilter}
+                onChange={(e) => setDateFromFilter(e.target.value)}
+                className="h-9 text-sm"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Recebido até
+              </Label>
+              <Input
+                type="date"
+                value={dateToFilter}
+                onChange={(e) => setDateToFilter(e.target.value)}
+                className="h-9 text-sm"
               />
             </div>
 
             <div className="flex items-end">
-              <Button type="button" onClick={onAplicarFiltros} disabled={isLoading}>
+              <Button type="button" onClick={onAplicarFiltros} disabled={isLoading} className="h-9">
                 <Search className="mr-2 h-4 w-4" />
                 Aplicar
               </Button>
             </div>
 
             <div className="flex items-end">
-              <Button type="button" variant="outline" onClick={onLimparFiltros} disabled={isLoading}>
+              <Button type="button" variant="outline" onClick={onLimparFiltros} disabled={isLoading} className="h-9">
                 <Undo2 className="mr-2 h-4 w-4" />
                 Limpar
               </Button>
@@ -903,7 +1371,8 @@ export default function PrazosIniciaisPage() {
                 variant="ghost"
                 onClick={() => loadIntakes()}
                 disabled={isLoading}
-                title="Atualizar lista"
+                title="Atualizar lista sem mudar filtros"
+                className="h-9"
               >
                 <RefreshCw className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
               </Button>
@@ -972,21 +1441,58 @@ export default function PrazosIniciaisPage() {
                           {item.natureza_processo || "Natureza pendente"}
                           {item.produto ? ` · ${item.produto}` : ""}
                         </div>
+                        {item.treated_by_name ? (
+                          <div className="text-xs text-muted-foreground">
+                            Tratado por <span className="font-medium text-foreground/80">{item.treated_by_name}</span>
+                            {item.treated_at ? ` em ${formatDateTime(item.treated_at)}` : ""}
+                          </div>
+                        ) : null}
                       </div>
                     </TableCell>
                     <TableCell>
                       <Badge variant={statusBadgeVariant(item.status)}>{STATUS_LABEL[item.status] ?? item.status}</Badge>
+                      {item.dispatch_pending ? (
+                        <div className="mt-1">
+                          <Badge variant="outline" className="bg-amber-50 text-amber-800 border-amber-300">
+                            Pendente disparo
+                          </Badge>
+                        </div>
+                      ) : null}
                       {item.error_message ? (
                         <div className="mt-1 max-w-[220px] truncate text-xs text-muted-foreground" title={item.error_message}>
                           {item.error_message}
                         </div>
                       ) : null}
+                      {item.dispatch_error_message ? (
+                        <div
+                          className="mt-1 max-w-[220px] truncate text-xs text-destructive"
+                          title={item.dispatch_error_message}
+                        >
+                          Disparo: {item.dispatch_error_message}
+                        </div>
+                      ) : null}
                     </TableCell>
                     <TableCell className="text-right">{item.sugestoes_count}</TableCell>
                     <TableCell className="text-right">
-                      <Button size="sm" variant="outline" onClick={() => setSelectedId(item.id)}>
-                        Detalhes
-                      </Button>
+                      <div className="flex flex-col gap-1 items-end">
+                        <Button size="sm" variant="outline" onClick={() => setSelectedId(item.id)}>
+                          Detalhes
+                        </Button>
+                        {item.dispatch_pending ? (
+                          <Button
+                            size="sm"
+                            variant="default"
+                            disabled={dispatchingIntakeId === item.id}
+                            onClick={() => onDispatchIntake(item.id)}
+                            title="Sobe habilitação no GED + cancela task legada"
+                          >
+                            {dispatchingIntakeId === item.id ? (
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            ) : null}
+                            Disparar
+                          </Button>
+                        ) : null}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -1021,7 +1527,7 @@ export default function PrazosIniciaisPage() {
           if (!open) setSelectedId(null);
         }}
       >
-        <DialogContent className="max-h-[88vh] max-w-5xl overflow-y-auto">
+        <DialogContent className="!max-w-[min(95vw,72rem)] max-h-[92vh] w-[95vw] overflow-y-auto overflow-x-hidden p-5 sm:p-6">
           <DialogHeader>
             <DialogTitle>Intake #{selectedId}</DialogTitle>
             <DialogDescription>
@@ -1047,7 +1553,7 @@ export default function PrazosIniciaisPage() {
 
           {detail && !detailLoading ? (
             <div className="space-y-5">
-              <div className="grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-3">
+              <div className="grid gap-3 text-sm sm:grid-cols-2 2xl:grid-cols-3 [&>div]:min-w-0 [&>div>div]:break-words">
                 <div>
                   <div className="text-xs text-muted-foreground">External ID</div>
                   <div className="break-all font-mono">{detail.external_id}</div>
@@ -1070,9 +1576,14 @@ export default function PrazosIniciaisPage() {
                   <div className="text-xs text-muted-foreground">Processo no Legal One</div>
                   <div>{detail.lawsuit_id ? `lawsuit_id = ${detail.lawsuit_id}` : "Nao resolvido"}</div>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="text-xs text-muted-foreground">Escritorio</div>
-                  <div>{detail.office_id ? `office_id = ${detail.office_id}` : "-"}</div>
+                  <div
+                    className="break-words text-sm"
+                    title={detail.office_id ? `office_id: ${detail.office_id}` : undefined}
+                  >
+                    {officeLabel(detail.office_id)}
+                  </div>
                 </div>
                 <div>
                   <div className="text-xs text-muted-foreground">Natureza</div>
@@ -1216,11 +1727,15 @@ export default function PrazosIniciaisPage() {
                     <span className="ml-2 text-muted-foreground">({formatBytes(detail.pdf_bytes)})</span>
                   </span>
                   {detail.pdf_bytes ? (
-                    <Button asChild size="sm" variant="outline" className="ml-auto">
-                      <a href={prazoInicialPdfUrl(detail.id)} target="_blank" rel="noopener noreferrer">
-                        <ExternalLink className="mr-1 h-4 w-4" />
-                        Abrir em nova aba
-                      </a>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="ml-auto"
+                      onClick={onOpenPdfInNewTab}
+                      title="Baixa o PDF autenticado e abre numa nova aba"
+                    >
+                      <ExternalLink className="mr-1 h-4 w-4" />
+                      Abrir em nova aba
                     </Button>
                   ) : (
                     <span className="ml-auto text-xs text-muted-foreground">Retencao expirada</span>
@@ -1431,25 +1946,7 @@ export default function PrazosIniciaisPage() {
             </div>
           ) : null}
 
-          <DialogFooter className="gap-2">
-            <Button
-              variant="outline"
-              onClick={onReprocessarCnj}
-              disabled={
-                !detail ||
-                actionLoading ||
-                !(detail.status === "RECEBIDO" || detail.status === "PROCESSO_NAO_ENCONTRADO")
-              }
-              title="Disponivel apenas em RECEBIDO / PROCESSO_NAO_ENCONTRADO"
-            >
-              {actionLoading ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <RefreshCw className="mr-2 h-4 w-4" />
-              )}
-              Reprocessar CNJ
-            </Button>
-
+          <DialogFooter className="flex-wrap justify-end gap-2 sm:space-x-0">
             <Button
               variant="destructive"
               onClick={onCancelar}
@@ -1461,36 +1958,47 @@ export default function PrazosIniciaisPage() {
 
             <Button
               variant="outline"
-              onClick={onRecomputeGlobals}
-              disabled={!detail || actionLoading || (detail.pedidos?.length ?? 0) === 0}
-              title="Recalcula Valor total / Aprovisionamento / Prob. êxito global a partir dos pedidos já extraídos. Não gasta tokens."
-            >
-              {actionLoading ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <RefreshCw className="mr-2 h-4 w-4" />
-              )}
-              Recalcular totais
-            </Button>
-
-            <Button
-              variant="outline"
-              onClick={onReanalisar}
+              onClick={onFinalizeWithoutProvidence}
               disabled={
                 !detail ||
                 actionLoading ||
+                !detail.lawsuit_id ||
+                detail.status === "CANCELADO" ||
+                detail.status === "AGENDADO" ||
                 detail.status === "RECEBIDO" ||
                 detail.status === "EM_CLASSIFICACAO"
               }
-              title="Apaga sugestões/pedidos atuais e reclassifica no próximo batch"
+              className="border-amber-400 text-amber-700 hover:bg-amber-50 hover:text-amber-900"
+              title={
+                !detail?.lawsuit_id
+                  ? "Intake sem processo vinculado — reprocesse o CNJ primeiro"
+                  : detail?.status === "CONCLUIDO_SEM_PROVIDENCIA"
+                    ? "Retentar os passos que faltaram (idempotente): refaz GED se não subiu, cleanup PDF se não apagou, reenfileira cancelamento da legada"
+                    : "Sobe habilitação pro GED, cancela task legada, marca intake como concluído SEM criar tarefa nova no L1"
+              }
             >
               {actionLoading ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
-                <RefreshCw className="mr-2 h-4 w-4" />
+                <CheckCircle2 className="mr-2 h-4 w-4" />
               )}
-              Reanalisar
+              {detail?.status === "CONCLUIDO_SEM_PROVIDENCIA"
+                ? "Retentar finalização"
+                : "Finalizar sem providência"}
             </Button>
+
+            {isAdmin && (
+              <Button
+                variant="destructive"
+                onClick={onDeleteIntake}
+                disabled={!detail || actionLoading}
+                title="HARD DELETE — admin only. Apaga intake + cascata + PDF. Use só em testes."
+                className="bg-red-700 hover:bg-red-800"
+              >
+                <XCircle className="mr-2 h-4 w-4" />
+                Deletar
+              </Button>
+            )}
 
             <Button variant="secondary" onClick={() => setSelectedId(null)}>
               Fechar

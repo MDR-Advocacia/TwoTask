@@ -3,8 +3,11 @@
 import json
 import logging
 import os
+import re
 import threading
 import time
+import base64
+import hashlib
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -15,7 +18,28 @@ from app.core.config import settings
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
+def _ascii_filename(value: str, default: str = "documento.pdf") -> str:
+    import unicodedata
+
+    base = os.path.basename(value or default)
+    stem, ext = os.path.splitext(base)
+    normalized = unicodedata.normalize("NFKD", stem).encode("ascii", "ignore").decode("ascii")
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", normalized).strip(".-_")
+    if not normalized:
+        normalized = os.path.splitext(default)[0] or "documento"
+    return f"{normalized}{ext or os.path.splitext(default)[1] or '.pdf'}"
+
+
 class LegalOneAuthenticationError(RuntimeError):
+    pass
+
+
+class LegalOneGedUploadError(RuntimeError):
+    """
+    Falha em algum dos 3 passos do upload GED (GetContainer / PUT blob /
+    POST Documents). A mensagem inclui contexto sobre em qual passo
+    ocorreu e o body de erro retornado pelo servidor quando disponível.
+    """
     pass
 
 
@@ -979,6 +1003,49 @@ class LegalOneApiClient:
         response = self._request_with_retry("GET", url)
         return response.json()
 
+    def update_task_status(self, task_id: int, status_id: int) -> bool:
+        """
+        Atualiza apenas o `statusId` de uma tarefa via PATCH parcial.
+
+        Endpoint: PATCH /tasks/{id}
+        Body: {"statusId": <novo_id>}
+
+        Retorna True se HTTP 204 (esperado pelo swagger) ou 200; False
+        em caso de erro. Levanta exception em falhas de rede/auth.
+
+        Status IDs do L1 (Tasks):
+            0 = Pendente
+            1 = Cumprido
+            2 = Nao cumprido
+            3 = Cancelado
+            4 = Iniciado
+            5 = Reagendado
+        """
+        self.logger.info(
+            "Atualizando status da tarefa %s -> %s via PATCH /tasks/{id}",
+            task_id, status_id,
+        )
+        endpoint = f"/tasks/{task_id}"
+        url = f"{self.base_url}{endpoint}"
+        payload = {"statusId": int(status_id)}
+        try:
+            response = self._request_with_retry("PATCH", url, json=payload)
+            if response.status_code in (200, 204):
+                return True
+            self.logger.warning(
+                "PATCH /tasks/%s retornou status inesperado: %s. Body: %s",
+                task_id, response.status_code, (response.text or "")[:300],
+            )
+            return False
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else "?"
+            body = exc.response.text[:400] if exc.response is not None else ""
+            self.logger.error(
+                "Falha PATCH /tasks/%s -> statusId=%s: HTTP %s. %s",
+                task_id, status_id, status, body,
+            )
+            return False
+
     def get_task_relationships(self, task_id: int) -> List[Dict[str, Any]]:
         self.logger.info("Buscando relacionamentos da tarefa ID %s.", task_id)
         endpoint = f"/tasks/{task_id}/relationships"
@@ -1081,6 +1148,283 @@ class LegalOneApiClient:
         except requests.exceptions.HTTPError as exc:
             self.logger.error("Erro HTTP ao adicionar participante a tarefa %s: %s", task_id, exc.response.text)
             return False
+
+    # ──────────────────────────────────────────────────────────────
+    # GED (ECM) — Upload de Documentos
+    # ──────────────────────────────────────────────────────────────
+    # Fluxo documentado no swagger oficial (legal-one-firms-brazil-api):
+    #
+    #   1) GET /Documents/GetContainer(fileExtension='pdf')
+    #      → retorna DocumentUploadModel:
+    #        { id, externalId (URL SAS do Azure Blob),
+    #          fileName (nome temp no container),
+    #          uploadedFileSize (0 nesse ponto) }
+    #
+    #   2) PUT {externalId} (a URL retornada acima) com os BYTES do PDF.
+    #      Esse PUT vai direto pro Azure Blob Storage (não passa pela
+    #      API do L1 nem precisa do Authorization Bearer — a URL já tem
+    #      o SAS embutido). Header obrigatório:
+    #        - x-ms-blob-type: BlockBlob
+    #        - Content-Type: application/pdf
+    #
+    #   3) POST /Documents com DocumentModel:
+    #        { archive (nome visível), description, typeId ("2-48"),
+    #          notes, fileUploader: { ExternalId, FileName, UploadedFileSize },
+    #          relationships: [{ Link: "Litigation", LinkItem: { Id: ... } }] }
+    #      → retorna o DocumentModel com `id` — esse é o ged_document_id.
+
+    def upload_document_to_ged(
+        self,
+        *,
+        file_bytes: bytes,
+        file_name: str,
+        type_id: str,
+        litigation_id: int,
+        archive_name: Optional[str] = None,
+        description: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> int:
+        """
+        Faz upload de um PDF no GED do L1 vinculado a um processo (Litigation).
+        Retorna o `document_id` criado.
+
+        Levanta `LegalOneGedUploadError` com mensagem humana em qualquer
+        falha de um dos 3 passos. O chamador pode capturar e traduzir.
+        """
+        # Passo 1 — obtém container temp.
+        ext = "pdf"
+        get_container_endpoint = (
+            f"/documents/getcontainer(fileExtension='{ext}')"
+        )
+        get_container_url = f"{self.base_url}{get_container_endpoint}"
+        try:
+            resp = self._request_with_retry("GET", get_container_url)
+            container = resp.json() or {}
+        except requests.exceptions.HTTPError as exc:
+            body = exc.response.text if exc.response is not None else ""
+            raise LegalOneGedUploadError(
+                f"Falha no GetContainer do GED: HTTP {exc.response.status_code if exc.response else '?'}. {body[:400]}"
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise LegalOneGedUploadError(f"Erro ao obter container do GED: {exc}") from exc
+
+        external_id = container.get("externalId")
+        temp_file_name = container.get("fileName") or file_name
+        if not external_id:
+            raise LegalOneGedUploadError(
+                f"GetContainer não retornou externalId. Resposta: {container}"
+            )
+
+        # Log do path do blob (sem a signature/SAS) + response completo
+        # do GetContainer (em JSON) pra debug.
+        try:
+            from urllib.parse import urlparse
+            _parsed = urlparse(external_id)
+            self.logger.info(
+                "GED GetContainer OK: blob_host=%s blob_path=%s temp_file_name=%s id_from_container=%s size_from_container=%s",
+                _parsed.netloc,
+                _parsed.path,
+                temp_file_name,
+                container.get("id"),
+                container.get("uploadedFileSize"),
+            )
+            self.logger.info(
+                "GED GetContainer FULL RESPONSE (sans SAS signature):\n%s",
+                json.dumps({
+                    **container,
+                    "externalId": f"{_parsed.scheme}://{_parsed.netloc}{_parsed.path}?<SAS>"
+                    if external_id else None,
+                }, indent=2, ensure_ascii=False),
+            )
+        except Exception:
+            pass
+
+        # Passo 2 — PUT bytes direto no Azure Blob. URL já tem SAS
+        # embutido; não usamos nossos headers de Authorization aqui.
+        #
+        # Envia os bytes crus do PDF para a URL SAS retornada pelo
+        # GetContainer. O MD5 e a versao do Blob API ajudam a deixar o PUT
+        # deterministico para o Azure e para qualquer validacao posterior do L1.
+        content_md5 = base64.b64encode(hashlib.md5(file_bytes).digest()).decode("ascii")
+        try:
+            put_response = requests.put(
+                external_id,
+                data=file_bytes,
+                headers={
+                    "x-ms-blob-type": "BlockBlob",
+                    "x-ms-version": "2018-03-28",
+                    "Content-MD5": content_md5,
+                    "Content-Type": "application/pdf",
+                },
+                timeout=60,
+            )
+            put_response.raise_for_status()
+            self.logger.info(
+                "GED PUT OK: blob=%s status=%s size=%d md5=%s etag=%s request_id=%s",
+                temp_file_name,
+                put_response.status_code,
+                len(file_bytes),
+                content_md5,
+                put_response.headers.get("ETag", "-"),
+                put_response.headers.get("x-ms-request-id", "-"),
+            )
+
+            try:
+                head_response = requests.head(external_id, timeout=30)
+                head_response.raise_for_status()
+                azure_size_raw = head_response.headers.get("Content-Length")
+                azure_size = int(azure_size_raw) if azure_size_raw and azure_size_raw.isdigit() else None
+                self.logger.info(
+                    "GED blob HEAD OK: blob=%s status=%s azure_size=%s content_type=%s request_id=%s",
+                    temp_file_name,
+                    head_response.status_code,
+                    azure_size_raw or "-",
+                    head_response.headers.get("Content-Type", "-"),
+                    head_response.headers.get("x-ms-request-id", "-"),
+                )
+                if azure_size is not None and azure_size != len(file_bytes):
+                    raise LegalOneGedUploadError(
+                        f"Blob enviado com tamanho divergente no Azure: esperado {len(file_bytes)}, recebido {azure_size}."
+                    )
+            except LegalOneGedUploadError:
+                raise
+            except requests.exceptions.HTTPError as head_exc:
+                head_status = head_exc.response.status_code if head_exc.response is not None else "?"
+                self.logger.warning(
+                    "GED blob HEAD ignorado: blob=%s status=%s. URL SAS pode permitir apenas escrita.",
+                    temp_file_name,
+                    head_status,
+                )
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else "?"
+            body = exc.response.text[:400] if exc.response is not None else ""
+            raise LegalOneGedUploadError(
+                f"Falha no PUT do blob (Azure): HTTP {status}. {body}"
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise LegalOneGedUploadError(f"Erro ao enviar bytes pro blob: {exc}") from exc
+
+        # Passo 3 — POST metadata + relationship, seguindo o DocumentModel
+        # da v10: /documents em lowercase, `fileName` top-level retornado
+        # pelo GetContainer, metadados do tutorial e relationships em
+        # camelCase. `repository`, `fileUploader`, `externalId` e
+        # `uploadedFileSize` nao pertencem ao request body do DocumentModel.
+        post_endpoint = "/documents"
+        post_url = f"{self.base_url}{post_endpoint}"
+        # L1 rejeita HTTP 400 "Extensao de arquivo invalida" se o `archive`
+        # vier sem extensao. Garante que termine com `.{ext}` (default pdf).
+        archive_candidate = archive_name or file_name
+        if archive_candidate and "." not in os.path.basename(archive_candidate):
+            archive_candidate = f"{archive_candidate}.{ext}"
+        original_archive_candidate = archive_candidate
+        archive_candidate = _ascii_filename(archive_candidate, default=f"documento.{ext}")
+        if archive_candidate != original_archive_candidate:
+            self.logger.info(
+                "GED archive normalizado para ASCII: original=%r normalized=%r",
+                original_archive_candidate,
+                archive_candidate,
+            )
+        metadata_date = f"{datetime.utcnow().replace(microsecond=0).isoformat()}Z"
+        payload_notes = notes or ""
+        if original_archive_candidate != archive_candidate:
+            payload_notes = (payload_notes + "\n" if payload_notes else "") + (
+                f"Nome original do arquivo: {original_archive_candidate}"
+            )
+        payload: Dict[str, Any] = {
+            "fileName": temp_file_name,  # mesmo fileName do GetContainer
+            "archive": archive_candidate,
+            "typeId": type_id,
+            "description": description or file_name,
+            "notes": payload_notes,
+            "isPhysicallyStored": False,
+            "phisicalLocalization": "",
+            "author": "OneTask",
+            "beginDate": metadata_date,
+            "endDate": metadata_date,
+            "isModel": False,
+            "relationships": [
+                {
+                    "link": "Litigation",
+                    "linkItem": {
+                        "id": int(litigation_id),
+                    },
+                }
+            ],
+        }
+
+        self.logger.info(
+            "GED upload: POST /documents litigation=%s type=%s size=%d",
+            litigation_id, type_id, len(file_bytes),
+        )
+        self.logger.info(
+            "GED upload metadata payload:\n%s",
+            json.dumps(payload, indent=2, ensure_ascii=False),
+        )
+
+        # Retry custom pra 404 "File not found in Storage" — se o L1 tiver
+        # uma fila interna de varredura/importacao do blob temporario, essa
+        # janela maior ajuda a separar latencia real de erro de contrato.
+        storage_retry_waits = (1.5, 3.0, 6.0, 10.0, 15.0, 30.0, 60.0)
+        last_error_body = ""
+        last_error_status: Any = "?"
+        created: Optional[Dict[str, Any]] = None
+        exhausted_storage_miss = False
+        for attempt_idx, wait_before in enumerate((0.0,) + storage_retry_waits):
+            if wait_before > 0:
+                self.logger.warning(
+                    "GED POST 'File not found in Storage' (tentativa %d). "
+                    "Aguardando %.1fs para reindexacao do blob.",
+                    attempt_idx, wait_before,
+                )
+                time.sleep(wait_before)
+            try:
+                resp = self._request_with_retry("POST", post_url, json=payload)
+                created = resp.json() or {}
+                break
+            except requests.exceptions.HTTPError as exc:
+                last_error_status = exc.response.status_code if exc.response is not None else "?"
+                last_error_body = exc.response.text[:400] if exc.response is not None else ""
+                # Se for especificamente 404 "File not found in Storage",
+                # aguarda e tenta de novo. Demais erros -> falha imediata.
+                is_storage_miss = (
+                    last_error_status == 404
+                    and "File not found in Storage" in last_error_body
+                )
+                if is_storage_miss and attempt_idx < len(storage_retry_waits):
+                    continue
+                if is_storage_miss:
+                    exhausted_storage_miss = True
+                    break
+                self.logger.error(
+                    "GED upload falhou. Payload enviado:\n%s",
+                    json.dumps(payload, indent=2, ensure_ascii=False),
+                )
+                raise LegalOneGedUploadError(
+                    f"Falha no POST /documents: HTTP {last_error_status}. {last_error_body}"
+                ) from exc
+            except Exception as exc:  # noqa: BLE001
+                raise LegalOneGedUploadError(f"Erro ao criar registro no GED: {exc}") from exc
+
+        if created is None and exhausted_storage_miss:
+            self.logger.error(
+                "GED upload falhou apos retries de storage. Payload v10 enviado:\n%s",
+                json.dumps(payload, indent=2, ensure_ascii=False),
+            )
+            raise LegalOneGedUploadError(
+                f"Falha no POST /documents (storage miss persistente): HTTP {last_error_status}. {last_error_body}"
+            )
+
+        if created is None:
+            raise LegalOneGedUploadError(
+                f"Falha no POST /documents: HTTP {last_error_status}. {last_error_body}"
+            )
+
+        document_id = created.get("id")
+        if not document_id:
+            raise LegalOneGedUploadError(
+                f"POST /documents não retornou id. Resposta: {created}"
+            )
+        return int(document_id)
 
     # ──────────────────────────────────────────────────────────────
     # Motor de Busca de Publicações (Updates)

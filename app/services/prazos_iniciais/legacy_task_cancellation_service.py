@@ -28,6 +28,56 @@ DEFAULT_LEGAL_ONE_WEB_BASE_URL = "https://mdradvocacia.novajus.com.br"
 
 RUNNER_SUCCESS_STATUSES = {"cancelled", "already_cancelled"}
 
+
+# Quantas linhas dos logs do runner Node.js vão ser replicadas pro stdout
+# do container (Coolify). Evita poluição absurda quando o runner produz
+# milhares de linhas (ex: full trace de Playwright).
+_RUNNER_LOG_TAIL_LIMIT = 500
+
+
+def _mirror_runner_log_to_stdout(
+    *,
+    log_path: Path,
+    error_log_path: Path,
+    run_label: str,
+    exit_code: int,
+) -> None:
+    """
+    Replica as linhas finais dos arquivos de log do runner Node.js (Playwright)
+    pro logger Python — que por sua vez aparece no stdout do container no
+    Coolify. Invocado após `subprocess.run` concluir (bem ou mal), pra dar
+    visibilidade ao operador sem precisar entrar no container.
+
+    Limita em `_RUNNER_LOG_TAIL_LIMIT` linhas por arquivo pra não estourar o
+    stdout em caso de loop infinito do runner.
+    """
+    level = logging.INFO if exit_code == 0 else logging.WARNING
+
+    for label, path in (("stdout", log_path), ("stderr", error_log_path)):
+        if not path.exists():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            logger.warning(
+                "%s: nao foi possivel ler %s: %s", run_label, path.name, exc,
+            )
+            continue
+
+        lines = text.splitlines()
+        if not lines:
+            continue
+        tail = lines[-_RUNNER_LOG_TAIL_LIMIT:]
+        truncated = len(lines) - len(tail)
+        if truncated > 0:
+            logger.log(
+                level,
+                "%s: [%s] (%d linhas iniciais suprimidas, mostrando ultimas %d)",
+                run_label, label, truncated, len(tail),
+            )
+        for line in tail:
+            logger.log(level, "%s: [%s] %s", run_label, label, line)
+
 # Substrings (lowercase) que classificam falhas do runner para alimentar
 # o circuit breaker e a UI:
 #  - layout_drift     → tela do L1 mudou (campo/seletor não encontrado)
@@ -267,12 +317,32 @@ class LegacyTaskCancellationService:
             artifacts=run_dir / "artifacts",
         )
 
-    def _build_task_urls(self, task_id: int) -> dict[str, str]:
+    def _build_task_urls(
+        self,
+        task_id: int,
+        lawsuit_id: Optional[int] = None,
+    ) -> dict[str, str]:
         web_base_url = (
             os.getenv("LEGAL_ONE_WEB_URL")
             or os.getenv("LEGALONE_WEB_URL")
             or DEFAULT_LEGAL_ONE_WEB_BASE_URL
         ).rstrip("/")
+        if lawsuit_id is not None:
+            details_relative = (
+                f"/processos/processos/DetailsCompromissosTarefas/{lawsuit_id}"
+                "?renderOnlySection=True"
+            )
+            details_url = f"{web_base_url}{details_relative}"
+            edit_url = (
+                f"{web_base_url}/processos/tarefas/edittarefa/{task_id}"
+                f"?parentId={lawsuit_id}&tipoContexto=1"
+                f"&returnUrl={quote(details_relative, safe='')}"
+            )
+            return {
+                "edit_url": edit_url,
+                "details_url": details_url,
+            }
+
         details_relative = (
             f"/agenda/tarefas/DetailsCompromissoTarefa/{task_id}"
             "?currentPage=1&hasNavigation=True"
@@ -420,7 +490,7 @@ class LegacyTaskCancellationService:
         if task_id is None:
             raise ValueError("A tarefa selecionada nao possui ID valido.")
 
-        urls = self._build_task_urls(task_id)
+        urls = self._build_task_urls(task_id, lawsuit_id=lawsuit_id)
         return [
             {
                 "index": 1,
@@ -484,6 +554,27 @@ class LegacyTaskCancellationService:
                 stderr=stderr,
                 creationflags=creation_flags,
                 check=False,
+            )
+
+        # Espelha os logs do runner Node.js pro stdout do container (Coolify)
+        # pra não precisar entrar no container e abrir os arquivos manualmente
+        # quando algo der errado. Síncrono (pós-terminar), limitado pra não
+        # estourar o stdout se o runner produzir N mil linhas.
+        run_label = f"legacy-cancel run={paths.run_dir.name}"
+        logger.info(
+            "%s: runner Node finalizou (exit_code=%s).",
+            run_label, completed.returncode,
+        )
+        try:
+            _mirror_runner_log_to_stdout(
+                log_path=paths.log,
+                error_log_path=paths.error_log,
+                run_label=run_label,
+                exit_code=completed.returncode,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "%s: falha ao espelhar logs do runner pro stdout.", run_label,
             )
 
         payload = self._read_json_file(paths.status, fallback=None)
@@ -593,6 +684,10 @@ class LegacyTaskCancellationService:
                 "details_url": urls["details_url"],
             }
 
+        # Cancelamento via RPA Playwright. A API REST recusa PATCH /tasks
+        # quando a task eh oriunda de Workflow ("O id informado eh oriundo
+        # de um modelo de procedimento do Workflow, altere o registro
+        # pelo Legal One"). Pela UI web funciona normalmente.
         runner_items = self._build_runner_items(
             cnj_number=normalized_cnj,
             lawsuit_id=resolved_lawsuit_id,
@@ -613,19 +708,72 @@ class LegacyTaskCancellationService:
         runner_state = payload.get("state")
         runner_error = item_payload.get("error") or payload.get("error")
 
-        success = (
+        runner_reports_success = (
             runner_state == "completed"
             and runner_item_status in RUNNER_SUCCESS_STATUSES
         )
 
-        # Em sucesso mantemos o status do runner como reason (cancelled/
-        # already_cancelled — entram em QUEUE_SUCCESS_REASONS). Em falha,
-        # classificamos a categoria do erro pra alimentar o circuit breaker
-        # (auth_failure/timeout contam, layout_drift/verification_failed não)
-        # e pra UI exibir um badge estável.
-        if success:
-            reason = runner_item_status
+        # Verificacao AUTORITATIVA via API L1: o GET /Tasks/{id} eh a
+        # FONTE DA VERDADE. O runner pode mentir — o `liveStatusIdAfterSubmit`
+        # eh so o valor do form na pagina renderizada de volta pelo
+        # servidor, e NAO prova que persistiu. Aprendemos isso na
+        # marra: form mostrava StatusId=3 mas o L1 nao salvou.
+        api_verified_status: Optional[int] = None
+        api_verify_error: Optional[str] = None
+        try:
+            task_after = self.client.get_task_by_id(int(resolved_task_id))
+            api_verified_status = self._to_int(task_after.get("statusId"))
+            logger.info(
+                "legacy_task_queue.cancel_task.api_verify task_id=%s api_statusId=%s target=%s runner_reports=%s",
+                resolved_task_id,
+                api_verified_status,
+                target_status_id,
+                runner_item_status,
+            )
+        except Exception as exc:  # noqa: BLE001
+            api_verify_error = str(exc)
+            logger.warning(
+                "legacy_task_queue.cancel_task.api_verify_failed task_id=%s err=%s",
+                resolved_task_id, exc,
+            )
+
+        api_confirms_target = (
+            api_verified_status is not None
+            and int(api_verified_status) == int(target_status_id)
+        )
+        api_says_not_target = (
+            api_verified_status is not None
+            and int(api_verified_status) != int(target_status_id)
+        )
+
+        # Decisao de sucesso:
+        #  - Se a API L1 confirma que statusId == target -> SUCESSO.
+        #  - Se a API L1 retornou statusId != target -> FALHA, ignorando
+        #    o que o runner reportou (runner ja "mentiu" antes).
+        #  - Se a API L1 falhou em retornar (network/auth) -> cai pro
+        #    runner_reports_success como fallback (best-effort).
+        if api_confirms_target:
+            success = True
+        elif api_says_not_target:
+            success = False
         else:
+            # API nao conseguiu verificar — usa o runner como fallback.
+            success = runner_reports_success
+
+        if success:
+            reason = (
+                runner_item_status
+                if runner_reports_success and runner_item_status in RUNNER_SUCCESS_STATUSES
+                else "cancelled"
+            )
+        else:
+            # Se a API nos disse que nao bateu o status, registra isso
+            # como o erro real (pra UI mostrar em vez do erro do runner).
+            if api_says_not_target:
+                runner_error = (
+                    f"API L1 confirma statusId={api_verified_status} "
+                    f"(esperado {target_status_id}). Save nao persistiu."
+                )
             reason = self._classify_runner_error(
                 runner_state=runner_state,
                 runner_item_status=runner_item_status,

@@ -191,6 +191,7 @@ export type PrazoInicialIntakeStatus =
   | "CLASSIFICADO"
   | "EM_REVISAO"
   | "AGENDADO"
+  | "CONCLUIDO_SEM_PROVIDENCIA"
   | "GED_ENVIADO"
   | "CONCLUIDO"
   | "ERRO_CLASSIFICACAO"
@@ -225,6 +226,17 @@ export interface PrazoInicialIntakeSummary {
   received_at: string;
   updated_at: string;
   sugestoes_count: number;
+  // Tratado por (pin011) — quem confirmou agendamentos OU finalizou.
+  treated_by_user_id?: number | null;
+  treated_by_email?: string | null;
+  treated_by_name?: string | null;
+  treated_at?: string | null;
+  // Disparo desacoplado de GED + cancel (pin012, Onda 3 #5).
+  // True = aguardando o operador acionar "Disparar agora" na Tratamento Web
+  // (ou worker periódico).
+  dispatch_pending?: boolean;
+  dispatched_at?: string | null;
+  dispatch_error_message?: string | null;
 }
 
 export interface PrazoInicialParteProcessual {
@@ -342,9 +354,19 @@ export interface PrazoInicialApplyBatchResponse {
 }
 
 export interface PrazoInicialIntakeFilters {
-  status?: string;
+  // Todos os filtros abaixo aceitam CSV quando é multi-valor.
+  status?: string;           // "CLASSIFICADO,AGENDADO"
   cnj_number?: string;
-  office_id?: number;
+  office_id?: string;        // "61,62" (string porque backend aceita CSV agora)
+  natureza_processo?: string;
+  produto?: string;
+  probabilidade_exito_global?: string; // "remota,possivel,provavel"
+  date_from?: string;        // "YYYY-MM-DD"
+  date_to?: string;
+  has_error?: boolean;
+  batch_id?: number;
+  treated_by_user_id?: string;  // CSV de user_ids: "5,8"
+  dispatch_pending?: boolean;   // true = só pendentes; false = só já disparados
   limit?: number;
   offset?: number;
 }

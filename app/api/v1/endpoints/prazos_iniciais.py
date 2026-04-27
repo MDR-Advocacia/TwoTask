@@ -77,6 +77,45 @@ from app.services.prazos_iniciais.storage import (
 logger = logging.getLogger(__name__)
 
 
+# ─── Helpers privados de parsing CSV ─────────────────────────────────
+# Usados pelos filtros multi-valor (status, treated_by_user_id, etc.).
+# Espelham os helpers de `publication_search_service` mas mantemos uma
+# cópia local pra evitar dependência cruzada API → service.
+
+def _parse_csv_ints(raw) -> list[int]:
+    """
+    Aceita None, str ("5,8"), int, ou lista[int|str]. Retorna lista de
+    inteiros descartando entradas inválidas (não bloqueia a request).
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, int):
+        return [raw]
+    if isinstance(raw, list):
+        out: list[int] = []
+        for item in raw:
+            try:
+                out.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        return out
+    out: list[int] = []
+    for chunk in str(raw).split(","):
+        chunk = chunk.strip()
+        if chunk.isdigit() or (chunk.startswith("-") and chunk[1:].isdigit()):
+            out.append(int(chunk))
+    return out
+
+
+def _parse_csv_strs(raw) -> list[str]:
+    """Aceita None, str ("a,b") ou lista. Retorna lista filtrada de strings."""
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(x).strip() for x in raw if str(x).strip()]
+    return [chunk.strip() for chunk in str(raw).split(",") if chunk.strip()]
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Schemas Pydantic
 # ═══════════════════════════════════════════════════════════════════════
@@ -185,6 +224,16 @@ class IntakeSummary(BaseModel):
     received_at: datetime
     updated_at: datetime
     sugestoes_count: int
+    # Tratado por (pin011) — quem confirmou agendamentos OU finalizou
+    # sem providência. NULL enquanto intake estiver em fluxo.
+    treated_by_user_id: Optional[int] = None
+    treated_by_email: Optional[str] = None
+    treated_by_name: Optional[str] = None
+    treated_at: Optional[datetime] = None
+    # Disparo desacoplado (pin012, Onda 3 #5).
+    dispatch_pending: bool = False
+    dispatched_at: Optional[datetime] = None
+    dispatch_error_message: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -268,6 +317,19 @@ async def ingest_intake(
     estável para o ciclo de vida do processo.
     """
     # 1. Parse do JSON (o FastAPI já validou que o campo existe, mas é string).
+    # Recovery de encoding: python-multipart decoda form fields em Latin-1
+    # quando o cliente não envia charset explícito, corrompendo UTF-8
+    # (Í vira "Ã\x8D" etc.). Re-encodamos pra Latin-1 → decodamos como
+    # UTF-8 — operação idempotente pra strings já corretas (cai no
+    # UnicodeDecodeError do fallback).
+    try:
+        recovered = payload.encode("latin-1").decode("utf-8")
+        payload = recovered
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        # Já era UTF-8 válido, ou contém caracteres fora de Latin-1 —
+        # segue com o payload original sem tocar.
+        pass
+
     try:
         payload_dict = json.loads(payload)
         intake_payload = PrazoInicialIntakePayload.model_validate(payload_dict)
@@ -384,6 +446,13 @@ def _intake_to_summary(intake: PrazoInicialIntake) -> IntakeSummary:
         received_at=intake.received_at,
         updated_at=intake.updated_at,
         sugestoes_count=len(intake.sugestoes or []),
+        treated_by_user_id=intake.treated_by_user_id,
+        treated_by_email=intake.treated_by_email,
+        treated_by_name=intake.treated_by_name,
+        treated_at=intake.treated_at,
+        dispatch_pending=bool(getattr(intake, "dispatch_pending", False)),
+        dispatched_at=getattr(intake, "dispatched_at", None),
+        dispatch_error_message=getattr(intake, "dispatch_error_message", None),
     )
 
 
@@ -462,27 +531,99 @@ def get_enums(
     )
 
 
+def _parse_csv_strs(value: Optional[str]) -> list[str]:
+    """Divide string CSV em lista de strings limpas. 'a,b, c ' → ['a','b','c']."""
+    if not value:
+        return []
+    return [v.strip() for v in value.split(",") if v.strip()]
+
+
+def _parse_csv_ints(value: Optional[str]) -> list[int]:
+    """Divide string CSV em lista de ints. '61, 62' → [61, 62]. Tolerante a erros."""
+    out: list[int] = []
+    for v in _parse_csv_strs(value):
+        try:
+            out.append(int(v))
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
 @router.get(
     "/intakes",
     response_model=IntakeListResponse,
     summary="Lista intakes com filtros.",
 )
 def list_intakes(
-    status_filter: Optional[str] = Query(default=None, alias="status"),
-    office_id: Optional[int] = Query(default=None),
+    status_filter: Optional[str] = Query(
+        default=None,
+        alias="status",
+        description="Aceita CSV: 'CLASSIFICADO,AGENDADO'.",
+    ),
+    office_id: Optional[str] = Query(
+        default=None,
+        description="CSV de office_ids: '61,62'.",
+    ),
     cnj_number: Optional[str] = Query(default=None),
-    natureza_processo: Optional[str] = Query(default=None),
-    produto: Optional[str] = Query(default=None),
+    natureza_processo: Optional[str] = Query(
+        default=None,
+        description="CSV: 'COMUM,JUIZADO,AGRAVO_INSTRUMENTO,OUTRO'.",
+    ),
+    produto: Optional[str] = Query(
+        default=None,
+        description="CSV: 'SUPERENDIVIDAMENTO,CREDCESTA,...'.",
+    ),
+    probabilidade_exito_global: Optional[str] = Query(
+        default=None,
+        description="CSV: 'remota,possivel,provavel'.",
+    ),
+    date_from: Optional[str] = Query(
+        default=None,
+        description="Data início (YYYY-MM-DD). Filtra por received_at >=.",
+    ),
+    date_to: Optional[str] = Query(
+        default=None,
+        description="Data fim (YYYY-MM-DD). Filtra por received_at < date_to+1dia.",
+    ),
+    has_error: Optional[bool] = Query(
+        default=None,
+        description="true = só com error_message; false = só sem; omitido = ambos.",
+    ),
+    batch_id: Optional[int] = Query(
+        default=None,
+        description="Filtra intakes de um batch de classificação específico.",
+    ),
+    treated_by_user_id: Optional[str] = Query(
+        default=None,
+        description="CSV de user_ids: '5,8'. Filtra por quem confirmou/finalizou.",
+    ),
+    dispatch_pending: Optional[bool] = Query(
+        default=None,
+        description="true = só pendentes de disparo (Tratamento Web); false = já disparados; omitido = ambos.",
+    ),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
     query = db.query(PrazoInicialIntake)
-    if status_filter:
-        query = query.filter(PrazoInicialIntake.status == status_filter)
-    if office_id is not None:
-        query = query.filter(PrazoInicialIntake.office_id == office_id)
+
+    # status — CSV, IN quando múltiplo
+    status_list = _parse_csv_strs(status_filter)
+    if status_list:
+        if len(status_list) == 1:
+            query = query.filter(PrazoInicialIntake.status == status_list[0])
+        else:
+            query = query.filter(PrazoInicialIntake.status.in_(status_list))
+
+    # office_id — CSV de ints
+    office_ids = _parse_csv_ints(office_id)
+    if office_ids:
+        if len(office_ids) == 1:
+            query = query.filter(PrazoInicialIntake.office_id == office_ids[0])
+        else:
+            query = query.filter(PrazoInicialIntake.office_id.in_(office_ids))
+
     if cnj_number:
         # aceita busca por pedaço do CNJ (sem máscara)
         normalized = "".join(c for c in cnj_number if c.isdigit())
@@ -490,12 +631,79 @@ def list_intakes(
             query = query.filter(
                 PrazoInicialIntake.cnj_number.like(f"%{normalized}%")
             )
-    if natureza_processo:
+
+    # natureza_processo — CSV
+    natureza_list = _parse_csv_strs(natureza_processo)
+    if natureza_list:
+        if len(natureza_list) == 1:
+            query = query.filter(
+                PrazoInicialIntake.natureza_processo == natureza_list[0]
+            )
+        else:
+            query = query.filter(
+                PrazoInicialIntake.natureza_processo.in_(natureza_list)
+            )
+
+    # produto — CSV
+    produto_list = _parse_csv_strs(produto)
+    if produto_list:
+        if len(produto_list) == 1:
+            query = query.filter(PrazoInicialIntake.produto == produto_list[0])
+        else:
+            query = query.filter(PrazoInicialIntake.produto.in_(produto_list))
+
+    # probabilidade_exito_global — CSV
+    prob_list = [p.lower() for p in _parse_csv_strs(probabilidade_exito_global)]
+    if prob_list:
+        if len(prob_list) == 1:
+            query = query.filter(
+                PrazoInicialIntake.probabilidade_exito_global == prob_list[0]
+            )
+        else:
+            query = query.filter(
+                PrazoInicialIntake.probabilidade_exito_global.in_(prob_list)
+            )
+
+    # Data range por received_at — comparação lexicográfica segura pq é timestamptz
+    if date_from:
+        query = query.filter(PrazoInicialIntake.received_at >= date_from)
+    if date_to:
+        # Inclusivo no dia final: compara com "<= date_to 23:59:59".
+        query = query.filter(PrazoInicialIntake.received_at <= f"{date_to}T23:59:59.999999+00:00")
+
+    # Presença de erro (independente do status — útil pra triagem)
+    if has_error is True:
         query = query.filter(
-            PrazoInicialIntake.natureza_processo == natureza_processo
+            PrazoInicialIntake.error_message.isnot(None),
+            PrazoInicialIntake.error_message != "",
         )
-    if produto:
-        query = query.filter(PrazoInicialIntake.produto == produto)
+    elif has_error is False:
+        query = query.filter(
+            (PrazoInicialIntake.error_message.is_(None))
+            | (PrazoInicialIntake.error_message == "")
+        )
+
+    # Batch de classificação
+    if batch_id is not None:
+        query = query.filter(PrazoInicialIntake.classification_batch_id == batch_id)
+
+    # Tratado por (CSV de user_ids)
+    treated_by_ids = _parse_csv_ints(treated_by_user_id)
+    if treated_by_ids:
+        if len(treated_by_ids) == 1:
+            query = query.filter(
+                PrazoInicialIntake.treated_by_user_id == treated_by_ids[0]
+            )
+        else:
+            query = query.filter(
+                PrazoInicialIntake.treated_by_user_id.in_(treated_by_ids)
+            )
+
+    # Onda 3 #5 — pendentes de disparo (Tratamento Web)
+    if dispatch_pending is True:
+        query = query.filter(PrazoInicialIntake.dispatch_pending.is_(True))
+    elif dispatch_pending is False:
+        query = query.filter(PrazoInicialIntake.dispatch_pending.is_(False))
 
     total = query.count()
     items = (
@@ -681,6 +889,52 @@ def cancel_intake(
     db.commit()
     db.refresh(intake)
     return _intake_to_summary(intake)
+
+
+@router.delete(
+    "/intakes/{intake_id}",
+    status_code=204,
+    summary="HARD DELETE de um intake (admin only). Apaga registro + PDF + cascata.",
+)
+def delete_intake_admin(
+    intake_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth_security.get_current_user),
+):
+    """
+    Apaga fisicamente o intake (e tudo em cascata via ondelete=CASCADE:
+    sugestoes, pedidos, legacy_task_queue). Tambem deleta o PDF fisico.
+
+    Usado durante testes pra reinjetar o mesmo processo do zero. Vai
+    virar arquivamento depois — esse endpoint sera removido / trocado
+    por soft delete.
+
+    SOMENTE admins podem chamar. `require_permission` nao basta porque
+    qualquer usuario com `can_use_prazos_iniciais` passaria por ele.
+    """
+    if getattr(current_user, "role", "user") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Apenas administradores podem deletar intakes.",
+        )
+
+    intake = db.get(PrazoInicialIntake, intake_id)
+    if intake is None:
+        raise HTTPException(status_code=404, detail="Intake não encontrado.")
+
+    # Best-effort: deleta PDF fisico antes de apagar a row no banco.
+    pdf_path = getattr(intake, "pdf_path", None)
+    if pdf_path:
+        try:
+            from app.services.prazos_iniciais import storage as pdf_storage
+            pdf_storage.delete_pdf(pdf_path)
+        except Exception:
+            # Nao impede o delete do intake. Worker de cleanup pega depois.
+            pass
+
+    db.delete(intake)
+    db.commit()
+    return None
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1834,6 +2088,8 @@ def export_intakes_xlsx(
     from openpyxl.utils import get_column_letter
     from app.models.prazo_inicial import PrazoInicialIntake
     from app.models.prazo_inicial_pedido import PrazoInicialPedido
+    from app.models.legal_one import LegalOneOffice
+    from app.services.publication_search_service import uf_from_cnj
     from datetime import datetime
 
     q = db.query(PrazoInicialIntake)
@@ -1847,6 +2103,20 @@ def export_intakes_xlsx(
         q = q.filter(PrazoInicialIntake.received_at < date_to + "T99")
 
     intakes = q.order_by(PrazoInicialIntake.received_at.desc()).all()
+
+    # Pré-carrega path dos escritórios pra mostrar a hierarquia completa
+    # (mesmo padrão das outras telas — o `name` é só a folha).
+    office_external_ids = {
+        i.office_id for i in intakes if i.office_id is not None
+    }
+    office_paths: dict[int, str] = {}
+    if office_external_ids:
+        offices = (
+            db.query(LegalOneOffice)
+            .filter(LegalOneOffice.external_id.in_(office_external_ids))
+            .all()
+        )
+        office_paths = {o.external_id: (o.path or o.name) for o in offices}
 
     wb = Workbook()
     header_font = Font(bold=True, color="FFFFFF")
@@ -1869,8 +2139,8 @@ def export_intakes_xlsx(
     ws = wb.active
     ws.title = "Resumo"
     resumo_cols = [
-        "Intake ID", "CNJ", "Status", "Natureza", "Produto",
-        "Escritório ID", "Lawsuit ID",
+        "Intake ID", "CNJ", "UF", "Status", "Natureza", "Produto",
+        "Escritório responsável", "Lawsuit ID",
         "Prob. Êxito Global",
         "Valor Total Pedido", "Valor Total Estimado",
         "Aprovisionamento Sugerido",
@@ -1880,28 +2150,37 @@ def export_intakes_xlsx(
     ]
     _write_header(ws, resumo_cols)
     for i, intake in enumerate(intakes, start=2):
+        office_label = (
+            office_paths.get(intake.office_id, str(intake.office_id))
+            if intake.office_id is not None
+            else ""
+        )
         ws.cell(row=i, column=1, value=intake.id)
         ws.cell(row=i, column=2, value=intake.cnj_number)
-        ws.cell(row=i, column=3, value=intake.status)
-        ws.cell(row=i, column=4, value=intake.natureza_processo)
-        ws.cell(row=i, column=5, value=intake.produto)
-        ws.cell(row=i, column=6, value=intake.office_id)
-        ws.cell(row=i, column=7, value=intake.lawsuit_id)
-        ws.cell(row=i, column=8, value=intake.probabilidade_exito_global)
-        ws.cell(row=i, column=9, value=float(intake.valor_total_pedido) if intake.valor_total_pedido is not None else None)
-        ws.cell(row=i, column=10, value=float(intake.valor_total_estimado) if intake.valor_total_estimado is not None else None)
-        ws.cell(row=i, column=11, value=float(intake.aprovisionamento_sugerido) if intake.aprovisionamento_sugerido is not None else None)
-        ws.cell(row=i, column=12, value=intake.analise_estrategica)
-        ws.cell(row=i, column=13, value=intake.agravo_processo_origem_cnj)
-        ws.cell(row=i, column=14, value=intake.received_at.isoformat() if intake.received_at else None)
-        ws.cell(row=i, column=15, value=intake.updated_at.isoformat() if intake.updated_at else None)
+        ws.cell(row=i, column=3, value=uf_from_cnj(intake.cnj_number) or "")
+        ws.cell(row=i, column=4, value=intake.status)
+        ws.cell(row=i, column=5, value=intake.natureza_processo)
+        ws.cell(row=i, column=6, value=intake.produto)
+        ws.cell(row=i, column=7, value=office_label)
+        ws.cell(row=i, column=8, value=intake.lawsuit_id)
+        ws.cell(row=i, column=9, value=intake.probabilidade_exito_global)
+        ws.cell(row=i, column=10, value=float(intake.valor_total_pedido) if intake.valor_total_pedido is not None else None)
+        ws.cell(row=i, column=11, value=float(intake.valor_total_estimado) if intake.valor_total_estimado is not None else None)
+        ws.cell(row=i, column=12, value=float(intake.aprovisionamento_sugerido) if intake.aprovisionamento_sugerido is not None else None)
+        ws.cell(row=i, column=13, value=intake.analise_estrategica)
+        ws.cell(row=i, column=14, value=intake.agravo_processo_origem_cnj)
+        ws.cell(row=i, column=15, value=intake.received_at.isoformat() if intake.received_at else None)
+        ws.cell(row=i, column=16, value=intake.updated_at.isoformat() if intake.updated_at else None)
     _autofit(ws, resumo_cols)
-    ws.column_dimensions[get_column_letter(12)].width = 60  # análise estratégica
+    # Larguras específicas: análise estratégica ocupa mais espaço.
+    ws.column_dimensions[get_column_letter(7)].width = 36   # escritório (path)
+    ws.column_dimensions[get_column_letter(13)].width = 60  # análise estratégica
 
     # ── Aba 2: Sugestões (1 linha por sugestão) ──
     ws2 = wb.create_sheet(title="Sugestões")
     sug_cols = [
-        "Sugestão ID", "Intake ID", "CNJ", "Tipo Prazo", "Subtipo",
+        "Sugestão ID", "Intake ID", "CNJ", "UF", "Escritório responsável",
+        "Tipo Prazo", "Subtipo",
         "Data Base", "Prazo Dias", "Prazo Tipo",
         "Data Final Calculada",
         "Prazo Fatal Data", "Prazo Fatal Fundamentação",
@@ -1912,27 +2191,36 @@ def export_intakes_xlsx(
     _write_header(ws2, sug_cols)
     row = 2
     for intake in intakes:
+        intake_uf = uf_from_cnj(intake.cnj_number) or ""
+        intake_office = (
+            office_paths.get(intake.office_id, str(intake.office_id))
+            if intake.office_id is not None
+            else ""
+        )
         for s in intake.sugestoes:
             ws2.cell(row=row, column=1, value=s.id)
             ws2.cell(row=row, column=2, value=intake.id)
             ws2.cell(row=row, column=3, value=intake.cnj_number)
-            ws2.cell(row=row, column=4, value=s.tipo_prazo)
-            ws2.cell(row=row, column=5, value=s.subtipo)
-            ws2.cell(row=row, column=6, value=s.data_base.isoformat() if s.data_base else None)
-            ws2.cell(row=row, column=7, value=s.prazo_dias)
-            ws2.cell(row=row, column=8, value=s.prazo_tipo)
-            ws2.cell(row=row, column=9, value=s.data_final_calculada.isoformat() if s.data_final_calculada else None)
-            ws2.cell(row=row, column=10, value=s.prazo_fatal_data.isoformat() if s.prazo_fatal_data else None)
-            ws2.cell(row=row, column=11, value=s.prazo_fatal_fundamentacao)
-            ws2.cell(row=row, column=12, value=s.prazo_base_decisao)
-            ws2.cell(row=row, column=13, value=s.audiencia_data.isoformat() if s.audiencia_data else None)
-            ws2.cell(row=row, column=14, value=s.audiencia_hora.isoformat() if s.audiencia_hora else None)
-            ws2.cell(row=row, column=15, value=s.audiencia_link)
-            ws2.cell(row=row, column=16, value=s.confianca)
-            ws2.cell(row=row, column=17, value=s.justificativa)
-            ws2.cell(row=row, column=18, value=s.review_status)
+            ws2.cell(row=row, column=4, value=intake_uf)
+            ws2.cell(row=row, column=5, value=intake_office)
+            ws2.cell(row=row, column=6, value=s.tipo_prazo)
+            ws2.cell(row=row, column=7, value=s.subtipo)
+            ws2.cell(row=row, column=8, value=s.data_base.isoformat() if s.data_base else None)
+            ws2.cell(row=row, column=9, value=s.prazo_dias)
+            ws2.cell(row=row, column=10, value=s.prazo_tipo)
+            ws2.cell(row=row, column=11, value=s.data_final_calculada.isoformat() if s.data_final_calculada else None)
+            ws2.cell(row=row, column=12, value=s.prazo_fatal_data.isoformat() if s.prazo_fatal_data else None)
+            ws2.cell(row=row, column=13, value=s.prazo_fatal_fundamentacao)
+            ws2.cell(row=row, column=14, value=s.prazo_base_decisao)
+            ws2.cell(row=row, column=15, value=s.audiencia_data.isoformat() if s.audiencia_data else None)
+            ws2.cell(row=row, column=16, value=s.audiencia_hora.isoformat() if s.audiencia_hora else None)
+            ws2.cell(row=row, column=17, value=s.audiencia_link)
+            ws2.cell(row=row, column=18, value=s.confianca)
+            ws2.cell(row=row, column=19, value=s.justificativa)
+            ws2.cell(row=row, column=20, value=s.review_status)
             row += 1
     _autofit(ws2, sug_cols)
+    ws2.column_dimensions[get_column_letter(5)].width = 36  # escritório
 
     # ── Aba 3: Pedidos (1 linha por pedido) ──
     ws3 = wb.create_sheet(title="Pedidos")

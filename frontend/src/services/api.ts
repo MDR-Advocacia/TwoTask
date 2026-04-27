@@ -180,8 +180,28 @@ export async function fetchPrazosIniciaisIntakes(
   const params = new URLSearchParams();
   if (filters.status) params.set("status", filters.status);
   if (filters.cnj_number) params.set("cnj_number", filters.cnj_number);
-  if (typeof filters.office_id === "number") {
-    params.set("office_id", String(filters.office_id));
+  // office_id agora aceita CSV no backend — serializamos como string.
+  if (filters.office_id) params.set("office_id", filters.office_id);
+  if (filters.natureza_processo) {
+    params.set("natureza_processo", filters.natureza_processo);
+  }
+  if (filters.produto) params.set("produto", filters.produto);
+  if (filters.probabilidade_exito_global) {
+    params.set("probabilidade_exito_global", filters.probabilidade_exito_global);
+  }
+  if (filters.date_from) params.set("date_from", filters.date_from);
+  if (filters.date_to) params.set("date_to", filters.date_to);
+  if (typeof filters.has_error === "boolean") {
+    params.set("has_error", String(filters.has_error));
+  }
+  if (typeof filters.batch_id === "number") {
+    params.set("batch_id", String(filters.batch_id));
+  }
+  if (filters.treated_by_user_id) {
+    params.set("treated_by_user_id", filters.treated_by_user_id);
+  }
+  if (typeof filters.dispatch_pending === "boolean") {
+    params.set("dispatch_pending", String(filters.dispatch_pending));
   }
   if (typeof filters.limit === "number") params.set("limit", String(filters.limit));
   if (typeof filters.offset === "number") params.set("offset", String(filters.offset));
@@ -221,6 +241,72 @@ export async function cancelarPrazoInicial(
     { method: "POST" },
   );
   return expectJson<PrazoInicialIntakeSummary>(response);
+}
+
+/**
+ * HARD DELETE de um intake (admin only). Apaga registro + PDF + cascata.
+ * Usado pra reinjetar o mesmo processo do zero durante testes. Vai virar
+ * arquivamento depois.
+ */
+export async function deletePrazoInicialIntake(intakeId: number): Promise<void> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/intakes/${intakeId}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok && response.status !== 204) {
+    let detail = "Falha ao deletar intake.";
+    try {
+      const data = await response.json();
+      detail = data?.detail || detail;
+    } catch (_) {
+      // sem body
+    }
+    throw new Error(detail);
+  }
+}
+
+
+/**
+ * Onda 3 #5 — dispara o tratamento web (GED + enqueue cancel da legacy)
+ * de um intake AGENDADO/CONCLUIDO_SEM_PROVIDENCIA. Idempotente — se
+ * `dispatch_pending` já estiver false, retorna `skipped:true`.
+ */
+export async function dispatchPrazoInicialTreatmentWeb(
+  intakeId: number,
+): Promise<{
+  intake: PrazoInicialIntakeSummary;
+  legacy_task_cancellation_item: unknown | null;
+  skipped: boolean;
+  reason?: string | null;
+}> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/intakes/${intakeId}/dispatch-treatment-web`,
+    { method: "POST" },
+  );
+  return expectJson(response);
+}
+
+
+/**
+ * Onda 3 #5/#6 — dispara em lote N intakes pendentes em ordem cronológica.
+ * Usado pelo botão "Disparar todos" e pelo worker periódico configurável.
+ */
+export async function dispatchPrazoInicialPendingBatch(
+  batchLimit: number = 10,
+): Promise<{
+  candidates: number;
+  success_count: number;
+  skipped_count: number;
+  failure_count: number;
+  success_ids: number[];
+  skipped_ids: number[];
+  failed: { intake_id: number; error: string }[];
+}> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/intakes/dispatch-pending/process-batch?batch_limit=${batchLimit}`,
+    { method: "POST" },
+  );
+  return expectJson(response);
 }
 
 
@@ -305,6 +391,33 @@ export async function applyPrazosIniciaisBatch(
  * persistidos do intake. Não re-roda Sonnet, não gasta tokens.
  * Útil pra corrigir intakes órfãos de apply antigo.
  */
+/**
+ * Finaliza o intake SEM criar tarefa no Legal One (Caminho A).
+ * Sobe habilitação pro GED, cancela a task legada, marca intake como
+ * CONCLUIDO_SEM_PROVIDENCIA. Caso operacional pra processos sem
+ * providência necessária (ex.: sentença de improcedência transitada,
+ * arquivamento definitivo).
+ */
+export async function finalizarPrazoInicialSemProvidencia(
+  intakeId: number,
+  payload: { notes?: string | null; enqueue_legacy_task_cancellation?: boolean } = {},
+): Promise<{ intake: Record<string, unknown>; legacy_task_cancellation_item: Record<string, unknown> | null }> {
+  const body = {
+    notes: payload.notes ?? null,
+    enqueue_legacy_task_cancellation: payload.enqueue_legacy_task_cancellation ?? true,
+  };
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/intakes/${intakeId}/finalizar-sem-providencia`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  return expectJson(response);
+}
+
+
 export async function recomputePrazoInicialGlobals(
   intakeId: number,
 ): Promise<{

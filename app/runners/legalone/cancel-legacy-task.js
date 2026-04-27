@@ -309,222 +309,220 @@ async function closeSession(session) {
   await session.browser?.close().catch(() => {});
 }
 
-async function waitForTaskEditForm(page, editUrl, loginConfig) {
-  let lastContext = null;
-
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    await page.goto(editUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
-    const fastHandle = await page
-      .waitForSelector('form[action*="/agenda/Tarefas/Edit"]', { timeout: 5000 })
-      .catch(() => null);
-    if (fastHandle) {
-      return;
+async function dismissCookieBanner(page) {
+  // Banner Thomson Reuters intercepta cliques. Tenta fechar antes de
+  // procurar o form. No-op se nao tiver o banner.
+  try {
+    for (const frame of page.frames()) {
+      const accept = await frame
+        .$('text=/Aceito esta pol[ií]tica/i')
+        .catch(() => null);
+      if (accept) {
+        await accept.click({ timeout: 2000 }).catch(() => {});
+        await page.waitForTimeout(250);
+        return true;
+      }
     }
+  } catch (_) {}
+  return false;
+}
 
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-    const settledHandle = await page.$('form[action*="/agenda/Tarefas/Edit"]');
-    if (settledHandle) {
-      return;
-    }
+async function submitCancellationViaBatchModal(page, item, loginConfig) {
+  // Fluxo:
+  //   1. Goto detailsUrl (lista de tasks do processo)
+  //   2. Marca checkbox da task alvo (#grid_check_{taskId})
+  //   3. Clica na engrenagem do toolbar (.toolbar-default-action .popover-menu-button)
+  //   4. Clica em "Alterar" (#toolbar-item a)
+  //   5. No modal "Alterando compromisso(s) e tarefa(s)":
+  //      a. Preenche o lookup "Campo" com "Status"
+  //      b. Aguarda lookup "Para" (#LookupStatusLote) habilitar
+  //      c. Preenche o lookup "Para" com "Cancelado"
+  //   6. Clica em Salvar (button.toolbar-modal-submit)
+  //   7. Aguarda fechar modal (toast/redirect/networkidle)
 
-    lastContext = await capturePageContext(page);
-    if (isAuthenticationPage(lastContext)) {
+  const detailsUrl = item.detailsUrl;
+  if (!detailsUrl) {
+    throw new Error('detailsUrl ausente no item — nao consigo abrir lista de tasks.');
+  }
+
+  // 1) Goto + dispense cookie banner + autenticacao se necessario
+  let loaded = false;
+  for (let attempt = 1; attempt <= 3 && !loaded; attempt += 1) {
+    await page.goto(detailsUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
+    await dismissCookieBanner(page);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+
+    const ctx = await capturePageContext(page);
+    if (isAuthenticationPage(ctx)) {
       await login(page, loginConfig);
       continue;
     }
-
-    await page.waitForTimeout(1500);
-    const lateHandle = await page.$('form[action*="/agenda/Tarefas/Edit"]');
-    if (lateHandle) {
-      return;
-    }
+    loaded = true;
+  }
+  if (!loaded) {
+    throw new Error('Nao consegui abrir DetailsCompromissosTarefas (auth loop).');
   }
 
-  throw new Error(
-    `Task edit form not found | url=${lastContext?.url || editUrl} | title=${lastContext?.title || ''} | body=${(lastContext?.bodyStart || '').slice(0, 400)}`,
+  // 2) Marca o checkbox da task. O <input> eh hidden via CSS, entao
+  // page.click() (mesmo com force) recusa. Solucao: chamar el.click()
+  // direto via evaluate — o metodo nativo do DOM dispara o handler
+  // independente de visibilidade. Idempotente (so clica se nao marcado).
+  const checkboxSelector = `input.grid_check[data-val="${item.taskId}"]`;
+  await page.waitForSelector(checkboxSelector, {
+    state: 'attached',
+    timeout: 15000,
+  });
+  await page.evaluate((tid) => {
+    const cb = document.querySelector(`input.grid_check[data-val="${tid}"]`);
+    if (!cb) {
+      throw new Error(`Checkbox grid_check[data-val="${tid}"] nao encontrado.`);
+    }
+    if (!cb.checked) {
+      cb.click(); // dispara o handler nativo + change event
+    }
+  }, String(item.taskId));
+
+  // 3) Clica na engrenagem do toolbar da grid (popover de acoes em lote).
+  // O seletor PRECISA ser escopado a `table.webgrid thead` — existem
+  // outros `.popover-button-wrapper.toolbar-default-action` em outros
+  // lugares da pagina (sidebar, etc). Sem o escopo, o click vai pro
+  // wrapper errado e o popover certo nunca abre.
+  const gearSelector =
+    'table.webgrid thead .popover-button-wrapper.toolbar-default-action .toolbar-action-right.popover-menu-button';
+  await page.waitForSelector(gearSelector, { timeout: 8000 });
+
+  let popoverOpen = false;
+  for (let attempt = 1; attempt <= 3 && !popoverOpen; attempt += 1) {
+    await page.click(gearSelector, { timeout: 5000 });
+    try {
+      // Espera o <ul> do popover (no thead) ficar visible
+      await page.waitForFunction(
+        () => {
+          const ul = document.querySelector(
+            'table.webgrid thead ul.action-right-list.popover-menu-list',
+          );
+          return ul && ul.offsetParent !== null;
+        },
+        null,
+        { timeout: 2000 },
+      );
+      popoverOpen = true;
+    } catch (_) {
+      // tenta de novo
+    }
+  }
+  if (!popoverOpen) {
+    throw new Error('Engrenagem do toolbar nao abriu o popover apos 3 tentativas.');
+  }
+
+  // 4) Clica em "Alterar" dentro do popover aberto (escopado ao thead).
+  // Aguarda o <li id="toolbar-item"> ficar VISIBLE — depende do <ul>
+  // pai ter saido de display:none.
+  await page.waitForSelector('#toolbar-item:visible', { timeout: 5000 });
+  await page.click(
+    'table.webgrid thead ul.action-right-list.popover-menu-list #toolbar-item a',
+    { timeout: 5000 },
   );
-}
 
-async function submitCancellation(page, item) {
-  return page.evaluate(async (currentItem) => {
-    const normalizeText = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-    const textFromHtml = (html) => {
-      const doc = new DOMParser().parseFromString(html, 'text/html');
-      return doc.body ? doc.body.innerText || '' : '';
-    };
+  // 5) Modal monta — aguarda body > div.modal ficar visivel + perder
+  // a classe widget-loading no .toolbar-modal-content
+  await page.waitForSelector('body > div.modal', {
+    state: 'visible',
+    timeout: 15000,
+  });
+  await page
+    .waitForFunction(
+      () => {
+        const content = document.querySelector('.toolbar-modal-content');
+        return content && !content.classList.contains('widget-loading');
+      },
+      null,
+      { timeout: 10000 },
+    )
+    .catch(() => {});
 
-    const collectMessages = (doc, text) => {
-      const selectors = [
-        '.validation-summary-errors',
-        '.field-validation-error',
-        '.alert-danger',
-        '.alert-warning',
-        '.alert',
-        '.message-error',
-        '.message-warning',
-        '.error-message',
-        '.warning-message',
-        '#msgErro',
-        '#mensagemErro',
-        '#mensagem',
-      ];
-      const messages = [];
+  //   5a) Campo = Status. Lookup customizado: NAO funciona via
+  //   autocomplete sintetico (testado). Usar o botao .lookup-show
+  //   que abre o dropdown como tabela, depois clicar na <tr> com
+  //   data-val-id="0" (Status). IDs documentados pelo investigador:
+  //   Status=0, Descricao=1, Local=2, Executante=3, Responsavel=4,
+  //   Solicitante=5, Escritorio origem=6, Escritorio responsavel=7,
+  //   Etiquetas=12.
+  await page.click('#LookupCampo .lookup-show', { timeout: 5000 });
+  await page.click(
+    '.lookup-dropdown.lookup-inside-modal:visible tr[data-val-id="0"]',
+    { timeout: 5000 },
+  );
 
-      for (const selector of selectors) {
-        for (const node of doc.querySelectorAll(selector)) {
-          const message = normalizeText(node.innerText || node.textContent || '');
-          if (message && message.length > 2) {
-            messages.push(message);
-          }
-        }
-      }
+  //   5b) Aguarda o lookup "Para" (#LookupStatusLote) ficar VISIVEL —
+  //   ele soh aparece quando "Campo" = Status.
+  await page.waitForFunction(
+    () => {
+      const wrapper = document.getElementById('LookupStatusLote');
+      return wrapper && wrapper.offsetParent !== null;
+    },
+    null,
+    { timeout: 10000 },
+  );
 
-      if (!messages.length) {
-        const patterns = [
-          /nao[^.\n]{0,180}/ig,
-          /erro[^.\n]{0,180}/ig,
-          /obrigat[^\n.]{0,180}/ig,
-          /invalid[^\n.]{0,180}/ig,
-          /preencha[^.\n]{0,180}/ig,
-          /campo[^.\n]{0,180}/ig,
-        ];
+  //   5c) Para = Cancelado. Mesmo padrao: .lookup-show -> tr[data-val-id="3"].
+  //   Status IDs: Pendente=0, Cumprido=1, Nao cumprido=2, Cancelado=3,
+  //   Iniciado=4, Reagendado=5.
+  await page.click('#LookupStatusLote .lookup-show', { timeout: 5000 });
+  await page.click(
+    `.lookup-dropdown.lookup-inside-modal:visible tr[data-val-id="${item.targetStatusId}"]`,
+    { timeout: 5000 },
+  );
 
-        for (const pattern of patterns) {
-          for (const match of text.matchAll(pattern)) {
-            const snippet = normalizeText(match[0]);
-            if (snippet && snippet.length > 2) {
-              messages.push(snippet);
-            }
-          }
-        }
-      }
+  // 6) Clica em Salvar — o botao submit aparece DUAS vezes no DOM
+  // (um eh 0x0 invisivel). Filtra pelo visivel.
+  await page.click('button.toolbar-modal-submit:visible', { timeout: 5000 });
 
-      return [...new Set(messages)].slice(0, 12);
-    };
+  // 7) Aguarda o modal fechar (sumir do DOM ou virar invisible)
+  await page
+    .waitForFunction(
+      () => {
+        const modal = document.querySelector('.toolbar-modal-submit');
+        if (!modal) return true;
+        const visible = modal.offsetParent !== null;
+        return !visible;
+      },
+      null,
+      { timeout: 30000 },
+    )
+    .catch(() => {});
+  // Aguarda networkidle pra dar tempo do servidor processar
+  await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
 
-    const form = Array.from(document.querySelectorAll('form')).find((candidate) =>
-      (candidate.getAttribute('action') || '').includes('/agenda/Tarefas/Edit'),
-    );
-    if (!form) {
-      throw new Error('Main task edit form not found');
-    }
+  // 8) Re-acessa o detailsUrl pra forcar refresh — garante que a UI
+  // exibe o estado atualizado da task (em caso de qualquer cache do
+  // proprio Novajus) e da tempo do servidor terminar de processar.
+  // O Python depois valida via API L1 GET /Tasks/{id}.
+  try {
+    await page.goto(detailsUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+  } catch (_) {
+    // Refresh eh best-effort; nao impede o sucesso.
+  }
 
-    const currentStatusId =
-      form.querySelector('#StatusId')?.value ||
-      form.querySelector('[name="StatusId"]')?.value ||
-      null;
-    const currentStatusText =
-      form.querySelector('#StatusText')?.value ||
-      form.querySelector('[name="StatusText"]')?.value ||
-      '';
-
-    if (String(currentStatusId) === String(currentItem.targetStatusId)) {
-      return {
-        alreadyCancelled: true,
-        currentStatusId,
-        currentStatusText,
-        verifiedStatusId: currentStatusId,
-        verifiedStatusText: currentStatusText,
-      };
-    }
-
-    const params = new URLSearchParams();
-    const elements = form.querySelectorAll('input, select, textarea, button');
-    for (const element of elements) {
-      const tag = element.tagName.toUpperCase();
-      const type = (element.getAttribute('type') || '').toLowerCase();
-      const name = element.getAttribute('name') || '';
-      if (!name || element.disabled) continue;
-
-      if (tag === 'BUTTON') {
-        if (type === 'submit' && name === 'ButtonSave') {
-          params.set(name, element.value || '0');
-        }
-        continue;
-      }
-
-      if ((type === 'checkbox' || type === 'radio') && !element.checked) {
-        continue;
-      }
-
-      if (tag === 'SELECT' && element.multiple) {
-        const selected = Array.from(element.options).filter((option) => option.selected);
-        if (!selected.length) {
-          params.append(name, '');
-        } else {
-          for (const option of selected) {
-            params.append(name, option.value);
-          }
-        }
-        continue;
-      }
-
-      params.append(name, element.value ?? '');
-    }
-
-    params.set('StatusId', String(currentItem.targetStatusId));
-    params.set('StatusText', currentItem.targetStatusText);
-    params.set('ButtonSave', '0');
-
-    const actionUrl = new URL(form.getAttribute('action'), window.location.href).href;
-    const postResponse = await fetch(actionUrl, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
-      body: params.toString(),
-    });
-    const postHtml = await postResponse.text();
-    const postDoc = new DOMParser().parseFromString(postHtml, 'text/html');
-    const postText = textFromHtml(postHtml);
-    const postMessages = collectMessages(postDoc, postText);
-
-    const verifyResponse = await fetch(currentItem.editUrl, {
-      method: 'GET',
-      credentials: 'include',
-      headers: { Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },
-    });
-    const verifyHtml = await verifyResponse.text();
-    const verifyDoc = new DOMParser().parseFromString(verifyHtml, 'text/html');
-    const verifyText = textFromHtml(verifyHtml);
-    const verifyMessages = collectMessages(verifyDoc, verifyText);
-    const verifiedStatusId =
-      verifyDoc.querySelector('#StatusId')?.value ||
-      verifyDoc.querySelector('[name="StatusId"]')?.value ||
-      null;
-    const verifiedStatusText =
-      verifyDoc.querySelector('#StatusText')?.value ||
-      verifyDoc.querySelector('[name="StatusText"]')?.value ||
-      '';
-
-    const detailsResponse = await fetch(currentItem.detailsUrl, {
-      method: 'GET',
-      credentials: 'include',
-      headers: { Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },
-    });
-    const detailsHtml = await detailsResponse.text();
-    const detailsText = textFromHtml(detailsHtml);
-
-    return {
-      alreadyCancelled: false,
-      postStatus: postResponse.status,
-      postUrl: postResponse.url,
-      postMessages,
-      verifyStatus: verifyResponse.status,
-      verifyMessages,
-      verifiedStatusId,
-      verifiedStatusText,
-      detailsStatus: detailsResponse.status,
-      detailsHasTargetText: detailsText.toLowerCase().includes(String(currentItem.targetStatusText || '').toLowerCase()),
-      detailsPreview: detailsText.slice(0, 1500),
-      postPreview: postText.slice(0, 1500),
-    };
-  }, item);
+  return {
+    alreadyCancelled: false,
+    finalUrl: page.url(),
+    submitMethod: 'batch_modal',
+  };
 }
 
 async function cancelTask(session, item, loginConfig) {
-  const editUrl = item.editUrl;
-  await waitForTaskEditForm(session.page, editUrl, loginConfig);
-  const response = await submitCancellation(session.page, item);
+  // Cancelamento via tela de "Compromissos e tarefas" do processo
+  // (DetailsCompromissosTarefas) usando o modal "Alterar em lote". Esse
+  // caminho EVITA a tela de edit individual da task — logo NAO sofre
+  // com custom fields obrigatorios, EnvolvidoEfetivoId, popup "data
+  // anterior", validacao de Workflow, etc. Cancela direto.
+  const response = await submitCancellationViaBatchModal(
+    session.page,
+    item,
+    loginConfig,
+  );
 
   if (response.alreadyCancelled) {
     return {
@@ -533,14 +531,11 @@ async function cancelTask(session, item, loginConfig) {
     };
   }
 
-  if (String(response.verifiedStatusId) !== String(item.targetStatusId)) {
-    throw new Error(
-      response.verifyMessages?.join(' | ') ||
-      response.postMessages?.join(' | ') ||
-      `Status verification failed for task ${item.taskId}: expected ${item.targetStatusId}, got ${response.verifiedStatusId}`,
-    );
-  }
-
+  // Se nao deu exception ate aqui, o submit do modal "Alterar em lote"
+  // foi clicado sem erro. A verificacao AUTORITATIVA de cancelamento
+  // acontece no Python (`get_task_by_id` via API L1) — esse runner so
+  // reporta que o fluxo de UI executou. Se o save nao persistiu, o
+  // Python detecta pelo statusId retornado pela API e marca FAILED.
   return {
     status: RUNNER_STATUS_CANCELLED,
     response,

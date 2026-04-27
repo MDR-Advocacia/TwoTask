@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -33,7 +34,31 @@ from app.services.prazos_iniciais.scheduling_service import (
     PrazosIniciaisSchedulingService,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/prazos-iniciais", tags=["Prazos Iniciais"])
+
+
+def _run_reprocess_in_background(intake_id: int) -> None:
+    """
+    Executa o RPA de cancelamento imediatamente, em background, pra um
+    intake especifico. Usado pelo botao "Reprocessar" no UI — assim o
+    operador nao precisa esperar o tick periodico (~60s).
+
+    Cria propria sessao do banco porque a do request fecha junto com
+    a resposta HTTP.
+    """
+    db = SessionLocal()
+    try:
+        service = PrazosIniciaisLegacyTaskQueueService(db)
+        service.process_pending_items(limit=1, intake_id=intake_id)
+    except Exception:
+        logger.exception(
+            "legacy_task_queue.reprocess_background_failed intake_id=%s",
+            intake_id,
+        )
+    finally:
+        db.close()
 
 
 def _intake_to_summary(intake: PrazoInicialIntake) -> dict:
@@ -137,6 +162,8 @@ def confirm_intake_scheduling(
             ]
             or None,
             confirmed_by_email=current_user.email,
+            confirmed_by_user_id=current_user.id,
+            confirmed_by_name=getattr(current_user, "name", None),
             enqueue_legacy_task_cancellation=payload.enqueue_legacy_task_cancellation,
             legacy_task_type_external_id=payload.legacy_task_type_external_id,
             legacy_task_subtype_external_id=payload.legacy_task_subtype_external_id,
@@ -151,13 +178,88 @@ def confirm_intake_scheduling(
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    if payload.enqueue_legacy_task_cancellation:
-        background_tasks.add_task(_process_legacy_task_queue_for_intake, intake_id)
-
+    # Onda 3 #5 — Disparo desacoplado: GED + cancel da legada NÃO são
+    # acionados aqui. O intake fica AGENDADO + dispatch_pending=True. O
+    # operador (ou worker periódico) aciona via /dispatch-treatment-web.
     return ConfirmSchedulingResponse(
         intake=_intake_to_summary(result["intake"]),
         confirmed_suggestion_ids=result["confirmed_suggestion_ids"],
         created_task_ids=result["created_task_ids"],
+        legacy_task_cancellation_item=result["legacy_task_cancellation_item"],
+    )
+
+
+# ────────────────────────────────────────────────────────────────
+# Finalizar sem providência (Caminho A)
+# ────────────────────────────────────────────────────────────────
+
+
+class FinalizeWithoutProvidenceRequest(BaseModel):
+    """
+    Body do POST /intakes/{id}/finalizar-sem-providencia.
+    `notes` é opcional e vai pra `metadata_json.finalize_without_providence`
+    pra trilha de auditoria (quem finalizou e por quê).
+    """
+    notes: Optional[str] = Field(default=None, max_length=500)
+    enqueue_legacy_task_cancellation: bool = True
+    legacy_task_type_external_id: int = Field(
+        default=DEFAULT_LEGACY_TASK_TYPE_EXTERNAL_ID,
+        ge=1,
+    )
+    legacy_task_subtype_external_id: int = Field(
+        default=DEFAULT_LEGACY_TASK_SUBTYPE_EXTERNAL_ID,
+        ge=1,
+    )
+
+
+class FinalizeWithoutProvidenceResponse(BaseModel):
+    intake: dict
+    legacy_task_cancellation_item: Optional[dict] = None
+
+
+@router.post(
+    "/intakes/{intake_id}/finalizar-sem-providencia",
+    response_model=FinalizeWithoutProvidenceResponse,
+    summary=(
+        "Finaliza o intake SEM criar tarefa no Legal One. Sobe habilitação "
+        "pro GED, cancela task legada, marca CONCLUIDO_SEM_PROVIDENCIA."
+    ),
+)
+def finalize_without_providence(
+    background_tasks: BackgroundTasks,
+    payload: FinalizeWithoutProvidenceRequest,
+    intake_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(
+        auth_security.require_permission("prazos_iniciais")
+    ),
+):
+    service = PrazosIniciaisSchedulingService(db)
+    try:
+        result = service.finalize_without_scheduling(
+            intake_id=intake_id,
+            confirmed_by_email=current_user.email,
+            confirmed_by_user_id=current_user.id,
+            confirmed_by_name=getattr(current_user, "name", None),
+            notes=payload.notes,
+            enqueue_legacy_task_cancellation=payload.enqueue_legacy_task_cancellation,
+            legacy_task_type_external_id=payload.legacy_task_type_external_id,
+            legacy_task_subtype_external_id=payload.legacy_task_subtype_external_id,
+        )
+    except ValueError as exc:
+        # intake não encontrado
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        # status inválido OU falha no GED
+        detail = str(exc)
+        # 422 pra status inválido (regra de negócio), 502 pra falha do L1
+        status_code = 502 if "Legal One" in detail or "GED" in detail else 422
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+
+    # Onda 3 #5 — Disparo desacoplado: GED + cancel não são acionados
+    # aqui. Intake fica CONCLUIDO_SEM_PROVIDENCIA + dispatch_pending=True.
+    return FinalizeWithoutProvidenceResponse(
+        intake=_intake_to_summary(result["intake"]),
         legacy_task_cancellation_item=result["legacy_task_cancellation_item"],
     )
 
@@ -280,9 +382,10 @@ def legacy_task_cancel_queue_metrics(
 @router.post(
     "/legacy-task-cancel-queue/items/{item_id}/reprocessar",
     response_model=QueueItemActionResponse,
-    summary="Marca um item da fila como PENDENTE pra ser reprocessado pelo worker.",
+    summary="Reprocessa um item da fila imediatamente (em background).",
 )
 def reprocess_legacy_task_cancel_item(
+    background_tasks: BackgroundTasks,
     item_id: int = Path(..., ge=1),
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
@@ -291,6 +394,15 @@ def reprocess_legacy_task_cancel_item(
     item = service.reprocess_item(item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Item não encontrado.")
+
+    # Dispara o RPA imediatamente em background — operador nao precisa
+    # esperar o tick periodico (~60s) do worker. A resposta HTTP retorna
+    # rapido com o item ja em PENDING; o cancelamento real acontece
+    # logo em seguida em outra thread.
+    intake_id = item.get("intake_id") if isinstance(item, dict) else None
+    if intake_id:
+        background_tasks.add_task(_run_reprocess_in_background, int(intake_id))
+
     return QueueItemActionResponse(item=item)
 
 
@@ -374,3 +486,127 @@ def export_legacy_task_cancel_queue(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ────────────────────────────────────────────────────────────────
+# Onda 3 #5 — Dispatch Treatment Web (desacoplado)
+# ────────────────────────────────────────────────────────────────
+
+class DispatchTreatmentWebResponse(BaseModel):
+    """Resposta do POST /intakes/{id}/dispatch-treatment-web.
+
+    `skipped` indica que o intake já estava com dispatch_pending=False
+    (idempotente). `intake` traz o estado atualizado.
+    """
+    intake: dict
+    legacy_task_cancellation_item: Optional[dict] = None
+    skipped: bool = False
+    reason: Optional[str] = None
+
+
+@router.post(
+    "/intakes/{intake_id}/dispatch-treatment-web",
+    response_model=DispatchTreatmentWebResponse,
+    summary=(
+        "Dispara o tratamento web (GED upload + enqueue cancel da legacy) "
+        "de um intake AGENDADO/CONCLUIDO_SEM_PROVIDENCIA."
+    ),
+)
+def dispatch_treatment_web(
+    background_tasks: BackgroundTasks,
+    intake_id: int = Path(..., ge=1),
+    legacy_task_type_external_id: int = Query(
+        default=DEFAULT_LEGACY_TASK_TYPE_EXTERNAL_ID, ge=1,
+    ),
+    legacy_task_subtype_external_id: int = Query(
+        default=DEFAULT_LEGACY_TASK_SUBTYPE_EXTERNAL_ID, ge=1,
+    ),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    service = PrazosIniciaisSchedulingService(db)
+    try:
+        result = service.dispatch_treatment_web(
+            intake_id=intake_id,
+            legacy_task_type_external_id=legacy_task_type_external_id,
+            legacy_task_subtype_external_id=legacy_task_subtype_external_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        detail = str(exc)
+        # Falhas de Legal One/GED viram 502 (upstream); resto é regra
+        # de negócio (status incompatível, lawsuit_id ausente).
+        status_code = 502 if (
+            "Legal One" in detail or "GED" in detail or "enfileirar" in detail
+        ) else 422
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+
+    # Após disparo, processa imediatamente a fila daquele intake em
+    # background pra encurtar latência percebida pelo operador.
+    if not result.get("skipped"):
+        background_tasks.add_task(_process_legacy_task_queue_for_intake, intake_id)
+
+    return DispatchTreatmentWebResponse(
+        intake=_intake_to_summary(result["intake"]),
+        legacy_task_cancellation_item=result.get("legacy_task_cancellation_item"),
+        skipped=bool(result.get("skipped", False)),
+        reason=result.get("reason"),
+    )
+
+
+@router.post(
+    "/intakes/dispatch-pending/process-batch",
+    summary=(
+        "Dispara em lote os intakes com dispatch_pending=True (idempotente, "
+        "ordem cronológica). batch_limit controla quantos por chamada."
+    ),
+)
+def dispatch_pending_intakes_batch(
+    background_tasks: BackgroundTasks,
+    batch_limit: int = Query(default=10, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    """Endpoint usado tanto pelo botão "Disparar todos" da Tratamento Web
+    quanto pelo worker periódico (Onda 3 #6)."""
+    from app.models.prazo_inicial import PrazoInicialIntake
+
+    pending_ids = (
+        db.query(PrazoInicialIntake.id)
+        .filter(PrazoInicialIntake.dispatch_pending.is_(True))
+        .order_by(PrazoInicialIntake.treated_at.asc().nullslast())
+        .limit(batch_limit)
+        .all()
+    )
+    intake_ids = [row[0] for row in pending_ids]
+
+    service = PrazosIniciaisSchedulingService(db)
+    success: list[int] = []
+    failed: list[dict] = []
+    skipped: list[int] = []
+
+    for iid in intake_ids:
+        try:
+            result = service.dispatch_treatment_web(intake_id=iid)
+            if result.get("skipped"):
+                skipped.append(iid)
+            else:
+                success.append(iid)
+                background_tasks.add_task(
+                    _process_legacy_task_queue_for_intake, iid,
+                )
+        except Exception as exc:  # noqa: BLE001
+            failed.append({"intake_id": iid, "error": str(exc)[:300]})
+            # Loop continua — falhas individuais não interrompem o lote.
+            continue
+
+    return {
+        "candidates": len(intake_ids),
+        "success_count": len(success),
+        "skipped_count": len(skipped),
+        "failure_count": len(failed),
+        "success_ids": success,
+        "skipped_ids": skipped,
+        "failed": failed,
+    }
