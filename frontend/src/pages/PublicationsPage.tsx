@@ -727,6 +727,12 @@ const PublicationsPage = () => {
 
   // Batch classification
   const [batches, setBatches] = useState<PublicationBatch[]>([]);
+  // Paginação client-side da listagem de batches. Antes a tabela usava
+  // <ScrollArea> que não cooperava com o conteúdo dinâmico (mostrava só
+  // 3 linhas mesmo com 12 batches). 10/página cabe sem scroll vertical
+  // e dá controle pra navegar conforme o histórico cresce.
+  const [batchPage, setBatchPage] = useState(0);
+  const BATCHES_PAGE_SIZE = 10;
   const [batchesExpanded, setBatchesExpanded] = useState(true);
   const [submittingBatch, setSubmittingBatch] = useState(false);
   const [refreshingBatchId, setRefreshingBatchId] = useState<number | null>(null);
@@ -2489,8 +2495,20 @@ const PublicationsPage = () => {
               <div className="flex h-20 items-center justify-center text-xs text-muted-foreground">
                 Nenhum lote enviado ainda.
               </div>
-            ) : (
-              <ScrollArea className="max-h-[260px] rounded border">
+            ) : (() => {
+              // Paginação client-side: tabela mostra `BATCHES_PAGE_SIZE`
+              // por página e os controles abaixo navegam o histórico.
+              const totalPages = Math.max(
+                1,
+                Math.ceil(batches.length / BATCHES_PAGE_SIZE),
+              );
+              const safePage = Math.min(batchPage, totalPages - 1);
+              const pagedBatches = batches.slice(
+                safePage * BATCHES_PAGE_SIZE,
+                (safePage + 1) * BATCHES_PAGE_SIZE,
+              );
+              return (
+              <div className="rounded border">
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -2504,7 +2522,7 @@ const PublicationsPage = () => {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {batches.map((b) => (
+                    {pagedBatches.map((b) => (
                       <TableRow key={b.id}>
                         <TableCell className="font-mono text-xs">#{b.id}</TableCell>
                         <TableCell>
@@ -2600,8 +2618,47 @@ const PublicationsPage = () => {
                     ))}
                   </TableBody>
                 </Table>
-              </ScrollArea>
-            )}
+                {/* Controles de paginação — só aparecem se há >1 página */}
+                {totalPages > 1 && (
+                  <div className="flex items-center justify-between border-t px-3 py-2 text-xs text-muted-foreground">
+                    <div>
+                      Mostrando {safePage * BATCHES_PAGE_SIZE + 1}–
+                      {Math.min(
+                        (safePage + 1) * BATCHES_PAGE_SIZE,
+                        batches.length,
+                      )}{" "}
+                      de {batches.length} lotes
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2"
+                        onClick={() => setBatchPage((p) => Math.max(0, p - 1))}
+                        disabled={safePage === 0}
+                      >
+                        Anterior
+                      </Button>
+                      <span>
+                        Página {safePage + 1} de {totalPages}
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2"
+                        onClick={() =>
+                          setBatchPage((p) => Math.min(totalPages - 1, p + 1))
+                        }
+                        disabled={safePage >= totalPages - 1}
+                      >
+                        Próxima
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+              );
+            })()}
           </CardContent>
         )}
       </Card>
