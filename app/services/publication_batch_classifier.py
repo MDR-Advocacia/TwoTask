@@ -58,6 +58,10 @@ from app.services.classifier.prompts import (
     load_office_overrides,
 )
 from app.services.classifier.taxonomy import validate_classification, repair_classification
+from app.services.classifier.response_schema import (
+    validate_response,
+    ResponseSchemaError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -480,25 +484,52 @@ class PublicationBatchClassifier:
                 failed += 1
                 continue
 
-            cat = classification.get("categoria")
-            sub = classification.get("subcategoria")
+            # Schema cross-field: zera audiência se categoria não é
+            # "Audiência Agendada", valida formatos. Erro estrutural
+            # (sem categoria) é fatal pra esse item.
+            try:
+                clean = validate_response(classification)
+            except ResponseSchemaError as exc:
+                logger.warning(
+                    "Schema inválido #%s: %s — payload=%s",
+                    rec.id, exc, str(classification)[:300],
+                )
+                rec.status = RECORD_STATUS_ERROR
+                error_details[custom_id] = f"Schema inválido: {exc}"
+                failed += 1
+                continue
+
+            if clean.warnings:
+                logger.warning(
+                    "Schema warnings #%s: %s",
+                    rec.id, "; ".join(clean.warnings),
+                )
+
             # Auto-corrige inversões comuns (subcategoria emitida como categoria)
-            cat_fixed, sub_fixed = repair_classification(cat or "", sub or "")
-            if (cat_fixed, sub_fixed) != (cat, sub):
+            cat_fixed, sub_fixed = repair_classification(
+                clean.categoria, clean.subcategoria
+            )
+            if (cat_fixed, sub_fixed) != (clean.categoria, clean.subcategoria):
                 logger.info(
                     "Classificação auto-corrigida #%s: (%s/%s) → (%s/%s)",
-                    rec.id, cat, sub, cat_fixed, sub_fixed,
+                    rec.id,
+                    clean.categoria, clean.subcategoria,
+                    cat_fixed, sub_fixed,
                 )
-                cat, sub = cat_fixed, sub_fixed
-                classification["categoria"] = cat
-                classification["subcategoria"] = sub
-            polo_raw = (classification.get("polo") or "").strip().lower()
-            polo = polo_raw if polo_raw in VALID_POLOS else None
+            cat, sub = cat_fixed, sub_fixed
+            # Mantém o dict `classification` em sincronia pra o registro de
+            # _extra_classifications/raw e para a propagação de irmãos.
+            classification["categoria"] = cat
+            classification["subcategoria"] = sub
+            classification["polo"] = clean.polo
+            classification["audiencia_data"] = clean.audiencia_data
+            classification["audiencia_hora"] = clean.audiencia_hora
+            classification["audiencia_link"] = clean.audiencia_link
 
-            # Audiência: extrair data/hora/link se presente
-            aud_data = classification.get("audiencia_data") or None
-            aud_hora = classification.get("audiencia_hora") or None
-            aud_link = classification.get("audiencia_link") or None
+            polo = clean.polo
+            aud_data = clean.audiencia_data
+            aud_hora = clean.audiencia_hora
+            aud_link = clean.audiencia_link
 
             if cat and validate_classification(cat, sub):
                 rec.category = cat
@@ -509,7 +540,7 @@ class PublicationBatchClassifier:
                 rec.audiencia_link = aud_link
                 # Natureza do processo: só pra publicações sem pasta vinculada
                 if rec.linked_lawsuit_id is None:
-                    rec.natureza_processo = classification.get("natureza_processo") or None
+                    rec.natureza_processo = clean.natureza_processo
                 # Múltiplas classificações
                 extra = classification.get("_extra_classifications")
                 if extra:

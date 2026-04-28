@@ -232,6 +232,60 @@ Resposta: {{"categoria": "Audiência Agendada", "subcategoria": "Instrução", "
 
 Texto: "Intimem-se as partes acerca da audiência já designada..."
 Resposta: {{"categoria": "Audiência Agendada", "subcategoria": "Não especificada", "polo": "ambos", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": null, "prazo_tipo": null, "prazo_fundamentacao": null, "confianca": "alta", "justificativa": "Menção a audiência já designada sem indicação de data/hora no texto"}}
+
+# CASOS QUE A IA COSTUMA CONFUNDIR — LEIA COM ATENÇÃO
+
+Os blocos abaixo são pares/grupos de textos parecidos que classificam DIFERENTE.
+Foram montados a partir de erros recorrentes da operação. Use-os como gabarito
+quando estiver em dúvida entre opções similares.
+
+## Sentença em Embargos vs. Sentença comum
+Embargos à Execução são processo APENSO à execução. A sentença que decide os
+embargos é uma sentença normal — categoria "Sentença" — MAS o operador depende
+de saber que é em embargos pra triagem certa. Para publicações VINCULADAS a uma
+pasta, isso aparece na descrição do processo (não no campo natureza_processo).
+Mesmo assim, mencione "embargos" na justificativa quando o texto deixar claro.
+
+Texto: "Vistos. JULGO PROCEDENTES os Embargos à Execução opostos pelo embargante para reconhecer o excesso de execução e reduzir o valor exequendo..."
+Resposta: {{"categoria": "Sentença", "subcategoria": "Sentença Procedente", "polo": "passivo", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": null, "prazo_tipo": null, "prazo_fundamentacao": null, "confianca": "alta", "justificativa": "Sentença de procedência em Embargos à Execução — favorece o embargante (executado/passivo da execução)"}}
+
+## Sentença Procedente vs. Improcedente vs. Parcialmente Procedente
+A diferença está no DISPOSITIVO. Não confunda fundamentação com decisão.
+
+Texto: "Vistos. Diante do exposto, JULGO PARCIALMENTE PROCEDENTE o pedido para condenar o réu ao pagamento de R$ 5.000,00 a título de danos morais, rejeitando os demais pedidos..."
+Resposta: {{"categoria": "Sentença", "subcategoria": "Sentença Parcialmente procedente", "polo": "ambos", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": null, "prazo_tipo": null, "prazo_fundamentacao": null, "confianca": "alta", "justificativa": "Procedência parcial com condenação reduzida frente ao pedido"}}
+
+Texto: "Vistos. Posto isso, JULGO IMPROCEDENTE o pedido. Condeno a parte autora ao pagamento das custas e honorários..."
+Resposta: {{"categoria": "Sentença", "subcategoria": "Sentença Improcedente", "polo": "ambos", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": null, "prazo_tipo": null, "prazo_fundamentacao": null, "confianca": "alta", "justificativa": "Improcedência total com condenação em sucumbência"}}
+
+## Acórdão Provido em Parte vs. Provido vs. Não Provido
+Igual à sentença — leia o DISPOSITIVO. "Dar provimento parcial" e "dar parcial
+provimento" são a mesma coisa: provido em parte.
+
+Texto: "ACORDAM os Desembargadores... em DAR PARCIAL PROVIMENTO ao recurso de apelação, apenas para reduzir o valor da condenação..."
+Resposta: {{"categoria": "2° Grau - Cível", "subcategoria": "Acordão - Provido Em Parte", "polo": "ambos", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": null, "prazo_tipo": null, "prazo_fundamentacao": null, "confianca": "alta", "justificativa": "Acórdão dando provimento parcial à apelação"}}
+
+## Audiência redesignada / adiada — categoria continua Audiência Agendada
+Redesignação ou remarcação geram nova classificação "Audiência Agendada" com a
+NOVA data. Se a publicação só comunica que a audiência foi cancelada SEM nova
+data, use subcategoria "Não especificada" e mantenha audiencia_data/hora null.
+
+Texto: "Em razão da impossibilidade de realização da audiência designada para 12/03/2026, REDESIGNO a audiência de instrução para o dia 18/04/2026 às 15h00..."
+Resposta: {{"categoria": "Audiência Agendada", "subcategoria": "Instrução", "polo": "ambos", "audiencia_data": "2026-04-18", "audiencia_hora": "15:00", "audiencia_link": null, "prazo_dias": null, "prazo_tipo": null, "prazo_fundamentacao": null, "confianca": "alta", "justificativa": "Redesignação de audiência de instrução com nova data"}}
+
+Texto: "Tendo em vista o problema técnico, fica CANCELADA a audiência designada para hoje. Aguarde-se a designação de nova data pela secretaria."
+Resposta: {{"categoria": "Audiência Agendada", "subcategoria": "Não especificada", "polo": "ambos", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": null, "prazo_tipo": null, "prazo_fundamentacao": null, "confianca": "alta", "justificativa": "Cancelamento de audiência sem indicação de nova data — aguarda redesignação"}}
+
+## Múltiplas classificações no mesmo texto — retorne ARRAY
+Quando o mesmo texto contém DUAS coisas independentes (ex.: sentença + designação
+de audiência subsequente, ou tutela + abertura de prazo), gere um ARRAY com uma
+classificação por evento. NÃO escolha "a mais importante".
+
+Texto: "Vistos. JULGO PARCIALMENTE PROCEDENTE o pedido inicial. DESIGNO audiência de continuação de instrução para o dia 22/05/2026 às 10h00 para esclarecimentos."
+Resposta: [
+  {{"categoria": "Sentença", "subcategoria": "Sentença Parcialmente procedente", "polo": "ambos", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": null, "prazo_tipo": null, "prazo_fundamentacao": null, "confianca": "alta", "justificativa": "Procedência parcial"}},
+  {{"categoria": "Audiência Agendada", "subcategoria": "Instrução", "polo": "ambos", "audiencia_data": "2026-05-22", "audiencia_hora": "10:00", "audiencia_link": null, "prazo_dias": null, "prazo_tipo": null, "prazo_fundamentacao": null, "confianca": "alta", "justificativa": "Designação de audiência de continuação de instrução"}}
+]
 """
 
 

@@ -57,9 +57,14 @@ class AnthropicClassifierClient:
         Raises:
             Exception em caso de erro de API ou resposta inválida.
         """
+        # temperature=0 é determinístico — pra classificação contra taxonomia
+        # fechada, não queremos a IA "criativa". Reduz reclassificações entre
+        # rodadas e melhora aderência aos exemplos few-shot. Mantém o request
+        # fora do PII de cache (caching depende só de system+model+tools).
         payload = {
             "model": self.model,
             "max_tokens": self.max_tokens,
+            "temperature": 0,
             "system": system_prompt,
             "messages": [
                 {"role": "user", "content": user_message},
@@ -157,6 +162,9 @@ class AnthropicClassifierClient:
             "params": {
                 "model": self.model,
                 "max_tokens": self.max_tokens,
+                # Mesmo motivo da chamada síncrona — taxonomia fechada
+                # pede determinismo.
+                "temperature": 0,
                 "system": system_prompt,
                 "messages": [
                     {"role": "user", "content": user_message},

@@ -776,6 +776,10 @@ class PublicationSearchService:
                 load_office_overrides,
             )
             from app.services.classifier.taxonomy import validate_classification, repair_classification
+            from app.services.classifier.response_schema import (
+                validate_response,
+                ResponseSchemaError,
+            )
         except Exception as exc:
             logger.warning("Classifier indisponível: %s", exc)
             return
@@ -854,31 +858,60 @@ class PublicationSearchService:
                     try:
                         user_msg = build_user_message(rec.linked_lawsuit_cnj or "", text)
                         result = await ai.classify(_prompt_for(rec), user_msg)
-                        cat = result.get("categoria")
-                        sub = result.get("subcategoria")
-                        cat_fixed, sub_fixed = repair_classification(cat or "", sub or "")
-                        if (cat_fixed, sub_fixed) != (cat, sub):
+
+                        # Schema cross-field: zera audiência se categoria não
+                        # for "Audiência Agendada", valida formatos de data/hora,
+                        # acumula warnings. Estrutural inválido (sem categoria)
+                        # vira erro recuperável — marca pra revisão humana.
+                        try:
+                            clean = validate_response(result)
+                        except ResponseSchemaError as exc:
+                            logger.warning(
+                                "Schema inválido na resposta da IA #%s: %s — payload=%s",
+                                rec.id, exc, str(result)[:300],
+                            )
+                            # `_one` é função (não loop) — usa return pra
+                            # abortar este registro. asyncio.gather segue
+                            # processando os irmãos. O sleep de 12s lá
+                            # embaixo é skipado, OK — só impacta um
+                            # registro abortado.
+                            return
+
+                        if clean.warnings:
+                            logger.warning(
+                                "Schema warnings #%s: %s",
+                                rec.id, "; ".join(clean.warnings),
+                            )
+
+                        # Auto-reparo de inversões de taxonomia (sub virou cat etc.)
+                        cat_fixed, sub_fixed = repair_classification(
+                            clean.categoria, clean.subcategoria
+                        )
+                        if (cat_fixed, sub_fixed) != (clean.categoria, clean.subcategoria):
                             logger.info(
                                 "Classificação auto-corrigida #%s: (%s/%s) → (%s/%s)",
-                                rec.id, cat, sub, cat_fixed, sub_fixed,
+                                rec.id,
+                                clean.categoria, clean.subcategoria,
+                                cat_fixed, sub_fixed,
                             )
-                            cat, sub = cat_fixed, sub_fixed
-                        polo_raw = (result.get("polo") or "").strip().lower()
-                        polo = polo_raw if polo_raw in VALID_POLOS else None
+                        cat, sub = cat_fixed, sub_fixed
+
                         if cat and validate_classification(cat, sub):
                             rec.category = cat
                             rec.subcategory = sub
-                            rec.polo = polo
-                            # Audiência: extrair data/hora se presente
-                            rec.audiencia_data = result.get("audiencia_data") or None
-                            rec.audiencia_hora = result.get("audiencia_hora") or None
+                            rec.polo = clean.polo
+                            # Audiência: schema garante que só vem preenchido
+                            # quando categoria == "Audiência Agendada".
+                            rec.audiencia_data = clean.audiencia_data
+                            rec.audiencia_hora = clean.audiencia_hora
+                            rec.audiencia_link = clean.audiencia_link
                             # Natureza do processo: só pra publicações sem pasta vinculada
                             if rec.linked_lawsuit_id is None:
-                                rec.natureza_processo = result.get("natureza_processo") or None
+                                rec.natureza_processo = clean.natureza_processo
                             rec.status = RECORD_STATUS_CLASSIFIED
                             logger.debug(
                                 "Classificado #%s → %s / %s (polo=%s, aud=%s %s, nat=%s)",
-                                rec.id, cat, sub, polo,
+                                rec.id, cat, sub, clean.polo,
                                 rec.audiencia_data, rec.audiencia_hora,
                                 rec.natureza_processo if rec.linked_lawsuit_id is None else "-",
                             )
