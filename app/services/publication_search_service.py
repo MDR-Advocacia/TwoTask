@@ -54,6 +54,19 @@ _METRICS_TZ = ZoneInfo("America/Fortaleza")
 L1_BLOCKING_STATUS_IDS = (0, 1, 2)
 L1_STATUS_LABELS = {0: "Pendente", 1: "Em Andamento", 2: "Aguardando"}
 
+# Mapeamento estendido pro endpoint de "tarefas do processo" (detalhe da
+# publicação) — inclui status terminais. IDs 3+ inferidos do `treatStatus=3`
+# usado nas URLs de publicação L1 ("treated/processed"). Pra IDs desconhecidos
+# o caller usa fallback "Status N".
+L1_STATUS_LABELS_FULL = {
+    0: "Pendente",
+    1: "Em Andamento",
+    2: "Aguardando",
+    3: "Concluída",
+    4: "Cancelada",
+    5: "Substituída",
+}
+
 # Base URL do painel web do L1 do MDR. Usada pra gerar deep-link que o
 # operador abre numa nova aba pra ver a task já existente antes de decidir
 # se agenda mesmo assim (force_duplicate=True) ou se remove da lista.
@@ -64,6 +77,13 @@ L1_WEB_BASE_URL = "https://mdradvocacia.novajus.com.br"
 # é literalmente "um session de revisão".
 _DUPLICATE_CACHE: dict[tuple, tuple[float, list]] = {}
 _DUPLICATE_CACHE_TTL_SECONDS = 15.0
+
+# Cache do "recent tasks" pro detalhe da publicação. Chave = lawsuit_id (sem
+# subtipos), TTL idêntico — operador abre/fecha modal de detalhe sequencialmente
+# e bater no L1 toda vez é desperdício. Limpeza oportunística junto com
+# _DUPLICATE_CACHE no fim de get_recent_tasks_for_lawsuit.
+_RECENT_TASKS_CACHE: dict[int, tuple[float, list]] = {}
+_RECENT_TASKS_CACHE_TTL_SECONDS = 15.0
 _WITHOUT_PROVIDENCE_STATUSES = (
     RECORD_STATUS_IGNORED,
     RECORD_STATUS_DISCARDED_DUPLICATE,
@@ -1240,6 +1260,162 @@ class PublicationSearchService:
             "total_duplicates": sum(len(v) for v in duplicates_by_subtype.values()),
             "checked_subtype_ids": subtype_ids_clean,
             "blocking_status_ids": list(L1_BLOCKING_STATUS_IDS),
+        }
+
+    def get_recent_tasks_for_lawsuit(
+        self,
+        lawsuit_id: int,
+        recent_completed_limit: int = 5,
+    ) -> dict[str, Any]:
+        """
+        Diagnóstico de tarefas no Legal One pra exibir no detalhe da publicação.
+
+        Diferente do `check_duplicates_for_lawsuit` (que filtra subtipo+status
+        bloqueante pra evitar duplicar agendamento), este puxa TODAS as
+        tarefas do processo e separa em duas listas:
+          - `pending`: TODAS com status ∈ L1_BLOCKING_STATUS_IDS (Pendente,
+            Em Andamento, Aguardando) — sem limite, operador precisa enxergar
+            tudo que está em curso.
+          - `recent_completed`: até N (default 5) das tarefas terminadas
+            (status fora do bloqueante: Concluída, Cancelada etc.), em ordem
+            cronológica decrescente — diagnóstico do que rodou recentemente.
+
+        Estratégia: 1 chamada OData ao L1 com `$top=50` ordenado por
+        creationDate desc. O cap de 50 cobre 99% dos processos; se houver
+        processo com mais de 50 pendentes (raro), as mais antigas ficariam
+        de fora do `pending` — reportamos `truncated=True` pra UI sinalizar.
+
+        Resolve nome de subtipo e tipo via lookup local nas tabelas
+        `legal_one_task_subtypes` / `legal_one_task_types` (já populadas pelo
+        sync de catálogo). Pra subtipos não catalogados, devolve `null` no
+        nome — UI mostra "Subtipo #N".
+
+        Cache: TTL=15s por lawsuit_id (separado do _DUPLICATE_CACHE pq a
+        chave é diferente — só lawsuit, sem subtipos).
+
+        Nunca levanta exceção: em caso de falha do L1, retorna estrutura com
+        `check_failed=True` pra UI mostrar fallback. Detalhe da publicação
+        não pode quebrar por causa de instabilidade externa.
+        """
+        from app.models.legal_one import LegalOneTaskSubType, LegalOneTaskType
+        import time
+
+        lawsuit_id_int = int(lawsuit_id)
+        recent_limit = max(1, min(int(recent_completed_limit), 20))
+
+        cache_key = lawsuit_id_int
+        now_ts = time.monotonic()
+        cached = _RECENT_TASKS_CACHE.get(cache_key)
+        if cached and (now_ts - cached[0]) < _RECENT_TASKS_CACHE_TTL_SECONDS:
+            tasks = cached[1]
+        else:
+            filter_expr = (
+                f"relationships/any(r: r/linkType eq 'Litigation' "
+                f"and r/linkId eq {lawsuit_id_int})"
+            )
+            try:
+                tasks = self.client.search_tasks(
+                    filter_expression=filter_expr,
+                    top=50,
+                    orderby="creationDate desc",
+                )
+                _RECENT_TASKS_CACHE[cache_key] = (now_ts, tasks)
+                # Limpeza oportunística (mesma cadência do _DUPLICATE_CACHE)
+                stale = [
+                    k for k, (ts, _) in _RECENT_TASKS_CACHE.items()
+                    if (now_ts - ts) > 300
+                ]
+                for k in stale:
+                    _RECENT_TASKS_CACHE.pop(k, None)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "get_recent_tasks falhou no L1 (lawsuit_id=%s): %s",
+                    lawsuit_id_int, exc,
+                )
+                return {
+                    "pending": [],
+                    "recent_completed": [],
+                    "pending_count": 0,
+                    "recent_completed_count": 0,
+                    "truncated": False,
+                    "check_failed": True,
+                    "check_error": str(exc)[:200],
+                }
+
+        # Lookups de nome (subtipos + tipos) — uma query só pra cada catálogo,
+        # evita N+1.
+        subtype_ids_seen = {
+            t.get("subTypeId") for t in (tasks or []) if t.get("subTypeId") is not None
+        }
+        type_ids_seen = {
+            t.get("typeId") for t in (tasks or []) if t.get("typeId") is not None
+        }
+        subtype_name_by_id: dict[int, str] = {}
+        type_name_by_id: dict[int, str] = {}
+        if subtype_ids_seen:
+            rows = (
+                self.db.query(LegalOneTaskSubType.external_id, LegalOneTaskSubType.name)
+                .filter(LegalOneTaskSubType.external_id.in_(subtype_ids_seen))
+                .all()
+            )
+            subtype_name_by_id = {ext: name for ext, name in rows}
+        if type_ids_seen:
+            rows = (
+                self.db.query(LegalOneTaskType.external_id, LegalOneTaskType.name)
+                .filter(LegalOneTaskType.external_id.in_(type_ids_seen))
+                .all()
+            )
+            type_name_by_id = {ext: name for ext, name in rows}
+
+        def _to_entry(t: dict) -> dict:
+            sid = t.get("statusId")
+            type_id = t.get("typeId")
+            sub_id = t.get("subTypeId")
+            return {
+                "task_id": t.get("id"),
+                "description": (t.get("description") or "")[:200],
+                "status_id": sid,
+                "status_label": L1_STATUS_LABELS_FULL.get(sid, f"Status {sid}"),
+                "type_id": type_id,
+                "type_name": type_name_by_id.get(type_id) if type_id is not None else None,
+                "subtype_id": sub_id,
+                "subtype_name": (
+                    subtype_name_by_id.get(sub_id) if sub_id is not None else None
+                ),
+                "creation_date": t.get("creationDate"),
+                "end_date_time": t.get("endDateTime"),
+                "effective_end_date_time": t.get("effectiveEndDateTime"),
+                "l1_url": self._build_l1_task_url(t.get("id"), lawsuit_id_int),
+            }
+
+        pending: list[dict] = []
+        completed: list[dict] = []
+        for t in tasks or []:
+            sid = t.get("statusId")
+            entry = _to_entry(t)
+            if sid in L1_BLOCKING_STATUS_IDS:
+                pending.append(entry)
+            else:
+                completed.append(entry)
+
+        # `tasks` já vem ordenado por creationDate desc (do L1). Trunca o
+        # completed na quantidade pedida; mantém pending cheio.
+        recent_completed = completed[:recent_limit]
+
+        # Se chegamos no cap de 50 do L1 E ainda há tarefas separadas em
+        # pending+completed totalizando >=50, sinaliza que a lista pode
+        # estar truncada (operador deve abrir a aba de Compromissos no L1
+        # pra ver todas).
+        truncated = len(tasks or []) >= 50
+
+        return {
+            "pending": pending,
+            "recent_completed": recent_completed,
+            "pending_count": len(pending),
+            "recent_completed_count": len(recent_completed),
+            "completed_total_in_window": len(completed),
+            "truncated": truncated,
+            "check_failed": False,
         }
 
     def _apply_required_task_defaults(

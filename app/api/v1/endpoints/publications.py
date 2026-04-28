@@ -825,6 +825,31 @@ def check_duplicates(
         raise HTTPException(status_code=500, detail=f"Erro ao checar duplicatas: {exc}")
 
 
+@router.get("/groups/{lawsuit_id}/recent-tasks")
+def recent_tasks(
+    lawsuit_id: int,
+    limit: int = Query(default=5, ge=1, le=20, description="Máximo de tarefas concluídas a retornar"),
+    service: PublicationSearchService = Depends(_get_service),
+    _=Depends(auth_security.get_current_user),
+):
+    """
+    Diagnóstico de tarefas no L1 pra UI do detalhe da publicação. Retorna:
+      - `pending`: TODAS as tarefas em curso (status 0/1/2)
+      - `recent_completed`: até `limit` tarefas terminadas, mais recentes primeiro
+    Cada item traz description, subtype_name, status_label, datas e l1_url.
+    Falha graceful: em caso de erro do L1 retorna `check_failed=True`.
+    """
+    try:
+        return service.get_recent_tasks_for_lawsuit(
+            lawsuit_id=lawsuit_id,
+            recent_completed_limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Erro ao consultar tarefas: {exc}")
+
+
 # ─── Debug ──────────────────────────────────────
 
 @router.get("/debug-api")

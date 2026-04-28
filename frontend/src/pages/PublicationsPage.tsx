@@ -694,6 +694,22 @@ const PublicationsPage = () => {
   const [selectedRecord, setSelectedRecord] = useState<PublicationRecord | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
 
+  /**
+   * Sumário de tarefas L1 do processo no detalhe da publicação.
+   * Busca: todas pendentes (status 0/1/2) + 5 últimas concluídas.
+   * Renderiza só quando `selectedRecord.linked_lawsuit_id` existe.
+   * Cache curto no backend (15s) absorve abre/fecha sequencial.
+   */
+  const [recentTasks, setRecentTasks] = useState<{
+    pending: any[];
+    recent_completed: any[];
+    pending_count: number;
+    recent_completed_count: number;
+    truncated: boolean;
+    check_failed: boolean;
+  } | null>(null);
+  const [recentTasksLoading, setRecentTasksLoading] = useState(false);
+
   // Schedule dialog
   const [scheduleGroup, setScheduleGroup] = useState<GroupedRecord | null>(null);
   const [scheduleOpen, setScheduleOpen] = useState(false);
@@ -1060,6 +1076,48 @@ const PublicationsPage = () => {
     const t = setInterval(() => loadIndexStatus(searchOfficeId), 3000);
     return () => clearInterval(t);
   }, [searchOfficeId, indexStatus?.in_progress, loadIndexStatus]);
+
+  // ─── Fetch tarefas L1 quando abre detalhe da publicação ─────────────
+  // Auto-load: assim que `detailOpen` vira true E o record tem
+  // `linked_lawsuit_id`, busca pending+recent. Limpa estado anterior pra
+  // não vazar dados de uma publicação pra outra (lawsuit diferente).
+  // Cache no backend (TTL 15s) absorve operador abrindo/fechando rápido.
+  useEffect(() => {
+    if (!detailOpen || !selectedRecord?.linked_lawsuit_id) {
+      setRecentTasks(null);
+      return;
+    }
+    const lawsuitId = selectedRecord.linked_lawsuit_id;
+    const controller = new AbortController();
+    setRecentTasksLoading(true);
+    setRecentTasks(null);
+    apiFetch(`${API}/groups/${lawsuitId}/recent-tasks?limit=5`, {
+      signal: controller.signal,
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        setRecentTasks(data);
+      })
+      .catch((err) => {
+        if (err.name === "AbortError") return;
+        // Falha na busca — UI mostra mensagem "não foi possível carregar"
+        // com link pro botão de Compromissos do L1. Não toast porque o
+        // detalhe da publicação serve mesmo sem isso.
+        setRecentTasks({
+          pending: [],
+          recent_completed: [],
+          pending_count: 0,
+          recent_completed_count: 0,
+          truncated: false,
+          check_failed: true,
+        });
+      })
+      .finally(() => setRecentTasksLoading(false));
+    return () => controller.abort();
+  }, [detailOpen, selectedRecord?.id, selectedRecord?.linked_lawsuit_id]);
 
   // ─── Polling de progresso de busca ativa ─────────────────────────────
   const activeSearch = searches.find((s) => s.status === "EXECUTANDO");
@@ -3531,6 +3589,29 @@ const PublicationsPage = () => {
                     </a>
                   </div>
                 )}
+                {/* Atalho pra "Compromissos e Tarefas" do PROCESSO no Legal One.
+                    Diferente do link de publicação acima (que usa
+                    `legal_one_update_id`, o external_id da publicação na API
+                    L1), aqui usamos `linked_lawsuit_id`, que vem do
+                    `relationships[Litigation].linkId` do payload L1 — é o
+                    external_id do processo. Por isso a condição é independente
+                    do legal_one_update_id (uma publicação pode ter um sem o
+                    outro, ex: publicação avulsa sem pasta vinculada). */}
+                {selectedRecord.linked_lawsuit_id && (
+                  <div className="col-span-2">
+                    <span className="font-medium text-muted-foreground">Compromissos e Tarefas: </span>
+                    <a
+                      href={`https://mdradvocacia.novajus.com.br/processos/Processos/DetailsCompromissosTarefas/${selectedRecord.linked_lawsuit_id}?renderOnlySection=True`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 rounded border border-violet-300 bg-violet-50 px-2 py-0.5 text-xs font-medium text-violet-700 hover:underline"
+                    >
+                      <Calendar className="h-3 w-3" />
+                      Abrir no Legal One
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  </div>
+                )}
               </div>
               <div>
                 <Label className="text-sm text-muted-foreground">Texto da Publicação</Label>
@@ -3544,6 +3625,165 @@ const PublicationsPage = () => {
                 <div>
                   <Label className="text-sm text-muted-foreground">Observações</Label>
                   <p className="mt-1 whitespace-pre-wrap text-[15px] leading-relaxed">{selectedRecord.notes}</p>
+                </div>
+              )}
+              {/* Diagnóstico: tarefas L1 do processo. Aparece só quando
+                  publicação tem lawsuit vinculado. Duas seções: pendentes
+                  (todas, com badge amber) + últimas concluídas (até 5,
+                  neutras). Falha graceful — operador ainda consegue
+                  agendar mesmo sem o diagnóstico. */}
+              {selectedRecord.linked_lawsuit_id && (
+                <div className="rounded-lg border bg-muted/20 p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <Label className="text-sm font-semibold flex items-center gap-1.5">
+                      <Calendar className="h-4 w-4 text-muted-foreground" />
+                      Tarefas no Legal One
+                    </Label>
+                    {recentTasks?.truncated && (
+                      <span className="text-[10px] text-amber-700">
+                        Lista pode estar incompleta — abrir no L1 para ver tudo
+                      </span>
+                    )}
+                  </div>
+                  {recentTasksLoading && (
+                    <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      Consultando tarefas do processo...
+                    </div>
+                  )}
+                  {!recentTasksLoading && recentTasks?.check_failed && (
+                    <p className="py-2 text-xs text-muted-foreground">
+                      Não foi possível carregar agora. Abra os{" "}
+                      <a
+                        href={`https://mdradvocacia.novajus.com.br/processos/Processos/DetailsCompromissosTarefas/${selectedRecord.linked_lawsuit_id}?renderOnlySection=True`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-violet-700 underline"
+                      >
+                        Compromissos e Tarefas no Legal One
+                      </a>
+                      {" "}pra ver direto.
+                    </p>
+                  )}
+                  {!recentTasksLoading &&
+                    recentTasks &&
+                    !recentTasks.check_failed && (
+                      <>
+                        {/* Pendentes — todas */}
+                        <div className="mb-3">
+                          <p className="mb-1.5 text-xs font-medium text-amber-800">
+                            Pendentes ({recentTasks.pending_count})
+                          </p>
+                          {recentTasks.pending.length === 0 ? (
+                            <p className="text-xs text-muted-foreground italic">
+                              Nenhuma tarefa em aberto neste processo.
+                            </p>
+                          ) : (
+                            <ul className="space-y-1.5">
+                              {recentTasks.pending.map((t: any) => (
+                                <li
+                                  key={t.task_id}
+                                  className="rounded border border-amber-200 bg-amber-50/60 px-2 py-1.5 text-xs"
+                                >
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="rounded bg-amber-200 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900">
+                                      {t.status_label}
+                                    </span>
+                                    {t.subtype_name && (
+                                      <span className="text-amber-900 font-medium">
+                                        {t.subtype_name}
+                                      </span>
+                                    )}
+                                    {t.l1_url && (
+                                      <a
+                                        href={t.l1_url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="ml-auto text-[10px] text-blue-600 hover:underline inline-flex items-center gap-0.5"
+                                      >
+                                        Abrir <ExternalLink className="h-2.5 w-2.5" />
+                                      </a>
+                                    )}
+                                  </div>
+                                  {t.description && (
+                                    <p className="mt-0.5 text-amber-900/80 line-clamp-2">
+                                      {t.description}
+                                    </p>
+                                  )}
+                                  {t.creation_date && (
+                                    <p className="mt-0.5 text-[10px] text-muted-foreground">
+                                      Criada em{" "}
+                                      {new Date(t.creation_date).toLocaleDateString("pt-BR")}
+                                    </p>
+                                  )}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                        {/* Últimas concluídas */}
+                        <div>
+                          <p className="mb-1.5 text-xs font-medium text-muted-foreground">
+                            Últimas concluídas ({recentTasks.recent_completed_count})
+                          </p>
+                          {recentTasks.recent_completed.length === 0 ? (
+                            <p className="text-xs text-muted-foreground italic">
+                              Sem tarefas terminadas recentemente.
+                            </p>
+                          ) : (
+                            <ul className="space-y-1.5">
+                              {recentTasks.recent_completed.map((t: any) => (
+                                <li
+                                  key={t.task_id}
+                                  className="rounded border bg-background px-2 py-1.5 text-xs"
+                                >
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                                      {t.status_label}
+                                    </span>
+                                    {t.subtype_name && (
+                                      <span className="font-medium">{t.subtype_name}</span>
+                                    )}
+                                    {t.l1_url && (
+                                      <a
+                                        href={t.l1_url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="ml-auto text-[10px] text-blue-600 hover:underline inline-flex items-center gap-0.5"
+                                      >
+                                        Abrir <ExternalLink className="h-2.5 w-2.5" />
+                                      </a>
+                                    )}
+                                  </div>
+                                  {t.description && (
+                                    <p className="mt-0.5 text-muted-foreground line-clamp-2">
+                                      {t.description}
+                                    </p>
+                                  )}
+                                  <p className="mt-0.5 text-[10px] text-muted-foreground">
+                                    {t.creation_date && (
+                                      <>
+                                        Criada em{" "}
+                                        {new Date(t.creation_date).toLocaleDateString("pt-BR")}
+                                      </>
+                                    )}
+                                    {(t.effective_end_date_time || t.end_date_time) && (
+                                      <>
+                                        {t.creation_date ? " · " : ""}
+                                        Concluída em{" "}
+                                        {new Date(
+                                          t.effective_end_date_time || t.end_date_time,
+                                        ).toLocaleDateString("pt-BR")}
+                                      </>
+                                    )}
+                                  </p>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      </>
+                    )}
                 </div>
               )}
               <div className="flex flex-wrap gap-2 pt-2">
