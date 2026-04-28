@@ -924,6 +924,111 @@ def debug_legalone_api(
         return {"error": str(exc), "url_called": url}
 
 
+@router.get("/debug/task-statuses")
+def debug_task_statuses(
+    sample_size: int = Query(default=200, ge=10, le=500, description="Amostra de tarefas a inspecionar"),
+    client: LegalOneApiClient = Depends(get_api_client),
+    _=Depends(auth_security.get_current_user),
+):
+    """
+    Descobre o mapeamento canônico statusId → Description direto do L1.
+
+    Faz uma chamada paginada ao /Tasks com `$expand=status`, agrega todos
+    os status únicos encontrados na amostra e retorna o dicionário
+    {statusId: {description, sample_count}}.
+
+    Use uma vez pra atualizar L1_STATUS_LABELS_FULL no
+    publication_search_service.py — a fonte da verdade é o L1.
+
+    NOTA: o L1 tem cap de $top=30 no endpoint /Tasks, então a função
+    pagina via @odata.nextLink até atingir `sample_size`. Pode ser
+    lento (rate limiter de 1.2 req/s).
+    """
+    base_url = client.base_url
+    client._refresh_token_if_needed()
+    headers = {"Authorization": f"Bearer {client._Auth.token}"}
+
+    discovered: dict[int, dict] = {}
+    url: str | None = (
+        f"{base_url}/Tasks?$top=30"
+        f"&$select=id,statusId&$expand=status($select=id,description)"
+    )
+    pages_fetched = 0
+    total_tasks_seen = 0
+
+    try:
+        while url and total_tasks_seen < sample_size:
+            resp = client._session.get(url, headers=headers, timeout=30)
+            if resp.status_code != 200:
+                return {
+                    "error": f"HTTP {resp.status_code}",
+                    "url_called": url,
+                    "response_body": resp.text[:1000],
+                    "discovered_so_far": discovered,
+                }
+            data = resp.json() or {}
+            value = data.get("value", []) or []
+            pages_fetched += 1
+            total_tasks_seen += len(value)
+            for t in value:
+                # Lê dos dois lugares (statusId top-level e status.id/Id nested)
+                # pra detectar divergência se houver.
+                flat_id = t.get("statusId")
+                nested = t.get("status") or {}
+                # OData às vezes devolve PascalCase (Id, Description) e às
+                # vezes camelCase (id, description). Tenta ambos.
+                nested_id = nested.get("id") if "id" in nested else nested.get("Id")
+                description = (
+                    nested.get("description")
+                    if "description" in nested
+                    else nested.get("Description")
+                )
+                # Chave do agregado: o que VEMOS de fato (preferindo nested
+                # se existir, senão flat).
+                key = nested_id if nested_id is not None else flat_id
+                if key is None:
+                    continue
+                entry = discovered.setdefault(
+                    int(key),
+                    {
+                        "description": description,
+                        "sample_count": 0,
+                        "flat_id_match": True,
+                        "example_task_ids": [],
+                    },
+                )
+                entry["sample_count"] += 1
+                if len(entry["example_task_ids"]) < 3:
+                    entry["example_task_ids"].append(t.get("id"))
+                if flat_id is not None and nested_id is not None and flat_id != nested_id:
+                    entry["flat_id_match"] = False
+                    entry.setdefault("flat_id_when_diverging", flat_id)
+            url = data.get("@odata.nextLink")
+            if total_tasks_seen >= sample_size:
+                break
+
+        # Ordenar por statusId pra leitura fácil
+        ordered = dict(sorted(discovered.items()))
+        return {
+            "discovered_status_map": ordered,
+            "total_tasks_inspected": total_tasks_seen,
+            "pages_fetched": pages_fetched,
+            "next_step_hint": (
+                "Use 'description' como o label canônico em "
+                "L1_STATUS_LABELS_FULL no publication_search_service.py. "
+                "Se 'flat_id_match=False' aparecer pra algum status, "
+                "significa que o campo flat 'statusId' diverge do "
+                "'status.Id' nested — nesse caso usar o nested como fonte."
+            ),
+        }
+    except Exception as exc:
+        return {
+            "error": str(exc),
+            "discovered_so_far": discovered,
+            "total_tasks_seen": total_tasks_seen,
+        }
+
+
 # ─── Classificações por Escritório (Overrides) ─────────────
 
 
