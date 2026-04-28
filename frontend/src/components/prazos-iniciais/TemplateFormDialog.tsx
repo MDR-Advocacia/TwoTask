@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { SubtypePicker } from "@/components/ui/SubtypePicker";
 import {
   Select,
   SelectContent,
@@ -271,6 +271,30 @@ export function TemplateFormDialog({
   };
 
   /**
+   * Adapter pro `SubtypePicker` compartilhado.
+   *
+   * O componente em `@/components/ui/SubtypePicker` foi escrito pro shape
+   * usado em Publications (`external_id` + `subtypes`). Aqui usamos
+   * `id` + `sub_types`. Mapeamos uma vez pra não converter a cada render
+   * dos blocos. O `external_id` no adapter recebe o `tt.id` interno —
+   * é só identificador opaco pro picker, não vai pra API. O picker chama
+   * `onChange(subId, parentType)` e a gente usa `parentType.external_id`
+   * (= tt.id original) pra alimentar `block.task_type_id`.
+   */
+  const taskTypesForPicker = useMemo(
+    () =>
+      taskTypes.map((tt) => ({
+        external_id: tt.id,
+        name: tt.name,
+        subtypes: tt.sub_types.map((st) => ({
+          external_id: st.external_id,
+          name: st.name,
+        })),
+      })),
+    [taskTypes],
+  );
+
+  /**
    * Subtypes em uso por OUTROS blocos do form atual. Se o operador tentar
    * selecionar um já em uso, o backend retornaria 409. Marcamos o item
    * como `(já em uso)` e disabled no Select pra evitar a tentativa.
@@ -449,7 +473,12 @@ export function TemplateFormDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <ScrollArea className="flex-1 -mr-4 pr-4">
+        {/* Scroll nativo em vez do Radix ScrollArea — ScrollArea precisa de
+            altura explícita resolvida e às vezes falha quando o conteúdo
+            cresce dinamicamente (ex.: 2+ blocos de tarefa empurrando além
+            do max-h-90vh). overflow-y-auto + flex-1 dentro de DialogContent
+            flex-col com max-h-[90vh] resolve sem mistério. */}
+        <div className="flex-1 overflow-y-auto -mr-2 pr-2 min-h-0">
           <div className="space-y-6 pb-2">
             {/* ─── BLOCO 1 — Classificação compartilhada ─── */}
             <section className="space-y-4">
@@ -600,7 +629,6 @@ export function TemplateFormDialog({
               </div>
 
               {form.taskBlocks.map((block, idx) => {
-                const blockSubtypes = subtypesForBlock(block);
                 const usedSubtypes = subtypesInUseByOtherBlocks(idx);
                 const selectedUser = users.find(
                   (u) =>
@@ -668,68 +696,45 @@ export function TemplateFormDialog({
                       />
                     </div>
 
-                    {/* Linha: task type → task subtype (cascade) */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div className="space-y-1 min-w-0">
-                        <Label>Categoria da task *</Label>
-                        <Select
-                          value={block.task_type_id}
-                          onValueChange={(v) =>
-                            setBlockField(idx, "task_type_id", v)
-                          }
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Selecione..." />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {taskTypes.map((tt) => (
-                              <SelectItem key={tt.id} value={String(tt.id)}>
-                                {tt.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="space-y-1 min-w-0">
-                        <Label>Task do Legal One *</Label>
-                        <Select
-                          value={block.task_subtype_external_id}
-                          onValueChange={(v) =>
-                            setBlockField(idx, "task_subtype_external_id", v)
-                          }
-                          disabled={!block.task_type_id}
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Selecione..." />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {blockSubtypes.map((st) => {
-                              // Subtype já em uso em outro bloco do form?
-                              // Desabilita pra evitar 409 no submit. Mantém
-                              // selecionável o valor que já está NESTE bloco
-                              // (não fica "preso" no estado).
-                              const alreadyUsed =
-                                usedSubtypes.has(String(st.external_id)) &&
-                                String(st.external_id) !== block.task_subtype_external_id;
-                              return (
-                                <SelectItem
-                                  key={st.external_id}
-                                  value={String(st.external_id)}
-                                  disabled={alreadyUsed}
-                                >
-                                  {st.name}
-                                  {alreadyUsed ? (
-                                    <span className="ml-2 text-xs text-muted-foreground">
-                                      (já em uso)
-                                    </span>
-                                  ) : null}
-                                </SelectItem>
-                              );
-                            })}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
+                    {/* Combobox unificado tipo+subtipo com busca, igual ao
+                        modal de Confirmar Agendamento e ao form de templates
+                        de publicação. Catálogo do L1 tem ~900 subtipos —
+                        Select tradicional vira inviável.
+
+                        Adapter de schema: `taskTypes` aqui usa `id` e
+                        `sub_types` (snake), enquanto o SubtypePicker
+                        compartilhado espera `external_id` e `subtypes`.
+                        Mapeamos no useMemo pra não recalcular a cada render.
+
+                        `task_type_id` continua sendo derivado: setado
+                        automaticamente quando o operador escolhe um subtipo. */}
+                    <SubtypePicker
+                      value={
+                        block.task_subtype_external_id
+                          ? Number(block.task_subtype_external_id)
+                          : null
+                      }
+                      taskTypes={taskTypesForPicker}
+                      onChange={(subId, parentType) => {
+                        setBlockField(
+                          idx,
+                          "task_subtype_external_id",
+                          String(subId),
+                        );
+                        setBlockField(
+                          idx,
+                          "task_type_id",
+                          parentType ? String(parentType.external_id) : "",
+                        );
+                      }}
+                      disabledSubtypeIds={
+                        new Set(Array.from(usedSubtypes).map(Number))
+                      }
+                      label="Task do Legal One"
+                      required
+                      placeholder="Selecione a task"
+                      searchPlaceholder="Buscar por categoria ou task..."
+                    />
 
                     {/* Responsável */}
                     <div className="space-y-1 min-w-0">
@@ -901,7 +906,7 @@ export function TemplateFormDialog({
               </p>
             </section>
           </div>
-        </ScrollArea>
+        </div>
 
         <DialogFooter className="gap-2 sm:gap-0">
           <Button
