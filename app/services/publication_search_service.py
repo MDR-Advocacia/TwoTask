@@ -1490,11 +1490,12 @@ class PublicationSearchService:
         # completed na quantidade pedida; mantém pending cheio.
         recent_completed = completed[:recent_limit]
 
-        # Se chegamos no cap de 50 do L1 E ainda há tarefas separadas em
-        # pending+completed totalizando >=50, sinaliza que a lista pode
-        # estar truncada (operador deve abrir a aba de Compromissos no L1
-        # pra ver todas).
-        truncated = len(tasks or []) >= 50
+        # Como o `_paginated_catalog_loader` segue `@odata.nextLink`
+        # automaticamente, em condição normal recebemos TODAS as tarefas
+        # do processo (não só as 30 da primeira página). O truncated só
+        # vira True em processos com volume realmente fora do comum
+        # (>= 200) — defensivo, não esperado no uso típico.
+        truncated = len(tasks or []) >= 200
 
         return {
             "pending": pending,
