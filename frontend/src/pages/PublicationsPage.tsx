@@ -3952,7 +3952,11 @@ const PublicationsPage = () => {
           }
         }}
       >
-        <DialogContent className="flex max-h-[90vh] max-w-2xl flex-col gap-0 p-0">
+        {/* max-w-4xl (~896px) em vez de 2xl (~672px): com o SubtypePicker
+            mostrando "Tipo · Subtipo" no trigger, labels do catálogo L1
+            (ex.: "BB Execução e Encerramento · Cumprimento de Sentença -
+            BB Execução e Encerramento") quebravam horizontalmente em 2xl. */}
+        <DialogContent className="flex max-h-[90vh] max-w-4xl flex-col gap-0 p-0">
           {/* ── Header fixo ── */}
           <div className="border-b px-6 py-4">
             <DialogTitle className="flex items-center gap-2 text-base font-semibold">
@@ -3970,8 +3974,11 @@ const PublicationsPage = () => {
             </DialogDescription>
           </div>
 
-          {/* ── Corpo scrollável ── */}
-          <div className="relative flex-1 overflow-y-auto px-6 py-4">
+          {/* ── Corpo scrollável ──
+              overflow-x-hidden mata a scrollbar horizontal que aparecia
+              quando algum filho (combobox de subtipo, badge longo, etc.)
+              estourava a largura. min-w-0 protege de novo. */}
+          <div className="relative flex-1 min-w-0 overflow-y-auto overflow-x-hidden px-6 py-4">
             {/* Overlay bloqueante enquanto consulta o L1. Sem isso o usuário
                 podia apertar Enviar antes da checagem terminar e causar
                 agendamento duplicado. */}
