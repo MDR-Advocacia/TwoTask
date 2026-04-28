@@ -2103,7 +2103,11 @@ const TaskTemplatesPage = () => {
 
       {/* Create / Edit Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+        {/* max-w-4xl: o modal tem 2 colunas (Categoria/Subcategoria,
+            Prazo/Referência/Prioridade) + labels longos tipo "(opcional —
+            digite uma existente)" que quebravam feio em 2xl. 4xl (~896px)
+            cabe sem truncar e ainda respira em telas FullHD. */}
+        <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>
               {editingId ? "Editar Template" : "Novo Template de Agendamento"}
