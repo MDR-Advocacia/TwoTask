@@ -1005,56 +1005,36 @@ class PublicationSearchService:
         extras nesta iteração).
 
         Parâmetros:
-            skip_responsible_lookup: Se True, pula a busca de responsável de pasta
-                na API Legal One (útil para reconstrução em massa, evitando rate-limit).
-                O operador pode definir o responsável manualmente no momento do agendamento.
+            skip_responsible_lookup: Se True, pula ate a busca limitada de
+                responsavel de pasta. No fluxo normal, essa busca so roda para
+                templates sem responsavel nominal.
         """
         try:
             from app.models.task_template import TaskTemplate
         except Exception:
             return  # Template model ainda não existe
 
-        # Pré-busca de responsáveis por pasta em batch para evitar N+1
-        lawsuit_responsibles: dict = {}
-        if not skip_responsible_lookup:
-            lawsuit_ids = list({
-                r.linked_lawsuit_id for r in records
-                if r.linked_lawsuit_id and r.category and r.linked_office_id
-            })
-            if lawsuit_ids:
-                try:
-                    from app.services.legal_one_client import LegalOneApiClient
-                    lo_client = LegalOneApiClient()
-                    lawsuit_responsibles = lo_client.fetch_lawsuit_responsibles_batch(lawsuit_ids)
-                    logger.info(
-                        "Responsáveis de pasta obtidos: %d de %d processos.",
-                        len(lawsuit_responsibles), len(lawsuit_ids),
-                    )
-                except Exception as exc:
-                    logger.warning("Falha ao buscar responsáveis de pasta: %s", exc)
+        def _classification_infos(rec: PublicationRecord) -> list[dict[str, Any]]:
+            classifications = [
+                {"category": rec.category, "subcategory": rec.subcategory}
+            ]
+            if rec.classifications and isinstance(rec.classifications, list):
+                for clf in rec.classifications[1:]:  # [1:] pois a primeira ja e a primaria
+                    cat = clf.get("categoria")
+                    sub = clf.get("subcategoria")
+                    if cat:
+                        classifications.append({"category": cat, "subcategory": sub})
+            return classifications
+
+        templates_by_record_id: dict[int, list] = {}
+        lawsuit_ids_needing_responsible: set[int] = set()
 
         for rec in records:
             if not rec.category:
                 continue
 
-            # Responsável da pasta para este registro
-            lawsuit_resp = lawsuit_responsibles.get(rec.linked_lawsuit_id) if rec.linked_lawsuit_id else None
-
-            # Coleta todas as classificações do registro (primária + extras)
-            classifications_to_process = [
-                {"category": rec.category, "subcategory": rec.subcategory}
-            ]
-            if rec.classifications and isinstance(rec.classifications, list):
-                for clf in rec.classifications[1:]:  # [1:] pois a primeira já é a primária
-                    cat = clf.get("categoria")
-                    sub = clf.get("subcategoria")
-                    if cat:
-                        classifications_to_process.append(
-                            {"category": cat, "subcategory": sub}
-                        )
-
-            proposals = []
-            for clf_info in classifications_to_process:
+            matching_templates = []
+            for clf_info in _classification_infos(rec):
                 # Busca templates correspondentes:
                 #   - Se o registro tem escritório: busca templates do escritório OU templates globais (office IS NULL)
                 #   - Se o registro não tem escritório (sem processo): busca APENAS templates globais (office IS NULL)
@@ -1078,16 +1058,48 @@ class PublicationSearchService:
                     .order_by(TaskTemplate.subcategory.nullslast())
                     .all()
                 )
+                matching_templates.extend(templates)
 
-                for tmpl in templates:
-                    try:
-                        proposal = self._render_proposal(rec, tmpl, lawsuit_responsible=lawsuit_resp)
-                        proposals.append(proposal)
-                    except Exception as exc:
-                        logger.warning(
-                            "Falha ao montar proposta p/ record %s, tmpl %s: %s",
-                            rec.id, tmpl.id, exc,
-                        )
+            templates_by_record_id[rec.id] = matching_templates
+            if (
+                not skip_responsible_lookup
+                and rec.linked_lawsuit_id
+                and any(t.responsible_user_external_id is None for t in matching_templates)
+            ):
+                lawsuit_ids_needing_responsible.add(rec.linked_lawsuit_id)
+
+        # Busca responsaveis de pasta somente quando algum template casado nao
+        # trouxe responsavel nominal. Templates ja completos nao geram chamadas
+        # extras ao Legal One.
+        lawsuit_responsibles: dict = {}
+        if lawsuit_ids_needing_responsible:
+            try:
+                from app.services.legal_one_client import LegalOneApiClient
+                lo_client = LegalOneApiClient()
+                lawsuit_ids = sorted(lawsuit_ids_needing_responsible)
+                lawsuit_responsibles = lo_client.fetch_lawsuit_responsibles_batch(lawsuit_ids)
+                logger.info(
+                    "Responsaveis de pasta obtidos para templates sem responsavel: %d de %d processos.",
+                    len(lawsuit_responsibles), len(lawsuit_ids),
+                )
+            except Exception as exc:
+                logger.warning("Falha ao buscar responsaveis de pasta: %s", exc)
+
+        for rec in records:
+            if not rec.category:
+                continue
+
+            lawsuit_resp = lawsuit_responsibles.get(rec.linked_lawsuit_id) if rec.linked_lawsuit_id else None
+            proposals = []
+            for tmpl in templates_by_record_id.get(rec.id, []):
+                try:
+                    proposal = self._render_proposal(rec, tmpl, lawsuit_responsible=lawsuit_resp)
+                    proposals.append(proposal)
+                except Exception as exc:
+                    logger.warning(
+                        "Falha ao montar proposta p/ record %s, tmpl %s: %s",
+                        rec.id, tmpl.id, exc,
+                    )
 
             if not proposals:
                 continue
@@ -1106,6 +1118,71 @@ class PublicationSearchService:
 
     # Limite máximo de caracteres aceito pela API Legal One no campo description.
     _DESCRIPTION_MAX_CHARS = 250
+
+    @staticmethod
+    def _payload_has_responsible_participant(payload: dict) -> bool:
+        for participant in payload.get("participants") or []:
+            if not isinstance(participant, dict):
+                continue
+            contact = participant.get("contact") or participant.get("Contact") or {}
+            contact_id = (
+                participant.get("contact_id")
+                or participant.get("contactId")
+                or participant.get("ContactId")
+                or contact.get("id")
+                or contact.get("Id")
+            )
+            is_responsible = (
+                participant.get("isResponsible")
+                or participant.get("is_responsible")
+                or participant.get("IsResponsible")
+            )
+            if is_responsible and contact_id:
+                return True
+        return False
+
+    @staticmethod
+    def _responsible_participant(contact_id: Any) -> dict:
+        return {
+            "contact": {"id": contact_id},
+            "isResponsible": True,
+            "isExecuter": True,
+            "isRequester": True,
+        }
+
+    def _apply_lawsuit_responsible_to_missing_payloads(
+        self,
+        payloads: list[dict],
+        lawsuit_id: int,
+    ) -> None:
+        missing_payloads = [
+            p for p in payloads
+            if isinstance(p, dict) and not self._payload_has_responsible_participant(p)
+        ]
+        if not missing_payloads:
+            return
+
+        try:
+            responsible = self.client.get_lawsuit_responsible_user(lawsuit_id)
+        except Exception as exc:
+            logger.warning(
+                "Falha ao buscar responsavel da pasta %s na confirmacao: %s",
+                lawsuit_id, exc,
+            )
+            return
+
+        responsible_id = responsible.get("id") if responsible else None
+        if not responsible_id:
+            return
+
+        participant = self._responsible_participant(responsible_id)
+        for payload in missing_payloads:
+            payload["participants"] = [participant]
+
+        logger.info(
+            "Responsavel da pasta aplicado em %d payload(s) do processo %s.",
+            len(missing_payloads), lawsuit_id,
+        )
 
     def _enforce_description_limit(self, payload: dict) -> None:
         """
@@ -1314,9 +1391,16 @@ class PublicationSearchService:
                 f"and r/linkId eq {lawsuit_id_int})"
             )
             try:
+                # ATENÇÃO: L1 impõe limite rígido de $top=30 no endpoint
+                # /Tasks. top maior retorna HTTP 400 e o
+                # _paginated_catalog_loader engole o erro devolvendo lista
+                # vazia (visto em prod 2026-04-28: "Total: 0" no log e
+                # nenhuma tarefa renderizada na UI). 30 é o máximo seguro;
+                # se o processo tiver mais de 30 tarefas, o loader pagina
+                # automaticamente via @odata.nextLink.
                 tasks = self.client.search_tasks(
                     filter_expression=filter_expr,
-                    top=50,
+                    top=30,
                     orderby="creationDate desc",
                 )
                 _RECENT_TASKS_CACHE[cache_key] = (now_ts, tasks)
@@ -1559,12 +1643,17 @@ class PublicationSearchService:
         subtype = self.db.query(LegalOneTaskSubType).options(
             joinedload(LegalOneTaskSubType.parent_type)
         ).filter(LegalOneTaskSubType.external_id == tmpl.task_subtype_external_id).first()
-        user = self.db.query(LegalOneUser).filter(
-            LegalOneUser.external_id == tmpl.responsible_user_external_id
-        ).first()
 
-        if not (subtype and subtype.parent_type and user):
+        if not (subtype and subtype.parent_type):
             raise ValueError("Template com referências inválidas (subtype/user).")
+
+        user = None
+        if tmpl.responsible_user_external_id is not None:
+            user = self.db.query(LegalOneUser).filter(
+                LegalOneUser.external_id == tmpl.responsible_user_external_id
+            ).first()
+            if not user:
+                raise ValueError("Template com referências inválidas (subtype/user).")
 
         # office pode ser None para templates globais (publicações sem processo)
         office = None
@@ -1581,6 +1670,12 @@ class PublicationSearchService:
             else rec.linked_office_id  # pode ainda ser None
         )
 
+        participants = []
+        if user:
+            participants.append(self._responsible_participant(user.external_id))
+        elif lawsuit_responsible and lawsuit_responsible.get("id"):
+            participants.append(self._responsible_participant(lawsuit_responsible.get("id")))
+
         payload = {
             "description": description,
             "priority": tmpl.priority or "Normal",
@@ -1591,14 +1686,7 @@ class PublicationSearchService:
             "status": {"id": 0},
             "typeId": subtype.parent_type.external_id,
             "subTypeId": subtype.external_id,
-            "participants": [
-                {
-                    "contact": {"id": user.external_id},
-                    "isResponsible": True,
-                    "isExecuter": True,
-                    "isRequester": True,
-                }
-            ],
+            "participants": participants,
         }
         # Só inclui escritório se disponível
         if effective_office_id:
@@ -2352,8 +2440,8 @@ class PublicationSearchService:
         `classifications` — só altera a classificação primária (index 0).
 
         Em seguida, reconstrói as propostas de tarefa para esses registros usando
-        `_build_task_proposals` (com `skip_responsible_lookup=True` para não bater
-        na API de participantes e evitar 429 em edições em série).
+        `_build_task_proposals`. A busca no L1 fica limitada aos templates sem
+        responsável nominal.
         """
         if not record_ids:
             raise ValueError("Nenhum registro informado.")
@@ -2424,7 +2512,7 @@ class PublicationSearchService:
 
         # Reconstrói a proposta de tarefa com o template correspondente à
         # nova classificação (se houver template cadastrado).
-        self._build_task_proposals(records, skip_responsible_lookup=True)
+        self._build_task_proposals(records)
 
         return {
             "updated_record_ids": [r.id for r in records],
@@ -2481,6 +2569,8 @@ class PublicationSearchService:
 
         if not payloads:
             raise ValueError("Proposta de tarefa inexistente. Configure um template.")
+
+        self._apply_lawsuit_responsible_to_missing_payloads(payloads, lawsuit_id)
 
         # Defesa em profundidade: mesmo que o frontend não tenha feito o
         # check-duplicates (ou alguém tenha chamado o endpoint direto via

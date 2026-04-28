@@ -256,8 +256,8 @@ def rebuild_task_proposals(
                 "rebuild-proposals: reconstruindo propostas para %d registros...",
                 len(records),
             )
-            # skip_responsible_lookup=True evita N chamadas à API Legal One que causam rate-limit (429).
-            service._build_task_proposals(records, skip_responsible_lookup=True)
+            # A busca de responsável é limitada aos templates sem responsável nominal.
+            service._build_task_proposals(records)
             _logger.info("rebuild-proposals: concluído.")
         except Exception as exc:
             _logger.error("Erro na reconstrução de propostas: %s", exc)
