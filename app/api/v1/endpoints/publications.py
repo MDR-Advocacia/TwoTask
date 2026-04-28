@@ -269,6 +269,26 @@ def rebuild_task_proposals(
 
 # ─── Classificação em lote (Anthropic Batch API) ────────────────────────
 
+def _prefetch_lawsuit_responsibles_for_batch(
+    lawsuit_ids: list[int],
+    batch_id: int,
+) -> None:
+    import logging
+
+    logger = logging.getLogger(__name__)
+    try:
+        result = LegalOneApiClient().prefetch_lawsuit_responsibles_cache(lawsuit_ids)
+        logger.info(
+            "Pré-cache de responsáveis concluído para batch %s: %d/%d processos.",
+            batch_id, len(result), len(lawsuit_ids),
+        )
+    except Exception as exc:
+        logger.warning(
+            "Falha no pré-cache de responsáveis para batch %s: %s",
+            batch_id, exc,
+        )
+
+
 class SubmitBatchRequest(BaseModel):
     linked_office_id: Optional[str] = None
     limit: Optional[int] = None
@@ -278,6 +298,7 @@ class SubmitBatchRequest(BaseModel):
 @router.post("/classify-batch/submit")
 async def submit_classify_batch(
     payload: SubmitBatchRequest,
+    background_tasks: BackgroundTasks,
     classifier: PublicationBatchClassifier = Depends(_get_batch_classifier),
     current_user=Depends(auth_security.get_current_user),
 ):
@@ -307,6 +328,17 @@ async def submit_classify_batch(
         batch = await classifier.submit_batch(
             records=records, requested_by_email=email
         )
+        lawsuit_ids = sorted({
+            int(rec.linked_lawsuit_id)
+            for rec in records
+            if rec.linked_lawsuit_id
+        })
+        if lawsuit_ids:
+            background_tasks.add_task(
+                _prefetch_lawsuit_responsibles_for_batch,
+                lawsuit_ids,
+                batch.id,
+            )
     except Exception as exc:
         raise HTTPException(
             status_code=500,

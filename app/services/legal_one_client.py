@@ -627,6 +627,145 @@ class LegalOneApiClient:
         finally:
             session.close()
 
+    def _lawsuit_cache_merge_upsert(self, updates: Dict[int, Dict[str, Any]]) -> None:
+        """Mescla campos novos no payload existente de lawsuit_cache."""
+        from datetime import datetime, timezone
+
+        from app.db.session import SessionLocal
+        from app.models.lawsuit_cache import LawsuitCache
+
+        if not updates:
+            return
+
+        session = SessionLocal()
+        try:
+            now = datetime.now(timezone.utc)
+            existing = {
+                r.lawsuit_id: r
+                for r in session.query(LawsuitCache)
+                .filter(LawsuitCache.lawsuit_id.in_(list(updates.keys())))
+                .all()
+            }
+            for lid, payload_update in updates.items():
+                row = existing.get(lid)
+                if row is None:
+                    payload = {"id": lid, **payload_update}
+                    session.add(
+                        LawsuitCache(
+                            lawsuit_id=lid,
+                            payload=payload,
+                            fetched_at=now,
+                        )
+                    )
+                else:
+                    payload = dict(row.payload or {})
+                    payload.update(payload_update)
+                    row.payload = payload
+                    row.fetched_at = now
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            self.logger.warning("Falha ao mesclar lawsuit_cache: %s", exc)
+        finally:
+            session.close()
+
+    @staticmethod
+    def _cached_responsible_from_payload(payload: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not isinstance(payload, dict):
+            return None
+        for key in ("responsibleUser", "responsible_user", "responsible"):
+            responsible = payload.get(key)
+            if isinstance(responsible, dict) and responsible.get("id"):
+                return responsible
+        return None
+
+    def get_cached_lawsuit_responsible_user(self, lawsuit_id: int) -> Optional[Dict[str, Any]]:
+        """Lê o responsável da pasta apenas do lawsuit_cache, sem chamar a API."""
+        try:
+            lid = int(lawsuit_id)
+        except (TypeError, ValueError):
+            return None
+
+        hits, _ = self._lawsuit_cache_lookup([lid])
+        return self._cached_responsible_from_payload(hits.get(lid))
+
+    def get_cached_lawsuit_responsibles_batch(
+        self, lawsuit_ids: List[int]
+    ) -> Dict[int, Dict[str, Any]]:
+        """Lê responsáveis de múltiplas pastas apenas do lawsuit_cache."""
+        unique_ids = []
+        seen = set()
+        for raw_id in lawsuit_ids:
+            try:
+                lid = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if lid > 0 and lid not in seen:
+                seen.add(lid)
+                unique_ids.append(lid)
+
+        if not unique_ids:
+            return {}
+
+        hits, _ = self._lawsuit_cache_lookup(unique_ids)
+        return {
+            lid: responsible
+            for lid, payload in hits.items()
+            if (responsible := self._cached_responsible_from_payload(payload))
+        }
+
+    def prefetch_lawsuit_responsibles_cache(
+        self, lawsuit_ids: List[int], max_workers: int = 2
+    ) -> Dict[int, Dict[str, Any]]:
+        """
+        Aquece o lawsuit_cache com o responsável nominal das pastas.
+
+        Primeiro reaproveita entradas frescas que já possuem responsibleUser.
+        Para misses, consulta o Legal One e mescla o responsável no JSON
+        existente do processo, sem sobrescrever responsibleOfficeId/CNJ.
+        """
+        unique_ids = []
+        seen = set()
+        for raw_id in lawsuit_ids:
+            try:
+                lid = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if lid > 0 and lid not in seen:
+                seen.add(lid)
+                unique_ids.append(lid)
+
+        if not unique_ids:
+            return {}
+
+        hits, _ = self._lawsuit_cache_lookup(unique_ids)
+        result: Dict[int, Dict[str, Any]] = {}
+        misses: List[int] = []
+        for lid in unique_ids:
+            responsible = self._cached_responsible_from_payload(hits.get(lid))
+            if responsible:
+                result[lid] = responsible
+            else:
+                misses.append(lid)
+
+        fetched = (
+            self.fetch_lawsuit_responsibles_batch(misses, max_workers=max_workers)
+            if misses
+            else {}
+        )
+        if fetched:
+            self._lawsuit_cache_merge_upsert({
+                lid: {"responsibleUser": responsible}
+                for lid, responsible in fetched.items()
+            })
+            result.update(fetched)
+
+        self.logger.info(
+            "Cache de responsáveis de pasta: %s hits, %s fetches, %s ids.",
+            len(unique_ids) - len(misses), len(fetched), len(unique_ids),
+        )
+        return result
+
     def search_lawsuit_by_cnj(self, cnj_number: str) -> Optional[Dict[str, Any]]:
         normalized_cnj = self._normalize_cnj_number(cnj_number)
         self.logger.info("Buscando processo com CNJ: %s", normalized_cnj)

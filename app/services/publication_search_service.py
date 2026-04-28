@@ -1068,22 +1068,21 @@ class PublicationSearchService:
             ):
                 lawsuit_ids_needing_responsible.add(rec.linked_lawsuit_id)
 
-        # Busca responsaveis de pasta somente quando algum template casado nao
-        # trouxe responsavel nominal. Templates ja completos nao geram chamadas
-        # extras ao Legal One.
+        # Lê responsáveis de pasta somente do cache pré-aquecido no envio do
+        # batch. Templates já completos não precisam nem consultar o cache.
         lawsuit_responsibles: dict = {}
         if lawsuit_ids_needing_responsible:
             try:
                 from app.services.legal_one_client import LegalOneApiClient
                 lo_client = LegalOneApiClient()
                 lawsuit_ids = sorted(lawsuit_ids_needing_responsible)
-                lawsuit_responsibles = lo_client.fetch_lawsuit_responsibles_batch(lawsuit_ids)
+                lawsuit_responsibles = lo_client.get_cached_lawsuit_responsibles_batch(lawsuit_ids)
                 logger.info(
-                    "Responsaveis de pasta obtidos para templates sem responsavel: %d de %d processos.",
+                    "Responsaveis de pasta lidos do cache para templates sem responsavel: %d de %d processos.",
                     len(lawsuit_responsibles), len(lawsuit_ids),
                 )
             except Exception as exc:
-                logger.warning("Falha ao buscar responsaveis de pasta: %s", exc)
+                logger.warning("Falha ao ler responsaveis de pasta do cache: %s", exc)
 
         for rec in records:
             if not rec.category:
@@ -1162,17 +1161,22 @@ class PublicationSearchService:
         if not missing_payloads:
             return
 
-        try:
-            responsible = self.client.get_lawsuit_responsible_user(lawsuit_id)
-        except Exception as exc:
+        cached_lookup = getattr(self.client, "get_cached_lawsuit_responsible_user", None)
+        if not callable(cached_lookup):
             logger.warning(
-                "Falha ao buscar responsavel da pasta %s na confirmacao: %s",
-                lawsuit_id, exc,
+                "Client sem leitura de cache de responsavel da pasta %s.",
+                lawsuit_id,
             )
             return
 
+        responsible = cached_lookup(lawsuit_id)
+
         responsible_id = responsible.get("id") if responsible else None
         if not responsible_id:
+            logger.warning(
+                "Responsavel da pasta %s ausente no cache durante confirmacao.",
+                lawsuit_id,
+            )
             return
 
         participant = self._responsible_participant(responsible_id)

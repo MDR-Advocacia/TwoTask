@@ -65,7 +65,7 @@ def test_build_task_proposals_fetches_responsible_only_for_templates_without_use
     captured = {}
 
     class FakeLegalOneApiClient:
-        def fetch_lawsuit_responsibles_batch(self, lawsuit_ids):
+        def get_cached_lawsuit_responsibles_batch(self, lawsuit_ids):
             captured["lawsuit_ids"] = list(lawsuit_ids)
             return {
                 501: {
@@ -179,7 +179,7 @@ def test_confirmation_helper_fills_only_payloads_missing_responsible():
         def __init__(self):
             self.calls = []
 
-        def get_lawsuit_responsible_user(self, lawsuit_id):
+        def get_cached_lawsuit_responsible_user(self, lawsuit_id):
             self.calls.append(lawsuit_id)
             return {"id": 888, "name": "Folder Responsible"}
 
