@@ -981,23 +981,11 @@ def update_classification_override(
     return {"ok": True, "id": override.id, "is_active": override.is_active}
 
 
-@router.delete("/classification-overrides/{override_id}")
-def delete_classification_override(
-    override_id: int,
-    db: Session = Depends(get_db),
-    _=Depends(auth_security.get_current_user),
-):
-    """Remove um override de classificação."""
-    from app.models.office_classification import OfficeClassificationOverride
-
-    override = db.query(OfficeClassificationOverride).filter_by(id=override_id).first()
-    if not override:
-        raise HTTPException(404, "Override não encontrado.")
-    db.delete(override)
-    db.commit()
-    return {"ok": True}
-
-
+# ATENÇÃO: ordem das rotas DELETE importa. O FastAPI avalia rotas na
+# ordem de declaração — `/bulk` PRECISA vir antes de `/{override_id}`,
+# senão o "bulk" do path entra como valor de override_id, falha o cast
+# pra int e devolve 422 ("value is not a valid integer"). O frontend
+# então renderiza o `detail` como `[object Object]` no toast.
 @router.post("/classification-overrides/bulk")
 def bulk_create_classification_overrides(
     body: OverrideBulkRequest,
@@ -1086,6 +1074,23 @@ def bulk_delete_classification_overrides(
     q.delete(synchronize_session=False)
     db.commit()
     return {"deleted": count}
+
+
+@router.delete("/classification-overrides/{override_id}")
+def delete_classification_override(
+    override_id: int,
+    db: Session = Depends(get_db),
+    _=Depends(auth_security.get_current_user),
+):
+    """Remove um override de classificação (por id, escritório único)."""
+    from app.models.office_classification import OfficeClassificationOverride
+
+    override = db.query(OfficeClassificationOverride).filter_by(id=override_id).first()
+    if not override:
+        raise HTTPException(404, "Override não encontrado.")
+    db.delete(override)
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("/classification-taxonomy")

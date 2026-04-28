@@ -75,6 +75,33 @@ import { apiFetch } from "@/lib/api-client";
 
 const API = "/api/v1/task-templates";
 
+/**
+ * Extrai uma mensagem de erro legível de respostas FastAPI/HTTP.
+ *
+ * Erros do FastAPI vêm em formatos variados:
+ *  - 4xx custom: `{detail: "string"}` — usar direto.
+ *  - 422 validação: `{detail: [{loc, msg, type}, ...]}` — concatenar `msg`.
+ *  - Erro de servidor sem JSON: `{}` ou parse falha — usar fallback.
+ *
+ * Se passarmos `data.detail` direto pra `new Error(...)`, o JS faz
+ * `String(detail)` no array/objeto e a mensagem vira `"[object Object]"`,
+ * que não ajuda em nada na UI. Esse helper garante string utilizável.
+ */
+const extractErrorMessage = (data: any, fallback: string): string => {
+  const detail = data?.detail;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map((d: any) => (typeof d === "string" ? d : d?.msg))
+      .filter(Boolean);
+    if (msgs.length > 0) return msgs.join("; ");
+  }
+  if (detail && typeof detail === "object" && typeof detail.msg === "string") {
+    return detail.msg;
+  }
+  return fallback;
+};
+
 // ─── Types ─────────────────────────────────────────────────────────────────
 
 interface Office {
@@ -693,7 +720,7 @@ const TaskTemplatesPage = () => {
           });
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
-            throw new Error(data.detail || `Erro ao salvar tarefa ${idx + 1}.`);
+            throw new Error(extractErrorMessage(data, `Erro ao salvar tarefa ${idx + 1}.`));
           }
           const savedItem = await res.json();
           if (templateId) {
@@ -735,7 +762,7 @@ const TaskTemplatesPage = () => {
             });
             if (!res.ok) {
               const data = await res.json().catch(() => ({}));
-              throw new Error(data.detail || `Erro ao criar tarefa ${idx + 1} (escritório ${officeRaw}).`);
+              throw new Error(extractErrorMessage(data, `Erro ao criar tarefa ${idx + 1} (escritório ${officeRaw}).`));
             }
             const created_item = await res.json();
             created.push(created_item.name ?? payload.name);
@@ -905,7 +932,7 @@ const TaskTemplatesPage = () => {
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || "Erro ao salvar.");
+        throw new Error(extractErrorMessage(data, "Erro ao salvar."));
       }
 
       if (isBulk) {
@@ -957,7 +984,7 @@ const TaskTemplatesPage = () => {
       }
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || "Erro ao remover.");
+        throw new Error(extractErrorMessage(data, "Erro ao remover."));
       }
       toast({ title: "Override removido" });
       await loadOverrides(overrideFilterOffice);
@@ -1005,7 +1032,7 @@ const TaskTemplatesPage = () => {
         });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
-          throw new Error(data.detail || "Erro ao aplicar override em massa.");
+          throw new Error(extractErrorMessage(data, "Erro ao aplicar override em massa."));
         }
         const data = await res.json();
         toast({
@@ -1022,7 +1049,7 @@ const TaskTemplatesPage = () => {
         );
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
-          throw new Error(data.detail || "Erro ao remover overrides em massa.");
+          throw new Error(extractErrorMessage(data, "Erro ao remover overrides em massa."));
         }
         const data = await res.json();
         toast({
