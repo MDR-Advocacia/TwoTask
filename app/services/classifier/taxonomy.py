@@ -9,6 +9,10 @@ A categoria especial "Para análise" é usada como fallback quando o texto
 não fornece informação suficiente para uma classificação assertiva.
 """
 
+import re
+import unicodedata
+
+
 CLASSIFICATION_TREE: dict[str, list[str]] = {
     "1° Grau - Cível / Execução": [
         "Apresentação de Contestação",
@@ -49,9 +53,25 @@ CLASSIFICATION_TREE: dict[str, list[str]] = {
         "Instrução",
         "Não especificada",
     ],
+    "Cita\u00e7\u00e3o": [
+        "Cita\u00e7\u00e3o para Contestar",
+        "Cita\u00e7\u00e3o para Apresenta\u00e7\u00e3o de Documentos",
+        "Cita\u00e7\u00e3o - Para An\u00e1lise",
+    ],
     "Complementar Custas": [],
     "Manifestação das Partes": [],
     "Provas": [],
+    "Embargos de Declara\u00e7\u00e3o": [
+        "Contrarraz\u00f5es",
+        "Decis\u00e3o Monocr\u00e1tica",
+        "Embargos de Declara\u00e7\u00e3o - Para An\u00e1lise",
+    ],
+    "Recurso Inominado": [
+        "Contrarraz\u00f5es",
+        "Abertura de Prazo",
+        "Recurso Inominado - Para An\u00e1lise",
+    ],
+    "Saneamento e Organiza\u00e7\u00e3o do Processo": [],
     "Sentença": [
         "Sentença Parcialmente procedente",
         "Sentença Procedente",
@@ -66,12 +86,53 @@ CLASSIFICATION_TREE: dict[str, list[str]] = {
         "Sentença Ausência de pressupostos",
         "Sentença Ausência de legitimidade",
         "Sentença Homologação desistência da ação",
+        "Senten\u00e7a de Extin\u00e7\u00e3o sem Resolu\u00e7\u00e3o",
         "Sentença Não definida",
     ],
     "Trânsito em Julgado": [],
     "Execução": [],
     "Arquivamento Definitivo": [],
     "Para análise": [],
+}
+
+
+def _normalize_label(value: str | None) -> str:
+    """Normaliza acentos, caixa e pontuação para comparar rótulos da IA."""
+    text = unicodedata.normalize("NFKD", value or "")
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.lower().replace("º", "o").replace("°", "o")
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def _find_category_by_normalized(label: str) -> str | None:
+    norm = _normalize_label(label)
+    for category in CLASSIFICATION_TREE:
+        if _normalize_label(category) == norm:
+            return category
+    return None
+
+
+def _find_subcategory_by_normalized(category: str, label: str) -> str | None:
+    norm = _normalize_label(label)
+    for subcategory in CLASSIFICATION_TREE.get(category, []):
+        if _normalize_label(subcategory) == norm:
+            return subcategory
+    return None
+
+
+_CATEGORY_ALIASES: dict[str, str] = {
+    "manifestacao": "Manifestação das Partes",
+    "manifestacao das partes": "Manifestação das Partes",
+    "recurso inominado contrarrazoes": "Recurso Inominado",
+}
+
+
+_PAIR_ALIASES: dict[tuple[str, str], tuple[str, str]] = {
+    (
+        "recurso inominado contrarrazoes",
+        "abertura de prazo",
+    ): ("Recurso Inominado", "Contrarrazões"),
 }
 
 
@@ -149,6 +210,22 @@ def repair_classification(category: str, subcategory: str) -> tuple[str, str]:
     """
     cat = (category or "").strip()
     sub = (subcategory or "").strip()
+
+    pair_alias = _PAIR_ALIASES.get((_normalize_label(cat), _normalize_label(sub)))
+    if pair_alias:
+        return pair_alias
+
+    cat_norm = _normalize_label(cat)
+    aliased_cat = _CATEGORY_ALIASES.get(cat_norm)
+    if aliased_cat:
+        cat = aliased_cat
+    else:
+        cat = _find_category_by_normalized(cat) or cat
+
+    if cat in CLASSIFICATION_TREE:
+        if not CLASSIFICATION_TREE[cat]:
+            return cat, "-"
+        sub = _find_subcategory_by_normalized(cat, sub) or sub
 
     # Já válido? retorna como está.
     if cat in CLASSIFICATION_TREE:

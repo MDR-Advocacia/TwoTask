@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.core import auth as auth_security
 from app.core.dependencies import get_db, get_api_client
+from app.models.publication_batch import PUB_BATCH_STATUS_FAILED
 from app.services.legal_one_client import LegalOneApiClient
 from app.services.publication_batch_classifier import PublicationBatchClassifier
 from app.services.publication_export_service import export_records_grouped_xlsx
@@ -430,16 +431,25 @@ async def retry_batch_errors(
     batch = classifier.get_batch(batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="Batch não encontrado.")
-    # Aceita retry se há error_details OU se errored_count > 0
-    # (batches antigos antes da coluna error_details existir também são válidos)
-    has_errors = bool(batch.error_details) or (batch.errored_count or 0) > 0
+    # Aceita retry se há error_details, contadores de falha da Anthropic,
+    # ou se o envio inteiro falhou depois de capturar os record_ids.
+    has_errors = (
+        bool(batch.error_details)
+        or (batch.errored_count or 0) > 0
+        or (batch.expired_count or 0) > 0
+        or (batch.canceled_count or 0) > 0
+        or (
+            batch.status == PUB_BATCH_STATUS_FAILED
+            and bool(batch.record_ids)
+        )
+    )
     if not has_errors:
         raise HTTPException(status_code=400, detail="Nenhum erro registrado neste batch.")
 
     records = classifier.collect_errored_records_from_batch(batch)
     if not records:
         raise HTTPException(
-            status_code=404,
+            status_code=400,
             detail="Nenhum registro com erro encontrado para reprocessamento.",
         )
 

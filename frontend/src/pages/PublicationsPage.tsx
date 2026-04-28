@@ -2547,7 +2547,12 @@ const PublicationsPage = () => {
                             )}
                           </div>
                           {/* Retry errors button */}
-                          {b.status === "APLICADO" && (b.errored_count > 0 || b.expired_count > 0) && (
+                          {(
+                            (b.status === "APLICADO" && (
+                              b.errored_count > 0 || b.expired_count > 0 || b.canceled_count > 0
+                            ))
+                            || (b.status === "FALHA" && b.total_records > 0)
+                          ) && (
                             <div className="mt-1 flex gap-1">
                               <Button size="sm" variant="outline"
                                 className="h-6 px-2 text-[10px] text-orange-700 border-orange-300"
@@ -2557,7 +2562,9 @@ const PublicationsPage = () => {
                                 {retryingBatchId === b.id
                                   ? <Loader2 className="mr-1 h-3 w-3 animate-spin" />
                                   : <RotateCcw className="mr-1 h-3 w-3" />}
-                                Retry {b.errored_count + b.expired_count} erros
+                                {b.status === "FALHA"
+                                  ? `Reenviar ${b.total_records}`
+                                  : `Retry ${b.errored_count + b.expired_count + b.canceled_count} erros`}
                               </Button>
                               {b.error_details && (
                                 <Button size="sm" variant="ghost"

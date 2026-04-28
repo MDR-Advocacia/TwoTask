@@ -570,6 +570,7 @@ class PublicationBatchClassifier:
                 logger.warning(
                     "Classificação inválida #%s: cat=%s sub=%s", rec.id, cat, sub
                 )
+                rec.status = RECORD_STATUS_ERROR
                 error_details[custom_id] = f"Classificação inválida: cat={cat}, sub={sub}"
                 failed += 1
 
@@ -668,14 +669,22 @@ class PublicationBatchClassifier:
         self, batch: PublicationBatchClassification
     ) -> List[PublicationRecord]:
         """
-        Coleta os registros que falharam em um batch anterior (status ERRO)
+        Coleta os registros que falharam em um batch anterior
         para permitir reprocessamento.
 
         Tenta primeiro usar error_details (mapeamento custom_id → motivo).
-        Se não estiver disponível (batch anterior à coluna ser criada),
-        cai de volta em record_ids + status=ERRO.
+        Isso também cobre batches antigos em que a classificação inválida
+        ficou em error_details, mas o registro permaneceu NOVO.
+        Se o envio inteiro falhou antes de haver resultados, usa record_ids.
+        Como último fallback para batches antigos, usa record_ids + status ERRO.
         """
-        if batch.error_details:
+        use_error_details = bool(batch.error_details)
+        use_failed_record_ids = (
+            batch.status == PUB_BATCH_STATUS_FAILED
+            and bool(batch.record_ids)
+        )
+
+        if use_error_details:
             # Caminho primário: usa o mapeamento detalhado de erros
             errored_ids = []
             for record_id_str in batch.error_details.keys():
@@ -684,7 +693,7 @@ class PublicationBatchClassifier:
                 except (TypeError, ValueError):
                     continue
         elif batch.record_ids:
-            # Fallback: busca todos os registros do batch que têm status ERRO
+            # Fallback: batch falhou inteiro ou batch antigo sem error_details.
             errored_ids = [int(rid) for rid in batch.record_ids if rid]
         else:
             return []
@@ -695,10 +704,15 @@ class PublicationBatchClassifier:
         query = (
             self.db.query(PublicationRecord)
             .filter(PublicationRecord.id.in_(errored_ids))
-            .filter(PublicationRecord.status == RECORD_STATUS_ERROR)
             .filter(PublicationRecord.description.isnot(None))
             .filter(PublicationRecord.description != "")
         )
+        if use_error_details or use_failed_record_ids:
+            query = query.filter(
+                PublicationRecord.status.in_([RECORD_STATUS_ERROR, RECORD_STATUS_NEW])
+            )
+        else:
+            query = query.filter(PublicationRecord.status == RECORD_STATUS_ERROR)
         records = query.all()
 
         # Reset status to NEW for reprocessing
@@ -709,6 +723,7 @@ class PublicationBatchClassifier:
             rec.audiencia_data = None
             rec.audiencia_hora = None
             rec.audiencia_link = None
+            rec.classifications = None
             rec.status = RECORD_STATUS_NEW
         self.db.commit()
 
