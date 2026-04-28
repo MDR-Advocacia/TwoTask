@@ -37,8 +37,56 @@ O Coolify cuida de:
 
 - **Nunca commitar do sandbox** (trava `.git/HEAD.lock`). Sempre entregar
   bloco PowerShell pronto pra o usuário rodar no VSCode/terminal.
-- O ambiente do usuário é PowerShell 5.x — não usa `&&` (use `;` ou
-  comandos separados, ou `if ($LASTEXITCODE -eq 0) { ... }`).
+- O ambiente do usuário é PowerShell 5.x — não usa `&&` (use linhas
+  separadas, sem `;` ou `if ($LASTEXITCODE -eq 0)`).
+- **Formato padrão e fixo dos blocos de commit** (não variar):
+
+### Quando o usuário disser "main":
+
+```powershell
+cd "C:\Users\jonil\OneDrive\Desktop\Projetos HUB\OneTask - Solo\onetask"
+git checkout main
+git add -A
+git commit -m "<mensagem>"
+git push origin main
+```
+
+### Quando o usuário disser "prazos iniciais" / "feat":
+
+```powershell
+cd "C:\Users\jonil\OneDrive\Desktop\Projetos HUB\OneTask - Solo\onetask"
+git checkout feat/prazos-iniciais
+git add -A
+git commit -m "<mensagem>"
+git push origin feat/prazos-iniciais
+```
+
+### Quando o usuário disser "os dois" / "ambos":
+
+Commitar em `feat/prazos-iniciais` (branch de teste, mais avançada) e
+propagar pra `main` via merge fast-forward:
+
+```powershell
+cd "C:\Users\jonil\OneDrive\Desktop\Projetos HUB\OneTask - Solo\onetask"
+git checkout feat/prazos-iniciais
+git add -A
+git commit -m "<mensagem>"
+git push origin feat/prazos-iniciais
+git checkout main
+git merge feat/prazos-iniciais --no-edit
+git push origin main
+```
+
+### Regras gerais (não variar)
+
+- Sempre `git add -A` (stage tudo).
+- Nunca rodar `git status` antes do commit (o usuário não pediu).
+- Mensagem em linha única: `feat(escopo): ...` / `fix(escopo): ...`
+  / `docs: ...` / `chore: ...`.
+- Sem caracteres especiais que o PowerShell interprete mal (sem `&&`,
+  sem `\n` na mensagem do commit — uma linha só).
+- Não inventar etapas extras (ex.: `git pull` antes do push, validação
+  de diff, etc.) a não ser que o usuário peça.
 
 ## Stack
 

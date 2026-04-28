@@ -51,6 +51,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { MultiSelect } from "@/components/ui/MultiSelect";
 import { Label } from "@/components/ui/label";
+import { SubtypePicker } from "@/components/ui/SubtypePicker";
 import {
   Select,
   SelectContent,
@@ -306,13 +307,6 @@ const TaskTemplatesPage = () => {
     () => form.taskBlocks.filter((block) => !block.id).length,
     [form.taskBlocks],
   );
-
-  /** Retorna os subtipos disponíveis para o tipo escolhido num bloco específico */
-  const getSubtypesForBlock = (blockIdx: number): TaskSubtype[] => {
-    const typeId = form.taskBlocks[blockIdx]?.task_type_external_id;
-    if (!typeId) return [];
-    return taskTypes.find((t) => String(t.external_id) === typeId)?.subtypes ?? [];
-  };
 
   /**
    * Retorna o conjunto de subtype external_ids (number) que JÁ estão em uso
@@ -1771,26 +1765,50 @@ const TaskTemplatesPage = () => {
                 </Select>
               </div>
               <div className="grid gap-1.5">
-                <Label>Subcategoria</Label>
-                <Select
-                  value={bulkForm.subcategory || "__all__"}
-                  onValueChange={(v) =>
-                    setBulkForm((p) => ({ ...p, subcategory: v === "__all__" ? "" : v }))
-                  }
-                  disabled={!bulkForm.category}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Todas" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__all__">Todas (categoria inteira)</SelectItem>
-                    {bulkSubcategories.map((s) => (
-                      <SelectItem key={s} value={s}>
-                        {s}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Label>
+                  {bulkForm.action === "include_custom" && bulkForm.mode === "apply"
+                    ? "Subcategoria (nova ou existente)"
+                    : "Subcategoria"}
+                </Label>
+                {bulkForm.action === "include_custom" && bulkForm.mode === "apply" ? (
+                  <>
+                    <Input
+                      value={bulkForm.subcategory}
+                      onChange={(e) =>
+                        setBulkForm((p) => ({ ...p, subcategory: e.target.value }))
+                      }
+                      list={`bulk-subcats-${bulkForm.category || "none"}`}
+                      placeholder="Ex.: Audiência UNA"
+                      autoComplete="off"
+                      disabled={!bulkForm.category}
+                    />
+                    <datalist id={`bulk-subcats-${bulkForm.category || "none"}`}>
+                      {bulkSubcategories.map((s) => (
+                        <option key={s} value={s} />
+                      ))}
+                    </datalist>
+                  </>
+                ) : (
+                  <Select
+                    value={bulkForm.subcategory || "__all__"}
+                    onValueChange={(v) =>
+                      setBulkForm((p) => ({ ...p, subcategory: v === "__all__" ? "" : v }))
+                    }
+                    disabled={!bulkForm.category}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Todas" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__all__">Todas (categoria inteira)</SelectItem>
+                      {bulkSubcategories.map((s) => (
+                        <SelectItem key={s} value={s}>
+                          {s}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
               </div>
             </div>
 
@@ -1915,26 +1933,62 @@ const TaskTemplatesPage = () => {
                 </Select>
               </div>
               <div className="grid gap-1.5">
-                <Label>Subcategoria</Label>
-                <Select
-                  value={overrideForm.subcategory || "_all"}
-                  onValueChange={(v) =>
-                    setOverrideForm((p) => ({ ...p, subcategory: v === "_all" ? "" : v }))
-                  }
-                  disabled={overrideCategorySubcategories.length === 0}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Todas" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="_all">(todas as subcategorias)</SelectItem>
-                    {overrideCategorySubcategories.map((s) => (
-                      <SelectItem key={s} value={s}>
-                        {s}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Label>
+                  {overrideForm.action === "include_custom"
+                    ? "Subcategoria (nova ou existente)"
+                    : "Subcategoria"}
+                </Label>
+                {overrideForm.action === "include_custom" ? (
+                  // include_custom: input livre, com autocomplete das existentes,
+                  // mas aceita qualquer nome novo (ex.: "Audiência UNA").
+                  // Sem subcategoria preenchida, o override só muda o prompt da
+                  // categoria toda — não cria um slot novo no grid de cobertura.
+                  <>
+                    <Input
+                      value={overrideForm.subcategory}
+                      onChange={(e) =>
+                        setOverrideForm((p) => ({ ...p, subcategory: e.target.value }))
+                      }
+                      list={`override-subcats-${overrideForm.category || "none"}`}
+                      placeholder='Ex.: "Audiência UNA" — deixe vazio p/ aplicar à categoria toda'
+                      autoComplete="off"
+                      disabled={!overrideForm.category || !!editingOverride}
+                    />
+                    <datalist id={`override-subcats-${overrideForm.category || "none"}`}>
+                      {overrideCategorySubcategories.map((s) => (
+                        <option key={s} value={s} />
+                      ))}
+                    </datalist>
+                    {!overrideForm.subcategory && overrideForm.category && (
+                      <p className="text-[11px] text-muted-foreground">
+                        Sem subcategoria, o override afeta o prompt da categoria
+                        inteira — não aparece como nova bolinha no grid de cobertura.
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  // exclude: continua Select, porque você só remove subcategorias
+                  // que já existem na taxonomia.
+                  <Select
+                    value={overrideForm.subcategory || "_all"}
+                    onValueChange={(v) =>
+                      setOverrideForm((p) => ({ ...p, subcategory: v === "_all" ? "" : v }))
+                    }
+                    disabled={overrideCategorySubcategories.length === 0 || !!editingOverride}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Todas" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="_all">(todas as subcategorias)</SelectItem>
+                      {overrideCategorySubcategories.map((s) => (
+                        <SelectItem key={s} value={s}>
+                          {s}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
               </div>
             </div>
 
@@ -2173,7 +2227,6 @@ const TaskTemplatesPage = () => {
               </div>
 
               {form.taskBlocks.map((block, idx) => {
-                const blockSubtypes = getSubtypesForBlock(idx);
                 const usedSubtypes = subtypesInUseForBlock(idx);
                 return (
                   <div
@@ -2211,69 +2264,40 @@ const TaskTemplatesPage = () => {
                       )}
                     </div>
 
-                    {/* Tipo / Subtipo */}
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="grid gap-1.5">
-                        <Label className="text-xs">Tipo de tarefa</Label>
-                        <Select
-                          value={block.task_type_external_id}
-                          onValueChange={(v) => {
-                            setBlockField(idx, "task_type_external_id", v);
-                            setBlockField(idx, "task_subtype_external_id", "");
-                          }}
-                        >
-                          <SelectTrigger className="h-8 text-sm">
-                            <SelectValue placeholder="Selecione..." />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {taskTypes.map((tt) => (
-                              <SelectItem key={tt.external_id} value={String(tt.external_id)}>
-                                {tt.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="grid gap-1.5">
-                        <Label className="text-xs">Subtipo de tarefa *</Label>
-                        <Select
-                          value={block.task_subtype_external_id}
-                          onValueChange={(v) => setBlockField(idx, "task_subtype_external_id", v)}
-                          disabled={blockSubtypes.length === 0}
-                        >
-                          <SelectTrigger className="h-8 text-sm">
-                            <SelectValue placeholder="Selecione..." />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {blockSubtypes.map((s) => {
-                              // Subtipos já em uso (no form ou em irmãos do
-                              // banco) ficam desabilitados pra evitar 409 de
-                              // duplicata exata. Exceção: o próprio valor
-                              // selecionado neste bloco continua selecionável
-                              // (evita "presa" no estado).
-                              const isUsedElsewhere =
-                                usedSubtypes.has(s.external_id) &&
-                                String(s.external_id) !==
-                                  block.task_subtype_external_id;
-                              return (
-                                <SelectItem
-                                  key={s.external_id}
-                                  value={String(s.external_id)}
-                                  disabled={isUsedElsewhere}
-                                >
-                                  {s.name}
-                                  {isUsedElsewhere ? (
-                                    <span className="ml-2 text-xs text-muted-foreground">
-                                      (já em uso)
-                                    </span>
-                                  ) : null}
-                                </SelectItem>
-                              );
-                            })}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
+                    {/* Subtipo de tarefa — combobox com busca, igual à modal de
+                        Confirmar Agendamento. Combina Tipo+Subtipo em UM campo
+                        pesquisável (catálogo L1 tem ~900 subtipos, Select
+                        tradicional fica inutilizável). O `task_type_external_id`
+                        agora é derivado: setado automaticamente quando o
+                        operador escolhe um subtipo. Subtipos "já em uso" por
+                        outros blocos/templates continuam aparecendo desabilitados
+                        com a etiqueta "(já em uso)" pra evitar 409 de duplicata. */}
+                    <SubtypePicker
+                      value={
+                        block.task_subtype_external_id
+                          ? parseInt(block.task_subtype_external_id)
+                          : null
+                      }
+                      taskTypes={taskTypes}
+                      onChange={(subId, parentType) => {
+                        setBlockField(
+                          idx,
+                          "task_subtype_external_id",
+                          String(subId),
+                        );
+                        setBlockField(
+                          idx,
+                          "task_type_external_id",
+                          parentType ? String(parentType.external_id) : "",
+                        );
+                      }}
+                      disabledSubtypeIds={usedSubtypes}
+                      label="Subtipo de tarefa"
+                      required
+                      placeholder="Selecione o subtipo"
+                      searchPlaceholder="Buscar por tipo ou subtipo..."
+                      triggerClassName="h-8"
+                    />
 
                     {/* Responsável */}
                     <div className="grid gap-1.5">
