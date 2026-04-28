@@ -515,7 +515,17 @@ const TaskTemplatesPage = () => {
       return { ...prev, taskBlocks: blocks };
     });
 
-  /** Adiciona um novo bloco de tarefa (copia o último como base) */
+  /**
+   * Adiciona um novo bloco de tarefa.
+   *
+   * Copia o último bloco como base de ergonomia, MAS limpa
+   * `task_subtype_external_id` (e o `task_type_external_id` parent)
+   * pra forçar o operador a escolher um subtype diferente.
+   *
+   * Se mantivéssemos o subtype copiado, o POST do bloco extra colidiria
+   * com o template existente (mesma chave classificação + office +
+   * subtype) e o operador veria 409 sem saber por quê.
+   */
   const addTaskBlock = () =>
     setForm((prev) => ({
       ...prev,
@@ -593,6 +603,26 @@ const TaskTemplatesPage = () => {
   };
 
   const handleSave = async () => {
+    // Pre-flight: detecta subtypes duplicados ENTRE blocos do form, e entre
+    // blocos do form e templates irmãos no banco. Se acharmos, abortamos
+    // antes de bater no backend e mostramos mensagem específica (em vez de
+    // 409 genérico que não diz qual bloco está colidindo).
+    const seen = new Map<number, number>(); // subtype_external_id → blockIdx
+    for (let i = 0; i < form.taskBlocks.length; i++) {
+      const sub = form.taskBlocks[i].task_subtype_external_id;
+      if (!sub) continue;
+      const subId = parseInt(sub);
+      if (seen.has(subId)) {
+        toast({
+          title: "Subtipos duplicados",
+          description: `Tarefa ${seen.get(subId)! + 1} e Tarefa ${i + 1} usam o mesmo subtipo. Cada tarefa precisa de um subtipo diferente.`,
+          variant: "destructive",
+        });
+        return;
+      }
+      seen.set(subId, i);
+    }
+
     if (!form.category || form.taskBlocks.length === 0) {
       toast({
         title: "Campos obrigatórios",
@@ -2144,6 +2174,7 @@ const TaskTemplatesPage = () => {
 
               {form.taskBlocks.map((block, idx) => {
                 const blockSubtypes = getSubtypesForBlock(idx);
+                const usedSubtypes = subtypesInUseForBlock(idx);
                 return (
                   <div
                     key={idx}
@@ -2214,11 +2245,31 @@ const TaskTemplatesPage = () => {
                             <SelectValue placeholder="Selecione..." />
                           </SelectTrigger>
                           <SelectContent>
-                            {blockSubtypes.map((s) => (
-                              <SelectItem key={s.external_id} value={String(s.external_id)}>
-                                {s.name}
-                              </SelectItem>
-                            ))}
+                            {blockSubtypes.map((s) => {
+                              // Subtipos já em uso (no form ou em irmãos do
+                              // banco) ficam desabilitados pra evitar 409 de
+                              // duplicata exata. Exceção: o próprio valor
+                              // selecionado neste bloco continua selecionável
+                              // (evita "presa" no estado).
+                              const isUsedElsewhere =
+                                usedSubtypes.has(s.external_id) &&
+                                String(s.external_id) !==
+                                  block.task_subtype_external_id;
+                              return (
+                                <SelectItem
+                                  key={s.external_id}
+                                  value={String(s.external_id)}
+                                  disabled={isUsedElsewhere}
+                                >
+                                  {s.name}
+                                  {isUsedElsewhere ? (
+                                    <span className="ml-2 text-xs text-muted-foreground">
+                                      (já em uso)
+                                    </span>
+                                  ) : null}
+                                </SelectItem>
+                              );
+                            })}
                           </SelectContent>
                         </Select>
                       </div>

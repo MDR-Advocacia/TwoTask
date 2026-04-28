@@ -132,6 +132,49 @@ def proximo_dia_util(d: date, extra_holidays: Optional[Iterable[date]] = None) -
     return cur
 
 
+def add_business_days(
+    base: date,
+    n: int,
+    extra_holidays: Optional[Iterable[date]] = None,
+) -> date:
+    """
+    Soma `n` dias úteis a `base`, pulando fim de semana e feriados.
+
+    Ao contrário de `calcular_prazo_final` (que segue o CPC: começa no
+    dia útil seguinte ao termo inicial), esta é uma soma genérica de
+    "N dias úteis a partir da data X" — útil para vencimentos
+    operacionais (ex.: tarefa interna 5 dias úteis após uma publicação).
+
+    Convenção:
+      - n > 0: avança N dias úteis a partir de `base`.
+      - n < 0: retrocede |N| dias úteis.
+      - n == 0: retorna `base` sem ajuste.
+
+    Diferença vs `proximo_dia_util` + soma corrida: aqui contamos
+    APENAS dias úteis. Sábado, domingo e feriados nacionais não
+    incrementam o contador.
+
+    Args:
+        base: data de referência (ex.: data da publicação).
+        n: quantidade de dias úteis (positivo ou negativo).
+        extra_holidays: feriados extras (recessos de tribunal, etc.).
+
+    Returns:
+        date resultante. Se `n == 0`, devolve `base` mesmo se cair em
+        fim de semana/feriado (caller decide se quer prorrogar).
+    """
+    if n == 0:
+        return base
+    step = 1 if n > 0 else -1
+    remaining = abs(n)
+    cur = base
+    while remaining > 0:
+        cur += timedelta(days=step)
+        if is_business_day(cur, extra_holidays):
+            remaining -= 1
+    return cur
+
+
 # ─── Cálculo principal ───────────────────────────────────────────────
 
 
