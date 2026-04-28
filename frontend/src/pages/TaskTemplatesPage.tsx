@@ -167,6 +167,53 @@ interface TaskTemplate {
 // ─── Blank form ────────────────────────────────────────────────────────────
 
 /** Um bloco de tarefa dentro do formulário (pode haver N por classificação) */
+// ─── Coverage view: agrupamento de categorias por fase processual ─────
+//
+// O Coverage view (`viewMode === "by-office"`) agrupa as categorias em
+// "fases" pra dar visão jurídica ao operador (em vez de listar tudo
+// numa pilha sem hierarquia). Esse mapeamento é puramente VISUAL — não
+// muda a taxonomia (`CLASSIFICATION_TREE`) nem a classificação da IA.
+//
+// Quando a taxonomia ganhar categorias novas, basta adicionar aqui;
+// categorias não mapeadas caem em "Outros" automaticamente.
+const COVERAGE_PHASE_ORDER = [
+  "Fase de Conhecimento",
+  "Tutela",
+  "Sentença e Encerramento",
+  "Recursos",
+  "Execução",
+  "Outros",
+] as const;
+
+type CoveragePhase = typeof COVERAGE_PHASE_ORDER[number];
+
+const COVERAGE_CATEGORY_TO_PHASE: Record<string, CoveragePhase> = {
+  // Fase de Conhecimento
+  "Citação": "Fase de Conhecimento",
+  "Manifestação das Partes": "Fase de Conhecimento",
+  "Provas": "Fase de Conhecimento",
+  "Saneamento e Organização do Processo": "Fase de Conhecimento",
+  "Audiência Agendada": "Fase de Conhecimento",
+  // Tutela
+  "Tutela": "Tutela",
+  // Sentença e Encerramento
+  "Sentença": "Sentença e Encerramento",
+  "Trânsito em Julgado": "Sentença e Encerramento",
+  "Arquivamento Definitivo": "Sentença e Encerramento",
+  // Recursos
+  "2° Grau - Cível": "Recursos",
+  "Embargos de Declaração": "Recursos",
+  "Recurso Inominado": "Recursos",
+  // Execução
+  "1° Grau - Cível / Execução": "Execução",
+  "Execução": "Execução",
+  "Complementar Custas": "Execução",
+};
+
+const phaseForCategory = (category: string): CoveragePhase =>
+  COVERAGE_CATEGORY_TO_PHASE[category] ?? "Outros";
+
+
 const BLANK_TASK_BLOCK = {
   id: undefined as number | undefined,
   name: "",
@@ -1404,16 +1451,50 @@ const TaskTemplatesPage = () => {
                       ? Math.round((entry.coveredCount / entry.total) * 100)
                       : 0;
 
-                  // Agrupa slots visíveis por categoria para renderizar
-                  const slotsByCategory = new Map<
-                    string,
-                    typeof entry.slots
+                  // Agrupa slots por (fase processual → categoria), pra
+                  // renderizar a cobertura organizada em "Fase de
+                  // Conhecimento", "Recursos", "Execução" etc. Sem mudar
+                  // a taxonomia. Categorias não mapeadas caem em "Outros".
+                  const slotsByPhase = new Map<
+                    CoveragePhase,
+                    Map<string, typeof entry.slots>
                   >();
                   visibleSlots.forEach((s) => {
-                    const arr = slotsByCategory.get(s.category) || [];
+                    const phase = phaseForCategory(s.category);
+                    let phaseGroup = slotsByPhase.get(phase);
+                    if (!phaseGroup) {
+                      phaseGroup = new Map();
+                      slotsByPhase.set(phase, phaseGroup);
+                    }
+                    const arr = phaseGroup.get(s.category) || [];
                     arr.push(s);
-                    slotsByCategory.set(s.category, arr);
+                    phaseGroup.set(s.category, arr);
                   });
+
+                  // Helpers de ordenação:
+                  // - Slots dentro de uma categoria: faltantes primeiro
+                  //   (chamam atenção pra ação), cobertas depois. Ordem
+                  //   alfabética dentro de cada grupo.
+                  // - Categorias dentro de uma fase: mais gaps primeiro
+                  //   (urgência), 100% cobertas no fim.
+                  const sortSlots = (
+                    arr: typeof entry.slots,
+                  ): typeof entry.slots => {
+                    const bySub = (a: { subcategory: string }, b: { subcategory: string }) =>
+                      a.subcategory.localeCompare(b.subcategory, "pt-BR");
+                    const missing = arr.filter((s) => !s.covered).sort(bySub);
+                    const covered = arr.filter((s) => s.covered).sort(bySub);
+                    return [...missing, ...covered];
+                  };
+                  const sortCategoriesByUrgency = (
+                    cats: Array<[string, typeof entry.slots]>,
+                  ): Array<[string, typeof entry.slots]> =>
+                    cats.slice().sort(([cA, sA], [cB, sB]) => {
+                      const missA = sA.filter((s) => !s.covered).length;
+                      const missB = sB.filter((s) => !s.covered).length;
+                      if (missA !== missB) return missB - missA;
+                      return cA.localeCompare(cB, "pt-BR");
+                    });
 
                   return (
                     <div key={entry.office.external_id} className="rounded-lg border">
@@ -1452,81 +1533,140 @@ const TaskTemplatesPage = () => {
                         </div>
                       </div>
 
-                      {/* Slots grouped by category — cada categoria vira um
-                          <details> colapsável. Aberto por default pra preservar
-                          UX; dá pra recolher clicando no header, resolvendo
-                          o problema das telas infinitas em escritórios com
-                          muitas subcategorias (ex.: MDR Advocacia, 46 faltando). */}
+                      {/* Slots agrupados em FASES PROCESSUAIS (Conhecimento,
+                          Tutela, Sentença, Recursos, Execução, Outros). Cada
+                          fase tem um header e dentro dela as categorias
+                          vão como <details> colapsáveis ordenados por
+                          urgência (mais gaps primeiro, cobertas no fim
+                          collapsed). Slots dentro de cada categoria também
+                          ordenados: faltantes primeiro, cobertas depois. */}
                       <div className="divide-y">
-                        {Array.from(slotsByCategory.entries()).map(
-                          ([category, slots]) => {
-                            const coveredCat = slots.filter((s) => s.covered).length;
-                            const missingCat = slots.length - coveredCat;
+                        {COVERAGE_PHASE_ORDER.filter((p) => slotsByPhase.has(p)).map(
+                          (phase) => {
+                            const phaseGroup = slotsByPhase.get(phase)!;
+                            const sortedCategories = sortCategoriesByUrgency(
+                              Array.from(phaseGroup.entries()),
+                            );
+                            // Total da fase (pra mostrar no header)
+                            const phaseTotal = sortedCategories.reduce(
+                              (sum, [, slots]) => sum + slots.length,
+                              0,
+                            );
+                            const phaseCovered = sortedCategories.reduce(
+                              (sum, [, slots]) =>
+                                sum + slots.filter((s) => s.covered).length,
+                              0,
+                            );
+                            const phaseMissing = phaseTotal - phaseCovered;
                             return (
-                            <details key={category} className="group" open>
-                              <summary className="flex cursor-pointer list-none items-center justify-between gap-2 p-3 hover:bg-muted/30">
-                                <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                                  <ChevronDown className="h-3 w-3 -rotate-90 transition-transform group-open:rotate-0" />
-                                  <Tag className="h-3 w-3" />
-                                  {category}
+                              <div key={phase} className="bg-background">
+                                {/* Header da fase processual */}
+                                <div className="flex items-center justify-between gap-2 bg-slate-50 px-4 py-2 border-y border-slate-200">
+                                  <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-600">
+                                    {phase}
+                                  </div>
+                                  <div className="flex items-center gap-2 text-[10px] text-slate-500">
+                                    <span className="text-emerald-700">
+                                      {phaseCovered} coberta{phaseCovered !== 1 ? "s" : ""}
+                                    </span>
+                                    {phaseMissing > 0 && (
+                                      <span className="text-rose-600">
+                                        {phaseMissing} faltando
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
-                                <div className="flex items-center gap-2 text-[11px]">
-                                  <span className="text-emerald-700">
-                                    {coveredCat} coberto{coveredCat !== 1 ? "s" : ""}
-                                  </span>
-                                  {missingCat > 0 && (
-                                    <span className="text-rose-600">{missingCat} faltando</span>
-                                  )}
-                                </div>
-                              </summary>
-                              <div className="px-3 pb-3">
-                              <div className="flex flex-wrap gap-1.5">
-                                {slots.map((s) => {
-                                  const subLabel =
-                                    s.subcategory === "-" ? "—" : s.subcategory;
-                                  if (s.covered && s.template) {
-                                    return (
-                                      <button
-                                        key={s.subcategory}
-                                        type="button"
-                                        onClick={() => openEdit(s.template!)}
-                                        className="inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1 text-xs text-emerald-800 transition-colors hover:bg-emerald-100"
-                                        title={`Editar template "${s.template.name}"`}
-                                      >
-                                        <Check className="h-3 w-3" />
-                                        {subLabel}
-                                      </button>
-                                    );
-                                  }
+                                {sortedCategories.map(([category, rawSlots]) => {
+                                  const slots = sortSlots(rawSlots);
+                                  const coveredCat = slots.filter((s) => s.covered).length;
+                                  const missingCat = slots.length - coveredCat;
+                                  // Categoria 100% coberta começa fechada
+                                  // (reduz scroll); com gaps começa aberta.
+                                  const startOpen = missingCat > 0;
                                   return (
-                                    <button
-                                      key={s.subcategory}
-                                      type="button"
-                                      onClick={() => {
-                                        setEditingId(null);
-                                        setForm({
-                                          category: s.category,
-                                          subcategory: s.subcategory === "-" ? "" : s.subcategory,
-                                          office_external_ids: [String(entry.office.external_id)],
-                                          taskBlocks: [{ ...BLANK_TASK_BLOCK }],
-                                        });
-                                        setDialogOpen(true);
-                                      }}
-                                      className="inline-flex items-center gap-1 rounded-md border border-dashed border-rose-300 bg-rose-50/60 px-2 py-1 text-xs text-rose-700 transition-colors hover:bg-rose-100"
-                                      title="Criar template para esta combinação"
+                                    <details
+                                      key={category}
+                                      className="group border-b last:border-b-0"
+                                      open={startOpen}
                                     >
-                                      <Plus className="h-3 w-3" />
-                                      {subLabel}
-                                    </button>
+                                      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 p-3 hover:bg-muted/30">
+                                        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                                          <ChevronDown className="h-3 w-3 -rotate-90 transition-transform group-open:rotate-0" />
+                                          <Tag className="h-3 w-3" />
+                                          {category}
+                                        </div>
+                                        <div className="flex items-center gap-2 text-[11px]">
+                                          <span className="text-emerald-700">
+                                            {coveredCat} coberto{coveredCat !== 1 ? "s" : ""}
+                                          </span>
+                                          {missingCat > 0 && (
+                                            <span className="text-rose-600">
+                                              {missingCat} faltando
+                                            </span>
+                                          )}
+                                        </div>
+                                      </summary>
+                                      <div className="px-3 pb-3">
+                                        <div className="flex flex-wrap gap-1.5">
+                                          {slots.map((s) => {
+                                            // Categoria sem subcategorias (slot
+                                            // único com subcategory="-"): mostra
+                                            // label explícito em vez de hífen solto.
+                                            const isPlaceholder = s.subcategory === "-";
+                                            const subLabel = isPlaceholder
+                                              ? s.covered
+                                                ? "Template configurado"
+                                                : "Cadastrar template único"
+                                              : s.subcategory;
+                                            if (s.covered && s.template) {
+                                              return (
+                                                <button
+                                                  key={s.subcategory}
+                                                  type="button"
+                                                  onClick={() => openEdit(s.template!)}
+                                                  className="inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1 text-xs text-emerald-800 transition-colors hover:bg-emerald-100"
+                                                  title={`Editar template "${s.template.name}"`}
+                                                >
+                                                  <Check className="h-3 w-3" />
+                                                  {subLabel}
+                                                </button>
+                                              );
+                                            }
+                                            return (
+                                              <button
+                                                key={s.subcategory}
+                                                type="button"
+                                                onClick={() => {
+                                                  setEditingId(null);
+                                                  setForm({
+                                                    category: s.category,
+                                                    subcategory:
+                                                      s.subcategory === "-" ? "" : s.subcategory,
+                                                    office_external_ids: [
+                                                      String(entry.office.external_id),
+                                                    ],
+                                                    taskBlocks: [{ ...BLANK_TASK_BLOCK }],
+                                                  });
+                                                  setDialogOpen(true);
+                                                }}
+                                                className="inline-flex items-center gap-1 rounded-md border border-dashed border-rose-300 bg-rose-50/60 px-2 py-1 text-xs text-rose-700 transition-colors hover:bg-rose-100"
+                                                title="Criar template para esta combinação"
+                                              >
+                                                <Plus className="h-3 w-3" />
+                                                {subLabel}
+                                              </button>
+                                            );
+                                          })}
+                                        </div>
+                                      </div>
+                                    </details>
                                   );
                                 })}
                               </div>
-                              </div>
-                            </details>
                             );
-                          }
+                          },
                         )}
-                        {slotsByCategory.size === 0 && (
+                        {slotsByPhase.size === 0 && (
                           <div className="p-4 text-center text-xs text-muted-foreground">
                             Todas as classificações cobertas para este escritório.
                           </div>
