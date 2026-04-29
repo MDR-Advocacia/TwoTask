@@ -871,6 +871,28 @@ export async function retryAjusClassifItem(itemId: number): Promise<AjusClassifQ
   return expectJson<AjusClassifQueueItem>(res);
 }
 
+export interface AjusClassifRetryBulkResponse {
+  retried: number;
+  ids: number[];
+}
+
+/**
+ * Retry em massa de itens da fila de classificacao em status 'erro'.
+ * Sem `itemIds` retoma TODOS os erros. Com `itemIds` restringe ao
+ * conjunto (intersect com status=erro).
+ */
+export async function retryAjusClassifErrorsBulk(
+  itemIds?: number[],
+): Promise<AjusClassifRetryBulkResponse> {
+  const body = itemIds && itemIds.length > 0 ? { item_ids: itemIds } : {};
+  const res = await apiFetch(`/api/v1/ajus/classificacao/retry-errors`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return expectJson<AjusClassifRetryBulkResponse>(res);
+}
+
 export async function uploadAjusClassifXlsx(
   file: File,
 ): Promise<AjusClassifUploadResponse> {

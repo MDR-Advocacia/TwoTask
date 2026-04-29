@@ -1013,3 +1013,39 @@ def retry_classif(
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _classif_to_out(item)
+
+
+# -- Retry em massa --------------------------------------------------
+
+
+class ClassifRetryBulkIn(BaseModel):
+    """
+    Se `item_ids` vier, restringe ao conjunto (apenas status=erro sao reenfileirados).
+    Se for None, retry em TODOS os itens em status 'erro'.
+    """
+    item_ids: Optional[list[int]] = None
+
+
+class ClassifRetryBulkOut(BaseModel):
+    retried: int
+    ids: list[int]
+
+
+@router.post(
+    "/classificacao/retry-errors",
+    response_model=ClassifRetryBulkOut,
+    summary=(
+        "Retry em massa de itens em status 'erro'. Sem body retoma "
+        "todos; com `item_ids` restringe ao conjunto."
+    ),
+)
+def retry_classif_bulk(
+    payload: ClassifRetryBulkIn = ClassifRetryBulkIn(),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    result = AjusClassificacaoService(db).retry_errors_bulk(
+        item_ids=payload.item_ids,
+    )
+    return ClassifRetryBulkOut(**result)
+

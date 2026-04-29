@@ -418,6 +418,35 @@ class AjusClassificacaoService:
         self.db.refresh(item)
         return item
 
+    def retry_errors_bulk(
+        self, *, item_ids: Optional[list[int]] = None,
+    ) -> dict[str, Any]:
+        """
+        Reenfileira em massa todos os itens em status `erro`. Se
+        `item_ids` for fornecido, restringe ao conjunto (intersect
+        com status=erro). Sem `item_ids`, processa todos.
+
+        Retorna dict com `retried` (count) e `ids` (lista dos ids
+        reenfileirados). Itens em outros status sao ignorados.
+        """
+        q = (
+            self.db.query(AjusClassificacaoQueue)
+            .filter(AjusClassificacaoQueue.status == AJUS_CLASSIF_ERRO)
+        )
+        if item_ids:
+            q = q.filter(AjusClassificacaoQueue.id.in_(item_ids))
+        items = q.all()
+
+        ids: list[int] = []
+        for item in items:
+            item.status = AJUS_CLASSIF_PENDENTE
+            item.error_message = None
+            ids.append(item.id)
+
+        if ids:
+            self.db.commit()
+        return {"retried": len(ids), "ids": ids}
+
     # ── Hooks pro runner Playwright (Chunk 2) ───────────────────────
     # Esses métodos vão ser usados pelo runner; deixamos prontos pra
     # não ter que mexer no service depois.

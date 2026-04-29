@@ -69,6 +69,7 @@ import {
   dispatchAjusClassif,
   fetchAjusClassif,
   fetchAjusClassifDefaults,
+  retryAjusClassifErrorsBulk,
   retryAjusClassifItem,
   updateAjusClassifDefaults,
   updateAjusClassifItem,
@@ -149,6 +150,9 @@ export function ClassificacaoTab() {
 
   // ─── Dispatch (rodar fila agora) ──────────────────────────────────
   const [dispatching, setDispatching] = useState(false);
+
+  // ─── Retry em massa dos erros ─────────────────────────────────────
+  const [retryingBulk, setRetryingBulk] = useState(false);
 
   // ─── Loaders ──────────────────────────────────────────────────────
   const loadDefaults = useCallback(async () => {
@@ -317,6 +321,38 @@ export function ClassificacaoTab() {
     }
   };
 
+  // ─── Retry em massa dos itens em erro ─────────────────────────────
+  const handleRetryAllErrors = async () => {
+    const errorCount = items.filter((i) => i.status === "erro").length;
+    if (errorCount === 0) return;
+    if (!window.confirm(
+      `Reenfileirar ${errorCount} item(ns) em status 'erro' visíveis na lista? ` +
+      `(Os filtros atuais ainda se aplicam — só os mostrados serão afetados.)`,
+    )) {
+      return;
+    }
+    setRetryingBulk(true);
+    try {
+      // Restringe ao conjunto VISÍVEL (filtrado). Sem item_ids o
+      // endpoint pegaria TODOS os erros do banco — mais arriscado.
+      const ids = items.filter((i) => i.status === "erro").map((i) => i.id);
+      const res = await retryAjusClassifErrorsBulk(ids);
+      toast({
+        title: "Retry em massa concluído",
+        description: `${res.retried} item(ns) reenfileirado(s).`,
+      });
+      await loadItems();
+    } catch (e: unknown) {
+      toast({
+        title: "Erro no retry em massa",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setRetryingBulk(false);
+    }
+  };
+
   // ─── Upload ───────────────────────────────────────────────────────
   const handleUpload = async (file: File) => {
     setUploading(true);
@@ -479,6 +515,25 @@ export function ClassificacaoTab() {
               >
                 <RefreshCw className={`mr-2 h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
                 Atualizar
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleRetryAllErrors}
+                disabled={retryingBulk || items.filter((i) => i.status === "erro").length === 0}
+                title="Reenfileira (status 'erro' -> 'pendente') todos os itens em erro visíveis na lista. Respeita os filtros aplicados."
+              >
+                {retryingBulk ? (
+                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RotateCcw className="mr-2 h-3.5 w-3.5" />
+                )}
+                Retry erros
+                {items.filter((i) => i.status === "erro").length > 0 && (
+                  <span className="ml-1 text-[10px] opacity-80">
+                    ({items.filter((i) => i.status === "erro").length})
+                  </span>
+                )}
               </Button>
               <Button
                 size="sm"
