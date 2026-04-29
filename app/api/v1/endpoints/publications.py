@@ -1067,6 +1067,25 @@ class OverrideBulkRequest(BaseModel):
     office_external_ids: list[int] | None = None
 
 
+class OverrideBulkForOfficeItem(BaseModel):
+    category: str
+    subcategory: str | None = None
+    custom_description: str | None = None
+
+
+class OverrideBulkForOfficeRequest(BaseModel):
+    """
+    Inverso do OverrideBulkRequest: UM escritorio, N combinacoes
+    (category/subcategory). Usado pelo modal "Adicionar classificacoes" do
+    regime manual - operador marca varias na taxonomia base e cria todos
+    como include_custom de uma vez.
+    """
+    office_external_id: int
+    items: list[OverrideBulkForOfficeItem]
+    action: str = "include_custom"  # "exclude" | "include_custom"
+    custom_description: str | None = None  # default opcional pra todos os items
+
+
 @router.get("/classification-overrides")
 def list_classification_overrides(
     office_external_id: Optional[int] = Query(None),
@@ -1242,6 +1261,83 @@ def bulk_create_classification_overrides(
         "created": created,
         "skipped_existing": skipped,
         "total_offices": len(target_ids),
+    }
+
+
+@router.post("/classification-overrides/bulk-for-office")
+def bulk_create_overrides_for_office(
+    body: OverrideBulkForOfficeRequest,
+    db: Session = Depends(get_db),
+    _=Depends(auth_security.get_current_user),
+):
+    """
+    Cria N overrides para UM escritorio de uma vez.
+
+    Caso de uso principal: modal "Adicionar classificacoes" do regime
+    manual. Operador marca varias combinacoes (category, subcategory) na
+    taxonomia base e elas viram overrides include_custom em batch.
+
+    Idempotente - combinacoes ja existentes sao contadas em
+    skipped_existing, nao geram erro.
+    """
+    from app.models.office_classification import OfficeClassificationOverride
+
+    if body.action not in ("exclude", "include_custom"):
+        raise HTTPException(
+            400,
+            "action deve ser exclude ou include_custom "
+            "(manual_mode e singleton, use o endpoint individual)",
+        )
+
+    if not body.items:
+        return {"created": 0, "skipped_existing": 0, "total": 0}
+
+    # Carrega todas as combinacoes existentes pra esse escritorio de uma
+    # tacada so (evita N queries no loop).
+    existing = {
+        (ov.category, ov.subcategory, ov.action)
+        for ov in db.query(OfficeClassificationOverride)
+        .filter(
+            OfficeClassificationOverride.office_external_id == body.office_external_id,
+        )
+        .all()
+    }
+
+    created = 0
+    skipped = 0
+    seen_in_request: set[tuple[str, str | None, str]] = set()
+
+    for item in body.items:
+        sub = item.subcategory or None
+        key = (item.category, sub, body.action)
+
+        # Evita duplicatas dentro do proprio request (operador marcou a
+        # mesma combinacao 2x - pouco provavel mas barato proteger).
+        if key in seen_in_request:
+            skipped += 1
+            continue
+        seen_in_request.add(key)
+
+        if key in existing:
+            skipped += 1
+            continue
+
+        db.add(
+            OfficeClassificationOverride(
+                office_external_id=body.office_external_id,
+                category=item.category,
+                subcategory=sub,
+                action=body.action,
+                custom_description=item.custom_description or body.custom_description,
+            )
+        )
+        created += 1
+
+    db.commit()
+    return {
+        "created": created,
+        "skipped_existing": skipped,
+        "total": len(body.items),
     }
 
 

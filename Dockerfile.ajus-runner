@@ -16,4 +16,4 @@
 # por engano, o build falha imediatamente com a mensagem abaixo.
 
 FROM busybox
-RUN echo "ERRO: Dockerfile.ajus-runner está DEPRECATED. Use 'Dockerfile' com 'target: ajus-runner'." >&2 && exit 1
+RUN echo "ERRO: Dockerfile.ajus-runner esta DEPRECATED. Use 'Dockerfile' com 'target: ajus-runner'." >&2 && exit 1

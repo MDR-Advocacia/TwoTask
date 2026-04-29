@@ -72,6 +72,10 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api-client";
+import {
+  ClassificationPickerDialog,
+  type ExistingClassification,
+} from "@/components/ClassificationPickerDialog";
 
 const API = "/api/v1/task-templates";
 
@@ -281,6 +285,12 @@ const TaskTemplatesPage = () => {
   const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
   const [editingOverride, setEditingOverride] = useState<ClassificationOverride | null>(null);
   const [savingOverride, setSavingOverride] = useState(false);
+
+  // Picker batch de classificacoes (modal grande com checkbox por subcategoria,
+  // usado no regime manual no lugar do form 1-a-1 de "Adicionar
+  // classificacao"). Quando `pickerOfficeId !== null`, abre o modal pra esse
+  // escritorio.
+  const [pickerOfficeId, setPickerOfficeId] = useState<number | null>(null);
   const [overrideForm, setOverrideForm] = useState({
     // "all" = aplicar em todos os escritórios (bulk);
     // string numérica = escritório específico.
@@ -961,21 +971,48 @@ const TaskTemplatesPage = () => {
 
   /**
    * Variante usada pelo botão "+ Adicionar classificação" do card de
-   * escritório no regime manual. Pré-preenche o office, deixando o
-   * operador escolher só categoria/subcategoria.
+   * escritório no regime manual.
+   *
+   * Abre o picker batch (modal grande com checkbox por subcategoria) em
+   * vez do form 1-a-1 — adicionar classificação por classificação era
+   * inviável quando o operador precisa configurar 30+ combinações por
+   * escritório.
    */
   const openAddClassificationForOffice = (officeId: number) => {
-    setEditingOverride(null);
-    setOverrideForm({
-      scope: String(officeId),
-      office_external_id: String(officeId),
-      category: "",
-      subcategory: "",
-      action: "include_custom",
-      custom_description: "",
-      is_active: true,
-    });
-    setOverrideDialogOpen(true);
+    setPickerOfficeId(officeId);
+  };
+
+  /**
+   * Calcula as classificações já presentes em um escritório (pra desabilitar
+   * no picker). Inclui:
+   *   - overrides include_custom ativos
+   *   - templates ativos vinculados ao escritório
+   * Apenas pares (category, subcategory) são considerados — categorias sem
+   * subcategoria viram (cat, null).
+   */
+  const getExistingClassificationsForOffice = (
+    officeId: number,
+  ): ExistingClassification[] => {
+    const out: ExistingClassification[] = [];
+    const seen = new Set<string>();
+    const push = (cat: string, sub: string | null) => {
+      const key = `${cat}::${sub ?? ""}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push({ category: cat, subcategory: sub });
+    };
+    overrides
+      .filter(
+        (o) =>
+          o.office_external_id === officeId &&
+          o.is_active &&
+          o.action === "include_custom",
+      )
+      .forEach((o) => push(o.category, o.subcategory ?? null));
+    templates
+      .filter((t) => t.office_external_id === officeId && t.is_active)
+      .forEach((t) => push(t.category, t.subcategory || null));
+    return out;
   };
 
   /**
@@ -2789,6 +2826,27 @@ const TaskTemplatesPage = () => {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Picker batch de classificações (regime manual) */}
+      {pickerOfficeId !== null && (
+        <ClassificationPickerDialog
+          open={pickerOfficeId !== null}
+          onOpenChange={(open) => {
+            if (!open) setPickerOfficeId(null);
+          }}
+          officeId={pickerOfficeId}
+          officeName={
+            offices.find((o) => o.external_id === pickerOfficeId)?.path ||
+            offices.find((o) => o.external_id === pickerOfficeId)?.name ||
+            `Escritório #${pickerOfficeId}`
+          }
+          categories={categories}
+          existing={getExistingClassificationsForOffice(pickerOfficeId)}
+          onAdded={() => {
+            void loadOverrides(overrideFilterOffice);
+          }}
+        />
+      )}
     </div>
   );
 };
