@@ -22,6 +22,7 @@ import {
   ChevronRight,
   ChevronsUpDown,
   ChevronUp,
+  CheckSquare,
   Clock,
   Eye,
   EyeOff,
@@ -724,6 +725,12 @@ const PublicationsPage = () => {
   // Bulk selection de grupos (Processos com Publicações)
   const [selectedGroupKeys, setSelectedGroupKeys] = useState<Set<string>>(new Set());
   const [bulkProcessing, setBulkProcessing] = useState(false);
+  // "Selecionar todos os filtrados" — quando o operador escolhe agir em
+  // toda a base que bate com os filtros (não só a página visível), a
+  // gente pré-carrega TODOS os grupos do filtro pra esse state e os
+  // bulk handlers operam sobre ele. Mantém intocada a paginação visual.
+  const [bulkScopeAllGroups, setBulkScopeAllGroups] = useState<GroupedRecord[]>([]);
+  const [bulkScopeLoading, setBulkScopeLoading] = useState(false);
 
   // Batch classification
   const [batches, setBatches] = useState<PublicationBatch[]>([]);
@@ -881,7 +888,10 @@ const PublicationsPage = () => {
       const res = await apiFetch(url);
       if (res.ok) setGrouped(await res.json());
     } catch { /* ignore */ }
-  }, []);
+    // groupPageSize precisa estar nas deps senão o useCallback captura
+    // o valor inicial (20) e ignora o dropdown — bug que fazia "100 por
+    // página" nunca aplicar. Outras deps são args explícitos da função.
+  }, [groupPageSize]);
 
   const handleExportExcel = async () => {
     if (isExporting) return;
@@ -1765,11 +1775,70 @@ const PublicationsPage = () => {
     });
   };
 
-  const clearSelection = () => setSelectedGroupKeys(new Set());
+  const clearSelection = () => {
+    setSelectedGroupKeys(new Set());
+    setBulkScopeAllGroups([]);
+  };
+
+  // Pré-carrega TODOS os grupos com os filtros atuais (cap em 500 do
+  // backend) e marca todos como selecionados. Bulk handlers passam a
+  // operar sobre `bulkScopeAllGroups` em vez de `grouped.groups`.
+  const handleSelectAllFiltered = async () => {
+    if (bulkScopeLoading) return;
+    setBulkScopeLoading(true);
+    try {
+      let url = `${API}/records/grouped?limit=500&offset=0`;
+      if (filterStatus) url += `&status=${filterStatus}`;
+      if (filterOffice) url += `&linked_office_id=${filterOffice}`;
+      if (filterDateFrom) url += `&date_from=${filterDateFrom}`;
+      if (filterDateTo) url += `&date_to=${filterDateTo}`;
+      if (filterCategory) url += `&category=${encodeURIComponent(filterCategory)}`;
+      if (filterUf) url += `&uf=${encodeURIComponent(filterUf)}`;
+      if (filterVinculo) url += `&vinculo=${filterVinculo}`;
+      if (filterNatureza) url += `&natureza=${encodeURIComponent(filterNatureza)}`;
+      if (filterPolo) url += `&polo=${encodeURIComponent(filterPolo)}`;
+      if (filterCnj) url += `&cnj_search=${encodeURIComponent(filterCnj)}`;
+      if (filterScheduledBy) url += `&scheduled_by_user_id=${encodeURIComponent(filterScheduledBy)}`;
+      const res = await apiFetch(url);
+      if (!res.ok) {
+        toast({ title: "Erro ao carregar todos", variant: "destructive" });
+        return;
+      }
+      const data = await res.json();
+      const allGroups: GroupedRecord[] = data.groups || [];
+      const totalGroups: number = data.total_groups ?? allGroups.length;
+      // Backend cap em 500 — avisa se atingiu o teto.
+      if (totalGroups > allGroups.length) {
+        toast({
+          title: `Carregados ${allGroups.length} de ${totalGroups}`,
+          description: "O backend retorna no máximo 500 por requisição. Refine os filtros pra cobrir o restante.",
+          variant: "destructive",
+          duration: 10000,
+        });
+      }
+      setBulkScopeAllGroups(allGroups);
+      setSelectedGroupKeys(new Set(allGroups.map(groupKey)));
+      toast({
+        title: `${allGroups.length} grupo(s) selecionado(s)`,
+        description: "Use 'Confirmar agendamentos' ou 'Ignorar selecionados' para agir.",
+      });
+    } catch (e) {
+      toast({
+        title: "Falha ao selecionar todos",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setBulkScopeLoading(false);
+    }
+  };
 
   const handleBulkConfirm = async () => {
-    if (!grouped) return;
-    const selected = grouped.groups.filter((g) => selectedGroupKeys.has(groupKey(g)));
+    if (!grouped && bulkScopeAllGroups.length === 0) return;
+    // Se "todos os filtrados" foi acionado, opera sobre o scope completo;
+    // senão, sobre o que está visível na página atual.
+    const sourceGroups = bulkScopeAllGroups.length > 0 ? bulkScopeAllGroups : (grouped?.groups || []);
+    const selected = sourceGroups.filter((g) => selectedGroupKeys.has(groupKey(g)));
     const schedulable = selected.filter((g) => {
       const tasks = g.proposed_tasks || (g.proposed_task ? [g.proposed_task] : []);
       const status = groupStatusSummary(g);
@@ -1840,8 +1909,9 @@ const PublicationsPage = () => {
   };
 
   const handleBulkIgnore = async () => {
-    if (!grouped) return;
-    const selected = grouped.groups.filter((g) => selectedGroupKeys.has(groupKey(g)));
+    if (!grouped && bulkScopeAllGroups.length === 0) return;
+    const sourceGroups = bulkScopeAllGroups.length > 0 ? bulkScopeAllGroups : (grouped?.groups || []);
+    const selected = sourceGroups.filter((g) => selectedGroupKeys.has(groupKey(g)));
     const recordIds = selected.flatMap((g) =>
       g.records.filter((r) => r.status !== "AGENDADO" && r.status !== "IGNORADO").map((r) => r.id),
     );
@@ -3457,6 +3527,24 @@ const PublicationsPage = () => {
                       <> · Página {groupPage + 1} de {totalPages}</>
                     )}
                   </span>
+                  {/* Selecionar todos os filtrados — fica visível quando há
+                      mais de uma página de resultados. Carrega TODOS os
+                      grupos do filtro num state paralelo (cap em 500 do
+                      backend) e marca todos. Bulk handlers usam esse scope. */}
+                  {totalPages > 1 && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleSelectAllFiltered}
+                      disabled={bulkScopeLoading || bulkProcessing}
+                      title={`Marca todos os ${grouped.total_groups} grupos que batem com os filtros atuais (não só a página visível).`}
+                    >
+                      {bulkScopeLoading
+                        ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                        : <CheckSquare className="mr-2 h-3.5 w-3.5" />}
+                      Selecionar todos os {grouped.total_groups} filtrados
+                    </Button>
+                  )}
                   <div className="flex items-center gap-3">
                     {/* Selector de tamanho de página */}
                     <div className="flex items-center gap-2">

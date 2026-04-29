@@ -1154,6 +1154,25 @@ class PublicationSearchService:
         payloads: list[dict],
         lawsuit_id: int,
     ) -> None:
+        """
+        Garante que payloads sem participant responsável recebam o
+        responsável da pasta (Legal One).
+
+        Estratégia em 2 níveis:
+          1. **Cache** (rápido) — `get_cached_lawsuit_responsible_user`.
+             Hit comum quando o operador classificou recentemente; cache
+             populado pelo motor de classificação.
+          2. **Fallback API** (motor de conferência na confirmação) —
+             quando o cache vem vazio (processo entrou na fila antes do
+             cache ser populado, ou cache foi invalidado), chama a API
+             do L1 (`get_lawsuit_responsible_user` → `/Lawsuits/{id}/Participants`)
+             pra resolver na hora. Sucesso popula o cache pra próximas
+             confirmações no mesmo processo.
+
+        Sem responsável após os 2 níveis: loga warning e segue sem
+        aplicar (L1 vai responder 400 com mensagem que o frontend
+        humaniza). Mantém compatibilidade com o comportamento antigo.
+        """
         missing_payloads = [
             p for p in payloads
             if isinstance(p, dict) and not self._payload_has_responsible_participant(p)
@@ -1170,11 +1189,44 @@ class PublicationSearchService:
             return
 
         responsible = cached_lookup(lawsuit_id)
-
         responsible_id = responsible.get("id") if responsible else None
+
+        # ── Fallback: cache vazio → API real (motor de conferência) ──
+        if not responsible_id:
+            api_lookup = getattr(self.client, "get_lawsuit_responsible_user", None)
+            if callable(api_lookup):
+                try:
+                    fetched = api_lookup(lawsuit_id)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Falha buscando responsavel da pasta %s na API L1: %s",
+                        lawsuit_id, exc,
+                    )
+                    fetched = None
+                if isinstance(fetched, dict) and fetched.get("id"):
+                    responsible = fetched
+                    responsible_id = fetched["id"]
+                    # Popular cache pra próximas confirmações dessa pasta
+                    cache_merge = getattr(
+                        self.client, "_lawsuit_cache_merge_upsert", None,
+                    )
+                    if callable(cache_merge):
+                        try:
+                            cache_merge({lawsuit_id: {"responsibleUser": fetched}})
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "Falha gravando responsavel da pasta %s no cache: %s",
+                                lawsuit_id, exc,
+                            )
+                    logger.info(
+                        "Responsavel da pasta %s resolvido via API (fallback) "
+                        "durante confirmacao.", lawsuit_id,
+                    )
+
         if not responsible_id:
             logger.warning(
-                "Responsavel da pasta %s ausente no cache durante confirmacao.",
+                "Responsavel da pasta %s ausente no cache E na API durante "
+                "confirmacao — payloads vao sem participant (L1 deve recusar).",
                 lawsuit_id,
             )
             return
