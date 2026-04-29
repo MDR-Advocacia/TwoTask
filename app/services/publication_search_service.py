@@ -3237,72 +3237,68 @@ class PublicationSearchService:
 
     @staticmethod
     def _search_to_dict(search: PublicationSearch) -> dict[str, Any]:
-        """
-        Encontra registros duplicados cujo texto difere do original.
-        Retorna pares (original, duplicata) com preview das diferenças.
-        """
-        from sqlalchemy import func as sqlfunc
+        return {
+            "id": search.id,
+            "status": search.status,
+            "date_from": search.date_from,
+            "date_to": search.date_to,
+            "origin_type": search.origin_type,
+            "office_filter": search.office_filter,
+            "total_found": search.total_found,
+            "total_new": search.total_new,
+            "total_duplicate": search.total_duplicate,
+            "progress_step": search.progress_step,
+            "progress_detail": search.progress_detail,
+            "progress_pct": search.progress_pct,
+            "requested_by_email": search.requested_by_email,
+            "error_message": search.error_message,
+            "created_at": search.created_at.isoformat() if search.created_at else None,
+            "finished_at": search.finished_at.isoformat() if search.finished_at else None,
+        }
 
-        # Encontra update_ids que aparecem mais de uma vez
-        subq = (
-            self.db.query(PublicationRecord.legal_one_update_id)
-            .group_by(PublicationRecord.legal_one_update_id)
-            .having(sqlfunc.count(PublicationRecord.id) > 1)
-            .subquery()
-        )
+    @staticmethod
+    def _record_to_dict(record: PublicationRecord, include_full_text: bool = False) -> dict[str, Any]:
+        proposal = None
+        proposals = None
+        if isinstance(record.raw_relationships, dict):
+            proposal = record.raw_relationships.get("_proposed_task")
+            proposals = record.raw_relationships.get("_proposed_tasks")
 
-        # Busca todos os registros com esses update_ids
-        records = (
-            self.db.query(PublicationRecord)
-            .filter(PublicationRecord.legal_one_update_id.in_(
-                self.db.query(subq.c.legal_one_update_id)
-            ))
-            .order_by(
-                PublicationRecord.legal_one_update_id,
-                PublicationRecord.created_at,
-            )
-            .all()
-        )
-
-        # Agrupa por update_id
-        by_update: dict = defaultdict(list)
-        for r in records:
-            by_update[r.legal_one_update_id].append(r)
-
-        # Filtra apenas os que têm divergência de texto
-        divergences = []
-        for update_id, group in by_update.items():
-            if len(group) < 2:
-                continue
-            original = group[0]
-            original_text = (original.description or "").strip()
-            for dup in group[1:]:
-                dup_text = (dup.description or "").strip()
-                if dup_text != original_text:
-                    divergences.append({
-                        "legal_one_update_id": update_id,
-                        "original": {
-                            "id": original.id,
-                            "search_id": original.search_id,
-                            "status": original.status,
-                            "text_preview": original_text[:300],
-                            "text_length": len(original_text),
-                            "created_at": original.created_at.isoformat() if original.created_at else None,
-                        },
-                        "duplicate": {
-                            "id": dup.id,
-                            "search_id": dup.search_id,
-                            "status": dup.status,
-                            "text_preview": dup_text[:300],
-                            "text_length": len(dup_text),
-                            "is_duplicate": dup.is_duplicate,
-                            "created_at": dup.created_at.isoformat() if dup.created_at else None,
-                        },
-                        "linked_lawsuit_cnj": original.linked_lawsuit_cnj or dup.linked_lawsuit_cnj,
-                    })
-
-        total = len(divergences)
-        page = divergences[offset:offset + limit]
-        return {"total": total, "offset": offset, "limit": limit, "divergences": page}
-
-    # ──────────────────────────────────────────────
+        result = {
+            "id": record.id,
+            "search_id": record.search_id,
+            "legal_one_update_id": record.legal_one_update_id,
+            "origin_type": record.origin_type,
+            "update_type_id": record.update_type_id,
+            "description_preview": (record.description or "")[:200],
+            "publication_date": record.publication_date,
+            "creation_date": record.creation_date,
+            "linked_lawsuit_id": record.linked_lawsuit_id,
+            "linked_lawsuit_cnj": record.linked_lawsuit_cnj,
+            "linked_office_id": record.linked_office_id,
+            "status": record.status,
+            "category": record.category,
+            "subcategory": record.subcategory,
+            "polo": record.polo,
+            "audiencia_data": record.audiencia_data,
+            "audiencia_hora": record.audiencia_hora,
+            "audiencia_link": record.audiencia_link,
+            "classifications": record.classifications,
+            "uf": record.uf,
+            "natureza_processo": record.natureza_processo,
+            "has_proposal": bool(proposal),
+            "proposal": proposal if include_full_text else None,
+            "proposals_count": len(proposals) if proposals else (1 if proposal else 0),
+            # Autoria do agendamento (pub002). Só tem valor quando status=AGENDADO.
+            "scheduled_by_user_id": record.scheduled_by_user_id,
+            "scheduled_by_email": record.scheduled_by_email,
+            "scheduled_by_name": record.scheduled_by_name,
+            "scheduled_at": record.scheduled_at.isoformat() if record.scheduled_at else None,
+            "created_at": record.created_at.isoformat() if record.created_at else None,
+            "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+        }
+        if include_full_text:
+            result["description"] = record.description
+            result["notes"] = record.notes
+            result["raw_relationships"] = record.raw_relationships
+        return result
