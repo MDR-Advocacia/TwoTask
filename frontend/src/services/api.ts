@@ -990,12 +990,11 @@ export async function logoutAjusSession(id: number): Promise<AjusSessionAccount>
   return expectJson<AjusSessionAccount>(res);
 }
 
-export async function dispatchAjusClassif(
-  batchPerAccount = 5,
-): Promise<AjusClassifDispatchResponse> {
-  const res = await apiFetch(
-    `/api/v1/ajus/classificacao/dispatch?batch_per_account=${batchPerAccount}`,
-    { method: "POST" },
-  );
+export async function dispatchAjusClassif(): Promise<AjusClassifDispatchResponse> {
+  // Endpoint apenas sinaliza pro ajus-runner pegar a fila — sem
+  // query params (batch_per_account fica configurado via env do worker).
+  const res = await apiFetch(`/api/v1/ajus/classificacao/dispatch`, {
+    method: "POST",
+  });
   return expectJson<AjusClassifDispatchResponse>(res);
 }

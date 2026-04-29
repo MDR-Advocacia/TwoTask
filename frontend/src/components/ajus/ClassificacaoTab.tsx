@@ -292,24 +292,25 @@ export function ClassificacaoTab() {
   };
 
   // ─── Dispatch ─────────────────────────────────────────────────────
+  // O endpoint /dispatch agora APENAS sinaliza — o ajus-runner roda em
+  // outro container, faz fast-poll de 2s e processa. Aqui mostramos
+  // a mensagem do backend e damos refresh diferido pra capturar progresso.
   const handleDispatch = async () => {
     setDispatching(true);
     try {
-      const res = await dispatchAjusClassif(5);
-      const lines: string[] = [
-        `${res.candidates} candidato(s)`,
-        `${res.success_count} sucesso(s)`,
-      ];
-      if (res.error_count) lines.push(`${res.error_count} erro(s)`);
-      if (res.accounts_used.length) {
-        lines.push(`Contas: ${res.accounts_used.join(", ")}`);
-      }
+      const res = await dispatchAjusClassif();
       toast({
-        title: "Dispatch concluído",
-        description: lines.join(" · "),
-        variant: res.error_count > 0 ? "destructive" : "default",
+        title: res.accepted ? "Disparo sinalizado" : "Nada a disparar",
+        description: res.message ?? `${res.candidates} candidato(s).`,
+        variant: res.accepted ? "default" : "destructive",
       });
+      // Reload imediato pra refletir status, e outro depois de 5s pra
+      // pegar o progresso do ajus-runner (fast-poll de 2s + processamento).
       await loadItems();
+      if (res.accepted) {
+        setTimeout(() => { void loadItems(); }, 5000);
+        setTimeout(() => { void loadItems(); }, 15000);
+      }
     } catch (e: unknown) {
       toast({
         title: "Erro ao disparar",

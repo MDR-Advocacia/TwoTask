@@ -639,6 +639,11 @@ export interface AjusClassifDispatchResponse {
   success_ids: number[];
   errored: { id: number; msg: string }[];
   accounts_used: number[];
+  // Modo soft-trigger: accepted=true quando ha trabalho a fazer
+  // (pendentes > 0 e ao menos 1 conta online). message eh humano-readable.
+  accepted?: boolean;
+  accounts_online?: number;
+  message?: string;
 }
 
 export interface PrazoInicialLegacyTaskLastTickState {

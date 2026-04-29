@@ -161,13 +161,24 @@ def main() -> int:
         finally:
             db.close()
 
-        # Sleep entre ciclos respeitando o intervalo configurado
-        # (default 30s). Checa shutdown a cada segundo pra não atrasar
-        # restart pelo Coolify.
-        for _ in range(interval):
+        # Sleep entre ciclos: tick rapido de 2s pra detectar trabalho
+        # novo (operador clicou "Disparar" no UI; fila ganhou item via
+        # intake). Sai do sleep cedo se houver, pra processar em ~2s.
+        # O `interval` configurado vira o intervalo MAXIMO de espera
+        # (sem trabalho novo). Checa shutdown a cada tick.
+        elapsed = 0
+        while elapsed < interval:
             if _shutdown:
                 break
-            time.sleep(1)
+            time.sleep(2)
+            elapsed += 2
+            try:
+                with SessionLocal() as fast_db:
+                    if _has_pending_items_for_anyone(fast_db):
+                        break
+            except Exception:
+                # Falha na fast-check nao quebra o ciclo; sleep continua.
+                pass
 
     logger.info("AJUS runner worker encerrado.")
     return 0

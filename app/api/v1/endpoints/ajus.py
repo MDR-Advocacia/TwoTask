@@ -31,6 +31,8 @@ from sqlalchemy.orm import Session
 from app.core import auth as auth_security
 from app.core.dependencies import get_db
 from app.models.ajus import (
+    AJUS_ACCOUNT_ONLINE,
+    AJUS_CLASSIF_PENDENTE,
     AJUS_QUEUE_PENDENTE,
     AJUS_QUEUE_STATUSES,
     AjusAndamentoQueue,
@@ -910,36 +912,68 @@ class ClassifDispatchOut(BaseModel):
     success_ids: list[int]
     errored: list[dict]
     accounts_used: list[int]
+    # Campos novos pro modo soft-trigger (endpoint /dispatch). Quando
+    # o endpoint apenas sinaliza (sem rodar Playwright), candidates
+    # vira count de pendentes e accepted=True se ha trabalho pra fazer.
+    accepted: bool = False
+    accounts_online: int = 0
+    message: str = ""
 
 
 @router.post(
     "/classificacao/dispatch", response_model=ClassifDispatchOut,
     summary=(
-        "Dispara processamento manual da fila de classificacao. "
-        "Distribui itens pendentes entre as contas online em round-robin. "
-        "Util pra testar sem esperar o worker periodico."
+        "Sinaliza pro ajus-runner pegar a fila imediatamente. NAO roda "
+        "Playwright nesse container (API). O ajus-runner faz fast-poll "
+        "de 2s e processa em ate ~2s apos a chamada. Retorna sumario do "
+        "que foi sinalizado."
     ),
 )
 def dispatch_classif(
-    batch_per_account: int = Query(default=5, ge=1, le=50),
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
-    # Importa lazy — endpoint vive no container API que NÃO tem
-    # Playwright; o dispatcher tenta importar o runner e falha graciosamente
-    # se for o caso (marca itens como erro). Em prod o operador deve
-    # esperar o worker do ajus-runner; esse endpoint serve pra orquestracao.
-    from app.services.ajus.classif_dispatcher import AjusClassifDispatcher
-    result = AjusClassifDispatcher(db).dispatch_all(
-        batch_per_account=batch_per_account,
+    # IMPORTANTE: este endpoint vive no container `api` que NAO tem
+    # Playwright instalado. Chamar AjusClassifDispatcher direto aqui
+    # estourava `ModuleNotFoundError: No module named 'playwright'`
+    # quando o runner tentava abrir o browser. A arquitetura correta
+    # eh: API so SINALIZA; o container `ajus-runner` (em loop) processa.
+    pendentes = (
+        db.query(AjusClassificacaoQueue)
+        .filter(AjusClassificacaoQueue.status == AJUS_CLASSIF_PENDENTE)
+        .filter(AjusClassificacaoQueue.dispatched_by_account_id.is_(None))
+        .count()
     )
+    online = (
+        db.query(AjusSessionAccount)
+        .filter(AjusSessionAccount.is_active.is_(True))
+        .filter(AjusSessionAccount.status == AJUS_ACCOUNT_ONLINE)
+        .count()
+    )
+
+    if pendentes == 0:
+        msg = "Nenhum item pendente na fila."
+    elif online == 0:
+        msg = (
+            f"{pendentes} item(ns) pendente(s) mas nenhuma conta online. "
+            "Acesse o card 'Sessoes AJUS' e faca login em pelo menos uma."
+        )
+    else:
+        msg = (
+            f"Sinalizado: {pendentes} item(ns) na fila, {online} conta(s) "
+            f"online. O ajus-runner pega em ate ~2s."
+        )
+
     return ClassifDispatchOut(
-        candidates=result.candidates,
-        success_count=result.success_count,
-        error_count=result.error_count,
-        success_ids=result.success_ids,
-        errored=result.errored,
-        accounts_used=result.accounts_used,
+        candidates=pendentes,
+        success_count=0,
+        error_count=0,
+        success_ids=[],
+        errored=[],
+        accounts_used=[],
+        accepted=(pendentes > 0 and online > 0),
+        accounts_online=online,
+        message=msg,
     )
 
 
