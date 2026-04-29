@@ -1,52 +1,19 @@
-# Dockerfile do container ajus-runner — Chunk 2c.
+# DEPRECATED — não use mais este Dockerfile.
 #
-# Container separado da API que roda Playwright Python pra classificar
-# processos no portal AJUS via RPA. Ver app/services/ajus/classif_runner.py.
+# A imagem do ajus-runner agora é construída via target multi-stage no
+# `Dockerfile` principal (target: ajus-runner). Isso compartilha a stage
+# `base` com a API e elimina a duplicação de apt + pip + Chromium que
+# estava estourando o build do Coolify (exit 255 quando os dois rodavam
+# em paralelo).
 #
-# Por que separar:
-#  - Isola Playwright + Chromium da API (~400MB extra).
-#  - Permite escalar replicas independentemente.
-#  - Se browser travar/vazar memória, não derruba a API.
+# docker-compose.yml já aponta `ajus-runner` pra:
+#   build:
+#     context: .
+#     dockerfile: Dockerfile
+#     target: ajus-runner
 #
-# Como roda no Coolify:
-#  - Mesmo repositório, dockerfile=Dockerfile.ajus-runner.
-#  - Volume `/data/ajus-session/` montado em /app/data/ajus-session.
-#  - Mesmas env vars que a API (DATABASE_URL, AJUS_*).
+# Esse arquivo ficou pra registro histórico. Se alguém tentar buildá-lo
+# por engano, o build falha imediatamente com a mensagem abaixo.
 
-FROM python:3.10-slim
-
-WORKDIR /app
-
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONPATH=/app
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-
-# Dependências do sistema que o Chromium do Playwright precisa.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates \
-        # libs do Chromium headless
-        libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
-        libdbus-1-3 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
-        libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 \
-        libcairo2 libxshmfence1 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Requirements da API (compartilhamos a mesma base — psycopg2,
-# sqlalchemy, pydantic etc.) + playwright Python.
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir playwright==1.47.0
-
-# Instala Chromium do Playwright. --with-deps já cobriu pacotes
-# acima, mas alguns ambientes Coolify não suportam --with-deps no
-# pip-installed playwright; deixamos as libs explicit acima.
-RUN playwright install chromium
-
-# Código da aplicação (mesmo da API — só vamos rodar o worker)
-COPY . .
-
-RUN mkdir -p /app/data/ajus-session
-
-# Worker em loop. Coolify cuida de restart se sair com erro.
-CMD ["python", "scripts/ajus_runner_worker.py"]
+FROM busybox
+RUN echo "ERRO: Dockerfile.ajus-runner está DEPRECATED. Use 'Dockerfile' com 'target: ajus-runner'." >&2 && exit 1

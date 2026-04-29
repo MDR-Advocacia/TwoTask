@@ -42,6 +42,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: api
     restart: unless-stopped
     # Chromium (Playwright) crasha com "Target closed" se /dev/shm for muito
     # pequeno. Padrão do Docker é 64MB — subimos pra 1GB.
@@ -71,7 +72,8 @@ services:
   ajus-runner:
     build:
       context: .
-      dockerfile: Dockerfile.ajus-runner
+      dockerfile: Dockerfile
+      target: ajus-runner
     restart: unless-stopped
     # Chromium precisa de /dev/shm grande pra não travar.
     shm_size: "1gb"
