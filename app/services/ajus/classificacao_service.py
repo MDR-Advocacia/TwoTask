@@ -414,6 +414,10 @@ class AjusClassificacaoService:
             )
         item.status = AJUS_CLASSIF_PENDENTE
         item.error_message = None
+        # IMPORTANTE: zera dispatched_by_account_id pra que o claim do
+        # dispatcher (que filtra `dispatched_by_account_id IS NULL`)
+        # consiga pegar o item novamente. Sem isso, item fica fantasma.
+        item.dispatched_by_account_id = None
         self.db.commit()
         self.db.refresh(item)
         return item
@@ -441,6 +445,8 @@ class AjusClassificacaoService:
         for item in items:
             item.status = AJUS_CLASSIF_PENDENTE
             item.error_message = None
+            # Zera dispatched_by_account_id (mesmo motivo do retry()).
+            item.dispatched_by_account_id = None
             ids.append(item.id)
 
         if ids:

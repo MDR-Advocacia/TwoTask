@@ -938,6 +938,30 @@ def dispatch_classif(
     # estourava `ModuleNotFoundError: No module named 'playwright'`
     # quando o runner tentava abrir o browser. A arquitetura correta
     # eh: API so SINALIZA; o container `ajus-runner` (em loop) processa.
+
+    # Auto-heal de fantasmas: itens com status=pendente mas com
+    # dispatched_by_account_id preenchido sao residuos de crash do
+    # dispatcher (ex.: ModuleNotFoundError do Playwright em deploy
+    # antigo). O `_release_unprocessed` do dispatcher deveria limpar
+    # mas a sessao pode ter ficado abortada apos o raise. Limpamos
+    # aqui antes de contar pendentes — operacao idempotente e barata.
+    ghost_count = (
+        db.query(AjusClassificacaoQueue)
+        .filter(AjusClassificacaoQueue.status == AJUS_CLASSIF_PENDENTE)
+        .filter(AjusClassificacaoQueue.dispatched_by_account_id.isnot(None))
+        .update(
+            {AjusClassificacaoQueue.dispatched_by_account_id: None},
+            synchronize_session=False,
+        )
+    )
+    if ghost_count:
+        db.commit()
+        logger.info(
+            "AJUS dispatch auto-heal: %d fantasma(s) liberado(s) "
+            "(dispatched_by_account_id zerado em itens pendentes)",
+            ghost_count,
+        )
+
     pendentes = (
         db.query(AjusClassificacaoQueue)
         .filter(AjusClassificacaoQueue.status == AJUS_CLASSIF_PENDENTE)
