@@ -107,8 +107,22 @@ services:
       retries: 3
       start_period: 15s
 
+# Volumes blindados com external: true + nomes reais em prod (Coolify).
+# Sem isso, Coolify pode recriar volumes ao detectar mudanca no compose,
+# zerando o banco. Aconteceu em lab 2026-04-29.
+#
+# Coolify normaliza _ (underscore) pra - (hifen) ao criar o volume fisico,
+# por isso o "name" usa hifen mesmo as keys usando underscore.
 volumes:
   postgres_data:
+    external: true
+    name: u800go80wk8kccg4sswowg08_postgres-data
   api_data:
+    external: true
+    name: u800go80wk8kccg4sswowg08_api-data
   api_output:
+    external: true
+    name: u800go80wk8kccg4sswowg08_api-output
   ajus_session:
+    external: true
+    name: u800go80wk8kccg4sswowg08_ajus-session
