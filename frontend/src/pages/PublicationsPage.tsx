@@ -1063,7 +1063,11 @@ const PublicationsPage = () => {
 
   // ─── Office Lawsuit Index ─────────────────────────────────────────────
   const loadIndexStatus = useCallback(async (officeId: string) => {
-    if (!officeId) { setIndexStatus(null); return; }
+    // Multi-office: não carrega status individual (UI já esconde o painel).
+    if (!officeId || officeId.includes(",")) {
+      setIndexStatus(null);
+      return;
+    }
     try {
       const res = await apiFetch(`${API_V1}/offices/${officeId}/lawsuit-index`);
       if (res.ok) setIndexStatus(await res.json());
@@ -1071,7 +1075,7 @@ const PublicationsPage = () => {
   }, []);
 
   const handleSyncIndex = async (forceFull: boolean = false) => {
-    if (!searchOfficeId) return;
+    if (!searchOfficeId || searchOfficeId.includes(",")) return;
     try {
       const res = await apiFetch(
         `${API_V1}/offices/${searchOfficeId}/lawsuit-index/sync?force_full=${forceFull}`,
@@ -1161,7 +1165,9 @@ const PublicationsPage = () => {
         date_from: new Date(dateFrom).toISOString(),
         date_to: dateTo ? new Date(dateTo).toISOString() : null,
         origin_type: originType,
-        responsible_office_id: searchOfficeId ? parseInt(searchOfficeId) : null,
+        // Backend aceita CSV ("23,45,67") ou int single. Passamos a
+        // string direto pra suportar multi-office.
+        responsible_office_id: searchOfficeId || null,
         auto_classify: false,
         only_unlinked: searchOnlyUnlinked,
       };
@@ -2339,19 +2345,21 @@ const PublicationsPage = () => {
               </Select>
             </div>
             <div className="grid gap-1.5">
-              <Label>Escritório Responsável</Label>
-              <Select value={searchOfficeId || "_all"}
-                onValueChange={(v) => setSearchOfficeId(v === "_all" ? "" : v)}>
-                <SelectTrigger className="w-[220px]">
-                  <SelectValue placeholder="Todos os escritórios" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="_all">Todos os escritórios</SelectItem>
-                  {offices.map((o) => (
-                    <SelectItem key={o.external_id} value={String(o.external_id)}>{officeLabel(o)}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label>Escritório(s) Responsável(eis)</Label>
+              {/* Multi-select: aceita N escritórios na mesma busca.
+                  searchOfficeId fica como CSV ("23,45,67") — o backend
+                  já aceita esse formato. Se vazio, busca em todos. */}
+              <MultiSelect
+                options={offices.map((o) => ({
+                  value: String(o.external_id),
+                  label: officeLabel(o),
+                }))}
+                defaultValue={searchOfficeId ? searchOfficeId.split(",").filter(Boolean) : []}
+                onValueChange={(vals) => setSearchOfficeId(vals.join(","))}
+                placeholder="Todos os escritórios"
+                className="w-[260px]"
+                maxCount={2}
+              />
             </div>
             <div className="flex items-center gap-2 self-end">
               <Checkbox
@@ -2368,7 +2376,10 @@ const PublicationsPage = () => {
               Buscar
             </Button>
           </div>
-          {searchOfficeId && indexStatus && (
+          {/* Painel de índice só faz sentido com 1 escritório. Pra
+              múltiplos, o sync acontece automático no backend (ensure_sync
+              roda por escritório no service durante a busca). */}
+          {searchOfficeId && !searchOfficeId.includes(",") && indexStatus && (
             <div className="mt-3 rounded-md border bg-muted/30 p-3 text-xs flex flex-wrap items-center gap-3">
               <span className="font-medium">Índice de processos:</span>
               <span>{indexStatus.total_ids.toLocaleString()} processos</span>
@@ -4728,112 +4739,4 @@ const PublicationsPage = () => {
                 <Label className="text-xs">O que estava errado?</Label>
                 <Select value={feedbackErrorType} onValueChange={setFeedbackErrorType}>
                   <SelectTrigger className="h-8 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="category">Categoria</SelectItem>
-                    <SelectItem value="subcategory">Subcategoria</SelectItem>
-                    <SelectItem value="polo">Polo</SelectItem>
-                    <SelectItem value="natureza">Natureza do processo</SelectItem>
-                    <SelectItem value="multiple">Vários campos</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Classificação correta */}
-              <div className="space-y-1">
-                <Label className="text-xs">Classificação correta</Label>
-                <Select
-                  value={feedbackSubcategory ? `${feedbackCategory}|||${feedbackSubcategory}` : feedbackCategory}
-                  onValueChange={(v) => {
-                    const [cat, sub] = v.split("|||");
-                    setFeedbackCategory(cat);
-                    setFeedbackSubcategory(sub || "");
-                  }}
-                >
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue placeholder="Selecione a classificação correta" />
-                  </SelectTrigger>
-                  <SelectContent className="max-h-80">
-                    {Object.entries(taxonomy).map(([cat, subs]) => (
-                      <div key={cat}>
-                        {subs && subs.length > 0 ? (
-                          <>
-                            <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                              {cat}
-                            </div>
-                            {subs.map((sub) => (
-                              <SelectItem key={`${cat}|||${sub}`} value={`${cat}|||${sub}`}>
-                                {sub}
-                              </SelectItem>
-                            ))}
-                          </>
-                        ) : (
-                          <SelectItem value={cat}>{cat}</SelectItem>
-                        )}
-                      </div>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Polo correto */}
-              <div className="space-y-1">
-                <Label className="text-xs">Polo correto</Label>
-                <Select value={feedbackPolo} onValueChange={setFeedbackPolo}>
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue placeholder="Selecione o polo" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="ativo">Ativo</SelectItem>
-                    <SelectItem value="passivo">Passivo</SelectItem>
-                    <SelectItem value="ambos">Ambos</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Natureza (só para sem processo) */}
-              {!feedbackRecord.linked_lawsuit_id && (
-                <div className="space-y-1">
-                  <Label className="text-xs">Natureza do processo</Label>
-                  <Input
-                    className="h-8 text-xs"
-                    placeholder="Ex.: Embargos à Execução, Agravo de Instrumento..."
-                    value={feedbackNatureza}
-                    onChange={(e) => setFeedbackNatureza(e.target.value)}
-                  />
-                </div>
-              )}
-
-              {/* Nota do operador */}
-              <div className="space-y-1">
-                <Label className="text-xs">Nota / regra (opcional)</Label>
-                <Textarea
-                  className="text-xs min-h-[60px]"
-                  placeholder="Ex.: 'Quando menciona embargante, sempre é Embargos à Execução'"
-                  value={feedbackNote}
-                  onChange={(e) => setFeedbackNote(e.target.value)}
-                />
-                <p className="text-[10px] text-muted-foreground">
-                  Dica: descreva uma regra geral para que o classificador aprenda com essa correção.
-                </p>
-              </div>
-            </div>
-          )}
-
-          <DialogFooter>
-            <Button variant="secondary" onClick={() => setFeedbackOpen(false)} disabled={submittingFeedback}>
-              Cancelar
-            </Button>
-            <Button onClick={handleSubmitFeedback} disabled={submittingFeedback}>
-              {submittingFeedback && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Enviar feedback
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-};
-
-export default PublicationsPage;
+         

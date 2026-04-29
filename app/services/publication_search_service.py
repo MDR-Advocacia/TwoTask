@@ -248,18 +248,35 @@ class PublicationSearchService:
         date_to: Optional[str] = None,
         origin_type: str = "OfficialJournalsCrawler",
         responsible_office_id: Optional[int] = None,
+        responsible_office_ids: Optional[list[int]] = None,
         auto_classify: bool = False,
         requested_by: Optional[str] = None,
         only_unlinked: bool = False,
     ) -> dict[str, Any]:
-        """Cria um registro de busca, executa, enriquece e persiste resultados."""
+        """
+        Cria um registro de busca, executa, enriquece e persiste resultados.
+
+        Aceita ambos `responsible_office_id` (int legado, single) e
+        `responsible_office_ids` (list[int], multi). Internamente
+        unifica em `_office_ids: list[int]` (vazia = sem filtro).
+        """
+        # Normaliza pra list[int]. Filtra zeros/duplicados.
+        _office_ids: list[int] = []
+        if responsible_office_ids:
+            _office_ids.extend(int(x) for x in responsible_office_ids if x)
+        if responsible_office_id:
+            _office_ids.append(int(responsible_office_id))
+        _office_ids = list(dict.fromkeys(_office_ids))  # unique preserva ordem
+        _office_ids_set: set[int] = set(_office_ids)
 
         search = PublicationSearch(
             status=SEARCH_STATUS_RUNNING,
             date_from=date_from,
             date_to=date_to,
             origin_type=origin_type,
-            office_filter=str(responsible_office_id) if responsible_office_id else None,
+            office_filter=(
+                ",".join(str(x) for x in _office_ids) if _office_ids else None
+            ),
             requested_by_email=requested_by,
         )
         self.db.add(search)
@@ -281,40 +298,47 @@ class PublicationSearchService:
             )
 
             # 1.5) Pré-filtro por escritório (otimização):
-            # Usa o índice persistente (office_lawsuit_index). Se o índice
-            # existir e estiver fresh, é consulta de banco — sem API. Se estiver
-            # stale/inexistente, dispara sync em background e segue com o que
-            # tiver (inclusive vazio — nesse caso pulamos o pré-filtro pra não
-            # perder dados na primeira busca).
-            if responsible_office_id is not None:
-                office_lawsuit_ids: Optional[set[int]] = None
-                try:
-                    from app.services.office_lawsuit_index_service import (
-                        OfficeLawsuitIndexService,
-                    )
-                    idx_svc = OfficeLawsuitIndexService(self.db, self.client)
-                    idx_svc.ensure_sync(responsible_office_id)
-                    ids = idx_svc.get_lawsuit_ids(responsible_office_id)
-                    if ids:
-                        office_lawsuit_ids = ids
-                        logger.info(
-                            "Índice persistente: %s processos pro escritório %s.",
-                            len(ids), responsible_office_id,
+            # Usa o índice persistente (office_lawsuit_index). Quando há
+            # múltiplos escritórios selecionados, faz a UNIÃO dos índices —
+            # ou seja, pré-filtra tudo que pertence a QUALQUER um deles.
+            # Se algum índice estiver stale, sync é disparado pra esse
+            # escritório e o pré-filtro segue com os índices disponíveis.
+            if _office_ids:
+                merged_ids: set[int] = set()
+                lid_to_office: dict[int, int] = {}
+                any_index_filled = False
+                for off_id in _office_ids:
+                    try:
+                        from app.services.office_lawsuit_index_service import (
+                            OfficeLawsuitIndexService,
                         )
-                    else:
-                        logger.info(
-                            "Índice persistente vazio/em construção pro escritório %s — "
-                            "pulando pré-filtro nessa busca.",
-                            responsible_office_id,
+                        idx_svc = OfficeLawsuitIndexService(self.db, self.client)
+                        idx_svc.ensure_sync(off_id)
+                        ids = idx_svc.get_lawsuit_ids(off_id)
+                        if ids:
+                            any_index_filled = True
+                            for lid in ids:
+                                merged_ids.add(lid)
+                                # 1ª associação ganha — operador raramente tem
+                                # o mesmo processo em 2 escritórios.
+                                lid_to_office.setdefault(lid, off_id)
+                            logger.info(
+                                "Índice persistente: %s processos pro escritório %s.",
+                                len(ids), off_id,
+                            )
+                        else:
+                            logger.info(
+                                "Índice vazio/em construção pro escritório %s — "
+                                "pulando pré-filtro pra esse.",
+                                off_id,
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            "Pré-filtro por escritório %s falhou: %s",
+                            off_id, exc,
                         )
-                except Exception as exc:
-                    logger.warning(
-                        "Pré-filtro por escritório falhou, caindo para o fluxo antigo: %s",
-                        exc,
-                    )
-                    office_lawsuit_ids = None
 
-                if office_lawsuit_ids:
+                if any_index_filled and merged_ids:
                     before_prefilter = len(publications)
                     kept = []
                     for _p in publications:
@@ -333,13 +357,13 @@ class PublicationSearchService:
                             lid = int(lit.get("linkId"))
                         except (TypeError, ValueError):
                             continue
-                        if lid in office_lawsuit_ids:
+                        if lid in merged_ids:
                             # já sabemos o escritório — grava e evita lookup depois
-                            _p["_responsible_office_id"] = responsible_office_id
+                            _p["_responsible_office_id"] = lid_to_office.get(lid)
                             kept.append(_p)
                     logger.info(
-                        "Pré-filtro escritório %s: %s → %s publicações (antes do enriquecimento).",
-                        responsible_office_id, before_prefilter, len(kept),
+                        "Pré-filtro escritórios %s: %s → %s publicações.",
+                        _office_ids, before_prefilter, len(kept),
                     )
                     publications = kept
 
@@ -357,7 +381,7 @@ class PublicationSearchService:
             )
 
             # 3) Filtra por escritório responsável (se especificado)
-            if responsible_office_id is not None:
+            if _office_ids_set:
                 before = len(publications)
 
                 # Diagnóstico: distribuição de responsibleOfficeId nos processos
@@ -381,17 +405,17 @@ class PublicationSearchService:
 
                 top = office_counter.most_common(20)
                 logger.info(
-                    "Diagnóstico escritórios (procurado=%s) | total=%s | sem processo vinculado=%s | processo sem responsibleOfficeId=%s | top responsibleOfficeId: %s",
-                    responsible_office_id, before, sem_processo, sem_office, top,
+                    "Diagnóstico escritórios (procurados=%s) | total=%s | sem processo vinculado=%s | processo sem responsibleOfficeId=%s | top responsibleOfficeId: %s",
+                    _office_ids, before, sem_processo, sem_office, top,
                 )
 
                 publications = [
                     p for p in publications
-                    if p.get("_responsible_office_id") == responsible_office_id
+                    if p.get("_responsible_office_id") in _office_ids_set
                 ]
                 logger.info(
-                    "Filtro por escritório %s: %s → %s publicações.",
-                    responsible_office_id, before, len(publications),
+                    "Filtro por escritórios %s: %s → %s publicações.",
+                    _office_ids, before, len(publications),
                 )
 
             # 3.5) Filtra apenas publicações sem processo vinculado (se solicitado)
@@ -3213,68 +3237,72 @@ class PublicationSearchService:
 
     @staticmethod
     def _search_to_dict(search: PublicationSearch) -> dict[str, Any]:
-        return {
-            "id": search.id,
-            "status": search.status,
-            "date_from": search.date_from,
-            "date_to": search.date_to,
-            "origin_type": search.origin_type,
-            "office_filter": search.office_filter,
-            "total_found": search.total_found,
-            "total_new": search.total_new,
-            "total_duplicate": search.total_duplicate,
-            "progress_step": search.progress_step,
-            "progress_detail": search.progress_detail,
-            "progress_pct": search.progress_pct,
-            "requested_by_email": search.requested_by_email,
-            "error_message": search.error_message,
-            "created_at": search.created_at.isoformat() if search.created_at else None,
-            "finished_at": search.finished_at.isoformat() if search.finished_at else None,
-        }
+        """
+        Encontra registros duplicados cujo texto difere do original.
+        Retorna pares (original, duplicata) com preview das diferenças.
+        """
+        from sqlalchemy import func as sqlfunc
 
-    @staticmethod
-    def _record_to_dict(record: PublicationRecord, include_full_text: bool = False) -> dict[str, Any]:
-        proposal = None
-        proposals = None
-        if isinstance(record.raw_relationships, dict):
-            proposal = record.raw_relationships.get("_proposed_task")
-            proposals = record.raw_relationships.get("_proposed_tasks")
+        # Encontra update_ids que aparecem mais de uma vez
+        subq = (
+            self.db.query(PublicationRecord.legal_one_update_id)
+            .group_by(PublicationRecord.legal_one_update_id)
+            .having(sqlfunc.count(PublicationRecord.id) > 1)
+            .subquery()
+        )
 
-        result = {
-            "id": record.id,
-            "search_id": record.search_id,
-            "legal_one_update_id": record.legal_one_update_id,
-            "origin_type": record.origin_type,
-            "update_type_id": record.update_type_id,
-            "description_preview": (record.description or "")[:200],
-            "publication_date": record.publication_date,
-            "creation_date": record.creation_date,
-            "linked_lawsuit_id": record.linked_lawsuit_id,
-            "linked_lawsuit_cnj": record.linked_lawsuit_cnj,
-            "linked_office_id": record.linked_office_id,
-            "status": record.status,
-            "category": record.category,
-            "subcategory": record.subcategory,
-            "polo": record.polo,
-            "audiencia_data": record.audiencia_data,
-            "audiencia_hora": record.audiencia_hora,
-            "audiencia_link": record.audiencia_link,
-            "classifications": record.classifications,
-            "uf": record.uf,
-            "natureza_processo": record.natureza_processo,
-            "has_proposal": bool(proposal),
-            "proposal": proposal if include_full_text else None,
-            "proposals_count": len(proposals) if proposals else (1 if proposal else 0),
-            # Autoria do agendamento (pub002). Só tem valor quando status=AGENDADO.
-            "scheduled_by_user_id": record.scheduled_by_user_id,
-            "scheduled_by_email": record.scheduled_by_email,
-            "scheduled_by_name": record.scheduled_by_name,
-            "scheduled_at": record.scheduled_at.isoformat() if record.scheduled_at else None,
-            "created_at": record.created_at.isoformat() if record.created_at else None,
-            "updated_at": record.updated_at.isoformat() if record.updated_at else None,
-        }
-        if include_full_text:
-            result["description"] = record.description
-            result["notes"] = record.notes
-            result["raw_relationships"] = record.raw_relationships
-        return result
+        # Busca todos os registros com esses update_ids
+        records = (
+            self.db.query(PublicationRecord)
+            .filter(PublicationRecord.legal_one_update_id.in_(
+                self.db.query(subq.c.legal_one_update_id)
+            ))
+            .order_by(
+                PublicationRecord.legal_one_update_id,
+                PublicationRecord.created_at,
+            )
+            .all()
+        )
+
+        # Agrupa por update_id
+        by_update: dict = defaultdict(list)
+        for r in records:
+            by_update[r.legal_one_update_id].append(r)
+
+        # Filtra apenas os que têm divergência de texto
+        divergences = []
+        for update_id, group in by_update.items():
+            if len(group) < 2:
+                continue
+            original = group[0]
+            original_text = (original.description or "").strip()
+            for dup in group[1:]:
+                dup_text = (dup.description or "").strip()
+                if dup_text != original_text:
+                    divergences.append({
+                        "legal_one_update_id": update_id,
+                        "original": {
+                            "id": original.id,
+                            "search_id": original.search_id,
+                            "status": original.status,
+                            "text_preview": original_text[:300],
+                            "text_length": len(original_text),
+                            "created_at": original.created_at.isoformat() if original.created_at else None,
+                        },
+                        "duplicate": {
+                            "id": dup.id,
+                            "search_id": dup.search_id,
+                            "status": dup.status,
+                            "text_preview": dup_text[:300],
+                            "text_length": len(dup_text),
+                            "is_duplicate": dup.is_duplicate,
+                            "created_at": dup.created_at.isoformat() if dup.created_at else None,
+                        },
+                        "linked_lawsuit_cnj": original.linked_lawsuit_cnj or dup.linked_lawsuit_cnj,
+                    })
+
+        total = len(divergences)
+        page = divergences[offset:offset + limit]
+        return {"total": total, "offset": offset, "limit": limit, "divergences": page}
+
+    # ──────────────────────────────────────────────

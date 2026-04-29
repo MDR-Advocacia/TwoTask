@@ -51,7 +51,9 @@ class SearchRequest(BaseModel):
     date_from: str
     date_to: Optional[str] = None
     origin_type: str = "OfficialJournalsCrawler"
-    responsible_office_id: Optional[int] = None
+    # Aceita int (legado) OU CSV de IDs ("23,45,67") pra varrer múltiplos
+    # escritórios na mesma busca. Service converte pra lista internamente.
+    responsible_office_id: Optional[str] = None
     auto_classify: bool = True
     only_unlinked: bool = False  # Buscar apenas publicações sem processo vinculado
 
@@ -131,11 +133,22 @@ def create_search(
 
     def _run_search():
         try:
+            # Parse responsible_office_id: aceita "23" (int single) OU
+            # "23,45,67" (CSV). Service trabalha com list[int].
+            office_ids: list[int] = []
+            if payload.responsible_office_id:
+                for part in str(payload.responsible_office_id).split(","):
+                    p = part.strip()
+                    if p:
+                        try:
+                            office_ids.append(int(p))
+                        except ValueError:
+                            pass
             service.create_and_run_search(
                 date_from=payload.date_from,
                 date_to=payload.date_to,
                 origin_type=payload.origin_type,
-                responsible_office_id=payload.responsible_office_id,
+                responsible_office_ids=office_ids or None,
                 auto_classify=payload.auto_classify,
                 requested_by=current_user.email if hasattr(current_user, "email") else None,
                 only_unlinked=payload.only_unlinked,
@@ -1096,8 +1109,15 @@ def create_classification_override(
     """Cria um override de classificação para um escritório."""
     from app.models.office_classification import OfficeClassificationOverride
 
-    if body.action not in ("exclude", "include_custom"):
-        raise HTTPException(400, "action deve ser 'exclude' ou 'include_custom'")
+    # `manual_mode` é um override singleton por escritório (sem categoria
+    # nem subcategoria) que sinaliza "este escritório está em regime manual
+    # de classificações" — taxonomia efetiva passa a ser apenas o que foi
+    # explicitamente adicionado via include_custom + templates ativos.
+    if body.action not in ("exclude", "include_custom", "manual_mode"):
+        raise HTTPException(
+            400,
+            "action deve ser 'exclude', 'include_custom' ou 'manual_mode'",
+        )
 
     existing = (
         db.query(OfficeClassificationOverride)
@@ -1172,8 +1192,15 @@ def bulk_create_classification_overrides(
     from app.models.office_classification import OfficeClassificationOverride
     from app.models.legal_one import LegalOneOffice
 
-    if body.action not in ("exclude", "include_custom"):
-        raise HTTPException(400, "action deve ser 'exclude' ou 'include_custom'")
+    # `manual_mode` é um override singleton por escritório (sem categoria
+    # nem subcategoria) que sinaliza "este escritório está em regime manual
+    # de classificações" — taxonomia efetiva passa a ser apenas o que foi
+    # explicitamente adicionado via include_custom + templates ativos.
+    if body.action not in ("exclude", "include_custom", "manual_mode"):
+        raise HTTPException(
+            400,
+            "action deve ser 'exclude', 'include_custom' ou 'manual_mode'",
+        )
 
     target_ids = body.office_external_ids
     if not target_ids:

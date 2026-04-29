@@ -9,7 +9,7 @@
  * pré-montar tarefas que o operador confirma antes de enviar ao Legal One.
  */
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import {
   AlertCircle,
   BookTemplate,
@@ -138,7 +138,7 @@ interface ClassificationOverride {
   office_external_id: number;
   category: string;
   subcategory: string | null;
-  action: "exclude" | "include_custom";
+  action: "exclude" | "include_custom" | "manual_mode";
   custom_description: string | null;
   is_active: boolean;
   created_at: string | null;
@@ -346,6 +346,46 @@ const TaskTemplatesPage = () => {
   }, []);
 
   /**
+   * Auto-init do regime manual: na primeira vez que esta página carrega
+   * com templates + overrides + offices conhecidos, identifica os
+   * escritórios SEM template ativo E SEM `manual_mode` registrado.
+   * Esses são "escritórios novos" — entram no regime manual
+   * automaticamente. Escritórios que já têm pelo menos 1 template
+   * permanecem no regime legado (taxonomia base explodida) pra preservar
+   * o trabalho prévio. Roda 1x por sessão (após dados carregarem).
+   */
+  const autoInitDoneRef = useRef(false);
+  useEffect(() => {
+    if (autoInitDoneRef.current) return;
+    if (offices.length === 0) return;
+    // Espera tudo carregar antes de tomar decisão
+    if (templates.length === 0 && overrides.length === 0 && categories.length === 0) {
+      return;
+    }
+    autoInitDoneRef.current = true;
+    const officesNeedingManual = offices.filter((o) => {
+      const hasTemplate = templates.some(
+        (t) => t.office_external_id === o.external_id && t.is_active,
+      );
+      const alreadyManual = overrides.some(
+        (ov) =>
+          ov.office_external_id === o.external_id &&
+          ov.action === "manual_mode" &&
+          ov.is_active,
+      );
+      return !hasTemplate && !alreadyManual;
+    });
+    if (officesNeedingManual.length === 0) return;
+    // Dispara em série (idempotente — backend retorna 409 se já existe).
+    (async () => {
+      for (const office of officesNeedingManual) {
+        await enableManualModeForOffice(office.external_id);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [offices, templates, overrides, categories]);
+
+  /**
    * Carrega SEMPRE todos os overrides. O filtro por escritório é aplicado
    * na exibição da tabela (client-side). Isso garante que o grid de cobertura
    * por escritório possa aplicar os overrides certos de cada escritório sem
@@ -450,15 +490,63 @@ const TaskTemplatesPage = () => {
    * - exclude com subcategory preenchida → remove só aquela subcategoria
    * - include_custom → adiciona categoria (se nova) e/ou subcategoria
    */
+  /**
+   * Indica se o escritório está em "regime manual" — taxonomia efetiva
+   * passa a ser apenas o que foi explicitamente adicionado (include_custom)
+   * + classificações de templates ativos. Tudo o resto da taxonomia base
+   * NÃO aparece na coverage view (paradigma invertido — operador adiciona
+   * sob demanda em vez de excluir).
+   */
+  const isManualModeOffice = (officeId: number): boolean =>
+    overrides.some(
+      (o) =>
+        o.office_external_id === officeId &&
+        o.action === "manual_mode" &&
+        o.is_active,
+    );
+
   const getEffectiveCategoriesForOffice = (officeId: number): CategoryEntry[] => {
+    const relevant = overrides.filter(
+      (o) => o.office_external_id === officeId && o.is_active
+    );
+
+    // ── Regime MANUAL: parte do zero, só inclui o que foi adicionado ──
+    if (relevant.some((o) => o.action === "manual_mode")) {
+      const manualTree: Record<string, string[]> = {};
+      // include_custom dá entrada na taxonomia efetiva
+      relevant
+        .filter((o) => o.action === "include_custom")
+        .forEach((o) => {
+          if (!manualTree[o.category]) manualTree[o.category] = [];
+          if (o.subcategory && !manualTree[o.category].includes(o.subcategory)) {
+            manualTree[o.category].push(o.subcategory);
+          }
+        });
+      // Templates ativos do escritório também garantem slot na taxonomia
+      // (importante: se operador criou template antes de adicionar
+      // include_custom, a classificação ainda aparece na coverage).
+      templates
+        .filter((t) => t.office_external_id === officeId && t.is_active)
+        .forEach((t) => {
+          if (!manualTree[t.category]) manualTree[t.category] = [];
+          const sub = t.subcategory && t.subcategory !== "" ? t.subcategory : "-";
+          if (!manualTree[t.category].includes(sub)) {
+            manualTree[t.category].push(sub);
+          }
+        });
+      return Object.entries(manualTree).map(([cat, subs]) => ({
+        category: cat,
+        subcategories: subs.filter((s) => s !== "-").length === 0 && subs.includes("-")
+          ? []
+          : subs,
+      }));
+    }
+
+    // ── Regime LEGADO: taxonomia base ± overrides ──
     const tree: Record<string, string[]> = {};
     categories.forEach((c) => {
       tree[c.category] = [...c.subcategories];
     });
-
-    const relevant = overrides.filter(
-      (o) => o.office_external_id === officeId && o.is_active
-    );
 
     // Exclusões
     relevant
@@ -878,6 +966,62 @@ const TaskTemplatesPage = () => {
       is_active: true,
     });
     setOverrideDialogOpen(true);
+  };
+
+  /**
+   * Variante usada pelo botão "+ Adicionar classificação" do card de
+   * escritório no regime manual. Pré-preenche o office, deixando o
+   * operador escolher só categoria/subcategoria.
+   */
+  const openAddClassificationForOffice = (officeId: number) => {
+    setEditingOverride(null);
+    setOverrideForm({
+      scope: String(officeId),
+      office_external_id: String(officeId),
+      category: "",
+      subcategory: "",
+      action: "include_custom",
+      custom_description: "",
+      is_active: true,
+    });
+    setOverrideDialogOpen(true);
+  };
+
+  /**
+   * Liga o regime manual em um escritório legado (operador pediu pra
+   * "Migrar pra regime manual"). Cria override singleton manual_mode.
+   * Não apaga overrides exclude/include_custom existentes — eles passam
+   * a coexistir, e o include_custom fica sendo a ÚNICA fonte de verdade
+   * pra taxonomia (regime manual ignora a base).
+   */
+  const enableManualModeForOffice = async (officeId: number) => {
+    try {
+      const res = await apiFetch(`/api/v1/publications/classification-overrides`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          office_external_id: officeId,
+          category: "",        // ignorado pra manual_mode
+          subcategory: null,
+          action: "manual_mode",
+          custom_description: null,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        // 409 = já existe (idempotente — ok pra auto-init)
+        if (res.status !== 409) {
+          throw new Error(data.detail || "Falha ao ligar regime manual.");
+        }
+      }
+      await loadOverrides();
+    } catch (e) {
+      toast({
+        title: "Erro ao ligar regime manual",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    }
   };
 
   /** Abre o dialog pra excluir uma classificação (exclude). */
@@ -1505,6 +1649,17 @@ const TaskTemplatesPage = () => {
                           <h3 className="text-sm font-semibold">
                             {entry.office.path || entry.office.name}
                           </h3>
+                          {/* Indica regime manual: taxonomia explícita
+                              em vez de "tudo da base aparece". Operador
+                              adiciona sob demanda via "+ Adicionar". */}
+                          {isManualModeOffice(entry.office.external_id) && (
+                            <span
+                              className="rounded border border-blue-300 bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-blue-700"
+                              title="Esse escritório está em regime MANUAL. As classificações precisam ser adicionadas explicitamente — clica em '+ Adicionar classificação' no fim do card."
+                            >
+                              Regime manual
+                            </span>
+                          )}
                         </div>
                         <div className="flex items-center gap-3 text-xs">
                           <span className="text-emerald-700">
@@ -1668,8 +1823,49 @@ const TaskTemplatesPage = () => {
                         )}
                         {slotsByPhase.size === 0 && (
                           <div className="p-4 text-center text-xs text-muted-foreground">
-                            Todas as classificações cobertas para este escritório.
+                            {isManualModeOffice(entry.office.external_id)
+                              ? "Nenhuma classificação adicionada ainda. Use o botão abaixo pra começar."
+                              : "Todas as classificações cobertas para este escritório."}
                           </div>
+                        )}
+                      </div>
+                      {/* Footer: ações por escritório.
+                          - Regime MANUAL: botão "+ Adicionar classificação".
+                          - Regime LEGADO: botão "Migrar para regime manual"
+                            (admin opt-in; só aparece se operador quiser
+                            converter um escritório que já tem templates). */}
+                      <div className="flex items-center justify-end gap-2 border-t bg-muted/20 px-4 py-2">
+                        {isManualModeOffice(entry.office.external_id) ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              openAddClassificationForOffice(entry.office.external_id)
+                            }
+                          >
+                            <Plus className="mr-1 h-3 w-3" />
+                            Adicionar classificação
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-xs text-muted-foreground"
+                            onClick={() => {
+                              if (
+                                confirm(
+                                  `Converter "${entry.office.path || entry.office.name}" pro regime manual?\n\n` +
+                                  "A taxonomia base deixa de aparecer automaticamente. " +
+                                  "Você precisará adicionar classificações sob demanda. " +
+                                  "Templates existentes ficam preservados."
+                                )
+                              ) {
+                                enableManualModeForOffice(entry.office.external_id);
+                              }
+                            }}
+                          >
+                            Migrar para regime manual…
+                          </Button>
                         )}
                       </div>
                     </div>
@@ -2538,85 +2734,4 @@ const TaskTemplatesPage = () => {
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="Low">Baixa</SelectItem>
-                            <SelectItem value="Normal">Normal</SelectItem>
-                            <SelectItem value="High">Alta</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-
-                    {/* Textos */}
-                    <div className="grid gap-2">
-                      <p className="text-xs text-muted-foreground">
-                        Placeholders:{" "}
-                        <code className="rounded bg-muted px-1">{"{cnj}"}</code>{" "}
-                        <code className="rounded bg-muted px-1">{"{publication_date}"}</code>{" "}
-                        <code className="rounded bg-muted px-1">{"{description}"}</code>
-                      </p>
-                      <div className="grid gap-1.5">
-                        <Label className="text-xs">Descrição da tarefa</Label>
-                        <Textarea
-                          rows={2}
-                          placeholder="Publicação judicial referente ao processo {cnj}..."
-                          value={block.description_template}
-                          onChange={(e) => setBlockField(idx, "description_template", e.target.value)}
-                          className="text-sm"
-                        />
-                      </div>
-                      <div className="grid gap-1.5">
-                        <Label className="text-xs">Observações (notas)</Label>
-                        <Textarea
-                          rows={2}
-                          placeholder="Opcional — aparece no campo Notas da tarefa."
-                          value={block.notes_template}
-                          onChange={(e) => setBlockField(idx, "notes_template", e.target.value)}
-                          className="text-sm"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-
-              {/* Add another task (bottom shortcut) */}
-              <button
-                type="button"
-                onClick={addTaskBlock}
-                className="w-full rounded-lg border border-dashed border-muted-foreground/30 py-2 text-xs text-muted-foreground hover:border-primary/50 hover:text-primary transition-colors flex items-center justify-center gap-1.5"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                Adicionar outra tarefa para esta classificação
-              </button>
-            </div>
-          </div>
-
-          {/* Footer buttons */}
-          <div className="mt-4 flex justify-end gap-3">
-            <Button
-              variant="outline"
-              onClick={() => setDialogOpen(false)}
-              disabled={saving}
-            >
-              Cancelar
-            </Button>
-            <Button onClick={handleSave} disabled={saving}>
-              {saving ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Check className="mr-2 h-4 w-4" />
-              )}
-              {editingId
-                ? newTaskBlockCount > 0
-                  ? `Salvar alterações + criar ${newTaskBlockCount} nova${newTaskBlockCount > 1 ? "s" : ""}`
-                  : "Salvar alterações"
-                : `Criar template (${form.taskBlocks.length} tarefa${form.taskBlocks.length > 1 ? "s" : ""})`}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-};
-
-export default TaskTemplatesPage;
+                            <Selec
