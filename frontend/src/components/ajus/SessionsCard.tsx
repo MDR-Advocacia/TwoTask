@@ -97,6 +97,9 @@ export function SessionsCard() {
   const [accounts, setAccounts] = useState<AjusSessionAccount[]>([]);
   const [loading, setLoading] = useState(false);
   const [actionId, setActionId] = useState<number | null>(null);
+  // Mapa accountId -> lista de screenshots de debug. Carregado on-demand
+  // quando a conta tem last_error_message (geralmente erro de login).
+  const [debugByAcc, setDebugByAcc] = useState<Record<number, { name: string; size: number; mtime: number }[]>>({});
 
   // Modal de cadastro/edição
   const [formOpen, setFormOpen] = useState(false);
@@ -150,7 +153,32 @@ export function SessionsCard() {
         loadAccounts();
       }
     }, 5000);
-    return () => clearInterval(id);
+    // Carrega lista de screenshots de debug pra contas com erro/offline.
+  // Re-roda quando `accounts` muda — capta novos erros gerados pelo runner.
+  useEffect(() => {
+    const accountsWithError = accounts.filter(
+      (a) => a.last_error_message && (a.status === "erro" || a.status === "offline"),
+    );
+    if (accountsWithError.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const updates: Record<number, { name: string; size: number; mtime: number }[]> = {};
+      for (const a of accountsWithError) {
+        try {
+          const files = await listAjusDebugScreenshots(a.id);
+          updates[a.id] = files;
+        } catch {
+          // ignora — endpoint pode falhar se volume nao montado no api
+        }
+      }
+      if (!cancelled && Object.keys(updates).length > 0) {
+        setDebugByAcc((prev) => ({ ...prev, ...updates }));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [accounts]);
+
+  return () => clearInterval(id);
   }, [accounts, loadAccounts]);
 
   // ─── Form handlers ────────────────────────────────────────────────
@@ -369,6 +397,18 @@ export function SessionsCard() {
                   <div className="text-xs text-destructive line-clamp-2" title={a.last_error_message}>
                     {a.last_error_message}
                   </div>
+                )}
+                {(debugByAcc[a.id] && debugByAcc[a.id].length > 0) && (
+                  <a
+                    href={ajusDebugScreenshotUrl(a.id, debugByAcc[a.id][0].name)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-blue-600 hover:underline inline-flex items-center gap-1"
+                    title={`${debugByAcc[a.id].length} screenshot(s) de debug. Mais recente: ${debugByAcc[a.id][0].name}`}
+                  >
+                    <ImageIcon className="h-3 w-3" />
+                    Ver último screenshot ({debugByAcc[a.id].length})
+                  </a>
                 )}
                 {a.last_used_at && (
                   <div className="text-[10px] text-muted-foreground">

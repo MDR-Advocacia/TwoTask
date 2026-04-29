@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import logging
 from datetime import date, time
+from pathlib import Path as FilePath
 from typing import Optional
 
 from fastapi import (
@@ -20,11 +21,11 @@ from fastapi import (
     Depends,
     File,
     HTTPException,
-    Path,
+    Path as FastapiPath,
     Query,
     UploadFile,
 )
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -209,7 +210,7 @@ def create_cod_andamento(
 @router.put("/cod-andamento/{cod_id}", response_model=CodAndamentoOut)
 def update_cod_andamento(
     payload: CodAndamentoIn,
-    cod_id: int = Path(..., ge=1),
+    cod_id: int = FastapiPath(..., ge=1),
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
@@ -231,7 +232,7 @@ def update_cod_andamento(
 
 @router.delete("/cod-andamento/{cod_id}", status_code=204)
 def delete_cod_andamento(
-    cod_id: int = Path(..., ge=1),
+    cod_id: int = FastapiPath(..., ge=1),
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
@@ -322,7 +323,7 @@ def dispatch_pending(
 
 @router.post("/andamentos/{item_id}/cancel", response_model=AndamentoQueueOut)
 def cancel_andamento(
-    item_id: int = Path(..., ge=1),
+    item_id: int = FastapiPath(..., ge=1),
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
@@ -338,7 +339,7 @@ def cancel_andamento(
 
 @router.post("/andamentos/{item_id}/retry", response_model=AndamentoQueueOut)
 def retry_andamento(
-    item_id: int = Path(..., ge=1),
+    item_id: int = FastapiPath(..., ge=1),
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
@@ -812,7 +813,7 @@ def create_session(
 )
 def update_session(
     payload: SessionAccountUpdateIn,
-    account_id: int = Path(..., ge=1),
+    account_id: int = FastapiPath(..., ge=1),
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
@@ -833,7 +834,7 @@ def update_session(
     "/classificacao/sessions/{account_id}", status_code=204,
 )
 def delete_session(
-    account_id: int = Path(..., ge=1),
+    account_id: int = FastapiPath(..., ge=1),
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
@@ -852,7 +853,7 @@ def delete_session(
     summary="Solicita que o runner faça login nessa conta.",
 )
 def request_login(
-    account_id: int = Path(..., ge=1),
+    account_id: int = FastapiPath(..., ge=1),
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
@@ -871,7 +872,7 @@ def request_login(
 )
 def submit_ip_code(
     payload: IpCodeIn,
-    account_id: int = Path(..., ge=1),
+    account_id: int = FastapiPath(..., ge=1),
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
@@ -889,7 +890,7 @@ def submit_ip_code(
     response_model=SessionAccountOut,
 )
 def request_logout(
-    account_id: int = Path(..., ge=1),
+    account_id: int = FastapiPath(..., ge=1),
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
@@ -1001,12 +1002,80 @@ def dispatch_classif(
     )
 
 
+# ── Debug screenshots dos logins (volume `ajus_session`, read-only) ─
+
+
+@router.get(
+    "/classificacao/sessions/{account_id}/debug-screenshots",
+    summary="Lista screenshots de debug de uma conta (gerados em falhas de login).",
+)
+def list_debug_screenshots(
+    account_id: int = FastapiPath(..., ge=1),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    """
+    Retorna lista de PNGs salvos pelo runner no volume da conta.
+    O runner cria esses arquivos quando o login falha — ajudam o
+    operador a ver o que o headless Chromium estava vendo.
+    """
+    from app.core.config import settings as _s
+    base = FilePath(_s.ajus_session_path) / str(account_id)
+    if not base.exists() or not base.is_dir():
+        return {"files": []}
+    files = sorted(
+        (
+            {
+                "name": f.name,
+                "size": f.stat().st_size,
+                "mtime": f.stat().st_mtime,
+            }
+            for f in base.iterdir()
+            if f.is_file() and f.name.startswith("debug-") and f.name.endswith(".png")
+        ),
+        key=lambda d: d["mtime"],
+        reverse=True,
+    )
+    return {"files": files}
+
+
+@router.get(
+    "/classificacao/sessions/{account_id}/debug-screenshots/{filename}",
+    summary="Serve o PNG de debug por nome de arquivo.",
+)
+def get_debug_screenshot(
+    account_id: int = FastapiPath(..., ge=1),
+    filename: str = FastapiPath(..., min_length=1, max_length=128),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    """
+    Serve o PNG de debug. Valida nome do arquivo pra evitar path
+    traversal — soh aceita o padrao `debug-...png`.
+    """
+    from app.core.config import settings as _s
+    if (
+        ".." in filename
+        or "/" in filename
+        or "\\" in filename
+        or not filename.startswith("debug-")
+        or not filename.endswith(".png")
+    ):
+        raise HTTPException(status_code=400, detail="Nome de arquivo invalido.")
+    fp = FilePath(_s.ajus_session_path) / str(account_id) / filename
+    if not fp.exists() or not fp.is_file():
+        raise HTTPException(status_code=404, detail="Screenshot nao encontrado.")
+    return FileResponse(
+        path=str(fp),
+        media_type="image/png",
+        filename=filename,
+    )
+
+
 # ── Detalhe + mutações por item (DEPOIS dos paths estáticos) ────────
 
 
 @router.get("/classificacao/{item_id}", response_model=ClassifQueueOut)
 def get_classif(
-    item_id: int = Path(..., ge=1),
+    item_id: int = FastapiPath(..., ge=1),
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
@@ -1020,7 +1089,7 @@ def get_classif(
 @router.put("/classificacao/{item_id}", response_model=ClassifQueueOut)
 def update_classif(
     payload: ClassifQueueUpdateIn,
-    item_id: int = Path(..., ge=1),
+    item_id: int = FastapiPath(..., ge=1),
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
@@ -1043,7 +1112,7 @@ def update_classif(
 
 @router.post("/classificacao/{item_id}/cancel", response_model=ClassifQueueOut)
 def cancel_classif(
-    item_id: int = Path(..., ge=1),
+    item_id: int = FastapiPath(..., ge=1),
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
@@ -1059,7 +1128,7 @@ def cancel_classif(
 
 @router.post("/classificacao/{item_id}/retry", response_model=ClassifQueueOut)
 def retry_classif(
-    item_id: int = Path(..., ge=1),
+    item_id: int = FastapiPath(..., ge=1),
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):

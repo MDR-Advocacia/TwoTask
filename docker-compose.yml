@@ -60,6 +60,10 @@ services:
     volumes:
       - api_data:/app/data
       - api_output:/app/output
+      # Volume compartilhado com ajus-runner em modo READ-ONLY pra que
+      # o endpoint /ajus/classificacao/sessions/{id}/debug-screenshots
+      # consiga servir os PNGs gerados pelo runner em caso de falha de login.
+      - ajus_session:/app/data/ajus-session:ro
     healthcheck:
       test:
         - CMD-SHELL

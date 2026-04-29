@@ -910,6 +910,31 @@ export function ajusClassifTemplateXlsxUrl(): string {
   return `/api/v1/ajus/classificacao/template.xlsx`;
 }
 
+export interface AjusDebugScreenshot {
+  name: string;
+  size: number;
+  mtime: number;
+}
+
+/** Lista screenshots de debug salvos pelo runner em falhas de login. */
+export async function listAjusDebugScreenshots(
+  accountId: number,
+): Promise<AjusDebugScreenshot[]> {
+  const res = await apiFetch(
+    `/api/v1/ajus/classificacao/sessions/${accountId}/debug-screenshots`,
+  );
+  const data = await expectJson<{ files: AjusDebugScreenshot[] }>(res);
+  return data.files;
+}
+
+/** URL absoluta pra abrir um screenshot em nova aba (img tag/<a href>). */
+export function ajusDebugScreenshotUrl(
+  accountId: number,
+  filename: string,
+): string {
+  return `/api/v1/ajus/classificacao/sessions/${accountId}/debug-screenshots/${encodeURIComponent(filename)}`;
+}
+
 // ─── Sessões AJUS (Chunk 2) ─────────────────────────────────────────
 
 export async function fetchAjusSessionConfig(): Promise<AjusSessionConfig> {
