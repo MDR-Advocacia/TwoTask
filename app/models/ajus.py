@@ -320,9 +320,102 @@ class AjusClassificacaoQueue(Base):
         nullable=False,
     )
 
+    # FK pra conta que executou o dispatch (Chunk 2). NULL enquanto
+    # pendente; preenchido quando dispatcher pega o item. Permite
+    # filtrar histórico por conta.
+    dispatched_by_account_id = Column(
+        Integer,
+        ForeignKey("ajus_session_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     # Relationship
     intake = relationship(
         "PrazoInicialIntake",
         primaryjoin="AjusClassificacaoQueue.intake_id == PrazoInicialIntake.id",
         foreign_keys=[intake_id],
+    )
+    dispatched_by_account = relationship(
+        "AjusSessionAccount",
+        primaryjoin=(
+            "AjusClassificacaoQueue.dispatched_by_account_id == "
+            "AjusSessionAccount.id"
+        ),
+        foreign_keys=[dispatched_by_account_id],
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Sessão AJUS — multi-conta (Chunk 2 — runner Playwright)
+# ═══════════════════════════════════════════════════════════════════════
+# Pra rodar a classificação na capa do AJUS via RPA precisamos de
+# sessões autenticadas. O cliente do MDR usa várias contas humanas que
+# também são usadas pelo robô — diluir tráfego entre N contas evita
+# rate-limit, ganha throughput pra zerar o backlog (~2.300 processos)
+# e adiciona resiliência (se uma conta cair na validação de IP, as
+# outras continuam).
+
+# Status da conta — ver docstring da migration ajus003.
+AJUS_ACCOUNT_OFFLINE = "offline"
+AJUS_ACCOUNT_LOGANDO = "logando"
+AJUS_ACCOUNT_AGUARDANDO_IP = "aguardando_ip_code"
+AJUS_ACCOUNT_ONLINE = "online"
+AJUS_ACCOUNT_EXECUTANDO = "executando"
+AJUS_ACCOUNT_ERRO = "erro"
+
+AJUS_ACCOUNT_STATUSES = frozenset({
+    AJUS_ACCOUNT_OFFLINE,
+    AJUS_ACCOUNT_LOGANDO,
+    AJUS_ACCOUNT_AGUARDANDO_IP,
+    AJUS_ACCOUNT_ONLINE,
+    AJUS_ACCOUNT_EXECUTANDO,
+    AJUS_ACCOUNT_ERRO,
+})
+
+
+class AjusSessionAccount(Base):
+    """
+    Conta de operador no AJUS usada pelo runner Playwright.
+
+    Senha vai criptografada (Fernet, env `AJUS_FERNET_KEY`). O
+    `storage_state_path` aponta pra um arquivo dentro do volume
+    persistente `/data/ajus-session/` mantido pelo container
+    `ajus-runner` (Chunk 2c). Status muda conforme o flow do runner.
+    """
+
+    __tablename__ = "ajus_session_accounts"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('offline','logando','aguardando_ip_code',"
+            "'online','executando','erro')",
+            name="ck_ajus_session_accounts_status",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    label = Column(String(64), nullable=False, unique=True)
+    login = Column(String(128), nullable=False)
+    encrypted_password = Column(Text, nullable=False)
+    storage_state_path = Column(String(255), nullable=True)
+
+    status = Column(
+        String(24), nullable=False, default=AJUS_ACCOUNT_OFFLINE, index=True,
+    )
+    pending_ip_code = Column(String(32), nullable=True)
+
+    last_error_message = Column(Text, nullable=True)
+    last_error_at = Column(DateTime(timezone=True), nullable=True)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )

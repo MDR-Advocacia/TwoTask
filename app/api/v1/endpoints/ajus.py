@@ -36,6 +36,12 @@ from app.models.ajus import (
     AjusAndamentoQueue,
     AjusClassificacaoQueue,
     AjusCodAndamento,
+    AjusSessionAccount,
+)
+from app.services.ajus.crypto import is_configured as ajus_crypto_configured
+from app.services.ajus.session_service import (
+    AjusSessionService,
+    has_storage_state,
 )
 from app.models.legal_one import LegalOneUser
 from app.services.ajus.classificacao_service import (
@@ -746,3 +752,221 @@ def retry_classif(
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _classif_to_out(item)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Sessões AJUS — multi-conta (Chunk 2a)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class SessionAccountIn(BaseModel):
+    label: str = Field(..., min_length=1, max_length=64)
+    login: str = Field(..., min_length=1, max_length=128)
+    password: str = Field(..., min_length=1)
+
+
+class SessionAccountUpdateIn(BaseModel):
+    label: Optional[str] = Field(default=None, max_length=64)
+    login: Optional[str] = Field(default=None, max_length=128)
+    password: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class SessionAccountOut(BaseModel):
+    id: int
+    label: str
+    login: str
+    status: str
+    has_storage_state: bool
+    has_pending_ip_code: bool
+    last_error_message: Optional[str]
+    last_error_at: Optional[str]
+    last_used_at: Optional[str]
+    is_active: bool
+    created_at: Optional[str]
+    updated_at: Optional[str]
+
+
+class SessionConfigOut(BaseModel):
+    crypto_configured: bool
+    portal_base_url: str
+
+
+class IpCodeIn(BaseModel):
+    code: str = Field(..., min_length=1, max_length=32)
+
+
+def _session_to_out(obj: AjusSessionAccount) -> SessionAccountOut:
+    return SessionAccountOut(
+        id=obj.id,
+        label=obj.label,
+        login=obj.login,
+        status=obj.status,
+        has_storage_state=has_storage_state(obj),
+        has_pending_ip_code=bool(obj.pending_ip_code),
+        last_error_message=obj.last_error_message,
+        last_error_at=(
+            obj.last_error_at.isoformat() if obj.last_error_at else None
+        ),
+        last_used_at=(
+            obj.last_used_at.isoformat() if obj.last_used_at else None
+        ),
+        is_active=obj.is_active,
+        created_at=obj.created_at.isoformat() if obj.created_at else None,
+        updated_at=obj.updated_at.isoformat() if obj.updated_at else None,
+    )
+
+
+@router.get(
+    "/classificacao/sessions/config", response_model=SessionConfigOut,
+)
+def get_session_config(
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    from app.core.config import settings as _s
+    return SessionConfigOut(
+        crypto_configured=ajus_crypto_configured(),
+        portal_base_url=_s.ajus_portal_base_url,
+    )
+
+
+@router.get(
+    "/classificacao/sessions", response_model=list[SessionAccountOut],
+)
+def list_sessions(
+    only_active: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    accounts = AjusSessionService(db).list_accounts(only_active=only_active)
+    return [_session_to_out(a) for a in accounts]
+
+
+@router.post(
+    "/classificacao/sessions",
+    response_model=SessionAccountOut,
+    status_code=201,
+)
+def create_session(
+    payload: SessionAccountIn,
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    if not ajus_crypto_configured():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "AJUS_FERNET_KEY não configurada. Adicione a variável "
+                "no painel do Coolify antes de cadastrar contas."
+            ),
+        )
+    try:
+        obj = AjusSessionService(db).create_account(
+            label=payload.label,
+            login=payload.login,
+            password=payload.password,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=409,
+            detail=f"Falha ao criar conta (label duplicado?): {exc}",
+        ) from exc
+    return _session_to_out(obj)
+
+
+@router.put(
+    "/classificacao/sessions/{account_id}",
+    response_model=SessionAccountOut,
+)
+def update_session(
+    payload: SessionAccountUpdateIn,
+    account_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    try:
+        obj = AjusSessionService(db).update_account(
+            account_id,
+            label=payload.label,
+            login=payload.login,
+            password=payload.password,
+            is_active=payload.is_active,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _session_to_out(obj)
+
+
+@router.delete(
+    "/classificacao/sessions/{account_id}", status_code=204,
+)
+def delete_session(
+    account_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    try:
+        AjusSessionService(db).delete_account(account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return None
+
+
+@router.post(
+    "/classificacao/sessions/{account_id}/login",
+    response_model=SessionAccountOut,
+    summary="Solicita que o runner faça login nessa conta.",
+)
+def request_login(
+    account_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    try:
+        obj = AjusSessionService(db).request_login(account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _session_to_out(obj)
+
+
+@router.post(
+    "/classificacao/sessions/{account_id}/ip-code",
+    response_model=SessionAccountOut,
+)
+def submit_ip_code(
+    payload: IpCodeIn,
+    account_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    try:
+        obj = AjusSessionService(db).submit_ip_code(account_id, payload.code)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _session_to_out(obj)
+
+
+@router.post(
+    "/classificacao/sessions/{account_id}/logout",
+    response_model=SessionAccountOut,
+)
+def request_logout(
+    account_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    try:
+        obj = AjusSessionService(db).request_logout(account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _session_to_out(obj)

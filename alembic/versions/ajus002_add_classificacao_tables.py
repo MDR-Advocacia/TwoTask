@@ -130,6 +130,7 @@ def upgrade() -> None:
         ),
     )
 
+
     # Seed do singleton de defaults (id=1, valores nulos — admin edita
     # pela UI antes do primeiro intake_auto começar a popular a fila).
     op.execute(

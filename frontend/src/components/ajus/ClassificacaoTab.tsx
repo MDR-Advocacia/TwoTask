@@ -78,6 +78,7 @@ import type {
   AjusClassifQueueUpdatePayload,
   AjusClassifStatus,
 } from "@/types/api";
+import { SessionsCard } from "@/components/ajus/SessionsCard";
 
 const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "__all__", label: "Todos os status" },
@@ -314,6 +315,9 @@ export function ClassificacaoTab() {
   // ─── Render ───────────────────────────────────────────────────────
   return (
     <div className="space-y-4">
+      {/* Card de sessões AJUS (multi-conta) */}
+      <SessionsCard />
+
       {/* Aviso defaults vazios */}
       {defaults && (!defaults.default_matter || !defaults.default_risk_loss_probability) && (
         <Alert>

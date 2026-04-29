@@ -589,6 +589,49 @@ export interface AjusClassifUploadResponse {
   skipped: { cnj: string; motivo: string }[];
 }
 
+// ─── Sessões AJUS (Chunk 2 — multi-conta) ─────────────────────────────
+
+export type AjusAccountStatus =
+  | "offline"
+  | "logando"
+  | "aguardando_ip_code"
+  | "online"
+  | "executando"
+  | "erro";
+
+export interface AjusSessionAccount {
+  id: number;
+  label: string;
+  login: string;
+  status: AjusAccountStatus;
+  has_storage_state: boolean;
+  has_pending_ip_code: boolean;
+  last_error_message: string | null;
+  last_error_at: string | null;
+  last_used_at: string | null;
+  is_active: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface AjusSessionConfig {
+  crypto_configured: boolean;
+  portal_base_url: string;
+}
+
+export interface AjusSessionCreatePayload {
+  label: string;
+  login: string;
+  password: string;
+}
+
+export interface AjusSessionUpdatePayload {
+  label?: string;
+  login?: string;
+  password?: string;        // se vier, troca senha + invalida storage
+  is_active?: boolean;
+}
+
 export interface PrazoInicialLegacyTaskLastTickState {
   tick_id: string | null;
   started_at: string | null;

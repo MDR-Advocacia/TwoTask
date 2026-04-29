@@ -6,6 +6,10 @@ import {
   AjusClassifQueueListResponse,
   AjusClassifQueueUpdatePayload,
   AjusClassifUploadResponse,
+  AjusSessionAccount,
+  AjusSessionConfig,
+  AjusSessionCreatePayload,
+  AjusSessionUpdatePayload,
   AjusCodAndamento,
   AjusCodAndamentoCreatePayload,
   AjusDispatchBatchResponse,
@@ -881,4 +885,84 @@ export async function uploadAjusClassifXlsx(
 /** URL absoluta pra link de download do template (operador clica direto). */
 export function ajusClassifTemplateXlsxUrl(): string {
   return `/api/v1/ajus/classificacao/template.xlsx`;
+}
+
+// ─── Sessões AJUS (Chunk 2) ─────────────────────────────────────────
+
+export async function fetchAjusSessionConfig(): Promise<AjusSessionConfig> {
+  const res = await apiFetch(`/api/v1/ajus/classificacao/sessions/config`);
+  return expectJson<AjusSessionConfig>(res);
+}
+
+export async function fetchAjusSessions(): Promise<AjusSessionAccount[]> {
+  const res = await apiFetch(`/api/v1/ajus/classificacao/sessions`);
+  return expectJson<AjusSessionAccount[]>(res);
+}
+
+export async function createAjusSession(
+  payload: AjusSessionCreatePayload,
+): Promise<AjusSessionAccount> {
+  const res = await apiFetch(`/api/v1/ajus/classificacao/sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return expectJson<AjusSessionAccount>(res);
+}
+
+export async function updateAjusSession(
+  id: number,
+  payload: AjusSessionUpdatePayload,
+): Promise<AjusSessionAccount> {
+  const res = await apiFetch(`/api/v1/ajus/classificacao/sessions/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return expectJson<AjusSessionAccount>(res);
+}
+
+export async function deleteAjusSession(id: number): Promise<void> {
+  const res = await apiFetch(`/api/v1/ajus/classificacao/sessions/${id}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 204) {
+    let detail = "Falha ao deletar sessão.";
+    try {
+      const data = await res.json();
+      detail = data?.detail || detail;
+    } catch (_) { /* sem body */ }
+    throw new Error(detail);
+  }
+}
+
+export async function loginAjusSession(id: number): Promise<AjusSessionAccount> {
+  const res = await apiFetch(
+    `/api/v1/ajus/classificacao/sessions/${id}/login`,
+    { method: "POST" },
+  );
+  return expectJson<AjusSessionAccount>(res);
+}
+
+export async function submitAjusSessionIpCode(
+  id: number,
+  code: string,
+): Promise<AjusSessionAccount> {
+  const res = await apiFetch(
+    `/api/v1/ajus/classificacao/sessions/${id}/ip-code`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    },
+  );
+  return expectJson<AjusSessionAccount>(res);
+}
+
+export async function logoutAjusSession(id: number): Promise<AjusSessionAccount> {
+  const res = await apiFetch(
+    `/api/v1/ajus/classificacao/sessions/${id}/logout`,
+    { method: "POST" },
+  );
+  return expectJson<AjusSessionAccount>(res);
 }

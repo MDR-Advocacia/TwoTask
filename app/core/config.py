@@ -142,6 +142,24 @@ class Settings(BaseSettings):
     # automaticamente após inserção bem-sucedida (sucesso da AJUS).
     ajus_storage_path: str = "/app/data/ajus_pdfs"
 
+    # ── Classificação AJUS via RPA Playwright (Chunk 2) ───────────────
+    # Volume persistente onde cada conta AJUS guarda seu storage_state.
+    # Layout: <root>/<account_id>/storage_state.json. Volume é
+    # compartilhado entre o container API e o `ajus-runner` (que roda
+    # o Playwright). Em prod (Coolify) montar `/data/ajus-session/`.
+    ajus_session_path: str = "/app/data/ajus-session"
+    # Key Fernet pra criptografar a senha das contas AJUS na tabela
+    # `ajus_session_accounts`. Gerar com Fernet.generate_key() — nunca
+    # commitar valor real. Sem essa key configurada, o módulo de
+    # classificação fica desabilitado (não loga, não dispara).
+    ajus_fernet_key: str | None = None
+    # URL base do portal AJUS (interface web — diferente do
+    # `ajus_base_url` da API REST de andamentos). Ex.:
+    # "https://sistema.ajus.com.br". O runner abre essa URL +
+    # `ajus_login_path` no Playwright.
+    ajus_portal_base_url: str = "https://sistema.ajus.com.br"
+    ajus_login_path: str = "/login"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -164,6 +182,7 @@ class Settings(BaseSettings):
             for content_type in self.spreadsheet_allowed_content_types.split(",")
             if content_type.strip()
         }
+
 
     @property
     def prazos_iniciais_api_keys(self) -> set[str]:
