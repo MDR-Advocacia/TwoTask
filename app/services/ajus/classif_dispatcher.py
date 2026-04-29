@@ -56,6 +56,11 @@ class DispatchResult:
     success_ids: list[int]
     errored: list[dict]
     accounts_used: list[int]
+    # Sinaliza que o login da conta caiu — dispatch_all usa pra marcar
+    # conta como erro no release (em vez de devolver online e cair em
+    # loop infinito de claim/falha).
+    auth_failed: bool = False
+    auth_error: str = ""
 
 
 def _claim_pending_items(
@@ -139,6 +144,7 @@ class AjusClassifDispatcher:
             account = self.session_service.claim_for_run()
             if account is None:
                 break
+            acc_result: Optional[DispatchResult] = None
             try:
                 acc_result = self._run_for_account(
                     account, batch_size=batch_per_account,
@@ -150,8 +156,22 @@ class AjusClassifDispatcher:
                 result.errored.extend(acc_result.errored)
                 result.accounts_used.append(account.id)
             finally:
-                self.session_service.release_run(account.id)
+                # Se o login da conta caiu, marca como erro pra parar
+                # o loop de reclaim. Senao, devolve pra online normal.
+                if acc_result is not None and acc_result.auth_failed:
+                    self.session_service.release_run(
+                        account.id,
+                        had_error=True,
+                        error_message=acc_result.auth_error,
+                    )
+                else:
+                    self.session_service.release_run(account.id)
                 _release_unprocessed(self.db, account.id)
+                # Se a conta caiu, NAO continua o loop tentando outras
+                # iteracoes (proxima claim_for_run pode ate retornar None,
+                # mas evita corrida com fast-poll do worker).
+                if acc_result is not None and acc_result.auth_failed:
+                    break
 
         return result
 
@@ -230,13 +250,18 @@ class AjusClassifDispatcher:
                     "AJUS dispatcher: falha no login da account %d — "
                     "devolvendo itens pra fila.", account.id,
                 )
+                # Devolve os itens pra fila (zera dispatched_by_account_id)
+                # em vez de marcar como erro — o problema eh da CONTA,
+                # nao do item. Operador faz Login de novo e tenta.
                 for item in items:
-                    self.classif_service.mark_error(
-                        item.id,
-                        error_message=f"Login da conta falhou: {exc}",
-                    )
+                    item.dispatched_by_account_id = None
                     result.errored.append({"id": item.id, "msg": str(exc)})
                     result.error_count += 1
+                self.db.commit()
+                # Sinaliza pro dispatch_all marcar a conta como erro no
+                # release (sem isso, conta volta pra online e o loop reclaima).
+                result.auth_failed = True
+                result.auth_error = str(exc)[:500]
                 return result
 
             for item in items:

@@ -175,6 +175,32 @@ class AjusClassifRunner:
 
     # ── Login ───────────────────────────────────────────────────────
 
+    def _dump_login_state(self, label: str) -> str:
+        """
+        Salva screenshot + URL + título no volume da conta pra debug
+        do flow de login. Retorna mensagem com a URL/path do PNG —
+        anexa em error_message pra mostrar na UI.
+        """
+        try:
+            ensure_account_dir(self.account)
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            png = (
+                Path(settings.ajus_session_path)
+                / str(self.account.id)
+                / f"debug-{label}-{ts}.png"
+            )
+            self._page.screenshot(path=str(png), full_page=True)
+            url = self._page.url
+            title = self._page.title()
+            logger.error(
+                "AJUS runner DEBUG[%s] account=%d url=%r title=%r screenshot=%s",
+                label, self.account.id, url, title, png,
+            )
+            return f"url={url} | title={title!r} | screenshot={png.name}"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Falha ao dump_login_state: %s", exc)
+            return "(falha ao capturar debug)"
+
     def ensure_logged_in(self) -> None:
         """
         Garante que a conta está autenticada. Se já tem storage_state
@@ -227,12 +253,17 @@ class AjusClassifRunner:
             self._handle_ip_validation()
             outcome = self._wait_for_login_outcome()
         if outcome != "workspace":
+            debug = self._dump_login_state("login-failed")
             self.session_service.set_status(
                 self.account.id, AJUS_ACCOUNT_OFFLINE,
-                error_message="AJUS não fechou a tela de login após enviar credenciais.",
+                error_message=(
+                    "AJUS nao fechou a tela de login apos enviar credenciais. "
+                    f"outcome={outcome} | {debug}"
+                ),
             )
             raise AjusRunnerError(
-                "AJUS não chegou no workspace após login. Confira credenciais.",
+                f"AJUS nao chegou no workspace apos login (outcome={outcome}). "
+                f"Veja {debug}",
             )
 
         self._persist_storage_state()
@@ -249,11 +280,28 @@ class AjusClassifRunner:
     def _is_ip_auth_visible(self) -> bool:
         """
         AJUS mostra um campo de validação de IP depois do login regular.
-        Selector exato (porte do Mirror): `input[name='codigoAuth']`.
+        Tenta primeiro o selector exato (porte do Mirror). Se nao casar,
+        cai em heuristicas (texto "validacao", "codigo", "IP") — layouts
+        novos do AJUS podem ter renomeado o input.
         """
         try:
             el = self._page.query_selector(portal.IP_AUTH_INPUT_SELECTOR)
-            return bool(el and el.is_visible())
+            if el and el.is_visible():
+                return True
+            # Heuristica fallback
+            generic = self._page.query_selector(
+                "input[name*='codigo' i], input[name*='code' i], "
+                "input[id*='codigo' i], input[id*='auth' i]"
+            )
+            if generic and generic.is_visible():
+                return True
+            # Heuristica por texto visivel
+            for txt in ("Validação de IP", "Codigo de validação",
+                        "Código de validação", "Validar IP"):
+                loc = self._page.query_selector(f"text={txt}")
+                if loc and loc.is_visible():
+                    return True
+            return False
         except Exception:
             return False
 
