@@ -193,3 +193,136 @@ class AjusAndamentoQueue(Base):
         primaryjoin="AjusAndamentoQueue.intake_id == PrazoInicialIntake.id",
         foreign_keys=[intake_id],
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Módulo de Classificação AJUS (Chunk 1 — Mirror porting)
+# ═══════════════════════════════════════════════════════════════════════
+# Para o AJUS reconhecer um andamento e gerar remuneração ao escritório,
+# a pasta do processo precisa estar CLASSIFICADA na capa (5 campos: UF,
+# Comarca, Matéria, Justiça/Honorário, Risco/Prob. Perda). O Mirror já
+# fazia isso via RPA Playwright com 100% de sucesso. Aqui modelamos a
+# fila e os defaults — o runner Playwright vem no Chunk 2.
+
+# Status da fila de classificação
+AJUS_CLASSIF_PENDENTE = "pendente"
+AJUS_CLASSIF_PROCESSANDO = "processando"
+AJUS_CLASSIF_SUCESSO = "sucesso"
+AJUS_CLASSIF_ERRO = "erro"
+AJUS_CLASSIF_CANCELADO = "cancelado"
+
+AJUS_CLASSIF_STATUSES = frozenset({
+    AJUS_CLASSIF_PENDENTE,
+    AJUS_CLASSIF_PROCESSANDO,
+    AJUS_CLASSIF_SUCESSO,
+    AJUS_CLASSIF_ERRO,
+    AJUS_CLASSIF_CANCELADO,
+})
+
+# Origem do item na fila de classificação
+AJUS_CLASSIF_ORIGEM_INTAKE = "intake_auto"
+AJUS_CLASSIF_ORIGEM_PLANILHA = "planilha"
+
+
+class AjusClassificacaoDefaults(Base):
+    """
+    Singleton (id=1) com defaults usados pra preencher os campos quando
+    o intake de prazos iniciais é enfileirado automaticamente.
+
+    Operador admin edita pela UI: define `default_matter` (ex.:
+    "Cumprimento de Sentença") e `default_risk_loss_probability` (ex.:
+    "Remoto"). Sem isso preenchido, intake_auto fica com NULL nesses
+    campos e o operador edita por linha antes de disparar.
+    """
+
+    __tablename__ = "ajus_classificacao_defaults"
+    __table_args__ = (
+        # CHECK que garante singleton (apenas id=1 permitido).
+        # Definido na migration via raw SQL.
+    )
+
+    id = Column(Integer, primary_key=True)
+    default_matter = Column(String(255), nullable=True)
+    default_risk_loss_probability = Column(String(255), nullable=True)
+
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class AjusClassificacaoQueue(Base):
+    """
+    Fila de processos a classificar na capa do AJUS via RPA Playwright.
+
+    1 CNJ = 1 item (UNIQUE). Se o operador subir o mesmo CNJ duas vezes
+    (planilha) ou se um intake duplicado tentar enfileirar, a segunda
+    inserção é ignorada/atualizada conforme caller.
+
+    Origens:
+      - `intake_auto`: criado pelo hook do intake_service quando intake
+        passa pra status RECEBIDO. Preenche UF (do CNJ), Comarca
+        (Jurisdição do intake -> fallback vara), Matéria + Risco
+        (defaults). `justice_fee` fica NULL — operador edita.
+      - `planilha`: upload XLSX com TODOS os campos preenchidos pelo
+        operador. Mais controlado, usado pra estoque legado.
+    """
+
+    __tablename__ = "ajus_classificacao_queue"
+    __table_args__ = (
+        CheckConstraint(
+            "origem IN ('intake_auto','planilha')",
+            name="ck_ajus_classif_queue_origem",
+        ),
+        CheckConstraint(
+            "status IN ('pendente','processando','sucesso','erro','cancelado')",
+            name="ck_ajus_classif_queue_status",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    cnj_number = Column(String(25), nullable=False, unique=True, index=True)
+    intake_id = Column(
+        Integer,
+        ForeignKey("prazo_inicial_intakes.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    origem = Column(String(16), nullable=False, index=True)
+
+    # Campos da capa do processo no AJUS
+    uf = Column(String(8), nullable=True)
+    comarca = Column(String(255), nullable=True)
+    matter = Column(String(255), nullable=True)
+    justice_fee = Column(String(255), nullable=True)
+    risk_loss_probability = Column(String(255), nullable=True)
+
+    status = Column(
+        String(16), nullable=False, default="pendente", index=True,
+    )
+    error_message = Column(Text, nullable=True)
+    last_log = Column(Text, nullable=True)
+    executed_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    # Relationship
+    intake = relationship(
+        "PrazoInicialIntake",
+        primaryjoin="AjusClassificacaoQueue.intake_id == PrazoInicialIntake.id",
+        foreign_keys=[intake_id],
+    )

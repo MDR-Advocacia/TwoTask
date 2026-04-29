@@ -58,6 +58,7 @@ import type {
   AjusQueueStatus,
 } from "@/types/api";
 import { CodAndamentoFormDialog } from "@/components/ajus/CodAndamentoFormDialog";
+import { ClassificacaoTab } from "@/components/ajus/ClassificacaoTab";
 
 const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "__all__", label: "Todos os status" },
@@ -269,6 +270,7 @@ export default function AjusPage() {
       <Tabs defaultValue="andamentos" className="space-y-4">
         <TabsList>
           <TabsTrigger value="andamentos">Andamentos</TabsTrigger>
+          <TabsTrigger value="classificacao">Classificação</TabsTrigger>
           <TabsTrigger value="codigos">Códigos de Andamento</TabsTrigger>
         </TabsList>
 
@@ -471,6 +473,11 @@ export default function AjusPage() {
               </Table>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* ═══ ABA: CLASSIFICAÇÃO ═══ */}
+        <TabsContent value="classificacao" className="space-y-4">
+          <ClassificacaoTab />
         </TabsContent>
 
         {/* ═══ ABA: CÓDIGOS ═══ */}

@@ -1,6 +1,11 @@
 import { apiFetch } from "@/lib/api-client";
 import {
   AjusAndamentoQueueListResponse,
+  AjusClassifDefaults,
+  AjusClassifQueueItem,
+  AjusClassifQueueListResponse,
+  AjusClassifQueueUpdatePayload,
+  AjusClassifUploadResponse,
   AjusCodAndamento,
   AjusCodAndamentoCreatePayload,
   AjusDispatchBatchResponse,
@@ -784,4 +789,96 @@ export async function retryAjusAndamento(itemId: number) {
     { method: "POST" },
   );
   return expectJson(res);
+}
+
+// ─── Classificação AJUS (Chunk 1) ────────────────────────────────────
+
+export async function fetchAjusClassifDefaults(): Promise<AjusClassifDefaults> {
+  const res = await apiFetch(`/api/v1/ajus/classificacao/defaults`);
+  return expectJson<AjusClassifDefaults>(res);
+}
+
+export async function updateAjusClassifDefaults(
+  payload: { default_matter: string | null; default_risk_loss_probability: string | null },
+): Promise<AjusClassifDefaults> {
+  const res = await apiFetch(`/api/v1/ajus/classificacao/defaults`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return expectJson<AjusClassifDefaults>(res);
+}
+
+export interface AjusClassifFilters {
+  status?: string;        // CSV
+  origem?: "intake_auto" | "planilha";
+  cnj_search?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function fetchAjusClassif(
+  filters: AjusClassifFilters = {},
+): Promise<AjusClassifQueueListResponse> {
+  const params = new URLSearchParams();
+  if (filters.status) params.set("status", filters.status);
+  if (filters.origem) params.set("origem", filters.origem);
+  if (filters.cnj_search) params.set("cnj_search", filters.cnj_search);
+  if (typeof filters.limit === "number") params.set("limit", String(filters.limit));
+  if (typeof filters.offset === "number") params.set("offset", String(filters.offset));
+  const qs = params.toString();
+  const res = await apiFetch(
+    `/api/v1/ajus/classificacao${qs ? `?${qs}` : ""}`,
+  );
+  return expectJson<AjusClassifQueueListResponse>(res);
+}
+
+export async function fetchAjusClassifItem(itemId: number): Promise<AjusClassifQueueItem> {
+  const res = await apiFetch(`/api/v1/ajus/classificacao/${itemId}`);
+  return expectJson<AjusClassifQueueItem>(res);
+}
+
+export async function updateAjusClassifItem(
+  itemId: number,
+  payload: AjusClassifQueueUpdatePayload,
+): Promise<AjusClassifQueueItem> {
+  const res = await apiFetch(`/api/v1/ajus/classificacao/${itemId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return expectJson<AjusClassifQueueItem>(res);
+}
+
+export async function cancelAjusClassifItem(itemId: number): Promise<AjusClassifQueueItem> {
+  const res = await apiFetch(
+    `/api/v1/ajus/classificacao/${itemId}/cancel`,
+    { method: "POST" },
+  );
+  return expectJson<AjusClassifQueueItem>(res);
+}
+
+export async function retryAjusClassifItem(itemId: number): Promise<AjusClassifQueueItem> {
+  const res = await apiFetch(
+    `/api/v1/ajus/classificacao/${itemId}/retry`,
+    { method: "POST" },
+  );
+  return expectJson<AjusClassifQueueItem>(res);
+}
+
+export async function uploadAjusClassifXlsx(
+  file: File,
+): Promise<AjusClassifUploadResponse> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await apiFetch(`/api/v1/ajus/classificacao/upload-xlsx`, {
+    method: "POST",
+    body: fd,
+  });
+  return expectJson<AjusClassifUploadResponse>(res);
+}
+
+/** URL absoluta pra link de download do template (operador clica direto). */
+export function ajusClassifTemplateXlsxUrl(): string {
+  return `/api/v1/ajus/classificacao/template.xlsx`;
 }

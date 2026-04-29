@@ -10,11 +10,21 @@ no futuro.
 
 from __future__ import annotations
 
+import io
 import logging
 from datetime import date, time
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Path,
+    Query,
+    UploadFile,
+)
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -24,9 +34,15 @@ from app.models.ajus import (
     AJUS_QUEUE_PENDENTE,
     AJUS_QUEUE_STATUSES,
     AjusAndamentoQueue,
+    AjusClassificacaoQueue,
     AjusCodAndamento,
 )
 from app.models.legal_one import LegalOneUser
+from app.services.ajus.classificacao_service import (
+    XLSX_HEADERS,
+    AjusClassificacaoService,
+    XlsxRow,
+)
 from app.services.ajus.queue_service import (
     MAX_ITENS_POR_REQUEST,
     AjusQueueService,
@@ -326,3 +342,407 @@ def retry_andamento(
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _queue_to_out(item)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Classificação (Chunk 1 — fila + defaults; Playwright runner no Chunk 2)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class ClassifDefaultsIn(BaseModel):
+    default_matter: Optional[str] = Field(default=None, max_length=255)
+    default_risk_loss_probability: Optional[str] = Field(
+        default=None, max_length=255,
+    )
+
+
+class ClassifDefaultsOut(BaseModel):
+    default_matter: Optional[str]
+    default_risk_loss_probability: Optional[str]
+    updated_at: Optional[str] = None
+
+
+class ClassifQueueOut(BaseModel):
+    id: int
+    cnj_number: str
+    intake_id: Optional[int]
+    origem: str
+    uf: Optional[str]
+    comarca: Optional[str]
+    matter: Optional[str]
+    justice_fee: Optional[str]
+    risk_loss_probability: Optional[str]
+    status: str
+    error_message: Optional[str]
+    last_log: Optional[str]
+    executed_at: Optional[str]
+    created_at: Optional[str]
+    updated_at: Optional[str]
+
+
+class ClassifQueueListResponse(BaseModel):
+    total: int
+    items: list[ClassifQueueOut]
+
+
+class ClassifQueueUpdateIn(BaseModel):
+    uf: Optional[str] = Field(default=None, max_length=8)
+    comarca: Optional[str] = Field(default=None, max_length=255)
+    matter: Optional[str] = Field(default=None, max_length=255)
+    justice_fee: Optional[str] = Field(default=None, max_length=255)
+    risk_loss_probability: Optional[str] = Field(default=None, max_length=255)
+
+
+class ClassifUploadResponse(BaseModel):
+    created: int
+    updated: int
+    skipped: list[dict]
+
+
+def _classif_to_out(item: AjusClassificacaoQueue) -> ClassifQueueOut:
+    return ClassifQueueOut(
+        id=item.id,
+        cnj_number=item.cnj_number,
+        intake_id=item.intake_id,
+        origem=item.origem,
+        uf=item.uf,
+        comarca=item.comarca,
+        matter=item.matter,
+        justice_fee=item.justice_fee,
+        risk_loss_probability=item.risk_loss_probability,
+        status=item.status,
+        error_message=item.error_message,
+        last_log=item.last_log,
+        executed_at=item.executed_at.isoformat() if item.executed_at else None,
+        created_at=item.created_at.isoformat() if item.created_at else None,
+        updated_at=item.updated_at.isoformat() if item.updated_at else None,
+    )
+
+
+# ── Defaults singleton ──────────────────────────────────────────────
+
+
+@router.get("/classificacao/defaults", response_model=ClassifDefaultsOut)
+def get_classif_defaults(
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    obj = AjusClassificacaoService(db).get_defaults()
+    return ClassifDefaultsOut(
+        default_matter=obj.default_matter,
+        default_risk_loss_probability=obj.default_risk_loss_probability,
+        updated_at=obj.updated_at.isoformat() if obj.updated_at else None,
+    )
+
+
+@router.put("/classificacao/defaults", response_model=ClassifDefaultsOut)
+def update_classif_defaults(
+    payload: ClassifDefaultsIn,
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    obj = AjusClassificacaoService(db).update_defaults(
+        default_matter=payload.default_matter,
+        default_risk_loss_probability=payload.default_risk_loss_probability,
+    )
+    return ClassifDefaultsOut(
+        default_matter=obj.default_matter,
+        default_risk_loss_probability=obj.default_risk_loss_probability,
+        updated_at=obj.updated_at.isoformat() if obj.updated_at else None,
+    )
+
+
+# ── Lista + detalhe ─────────────────────────────────────────────────
+
+
+@router.get("/classificacao", response_model=ClassifQueueListResponse)
+def list_classif(
+    status: Optional[str] = Query(default=None, description="CSV de status."),
+    origem: Optional[str] = Query(
+        default=None, description="intake_auto | planilha",
+    ),
+    cnj_search: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    statuses: Optional[list[str]] = None
+    if status:
+        statuses = [s.strip() for s in status.split(",") if s.strip()]
+    try:
+        total, items = AjusClassificacaoService(db).list(
+            statuses=statuses,
+            origem=origem,
+            cnj_search=cnj_search,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return ClassifQueueListResponse(
+        total=total, items=[_classif_to_out(i) for i in items],
+    )
+
+
+# ── Planilha modelo (download) ─ DECLARADO ANTES DE /{item_id} pra
+#    evitar que o validador de int em item_id capture "template.xlsx".
+
+
+@router.get(
+    "/classificacao/template.xlsx",
+    summary="Baixa a planilha modelo com cabeçalhos e exemplo.",
+)
+def download_classif_template(
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    """
+    Gera on-the-fly uma planilha modelo com:
+      - Linha 1: cabeçalhos (CNJ, UF, Comarca, Matéria, Justiça/Honorário,
+        Risco/Probabilidade Perda).
+      - Linha 2: exemplo (com valores plausíveis).
+      - Aba 'Instruções' explicando preenchimento.
+    """
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+    except ImportError as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "openpyxl não instalado no container — adicionar ao "
+                "requirements.txt."
+            ),
+        ) from exc
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Classificações"
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="1F2937")  # cinza escuro
+    header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    for col_idx, header in enumerate(XLSX_HEADERS, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_align
+
+    widths = (28, 8, 28, 32, 28, 28)
+    for col_idx, width in enumerate(widths, start=1):
+        ws.column_dimensions[chr(64 + col_idx)].width = width
+    ws.row_dimensions[1].height = 30
+
+    ws.cell(row=2, column=1, value="0001234-56.2026.8.05.0001")
+    ws.cell(row=2, column=2, value="BA")
+    ws.cell(row=2, column=3, value="SALVADOR")
+    ws.cell(row=2, column=4, value="Cumprimento de Sentença")
+    ws.cell(row=2, column=5, value="Justiça Estadual")
+    ws.cell(row=2, column=6, value="Remoto")
+
+    ws_help = wb.create_sheet("Instruções")
+    ws_help.column_dimensions["A"].width = 25
+    ws_help.column_dimensions["B"].width = 90
+    ws_help.cell(row=1, column=1, value="Campo").font = Font(bold=True)
+    ws_help.cell(row=1, column=2, value="Como preencher").font = Font(bold=True)
+
+    instr = [
+        ("CNJ", "Número do processo (com ou sem máscara)."),
+        ("UF", "Sigla da UF (ex.: BA). Se vazio, será derivado do CNJ."),
+        ("Comarca", "Nome da comarca (ex.: SALVADOR)."),
+        ("Matéria",
+         "Texto exato como aparece na capa do AJUS "
+         "(ex.: Cumprimento de Sentença)."),
+        ("Justiça/Honorário",
+         "Texto exato como aparece na capa do AJUS "
+         "(ex.: Justiça Estadual / Juizado Especial Cível)."),
+        ("Risco/Probabilidade Perda",
+         "Texto exato como aparece na capa do AJUS "
+         "(ex.: Remoto / Possível / Provável)."),
+    ]
+    for idx, (campo, desc) in enumerate(instr, start=2):
+        ws_help.cell(row=idx, column=1, value=campo)
+        c = ws_help.cell(row=idx, column=2, value=desc)
+        c.alignment = Alignment(wrap_text=True, vertical="top")
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": (
+                'attachment; filename="ajus-classificacao-modelo.xlsx"'
+            ),
+        },
+    )
+
+
+# ── Upload da planilha ─ TAMBÉM declarado antes de /{item_id}.
+
+
+@router.post(
+    "/classificacao/upload-xlsx", response_model=ClassifUploadResponse,
+)
+async def upload_classif_xlsx(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    """
+    Upload da planilha de classificação. Espera os cabeçalhos do
+    template (CNJ, UF, Comarca, Matéria, Justiça/Honorário,
+    Risco/Probabilidade Perda) na linha 1.
+    """
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=500,
+            detail="openpyxl não instalado no container.",
+        ) from exc
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="Arquivo vazio.")
+
+    try:
+        wb = load_workbook(io.BytesIO(contents), data_only=True)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=400,
+            detail=f"Falha ao abrir XLSX: {exc}",
+        ) from exc
+
+    ws = wb.active
+    if ws is None or ws.title.lower().startswith("instru"):
+        for sheet in wb.worksheets:
+            if not sheet.title.lower().startswith("instru"):
+                ws = sheet
+                break
+    if ws is None:
+        raise HTTPException(status_code=400, detail="Nenhuma aba de dados.")
+
+    header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
+    header_norm = [
+        (str(h).strip().lower() if h is not None else "")
+        for h in header_row
+    ]
+    expected = [h.lower() for h in XLSX_HEADERS]
+    if len(header_norm) < len(expected) or header_norm[: len(expected)] != expected:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Cabeçalhos não batem com o template. Esperado: "
+                + " | ".join(XLSX_HEADERS)
+            ),
+        )
+
+    rows: list[XlsxRow] = []
+    for raw in ws.iter_rows(min_row=2, values_only=True):
+        if raw is None:
+            continue
+        if all((v is None or str(v).strip() == "") for v in raw):
+            continue
+        padded = list(raw) + [None] * (len(expected) - len(raw))
+        rows.append(
+            XlsxRow(
+                cnj_number=str(padded[0] or "").strip(),
+                uf=(str(padded[1]).strip() if padded[1] is not None else None),
+                comarca=(
+                    str(padded[2]).strip() if padded[2] is not None else None
+                ),
+                matter=(
+                    str(padded[3]).strip() if padded[3] is not None else None
+                ),
+                justice_fee=(
+                    str(padded[4]).strip() if padded[4] is not None else None
+                ),
+                risk_loss_probability=(
+                    str(padded[5]).strip() if padded[5] is not None else None
+                ),
+            ),
+        )
+
+    if not rows:
+        raise HTTPException(status_code=400, detail="Sem linhas de dados.")
+
+    result = AjusClassificacaoService(db).enqueue_from_xlsx_rows(rows)
+    return ClassifUploadResponse(**result)
+
+
+# ── Detalhe + mutações por item (DEPOIS dos paths estáticos) ────────
+
+
+@router.get("/classificacao/{item_id}", response_model=ClassifQueueOut)
+def get_classif(
+    item_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    try:
+        item = AjusClassificacaoService(db).get(item_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _classif_to_out(item)
+
+
+@router.put("/classificacao/{item_id}", response_model=ClassifQueueOut)
+def update_classif(
+    payload: ClassifQueueUpdateIn,
+    item_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    service = AjusClassificacaoService(db)
+    try:
+        item = service.update(
+            item_id,
+            uf=payload.uf,
+            comarca=payload.comarca,
+            matter=payload.matter,
+            justice_fee=payload.justice_fee,
+            risk_loss_probability=payload.risk_loss_probability,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _classif_to_out(item)
+
+
+@router.post("/classificacao/{item_id}/cancel", response_model=ClassifQueueOut)
+def cancel_classif(
+    item_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    service = AjusClassificacaoService(db)
+    try:
+        item = service.cancel(item_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _classif_to_out(item)
+
+
+@router.post("/classificacao/{item_id}/retry", response_model=ClassifQueueOut)
+def retry_classif(
+    item_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    service = AjusClassificacaoService(db)
+    try:
+        item = service.retry(item_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _classif_to_out(item)

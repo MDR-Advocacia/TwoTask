@@ -145,6 +145,24 @@ class IntakeService:
                 intake.id,
             )
 
+        # ── Enfileiramento na fila de classificação AJUS (Chunk 1) ──
+        # Processo cai automaticamente na fila de classificação de capa
+        # (Matéria + Risco vêm dos defaults; UF do CNJ; Comarca da
+        # Jurisdição/vara). Operador pode editar antes do dispatch
+        # via runner Playwright (Chunk 2). Idempotente em CNJ.
+        try:
+            from app.services.ajus.classificacao_service import (
+                AjusClassificacaoService,
+            )
+            classif = AjusClassificacaoService(self.db)
+            classif.enqueue_from_intake(intake)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "AJUS classif enqueue: falha não-fatal ao enfileirar "
+                "intake %d (seguindo sem classificação).",
+                intake.id,
+            )
+
         return IntakeCreationResult(intake=intake, already_existed=False)
 
     # ─── Resolução do lawsuit no L1 (background task) ─────────────────

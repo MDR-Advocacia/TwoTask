@@ -535,6 +535,60 @@ export interface AjusDispatchBatchResponse {
   errored: { id: number; msg: string }[];
 }
 
+// ─── Classificação AJUS (Chunk 1) ─────────────────────────────────────
+
+export type AjusClassifStatus =
+  | "pendente"
+  | "processando"
+  | "sucesso"
+  | "erro"
+  | "cancelado";
+
+export type AjusClassifOrigem = "intake_auto" | "planilha";
+
+export interface AjusClassifDefaults {
+  default_matter: string | null;
+  default_risk_loss_probability: string | null;
+  updated_at: string | null;
+}
+
+export interface AjusClassifQueueItem {
+  id: number;
+  cnj_number: string;
+  intake_id: number | null;
+  origem: AjusClassifOrigem;
+  uf: string | null;
+  comarca: string | null;
+  matter: string | null;
+  justice_fee: string | null;
+  risk_loss_probability: string | null;
+  status: AjusClassifStatus;
+  error_message: string | null;
+  last_log: string | null;
+  executed_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface AjusClassifQueueListResponse {
+  total: number;
+  items: AjusClassifQueueItem[];
+}
+
+export interface AjusClassifQueueUpdatePayload {
+  uf?: string | null;
+  comarca?: string | null;
+  matter?: string | null;
+  justice_fee?: string | null;
+  risk_loss_probability?: string | null;
+}
+
+export interface AjusClassifUploadResponse {
+  created: number;
+  updated: number;
+  skipped: { cnj: string; motivo: string }[];
+}
+
 export interface PrazoInicialLegacyTaskLastTickState {
   tick_id: string | null;
   started_at: string | null;
