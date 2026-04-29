@@ -349,16 +349,12 @@ const TaskTemplatesPage = () => {
    * Auto-init do regime manual: na primeira vez que esta página carrega
    * com templates + overrides + offices conhecidos, identifica os
    * escritórios SEM template ativo E SEM `manual_mode` registrado.
-   * Esses são "escritórios novos" — entram no regime manual
-   * automaticamente. Escritórios que já têm pelo menos 1 template
-   * permanecem no regime legado (taxonomia base explodida) pra preservar
-   * o trabalho prévio. Roda 1x por sessão (após dados carregarem).
+   * Esses entram no regime manual automaticamente. Roda 1x por sessão.
    */
   const autoInitDoneRef = useRef(false);
   useEffect(() => {
     if (autoInitDoneRef.current) return;
     if (offices.length === 0) return;
-    // Espera tudo carregar antes de tomar decisão
     if (templates.length === 0 && overrides.length === 0 && categories.length === 0) {
       return;
     }
@@ -376,7 +372,6 @@ const TaskTemplatesPage = () => {
       return !hasTemplate && !alreadyManual;
     });
     if (officesNeedingManual.length === 0) return;
-    // Dispara em série (idempotente — backend retorna 409 se já existe).
     (async () => {
       for (const office of officesNeedingManual) {
         await enableManualModeForOffice(office.external_id);
@@ -513,7 +508,6 @@ const TaskTemplatesPage = () => {
     // ── Regime MANUAL: parte do zero, só inclui o que foi adicionado ──
     if (relevant.some((o) => o.action === "manual_mode")) {
       const manualTree: Record<string, string[]> = {};
-      // include_custom dá entrada na taxonomia efetiva
       relevant
         .filter((o) => o.action === "include_custom")
         .forEach((o) => {
@@ -522,9 +516,6 @@ const TaskTemplatesPage = () => {
             manualTree[o.category].push(o.subcategory);
           }
         });
-      // Templates ativos do escritório também garantem slot na taxonomia
-      // (importante: se operador criou template antes de adicionar
-      // include_custom, a classificação ainda aparece na coverage).
       templates
         .filter((t) => t.office_external_id === officeId && t.is_active)
         .forEach((t) => {
@@ -988,11 +979,8 @@ const TaskTemplatesPage = () => {
   };
 
   /**
-   * Liga o regime manual em um escritório legado (operador pediu pra
-   * "Migrar pra regime manual"). Cria override singleton manual_mode.
-   * Não apaga overrides exclude/include_custom existentes — eles passam
-   * a coexistir, e o include_custom fica sendo a ÚNICA fonte de verdade
-   * pra taxonomia (regime manual ignora a base).
+   * Liga o regime manual em um escritório (operador pediu pra "Migrar
+   * pra regime manual"). Cria override singleton manual_mode.
    */
   const enableManualModeForOffice = async (officeId: number) => {
     try {
@@ -1001,7 +989,7 @@ const TaskTemplatesPage = () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           office_external_id: officeId,
-          category: "",        // ignorado pra manual_mode
+          category: "",
           subcategory: null,
           action: "manual_mode",
           custom_description: null,
@@ -1009,7 +997,6 @@ const TaskTemplatesPage = () => {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        // 409 = já existe (idempotente — ok pra auto-init)
         if (res.status !== 409) {
           throw new Error(data.detail || "Falha ao ligar regime manual.");
         }
@@ -1649,13 +1636,10 @@ const TaskTemplatesPage = () => {
                           <h3 className="text-sm font-semibold">
                             {entry.office.path || entry.office.name}
                           </h3>
-                          {/* Indica regime manual: taxonomia explícita
-                              em vez de "tudo da base aparece". Operador
-                              adiciona sob demanda via "+ Adicionar". */}
                           {isManualModeOffice(entry.office.external_id) && (
                             <span
                               className="rounded border border-blue-300 bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-blue-700"
-                              title="Esse escritório está em regime MANUAL. As classificações precisam ser adicionadas explicitamente — clica em '+ Adicionar classificação' no fim do card."
+                              title="Esse escritório está em regime MANUAL. As classificações precisam ser adicionadas explicitamente."
                             >
                               Regime manual
                             </span>
@@ -1829,19 +1813,13 @@ const TaskTemplatesPage = () => {
                           </div>
                         )}
                       </div>
-                      {/* Footer: ações por escritório.
-                          - Regime MANUAL: botão "+ Adicionar classificação".
-                          - Regime LEGADO: botão "Migrar para regime manual"
-                            (admin opt-in; só aparece se operador quiser
-                            converter um escritório que já tem templates). */}
+                      {/* Footer: ações por escritório (regime manual / legado) */}
                       <div className="flex items-center justify-end gap-2 border-t bg-muted/20 px-4 py-2">
                         {isManualModeOffice(entry.office.external_id) ? (
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() =>
-                              openAddClassificationForOffice(entry.office.external_id)
-                            }
+                            onClick={() => openAddClassificationForOffice(entry.office.external_id)}
                           >
                             <Plus className="mr-1 h-3 w-3" />
                             Adicionar classificação
@@ -2734,4 +2712,85 @@ const TaskTemplatesPage = () => {
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <Selec
+                            <SelectItem value="Low">Baixa</SelectItem>
+                            <SelectItem value="Normal">Normal</SelectItem>
+                            <SelectItem value="High">Alta</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+
+                    {/* Textos */}
+                    <div className="grid gap-2">
+                      <p className="text-xs text-muted-foreground">
+                        Placeholders:{" "}
+                        <code className="rounded bg-muted px-1">{"{cnj}"}</code>{" "}
+                        <code className="rounded bg-muted px-1">{"{publication_date}"}</code>{" "}
+                        <code className="rounded bg-muted px-1">{"{description}"}</code>
+                      </p>
+                      <div className="grid gap-1.5">
+                        <Label className="text-xs">Descrição da tarefa</Label>
+                        <Textarea
+                          rows={2}
+                          placeholder="Publicação judicial referente ao processo {cnj}..."
+                          value={block.description_template}
+                          onChange={(e) => setBlockField(idx, "description_template", e.target.value)}
+                          className="text-sm"
+                        />
+                      </div>
+                      <div className="grid gap-1.5">
+                        <Label className="text-xs">Observações (notas)</Label>
+                        <Textarea
+                          rows={2}
+                          placeholder="Opcional — aparece no campo Notas da tarefa."
+                          value={block.notes_template}
+                          onChange={(e) => setBlockField(idx, "notes_template", e.target.value)}
+                          className="text-sm"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* Add another task (bottom shortcut) */}
+              <button
+                type="button"
+                onClick={addTaskBlock}
+                className="w-full rounded-lg border border-dashed border-muted-foreground/30 py-2 text-xs text-muted-foreground hover:border-primary/50 hover:text-primary transition-colors flex items-center justify-center gap-1.5"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Adicionar outra tarefa para esta classificação
+              </button>
+            </div>
+          </div>
+
+          {/* Footer buttons */}
+          <div className="mt-4 flex justify-end gap-3">
+            <Button
+              variant="outline"
+              onClick={() => setDialogOpen(false)}
+              disabled={saving}
+            >
+              Cancelar
+            </Button>
+            <Button onClick={handleSave} disabled={saving}>
+              {saving ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Check className="mr-2 h-4 w-4" />
+              )}
+              {editingId
+                ? newTaskBlockCount > 0
+                  ? `Salvar alterações + criar ${newTaskBlockCount} nova${newTaskBlockCount > 1 ? "s" : ""}`
+                  : "Salvar alterações"
+                : `Criar template (${form.taskBlocks.length} tarefa${form.taskBlocks.length > 1 ? "s" : ""})`}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+};
+
+export default TaskTemplatesPage;
