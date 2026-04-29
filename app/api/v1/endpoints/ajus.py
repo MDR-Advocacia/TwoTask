@@ -970,5 +970,3 @@ def retry_classif(
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _classif_to_out(item)
-
-

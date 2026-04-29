@@ -160,6 +160,33 @@ class Settings(BaseSettings):
     ajus_portal_base_url: str = "https://sistema.ajus.com.br"
     ajus_login_path: str = "/login"
 
+    # ── Seletores AJUS (porte do Mirror — Chunk 2b) ──────────────────
+    # Defaults vêm dos seletores que o Mirror usava. Override via env
+    # se o portal mudar layout. Os seletores de classificação são
+    # `*_process_*`; login é `*_user/password/button_*`. ExtJS é
+    # framework volátil, então deixamos tudo configurável.
+    ajus_user_selector: str = "#username"
+    ajus_password_selector: str = "#pwd"
+    ajus_login_button_selector: str = "button.login"
+    ajus_domain_selector: str | None = "#dominioCliente"
+    # Capa do processo — preencher 5 campos:
+    ajus_process_uf_selector: str | None = None
+    ajus_process_comarca_selector: str | None = None
+    ajus_process_matter_selector: str | None = None
+    ajus_process_justice_fee_selector: str | None = None
+    ajus_process_risk_selector: str | None = None
+    ajus_process_save_selector: str | None = None
+    # Como abrir o processo a partir do CNJ — template URL ou search input.
+    # Pelo menos um dos dois precisa ser configurado em prod.
+    ajus_process_search_url_template: str | None = None
+    ajus_process_search_input_selector: str | None = None
+    # Timeout do flow de login (ms) — usado em wait_for_login_outcome.
+    ajus_login_outcome_timeout_ms: int = 30_000
+    # Timeout do polling do IP-code (segundos). Operador tem esse tempo
+    # pra submeter o código pela UI antes do runner desistir.
+    ajus_ip_code_wait_seconds: int = 300
+
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -182,7 +209,6 @@ class Settings(BaseSettings):
             for content_type in self.spreadsheet_allowed_content_types.split(",")
             if content_type.strip()
         }
-
 
     @property
     def prazos_iniciais_api_keys(self) -> set[str]:
