@@ -1256,6 +1256,77 @@ class PublicationSearchService:
             desc = desc[: self._DESCRIPTION_MAX_CHARS - 1].rstrip() + "…"
         payload["description"] = desc
 
+    def _ensure_endtime_in_future(self, payload: dict) -> None:
+        """
+        Fallback: garante que `endDateTime` (e `startDateTime` quando
+        relevante) não fique no passado, o que faria o L1 retornar 400
+        com mensagem "O status selecionado não pode ser 'Pendente'
+        quando a data de conclusão for anterior à data atual".
+
+        Acontece quando o template foi calculado com base na data da
+        publicação (ex.: publish_date + 5 dias úteis), mas o operador só
+        confirmou o agendamento *depois* desse vencimento. O L1 rejeita
+        a tarefa em status "Pendente" pra data passada na config atual
+        do MDR.
+
+        Estratégia: se o `endDateTime` do payload já passou, ajusta
+        ambos (start/end) pro fim do **próximo dia útil** (BRT, 23:59:59).
+        Logamos warning pra rastreabilidade. Modifica o `payload` in-place.
+        """
+        end_iso = payload.get("endDateTime")
+        if not end_iso or not isinstance(end_iso, str):
+            return
+        try:
+            # endDateTime vem como "...Z" (UTC). Normaliza pra parse.
+            end_dt = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
+        except ValueError:
+            logger.warning(
+                "endDateTime do payload nao parseavel — pulando fallback: %s",
+                end_iso,
+            )
+            return
+
+        now_utc = datetime.now(timezone.utc)
+        if end_dt > now_utc:
+            return  # ainda no futuro, OK
+
+        # Calcula próximo dia útil em BRT
+        from app.services.prazos_iniciais.prazo_calculator import add_business_days
+        try:
+            br_tz = ZoneInfo("America/Sao_Paulo")
+        except Exception:  # noqa: BLE001
+            from datetime import timezone as _tz, timedelta as _td
+            br_tz = _tz(_td(hours=-3))  # fallback simples
+        today_brt = datetime.now(br_tz).date()
+        next_busday = add_business_days(today_brt, 1)
+        local_dt = datetime(
+            next_busday.year, next_busday.month, next_busday.day,
+            23, 59, 59, tzinfo=br_tz,
+        )
+        new_iso = local_dt.astimezone(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+        )
+
+        old_end = payload.get("endDateTime")
+        old_start = payload.get("startDateTime")
+        payload["endDateTime"] = new_iso
+        # Mantém start <= end. Se start também tá no passado, bumpa junto.
+        if isinstance(old_start, str):
+            try:
+                start_dt = datetime.fromisoformat(old_start.replace("Z", "+00:00"))
+                if start_dt < now_utc or start_dt > local_dt.astimezone(timezone.utc):
+                    payload["startDateTime"] = new_iso
+            except ValueError:
+                payload["startDateTime"] = new_iso
+        else:
+            payload["startDateTime"] = new_iso
+
+        logger.warning(
+            "Data de conclusao no passado (%s) — bumpada pro proximo dia "
+            "util (%s). startDateTime original=%s.",
+            old_end, new_iso, old_start,
+        )
+
     # ──────────────────────────────────────────────
     # Checagem de duplicatas (tarefa já pendente no L1)
     # ──────────────────────────────────────────────
@@ -2669,6 +2740,7 @@ class PublicationSearchService:
             self._apply_required_task_defaults(
                 payload, fallback_office_id=fallback_office_id,
             )
+            self._ensure_endtime_in_future(payload)
             created = self.client.create_task(payload)
             if not created or not created.get("id"):
                 # Se o client conseguiu extrair o que o L1 reclamou, usa
@@ -2775,6 +2847,7 @@ class PublicationSearchService:
             self._apply_required_task_defaults(
                 payload, fallback_office_id=fallback_office_id,
             )
+            self._ensure_endtime_in_future(payload)
             created = self.client.create_task(payload)
             if not created or not created.get("id"):
                 # Se o client conseguiu extrair o que o L1 reclamou, usa
