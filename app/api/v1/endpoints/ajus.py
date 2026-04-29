@@ -682,78 +682,6 @@ async def upload_classif_xlsx(
     return ClassifUploadResponse(**result)
 
 
-# ── Detalhe + mutações por item (DEPOIS dos paths estáticos) ────────
-
-
-@router.get("/classificacao/{item_id}", response_model=ClassifQueueOut)
-def get_classif(
-    item_id: int = Path(..., ge=1),
-    db: Session = Depends(get_db),
-    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
-):
-    try:
-        item = AjusClassificacaoService(db).get(item_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return _classif_to_out(item)
-
-
-@router.put("/classificacao/{item_id}", response_model=ClassifQueueOut)
-def update_classif(
-    payload: ClassifQueueUpdateIn,
-    item_id: int = Path(..., ge=1),
-    db: Session = Depends(get_db),
-    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
-):
-    service = AjusClassificacaoService(db)
-    try:
-        item = service.update(
-            item_id,
-            uf=payload.uf,
-            comarca=payload.comarca,
-            matter=payload.matter,
-            justice_fee=payload.justice_fee,
-            risk_loss_probability=payload.risk_loss_probability,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _classif_to_out(item)
-
-
-@router.post("/classificacao/{item_id}/cancel", response_model=ClassifQueueOut)
-def cancel_classif(
-    item_id: int = Path(..., ge=1),
-    db: Session = Depends(get_db),
-    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
-):
-    service = AjusClassificacaoService(db)
-    try:
-        item = service.cancel(item_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _classif_to_out(item)
-
-
-@router.post("/classificacao/{item_id}/retry", response_model=ClassifQueueOut)
-def retry_classif(
-    item_id: int = Path(..., ge=1),
-    db: Session = Depends(get_db),
-    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
-):
-    service = AjusClassificacaoService(db)
-    try:
-        item = service.retry(item_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _classif_to_out(item)
-
-
 # ═══════════════════════════════════════════════════════════════════════
 # Sessões AJUS — multi-conta (Chunk 2a)
 # ═══════════════════════════════════════════════════════════════════════
@@ -970,3 +898,77 @@ def request_logout(
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _session_to_out(obj)
+
+
+# ── Detalhe + mutações por item (DEPOIS dos paths estáticos) ────────
+
+
+@router.get("/classificacao/{item_id}", response_model=ClassifQueueOut)
+def get_classif(
+    item_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    try:
+        item = AjusClassificacaoService(db).get(item_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _classif_to_out(item)
+
+
+@router.put("/classificacao/{item_id}", response_model=ClassifQueueOut)
+def update_classif(
+    payload: ClassifQueueUpdateIn,
+    item_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    service = AjusClassificacaoService(db)
+    try:
+        item = service.update(
+            item_id,
+            uf=payload.uf,
+            comarca=payload.comarca,
+            matter=payload.matter,
+            justice_fee=payload.justice_fee,
+            risk_loss_probability=payload.risk_loss_probability,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _classif_to_out(item)
+
+
+@router.post("/classificacao/{item_id}/cancel", response_model=ClassifQueueOut)
+def cancel_classif(
+    item_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    service = AjusClassificacaoService(db)
+    try:
+        item = service.cancel(item_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _classif_to_out(item)
+
+
+@router.post("/classificacao/{item_id}/retry", response_model=ClassifQueueOut)
+def retry_classif(
+    item_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    service = AjusClassificacaoService(db)
+    try:
+        item = service.retry(item_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _classif_to_out(item)
+
+
