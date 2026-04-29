@@ -751,10 +751,10 @@ def _session_to_out(obj: AjusSessionAccount) -> SessionAccountOut:
 def get_session_config(
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
-    from app.core.config import settings as _s
+    from app.services.ajus import portal_constants as _portal
     return SessionConfigOut(
         crypto_configured=ajus_crypto_configured(),
-        portal_base_url=_s.ajus_portal_base_url,
+        portal_base_url=_portal.PORTAL_BASE_URL,
     )
 
 

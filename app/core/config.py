@@ -143,6 +143,11 @@ class Settings(BaseSettings):
     ajus_storage_path: str = "/app/data/ajus_pdfs"
 
     # ── Classificação AJUS via RPA Playwright (Chunk 2) ───────────────
+    # Selectors XPath, paths do portal e domínio do cliente NÃO ficam
+    # aqui — viraram constantes em `app/services/ajus/portal_constants.py`
+    # porque são fixos do portal AJUS / cliente MDR e não variam por
+    # instância. Aqui sobra só o que é confidencial ou operacional.
+    #
     # Volume persistente onde cada conta AJUS guarda seu storage_state.
     # Layout: <root>/<account_id>/storage_state.json. Volume é
     # compartilhado entre o container API e o `ajus-runner` (que roda
@@ -153,38 +158,8 @@ class Settings(BaseSettings):
     # commitar valor real. Sem essa key configurada, o módulo de
     # classificação fica desabilitado (não loga, não dispara).
     ajus_fernet_key: str | None = None
-    # URL base do portal AJUS (interface web — diferente do
-    # `ajus_base_url` da API REST de andamentos). Ex.:
-    # "https://sistema.ajus.com.br". O runner abre essa URL +
-    # `ajus_login_path` no Playwright.
-    ajus_portal_base_url: str = "https://sistema.ajus.com.br"
-    ajus_login_path: str = "/login"
-
-    # ── Seletores AJUS (porte do Mirror — Chunk 2b) ──────────────────
-    # Defaults vêm dos seletores que o Mirror usava. Override via env
-    # se o portal mudar layout. Os seletores de classificação são
-    # `*_process_*`; login é `*_user/password/button_*`. ExtJS é
-    # framework volátil, então deixamos tudo configurável.
-    ajus_user_selector: str = "#username"
-    ajus_password_selector: str = "#pwd"
-    ajus_login_button_selector: str = "button.login"
-    ajus_domain_selector: str | None = "#dominioCliente"
-    # Domínio do AJUS — campo extra que aparece junto com login/senha.
-    # Pra o cliente MDR é fixo "banco_master"; deixei configurável caso
-    # outro cliente use no futuro. Mesmo valor pra todas as contas.
-    ajus_login_domain: str = "banco_master"
-    # Capa do processo — preencher 5 campos:
-    ajus_process_uf_selector: str | None = None
-    ajus_process_comarca_selector: str | None = None
-    ajus_process_matter_selector: str | None = None
-    ajus_process_justice_fee_selector: str | None = None
-    ajus_process_risk_selector: str | None = None
-    ajus_process_save_selector: str | None = None
-    # Como abrir o processo a partir do CNJ — template URL ou search input.
-    # Pelo menos um dos dois precisa ser configurado em prod.
-    ajus_process_search_url_template: str | None = None
-    ajus_process_search_input_selector: str | None = None
     # Timeout do flow de login (ms) — usado em wait_for_login_outcome.
+    # Ajustável via env se o portal estiver lento.
     ajus_login_outcome_timeout_ms: int = 30_000
     # Timeout do polling do IP-code (segundos). Operador tem esse tempo
     # pra submeter o código pela UI antes do runner desistir.

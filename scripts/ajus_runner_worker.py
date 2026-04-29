@@ -161,7 +161,10 @@ def main() -> int:
         finally:
             db.close()
 
-        # Sleep com checagem rápida de shutdown
+        # Sleep entre ciclos respeitando o intervalo configurado
+        # (default 30s). Checa shutdown a cada segundo pra não atrasar
+        # restart pelo Coolify.
+        for _ in range(interval):
             if _shutdown:
                 break
             time.sleep(1)

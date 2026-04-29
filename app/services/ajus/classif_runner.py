@@ -52,6 +52,7 @@ from app.models.ajus import (
     AjusClassificacaoQueue,
     AjusSessionAccount,
 )
+from app.services.ajus import portal_constants as portal
 from app.services.ajus.classificacao_service import AjusClassificacaoService
 from app.services.ajus.session_service import (
     AjusSessionService,
@@ -182,8 +183,7 @@ class AjusClassifRunner:
         """
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-        portal = settings.ajus_portal_base_url.rstrip("/")
-        login_url = f"{portal}{settings.ajus_login_path}"
+        login_url = f"{portal.PORTAL_BASE_URL.rstrip('/')}{portal.LOGIN_PATH}"
 
         try:
             self._page.goto(login_url, wait_until="domcontentloaded")
@@ -208,20 +208,16 @@ class AjusClassifRunner:
             return
 
         # Form de login regular — AJUS pede 3 campos: domínio, usuário,
-        # senha. Domínio é fixo por instalação (cliente MDR usa
-        # `banco_master`), configurável via `AJUS_LOGIN_DOMAIN`.
+        # senha. Domínio é fixo: cliente MDR usa `banco_master`
+        # (ver portal_constants.LOGIN_DOMAIN).
         password = self.session_service.get_password(self.account)
         try:
-            if settings.ajus_domain_selector and settings.ajus_login_domain:
-                el = self._page.query_selector(settings.ajus_domain_selector)
-                if el is not None:
-                    self._page.fill(
-                        settings.ajus_domain_selector,
-                        settings.ajus_login_domain,
-                    )
-            self._page.fill(settings.ajus_user_selector, self.account.login)
-            self._page.fill(settings.ajus_password_selector, password)
-            self._page.click(settings.ajus_login_button_selector)
+            el = self._page.query_selector(portal.DOMAIN_SELECTOR)
+            if el is not None:
+                self._page.fill(portal.DOMAIN_SELECTOR, portal.LOGIN_DOMAIN)
+            self._page.fill(portal.USER_SELECTOR, self.account.login)
+            self._page.fill(portal.PASSWORD_SELECTOR, password)
+            self._page.click(portal.LOGIN_BUTTON_SELECTOR)
         except PlaywrightTimeoutError as exc:
             raise AjusRunnerError(f"Falha preenchendo form de login: {exc}") from exc
 
@@ -244,26 +240,20 @@ class AjusClassifRunner:
 
     def _is_login_form_visible(self) -> bool:
         try:
-            user_el = self._page.query_selector(settings.ajus_user_selector)
-            btn_el = self._page.query_selector(settings.ajus_login_button_selector)
+            user_el = self._page.query_selector(portal.USER_SELECTOR)
+            btn_el = self._page.query_selector(portal.LOGIN_BUTTON_SELECTOR)
             return bool(user_el and user_el.is_visible() and btn_el and btn_el.is_visible())
         except Exception:
             return False
 
     def _is_ip_auth_visible(self) -> bool:
         """
-        Heurística: AJUS mostra um campo de "código de validação" depois
-        do login. Procura por inputs/labels com texto "código" ou "IP".
+        AJUS mostra um campo de validação de IP depois do login regular.
+        Selector exato (porte do Mirror): `input[name='codigoAuth']`.
         """
         try:
-            return bool(
-                self._page.query_selector(
-                    "input[name*='codigo'], input[name*='code'], "
-                    "input[id*='codigo'], input[id*='code'], "
-                    "*:has-text('Código de validação'), "
-                    "*:has-text('Validação de IP')"
-                )
-            )
+            el = self._page.query_selector(portal.IP_AUTH_INPUT_SELECTOR)
+            return bool(el and el.is_visible())
         except Exception:
             return False
 
@@ -318,16 +308,16 @@ class AjusClassifRunner:
             )
             raise AjusRunnerError("Timeout esperando IP-code do operador.")
 
-        # Tenta encontrar o input do código e submeter
+        # Preenche e submete o IP-code. Selectors exatos (porte do
+        # Mirror) — input dedicado + link "Confirmar/Finish".
         try:
-            # Heurística — primeiro input vazio com nome/id de "codigo"
-            sel = (
-                "input[name*='codigo'], input[name*='code'], "
-                "input[id*='codigo'], input[id*='code']"
-            )
-            self._page.fill(sel, code)
-            # Submit pode ser Enter ou um botão "Validar/Confirmar"
-            self._page.keyboard.press("Enter")
+            self._page.fill(portal.IP_AUTH_INPUT_SELECTOR, code)
+            confirm = self._page.query_selector(portal.IP_AUTH_CONFIRM_SELECTOR)
+            if confirm is not None:
+                confirm.click()
+            else:
+                # Fallback se o link não estiver presente
+                self._page.keyboard.press("Enter")
         except PlaywrightTimeoutError as exc:
             self.session_service.clear_ip_code(self.account.id)
             raise AjusRunnerError(f"Falha ao submeter IP-code: {exc}") from exc
@@ -376,38 +366,35 @@ class AjusClassifRunner:
 
     def _open_process_by_cnj(self, cnj: str) -> None:
         """
-        Abre a tela do processo no AJUS. Estratégia preferida:
-        URL template (`AJUS_PROCESS_SEARCH_URL_TEMPLATE`). Fallback:
-        usa o input de busca rápida do workspace.
+        Abre a tela do processo no AJUS via busca rápida (overlay
+        esquerdo): clica no input, digita o CNJ, espera o dropdown
+        ExtJS aparecer, clica no item correspondente.
+
+        AJUS não aceita URL direta com CNJ — o portal é um workspace
+        ExtJS single-page. Tem que passar pela busca.
         """
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-        if settings.ajus_process_search_url_template:
-            url = settings.ajus_process_search_url_template.format(
-                process_number=cnj,
-            )
-            self._page.goto(url, wait_until="domcontentloaded")
-            self._page.wait_for_timeout(2000)
-            return
-
-        if not settings.ajus_process_search_input_selector:
-            raise AjusRunnerError(
-                "Sem AJUS_PROCESS_SEARCH_URL_TEMPLATE nem "
-                "AJUS_PROCESS_SEARCH_INPUT_SELECTOR configurado — "
-                "runner não sabe como abrir o processo.",
-            )
-
         try:
             search = self._page.locator(
-                settings.ajus_process_search_input_selector,
+                portal.PROCESS_SEARCH_INPUT_SELECTOR,
             ).first
             search.click()
             search.fill(cnj)
-            self._page.keyboard.press("Enter")
+            self._page.wait_for_timeout(800)  # autocomplete
+
+            # Clica no item do dropdown que contém o CNJ. Sem isso o
+            # ExtJS combobox não navega — só mostra resultados.
+            result_selector = portal.PROCESS_RESULT_SELECTOR_TEMPLATE.format(
+                process_number=cnj,
+            )
+            result = self._page.locator(result_selector).first
+            result.wait_for(state="visible", timeout=5_000)
+            result.click()
             self._page.wait_for_timeout(2000)
         except PlaywrightTimeoutError as exc:
             raise AjusRunnerError(
-                f"Não consegui usar o input de busca do AJUS: {exc}",
+                f"Não consegui abrir o processo {cnj} via busca rápida: {exc}",
             ) from exc
 
     def _update_process_cover(self, item: AjusClassificacaoQueue) -> None:
@@ -425,26 +412,25 @@ class AjusClassifRunner:
                     f"operador precisa editar antes do dispatch.",
                 )
 
-        self._fill_combo("UF", settings.ajus_process_uf_selector, item.uf)
-        self._fill_combo("Comarca", settings.ajus_process_comarca_selector, item.comarca)
-        self._fill_combo("Matéria", settings.ajus_process_matter_selector, item.matter)
+        self._fill_combo("UF", portal.PROCESS_UF_SELECTOR, item.uf)
+        self._fill_combo("Comarca", portal.PROCESS_COMARCA_SELECTOR, item.comarca)
+        self._fill_combo("Matéria", portal.PROCESS_MATTER_SELECTOR, item.matter)
         self._fill_combo(
             "Justiça/Honorário",
-            settings.ajus_process_justice_fee_selector,
+            portal.PROCESS_JUSTICE_FEE_SELECTOR,
             item.justice_fee,
         )
         self._fill_combo(
             "Risco/Prob. Perda",
-            settings.ajus_process_risk_selector,
+            portal.PROCESS_RISK_SELECTOR,
             item.risk_loss_probability,
         )
 
-        if settings.ajus_process_save_selector:
-            self._page.click(settings.ajus_process_save_selector)
-            self._page.wait_for_timeout(1500)
+        self._page.click(portal.PROCESS_SAVE_SELECTOR)
+        self._page.wait_for_timeout(1500)
 
     def _fill_combo(
-        self, label: str, selector: Optional[str], value: str,
+        self, label: str, selector: str, value: str,
     ) -> None:
         """
         Preenche um combobox ExtJS:
@@ -453,14 +439,9 @@ class AjusClassifRunner:
           3. Digita o valor
           4. Espera 800ms (autocomplete)
           5. Press ArrowDown + Enter pra selecionar primeiro match
-        Se o portal mudar layout, esses passos viram o ponto de
-        ajuste (mesmo padrão do Mirror).
+        Se o portal mudar layout, o ajuste é em
+        `app/services/ajus/portal_constants.py`.
         """
-        if not selector:
-            raise AjusRunnerError(
-                f"Selector pra '{label}' não configurado "
-                f"(setar AJUS_PROCESS_*_SELECTOR no env).",
-            )
         loc = self._page.locator(selector).first
         loc.click()
         self._page.keyboard.press("Control+a")
@@ -478,14 +459,14 @@ class AjusClassifRunner:
         ignorados).
         """
         actual = {
-            "UF": self._read_field_value(settings.ajus_process_uf_selector),
-            "Comarca": self._read_field_value(settings.ajus_process_comarca_selector),
-            "Matéria": self._read_field_value(settings.ajus_process_matter_selector),
+            "UF": self._read_field_value(portal.PROCESS_UF_SELECTOR),
+            "Comarca": self._read_field_value(portal.PROCESS_COMARCA_SELECTOR),
+            "Matéria": self._read_field_value(portal.PROCESS_MATTER_SELECTOR),
             "Justiça/Honorário": self._read_field_value(
-                settings.ajus_process_justice_fee_selector,
+                portal.PROCESS_JUSTICE_FEE_SELECTOR,
             ),
             "Risco/Prob. Perda": self._read_field_value(
-                settings.ajus_process_risk_selector,
+                portal.PROCESS_RISK_SELECTOR,
             ),
         }
         expected = {
@@ -506,9 +487,7 @@ class AjusClassifRunner:
                 + " | ".join(mismatches),
             )
 
-    def _read_field_value(self, selector: Optional[str]) -> str:
-        if not selector:
-            return ""
+    def _read_field_value(self, selector: str) -> str:
         try:
             loc = self._page.locator(selector).first
             return (loc.input_value() or "").strip()
