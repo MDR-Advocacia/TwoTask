@@ -169,6 +169,10 @@ class Settings(BaseSettings):
     ajus_password_selector: str = "#pwd"
     ajus_login_button_selector: str = "button.login"
     ajus_domain_selector: str | None = "#dominioCliente"
+    # Domínio do AJUS — campo extra que aparece junto com login/senha.
+    # Pra o cliente MDR é fixo "banco_master"; deixei configurável caso
+    # outro cliente use no futuro. Mesmo valor pra todas as contas.
+    ajus_login_domain: str = "banco_master"
     # Capa do processo — preencher 5 campos:
     ajus_process_uf_selector: str | None = None
     ajus_process_comarca_selector: str | None = None
@@ -185,6 +189,12 @@ class Settings(BaseSettings):
     # Timeout do polling do IP-code (segundos). Operador tem esse tempo
     # pra submeter o código pela UI antes do runner desistir.
     ajus_ip_code_wait_seconds: int = 300
+    # Worker do ajus-runner: intervalo entre polls e tamanho do batch
+    # por conta em cada ciclo. 5 itens × 45s ≈ 4min/batch, então com
+    # poll de 30s o worker fica idle a maior parte do tempo quando a
+    # fila é pequena. Em backlog grande, sobe `ajus_runner_batch_per_account`.
+    ajus_runner_poll_interval_seconds: int = 30
+    ajus_runner_batch_per_account: int = 5
 
 
     model_config = SettingsConfigDict(

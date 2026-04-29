@@ -207,16 +207,18 @@ class AjusClassifRunner:
             )
             return
 
-        # Form de login regular
+        # Form de login regular — AJUS pede 3 campos: domínio, usuário,
+        # senha. Domínio é fixo por instalação (cliente MDR usa
+        # `banco_master`), configurável via `AJUS_LOGIN_DOMAIN`.
         password = self.session_service.get_password(self.account)
         try:
-            if settings.ajus_domain_selector:
-                # Domínio é opcional — algumas instalações não têm.
+            if settings.ajus_domain_selector and settings.ajus_login_domain:
                 el = self._page.query_selector(settings.ajus_domain_selector)
                 if el is not None:
-                    # Sem dominio cadastrado por enquanto. Operador pode
-                    # adicionar campo na conta depois (Chunk futuro).
-                    pass
+                    self._page.fill(
+                        settings.ajus_domain_selector,
+                        settings.ajus_login_domain,
+                    )
             self._page.fill(settings.ajus_user_selector, self.account.login)
             self._page.fill(settings.ajus_password_selector, password)
             self._page.click(settings.ajus_login_button_selector)
