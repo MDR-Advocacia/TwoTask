@@ -126,6 +126,25 @@ class IntakeService:
             "Intake criado: id=%d, external_id=%s, cnj=%s",
             intake.id, external_id, normalized_cnj,
         )
+
+        # ── Enfileiramento automático no AJUS (módulo paralelo) ──
+        # Cada intake recebido vira um candidato a andamento na fila
+        # AJUS, usando o cod_andamento default cadastrado pela admin.
+        # Idempotente (UNIQUE em intake_id). Falhas aqui NÃO afetam
+        # criação do intake — só logam warning. Se faltar config
+        # (cod default ou env vars), AjusQueueService devolve None e
+        # o intake segue normal.
+        try:
+            from app.services.ajus.queue_service import AjusQueueService
+            ajus = AjusQueueService(self.db)
+            ajus.enqueue_for_intake(intake)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "AJUS enqueue: falha não-fatal ao enfileirar intake %d "
+                "(seguindo sem AJUS).",
+                intake.id,
+            )
+
         return IntakeCreationResult(intake=intake, already_existed=False)
 
     # ─── Resolução do lawsuit no L1 (background task) ─────────────────

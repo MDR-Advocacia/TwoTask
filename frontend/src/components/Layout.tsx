@@ -12,6 +12,7 @@ import {
   Newspaper,
   Settings,
   Users,
+  Workflow,
 } from "lucide-react";
 
 import { useAuth } from "@/hooks/useAuth";
@@ -89,6 +90,7 @@ export default function Layout({ children }: PropsWithChildren) {
         { to: "/prazos-iniciais", icon: CalendarClock, label: "Agendar Prazos Iniciais", requirePermission: 'canUsePrazosIniciais' },
         { to: "/prazos-iniciais/treatment", icon: ListChecks, label: "Tratamento Web Agendamentos Iniciais", requirePermission: 'canUsePrazosIniciais' },
         { to: "/prazos-iniciais/templates", icon: Settings, label: "Templates de Prazos Iniciais", requirePermission: 'isAdmin' },
+        { to: "/ajus", icon: Workflow, label: "AJUS — Andamentos", requirePermission: 'canUsePrazosIniciais' },
       ],
     },
     {

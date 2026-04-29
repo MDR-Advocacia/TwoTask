@@ -8,6 +8,7 @@ from app import models as _models
 from app.api.v1.endpoints import (
     admin,
     auth,
+    ajus,
     automations,
     capture_health,
     classifier,
@@ -266,6 +267,7 @@ app.include_router(
     dependencies=protected_dependencies,
 )
 app.include_router(task_templates.router, prefix="/api/v1/task-templates", tags=["Templates de Tarefa"], dependencies=protected_dependencies)
+app.include_router(ajus.router, prefix="/api/v1", tags=["AJUS"], dependencies=protected_dependencies)
 app.include_router(automations.router, prefix="/api/v1/automations", tags=["Automações"], dependencies=protected_dependencies)
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Autenticacao"])
 

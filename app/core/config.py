@@ -128,6 +128,20 @@ class Settings(BaseSettings):
     # Aceita múltiplas separadas por vírgula pra rotação sem downtime.
     batch_tasks_api_key: str | None = None
 
+    # ── AJUS (sistema do cliente — POST /inserir-prazos) ──────────────
+    # Credenciais lidas do env (Coolify). NÃO fica em tabela porque é
+    # uma conta única por instalação MDR. Se um dia precisar de conta
+    # por escritório, evolui pra tabela. Ver app/services/ajus/.
+    ajus_base_url: str = "https://sistema.ajus.com.br/webservices/api"
+    ajus_bearer_token: str | None = None
+    ajus_cliente: str | None = None
+    ajus_login: str | None = None
+    ajus_senha: str | None = None
+    # Storage local de cópias do PDF da habilitação que foram pra fila
+    # AJUS. Sobrevive à rotina de cleanup do prazos_iniciais. Apagado
+    # automaticamente após inserção bem-sucedida (sucesso da AJUS).
+    ajus_storage_path: str = "/app/data/ajus_pdfs"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

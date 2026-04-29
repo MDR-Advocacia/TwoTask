@@ -467,6 +467,74 @@ export interface PrazoInicialLegacyTaskCircuitBreakerSnapshot {
   counted_reasons: string[];
 }
 
+// ─── AJUS (módulo de andamentos pra sistema do cliente) ──────────────
+
+export type AjusQueueStatus =
+  | "pendente"
+  | "enviando"
+  | "sucesso"
+  | "erro"
+  | "cancelado";
+
+export interface AjusCodAndamento {
+  id: number;
+  codigo: string;
+  label: string;
+  descricao: string | null;
+  situacao: "A" | "C";
+  dias_agendamento_offset_uteis: number;
+  dias_fatal_offset_uteis: number;
+  informacao_template: string;
+  is_default: boolean;
+  is_active: boolean;
+}
+
+export interface AjusCodAndamentoCreatePayload {
+  codigo: string;
+  label: string;
+  descricao?: string | null;
+  situacao: "A" | "C";
+  dias_agendamento_offset_uteis: number;
+  dias_fatal_offset_uteis: number;
+  informacao_template: string;
+  is_default: boolean;
+  is_active: boolean;
+}
+
+export interface AjusAndamentoQueueItem {
+  id: number;
+  intake_id: number;
+  cnj_number: string;
+  cod_andamento_id: number;
+  cod_andamento_codigo: string | null;
+  cod_andamento_label: string | null;
+  situacao: "A" | "C";
+  data_evento: string;          // YYYY-MM-DD
+  data_agendamento: string;
+  data_fatal: string;
+  hora_agendamento: string | null;
+  informacao: string;
+  has_pdf: boolean;
+  status: AjusQueueStatus;
+  cod_informacao_judicial: string | null;
+  error_message: string | null;
+  created_at: string;
+  dispatched_at: string | null;
+}
+
+export interface AjusAndamentoQueueListResponse {
+  total: number;
+  items: AjusAndamentoQueueItem[];
+}
+
+export interface AjusDispatchBatchResponse {
+  candidates: number;
+  success_count: number;
+  error_count: number;
+  success_ids: number[];
+  errored: { id: number; msg: string }[];
+}
+
 export interface PrazoInicialLegacyTaskLastTickState {
   tick_id: string | null;
   started_at: string | null;

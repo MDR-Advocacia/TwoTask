@@ -1,5 +1,9 @@
 import { apiFetch } from "@/lib/api-client";
 import {
+  AjusAndamentoQueueListResponse,
+  AjusCodAndamento,
+  AjusCodAndamentoCreatePayload,
+  AjusDispatchBatchResponse,
   BatchExecution,
   LegalOnePositionFixControlResponse,
   LegalOnePositionFixStatus,
@@ -684,4 +688,100 @@ export async function exportPrazosIniciaisXlsx(filters: {
     throw new Error(`HTTP error! status: ${res.status}`);
   }
   return res.blob();
+}
+
+
+// ─── AJUS — códigos de andamento + fila ───────────────────────────────
+
+export async function fetchAjusCodAndamento(
+  onlyActive = false,
+): Promise<AjusCodAndamento[]> {
+  const qs = onlyActive ? "?only_active=true" : "";
+  const res = await apiFetch(`/api/v1/ajus/cod-andamento${qs}`);
+  return expectJson<AjusCodAndamento[]>(res);
+}
+
+export async function createAjusCodAndamento(
+  payload: AjusCodAndamentoCreatePayload,
+): Promise<AjusCodAndamento> {
+  const res = await apiFetch(`/api/v1/ajus/cod-andamento`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return expectJson<AjusCodAndamento>(res);
+}
+
+export async function updateAjusCodAndamento(
+  id: number,
+  payload: AjusCodAndamentoCreatePayload,
+): Promise<AjusCodAndamento> {
+  const res = await apiFetch(`/api/v1/ajus/cod-andamento/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return expectJson<AjusCodAndamento>(res);
+}
+
+export async function deleteAjusCodAndamento(id: number): Promise<void> {
+  const res = await apiFetch(`/api/v1/ajus/cod-andamento/${id}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 204) {
+    let detail = "Falha ao deletar código.";
+    try {
+      const data = await res.json();
+      detail = data?.detail || detail;
+    } catch (_) { /* sem body */ }
+    throw new Error(detail);
+  }
+}
+
+export interface AjusAndamentoFilters {
+  status?: string;       // CSV
+  cnj_number?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function fetchAjusAndamentos(
+  filters: AjusAndamentoFilters = {},
+): Promise<AjusAndamentoQueueListResponse> {
+  const params = new URLSearchParams();
+  if (filters.status) params.set("status", filters.status);
+  if (filters.cnj_number) params.set("cnj_number", filters.cnj_number);
+  if (typeof filters.limit === "number") params.set("limit", String(filters.limit));
+  if (typeof filters.offset === "number") params.set("offset", String(filters.offset));
+  const qs = params.toString();
+  const res = await apiFetch(
+    `/api/v1/ajus/andamentos${qs ? `?${qs}` : ""}`,
+  );
+  return expectJson<AjusAndamentoQueueListResponse>(res);
+}
+
+export async function dispatchAjusAndamentosPending(
+  batchLimit = 20,
+): Promise<AjusDispatchBatchResponse> {
+  const res = await apiFetch(
+    `/api/v1/ajus/andamentos/dispatch-pending?batch_limit=${batchLimit}`,
+    { method: "POST" },
+  );
+  return expectJson<AjusDispatchBatchResponse>(res);
+}
+
+export async function cancelAjusAndamento(itemId: number) {
+  const res = await apiFetch(
+    `/api/v1/ajus/andamentos/${itemId}/cancel`,
+    { method: "POST" },
+  );
+  return expectJson(res);
+}
+
+export async function retryAjusAndamento(itemId: number) {
+  const res = await apiFetch(
+    `/api/v1/ajus/andamentos/${itemId}/retry`,
+    { method: "POST" },
+  );
+  return expectJson(res);
 }
