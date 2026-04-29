@@ -212,15 +212,42 @@ class AjusClassifRunner:
         login_url = f"{portal.PORTAL_BASE_URL.rstrip('/')}{portal.LOGIN_PATH}"
 
         try:
-            self._page.goto(login_url, wait_until="domcontentloaded")
-        except PlaywrightTimeoutError as exc:
-            raise AjusRunnerError(f"Não consegui abrir {login_url}: {exc}") from exc
+            # `networkidle` espera o JS do AJUS terminar (ExtJS demora)
+            # antes de checarmos selectors. Sem isso, `_is_login_form_visible`
+            # retornava False porque o DOM ainda nao tinha renderizado, e
+            # o codigo marcava conta como online sem ter logado de verdade.
+            self._page.goto(login_url, wait_until="networkidle", timeout=30_000)
+        except PlaywrightTimeoutError:
+            # networkidle pode estourar em portais que nunca ficam idle.
+            # Cai pro DOMcontentloaded com pequeno wait pra estabilizar.
+            try:
+                self._page.goto(login_url, wait_until="domcontentloaded")
+                self._page.wait_for_timeout(2500)
+            except PlaywrightTimeoutError as exc2:
+                raise AjusRunnerError(
+                    f"Nao consegui abrir {login_url}: {exc2}",
+                ) from exc2
 
-        # Sessão salva — se chegamos no workspace direto, ok.
-        if not self._is_login_form_visible() and not self._is_ip_auth_visible():
+        # Garante mais tempo pro DOM estabilizar antes de checar selectors.
+        # Sem isso, race entre carregamento do form e nossa heuristica.
+        self._page.wait_for_timeout(1500)
+
+        # Sessao salva — soh assumimos workspace se VEMOS um marker positivo
+        # do workspace (input de busca rapida). Sem marker positivo, melhor
+        # tentar login do que dar false-positive de "ja logado".
+        ws_marker_visible = self._is_workspace_marker_visible()
+        if (
+            ws_marker_visible
+            and not self._is_login_form_visible()
+            and not self._is_ip_auth_visible()
+        ):
             self._persist_storage_state()
             self.session_service.set_status(
                 self.account.id, AJUS_ACCOUNT_ONLINE,
+            )
+            logger.info(
+                "AJUS runner: account %d ja logada (workspace marker visivel)",
+                self.account.id,
             )
             return
 
@@ -247,6 +274,10 @@ class AjusClassifRunner:
         except PlaywrightTimeoutError as exc:
             raise AjusRunnerError(f"Falha preenchendo form de login: {exc}") from exc
 
+        # Espera processo do login terminar: pequena pausa pra request
+        # ir e voltar antes do polling do _wait_for_login_outcome.
+        self._page.wait_for_timeout(2000)
+
         # Espera resultado: workspace OU IP-code OU erro
         outcome = self._wait_for_login_outcome()
         if outcome == "ip_auth":
@@ -268,6 +299,18 @@ class AjusClassifRunner:
 
         self._persist_storage_state()
         self.session_service.set_status(self.account.id, AJUS_ACCOUNT_ONLINE)
+
+    def _is_workspace_marker_visible(self) -> bool:
+        """
+        Marker POSITIVO de que estamos dentro do workspace (logado).
+        Usa o input de busca rapida (mesmo selector usado pra abrir
+        processo). Se ele esta visivel, com seguranca estamos logados.
+        """
+        try:
+            el = self._page.query_selector(portal.PROCESS_SEARCH_INPUT_SELECTOR)
+            return bool(el and el.is_visible())
+        except Exception:
+            return False
 
     def _is_login_form_visible(self) -> bool:
         try:
@@ -307,11 +350,10 @@ class AjusClassifRunner:
 
     def _wait_for_login_outcome(self) -> str:
         """
-        Aguarda até `ajus_login_outcome_timeout_ms`. Retorna:
-          'workspace' — login concluído
-          'ip_auth' — AJUS pedindo código de IP
+        Aguarda ate `ajus_login_outcome_timeout_ms`. Retorna:
+          'workspace' — vimos o marker positivo do workspace
+          'ip_auth'   — AJUS pedindo codigo de IP
           'login_form' — ainda no form (provavelmente erro)
-          'unknown' — não conseguiu identificar
         """
         deadline = time.monotonic() + (
             settings.ajus_login_outcome_timeout_ms / 1000.0
@@ -319,7 +361,10 @@ class AjusClassifRunner:
         while time.monotonic() < deadline:
             if self._is_ip_auth_visible():
                 return "ip_auth"
-            if not self._is_login_form_visible():
+            # Marker POSITIVO: so retorna workspace quando vemos elemento
+            # caracteristico (input de busca rapida). Form sumir nao basta —
+            # pode ser tela em transicao.
+            if self._is_workspace_marker_visible():
                 return "workspace"
             time.sleep(0.5)
         return "login_form"
