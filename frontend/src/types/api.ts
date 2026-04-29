@@ -632,6 +632,15 @@ export interface AjusSessionUpdatePayload {
   is_active?: boolean;
 }
 
+export interface AjusClassifDispatchResponse {
+  candidates: number;
+  success_count: number;
+  error_count: number;
+  success_ids: number[];
+  errored: { id: number; msg: string }[];
+  accounts_used: number[];
+}
+
 export interface PrazoInicialLegacyTaskLastTickState {
   tick_id: string | null;
   started_at: string | null;

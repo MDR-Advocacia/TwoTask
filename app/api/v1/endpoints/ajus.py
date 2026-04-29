@@ -900,6 +900,49 @@ def request_logout(
     return _session_to_out(obj)
 
 
+# ── Dispatch manual da classificação ───────────────────────────────
+
+
+class ClassifDispatchOut(BaseModel):
+    candidates: int
+    success_count: int
+    error_count: int
+    success_ids: list[int]
+    errored: list[dict]
+    accounts_used: list[int]
+
+
+@router.post(
+    "/classificacao/dispatch", response_model=ClassifDispatchOut,
+    summary=(
+        "Dispara processamento manual da fila de classificacao. "
+        "Distribui itens pendentes entre as contas online em round-robin. "
+        "Util pra testar sem esperar o worker periodico."
+    ),
+)
+def dispatch_classif(
+    batch_per_account: int = Query(default=5, ge=1, le=50),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    # Importa lazy — endpoint vive no container API que NÃO tem
+    # Playwright; o dispatcher tenta importar o runner e falha graciosamente
+    # se for o caso (marca itens como erro). Em prod o operador deve
+    # esperar o worker do ajus-runner; esse endpoint serve pra orquestracao.
+    from app.services.ajus.classif_dispatcher import AjusClassifDispatcher
+    result = AjusClassifDispatcher(db).dispatch_all(
+        batch_per_account=batch_per_account,
+    )
+    return ClassifDispatchOut(
+        candidates=result.candidates,
+        success_count=result.success_count,
+        error_count=result.error_count,
+        success_ids=result.success_ids,
+        errored=result.errored,
+        accounts_used=result.accounts_used,
+    )
+
+
 # ── Detalhe + mutações por item (DEPOIS dos paths estáticos) ────────
 
 

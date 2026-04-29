@@ -68,6 +68,26 @@ services:
       retries: 5
       start_period: 45s
 
+  ajus-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.ajus-runner
+    restart: unless-stopped
+    # Chromium precisa de /dev/shm grande pra não travar.
+    shm_size: "1gb"
+    environment:
+      PYTHONPATH: /app
+      TZ: America/Fortaleza
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-onetask}:${POSTGRES_PASSWORD:-onetask}@postgres:5432/${POSTGRES_DB:-onetask}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      # Volume dedicado pros storage_state.json das contas. Cada conta
+      # tem subdiretório `<account_id>/storage_state.json`. Precisa
+      # sobreviver a restart do container pra reaproveitar sessão.
+      - ajus_session:/app/data/ajus-session
+
   frontend:
     build:
       context: .
@@ -89,3 +109,4 @@ volumes:
   postgres_data:
   api_data:
   api_output:
+  ajus_session:

@@ -20,6 +20,7 @@ import {
   Download,
   Loader2,
   Pencil,
+  Play,
   RefreshCw,
   RotateCcw,
   Save,
@@ -65,6 +66,7 @@ import { useToast } from "@/hooks/use-toast";
 import {
   ajusClassifTemplateXlsxUrl,
   cancelAjusClassifItem,
+  dispatchAjusClassif,
   fetchAjusClassif,
   fetchAjusClassifDefaults,
   retryAjusClassifItem,
@@ -144,6 +146,9 @@ export function ClassificacaoTab() {
 
   // ─── Upload ───────────────────────────────────────────────────────
   const [uploading, setUploading] = useState(false);
+
+  // ─── Dispatch (rodar fila agora) ──────────────────────────────────
+  const [dispatching, setDispatching] = useState(false);
 
   // ─── Loaders ──────────────────────────────────────────────────────
   const loadDefaults = useCallback(async () => {
@@ -279,6 +284,36 @@ export function ClassificacaoTab() {
       });
     } finally {
       setActionId(null);
+    }
+  };
+
+  // ─── Dispatch ─────────────────────────────────────────────────────
+  const handleDispatch = async () => {
+    setDispatching(true);
+    try {
+      const res = await dispatchAjusClassif(5);
+      const lines: string[] = [
+        `${res.candidates} candidato(s)`,
+        `${res.success_count} sucesso(s)`,
+      ];
+      if (res.error_count) lines.push(`${res.error_count} erro(s)`);
+      if (res.accounts_used.length) {
+        lines.push(`Contas: ${res.accounts_used.join(", ")}`);
+      }
+      toast({
+        title: "Dispatch concluído",
+        description: lines.join(" · "),
+        variant: res.error_count > 0 ? "destructive" : "default",
+      });
+      await loadItems();
+    } catch (e: unknown) {
+      toast({
+        title: "Erro ao disparar",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setDispatching(false);
     }
   };
 
@@ -444,6 +479,19 @@ export function ClassificacaoTab() {
               >
                 <RefreshCw className={`mr-2 h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
                 Atualizar
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleDispatch}
+                disabled={dispatching || items.filter((i) => i.status === "pendente").length === 0}
+                title="Distribui itens pendentes entre as contas online (round-robin) e processa em batches de 5 por conta."
+              >
+                {dispatching ? (
+                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Play className="mr-2 h-3.5 w-3.5" />
+                )}
+                Disparar pendentes
               </Button>
               <Button
                 size="sm"

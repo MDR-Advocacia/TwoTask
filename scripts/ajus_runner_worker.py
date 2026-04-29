@@ -162,7 +162,6 @@ def main() -> int:
             db.close()
 
         # Sleep com checagem rápida de shutdown
-        for _ in range(interval):
             if _shutdown:
                 break
             time.sleep(1)

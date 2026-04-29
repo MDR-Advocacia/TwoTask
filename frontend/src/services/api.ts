@@ -5,6 +5,7 @@ import {
   AjusClassifQueueItem,
   AjusClassifQueueListResponse,
   AjusClassifQueueUpdatePayload,
+  AjusClassifDispatchResponse,
   AjusClassifUploadResponse,
   AjusSessionAccount,
   AjusSessionConfig,
@@ -965,4 +966,14 @@ export async function logoutAjusSession(id: number): Promise<AjusSessionAccount>
     { method: "POST" },
   );
   return expectJson<AjusSessionAccount>(res);
+}
+
+export async function dispatchAjusClassif(
+  batchPerAccount = 5,
+): Promise<AjusClassifDispatchResponse> {
+  const res = await apiFetch(
+    `/api/v1/ajus/classificacao/dispatch?batch_per_account=${batchPerAccount}`,
+    { method: "POST" },
+  );
+  return expectJson<AjusClassifDispatchResponse>(res);
 }
