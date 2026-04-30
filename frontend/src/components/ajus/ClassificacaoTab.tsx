@@ -18,6 +18,7 @@ import {
   AlertCircle,
   Ban,
   Bug,
+  ChevronDown,
   Download,
   Loader2,
   Pause,
@@ -57,6 +58,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Table,
   TableBody,
@@ -146,7 +153,7 @@ export function ClassificacaoTab() {
   const [items, setItems] = useState<AjusClassifQueueItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [statusFilter, setStatusFilter] = useState("__all__");
+  const [statusFilter, setStatusFilter] = useState<string[]>([]);
   const [origemFilter, setOrigemFilter] = useState("__all__");
   const [cnjFilter, setCnjFilter] = useState("");
   const [actionId, setActionId] = useState<number | null>(null);
@@ -265,7 +272,7 @@ export function ClassificacaoTab() {
     setLoading(true);
     try {
       const filters: Parameters<typeof fetchAjusClassif>[0] = { limit: 200 };
-      if (statusFilter !== "__all__") filters.status = statusFilter;
+      if (statusFilter.length > 0) filters.status = statusFilter.join(",");
       if (origemFilter !== "__all__") filters.origem = origemFilter as "intake_auto" | "planilha";
       if (cnjFilter.trim()) filters.cnj_search = cnjFilter.trim();
       const resp = await fetchAjusClassif(filters);
@@ -646,16 +653,57 @@ export function ClassificacaoTab() {
                 <label className="text-[10px] uppercase tracking-wide text-muted-foreground">
                   Status
                 </label>
-                <Select value={statusFilter} onValueChange={setStatusFilter}>
-                  <SelectTrigger className="h-8 w-[160px] text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {STATUS_OPTIONS.map((o) => (
-                      <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 w-[200px] justify-between text-xs font-normal"
+                    >
+                      <span className="truncate">
+                        {statusFilter.length === 0
+                          ? "Todos os status"
+                          : statusFilter.length === 1
+                          ? STATUS_OPTIONS.find((o) => o.value === statusFilter[0])?.label || statusFilter[0]
+                          : `${statusFilter.length} status selecionados`}
+                      </span>
+                      <ChevronDown className="ml-2 h-3 w-3 shrink-0 opacity-60" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[240px] p-2" align="start">
+                    <div className="space-y-1">
+                      <button
+                        type="button"
+                        className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
+                        onClick={() => setStatusFilter([])}
+                      >
+                        {statusFilter.length === 0 ? "✓ " : ""}Todos os status
+                      </button>
+                      <div className="my-1 h-px bg-border" />
+                      {STATUS_OPTIONS.filter((o) => o.value !== "__all__").map((o) => {
+                        const checked = statusFilter.includes(o.value);
+                        return (
+                          <label
+                            key={o.value}
+                            className="flex items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent cursor-pointer"
+                          >
+                            <Checkbox
+                              checked={checked}
+                              onCheckedChange={(c) => {
+                                if (c) {
+                                  setStatusFilter((prev) => [...prev, o.value]);
+                                } else {
+                                  setStatusFilter((prev) => prev.filter((s) => s !== o.value));
+                                }
+                              }}
+                            />
+                            <span>{o.label}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </PopoverContent>
+                </Popover>
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] uppercase tracking-wide text-muted-foreground">
