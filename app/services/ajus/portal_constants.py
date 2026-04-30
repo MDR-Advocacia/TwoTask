@@ -56,6 +56,18 @@ PROCESS_SEARCH_INPUT_SELECTOR = (
     "and not(@type='hidden') and not(@readonly)])[1]"
 )
 
+# Marker secundario do workspace pronto: icone de lupa "a.search".
+# Aparece ANTES do input de busca rapida ficar visivel (input pode estar
+# colapsado no overlay esquerdo). Porte do Mirror.
+PROCESS_SEARCH_TRIGGER_SELECTOR = "a.search"
+
+# Tela de loading que o AJUS mostra apos login bem-sucedido enquanto
+# carrega o workspace. Bloqueia decisao de "workspace ready" ate sumir.
+WORKSPACE_LOADING_TEXT_SELECTOR = (
+    "text=/aguarde, estamos preparando o seu AJUS/i"
+)
+WORKSPACE_BLOCKED_SELECTOR = "div.bloqueio-tela-login"
+
 # Template — `{process_number}` é substituído pelo CNJ em runtime.
 # Usa `last()` no Mirror não foi necessário; aqui pega o primeiro item
 # do dropdown VISÍVEL (filtra `visibility: hidden`).

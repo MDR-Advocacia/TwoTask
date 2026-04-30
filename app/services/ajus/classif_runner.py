@@ -351,15 +351,41 @@ class AjusClassifRunner:
         return self._is_ip_auth_request_visible() or self._is_ip_auth_visible()
 
     def _is_workspace_marker_visible(self) -> bool:
-        """Marker positivo do workspace: input de busca rapida visivel."""
-        return self._is_visible(portal.PROCESS_SEARCH_INPUT_SELECTOR)
+        """
+        Marker positivo do workspace. Multiplos seletores (porte do
+        Mirror) — aceita qualquer um deles como evidencia de workspace
+        pronto:
+          1. Input de busca rapida (quando expandido).
+          2. Icone de lupa `a.search` (sempre visivel quando logado,
+             mesmo com a busca colapsada).
+        """
+        return (
+            self._is_visible(portal.PROCESS_SEARCH_INPUT_SELECTOR)
+            or self._is_visible(portal.PROCESS_SEARCH_TRIGGER_SELECTOR)
+        )
+
+    def _is_workspace_blocked(self) -> bool:
+        """
+        Tela de loading do AJUS apos login ('aguarde, estamos preparando
+        o seu AJUS') OU bloqueio de tela de login. Quando visivel,
+        workspace NAO esta pronto ainda.
+        """
+        return (
+            self._is_visible(portal.WORKSPACE_LOADING_TEXT_SELECTOR)
+            or self._is_visible(portal.WORKSPACE_BLOCKED_SELECTOR)
+        )
 
     def _is_workspace_ready(self) -> bool:
         """
-        Workspace esta pronto pra interagir? Excluir explicitamente
-        se ainda esta no login form ou IP-auth.
+        Workspace esta pronto pra interagir? Exige:
+          - NAO ter login form visivel
+          - NAO ter IP-auth flow visivel
+          - NAO ter tela de loading visivel
+          - TER algum marker positivo (search input ou search trigger)
         """
         if self._is_login_form_visible() or self._is_ip_auth_flow_visible():
+            return False
+        if self._is_workspace_blocked():
             return False
         return self._is_workspace_marker_visible()
 
