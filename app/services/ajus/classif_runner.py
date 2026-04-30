@@ -350,25 +350,10 @@ class AjusClassifRunner:
         """Qualquer tela de IP-auth (request ou inputs) visivel?"""
         return self._is_ip_auth_request_visible() or self._is_ip_auth_visible()
 
-    def _is_workspace_marker_visible(self) -> bool:
-        """
-        Marker positivo do workspace. Multiplos seletores (porte do
-        Mirror) — aceita qualquer um deles como evidencia de workspace
-        pronto:
-          1. Input de busca rapida (quando expandido).
-          2. Icone de lupa `a.search` (sempre visivel quando logado,
-             mesmo com a busca colapsada).
-        """
-        return (
-            self._is_visible(portal.PROCESS_SEARCH_INPUT_SELECTOR)
-            or self._is_visible(portal.PROCESS_SEARCH_TRIGGER_SELECTOR)
-        )
-
     def _is_workspace_blocked(self) -> bool:
         """
-        Tela de loading do AJUS apos login ('aguarde, estamos preparando
-        o seu AJUS') OU bloqueio de tela de login. Quando visivel,
-        workspace NAO esta pronto ainda.
+        Tela de loading ('aguarde, estamos preparando') OU bloqueio
+        do login. Quando visivel, workspace NAO esta pronto.
         """
         return (
             self._is_visible(portal.WORKSPACE_LOADING_TEXT_SELECTOR)
@@ -377,17 +362,188 @@ class AjusClassifRunner:
 
     def _is_workspace_ready(self) -> bool:
         """
-        Workspace esta pronto pra interagir? Exige:
-          - NAO ter login form visivel
-          - NAO ter IP-auth flow visivel
-          - NAO ter tela de loading visivel
-          - TER algum marker positivo (search input ou search trigger)
+        Workspace pronto pra interagir? Porte direto do Mirror:
+          1. NAO eh login form, IP-auth ou tela de loading.
+          2. ENTAO accepta qualquer marker positivo:
+             a. Input de busca rapida visivel.
+             b. Trigger de busca (a.search) clicavel.
+             c. Menu de processos clicavel (fallback).
+             d. Algum input generico de busca (fallback).
         """
         if self._is_login_form_visible() or self._is_ip_auth_flow_visible():
             return False
         if self._is_workspace_blocked():
             return False
-        return self._is_workspace_marker_visible()
+
+        # Marker primario — input de busca rapida
+        if self._is_visible(portal.PROCESS_SEARCH_INPUT_SELECTOR):
+            return True
+
+        # Marker secundario — trigger da busca (icone de lupa)
+        if self._can_click(portal.PROCESS_SEARCH_TRIGGER_SELECTOR):
+            return True
+
+        # Fallback — menu de processos clicavel
+        if self._can_click(portal.MENU_PROCESSES_SELECTOR):
+            return True
+
+        # Fallback — qualquer input generico
+        for sel in portal.PROCESS_QUICK_SEARCH_FALLBACK_SELECTORS:
+            if self._is_visible(sel):
+                return True
+
+        return False
+
+    def _wait_for_workspace_ready(self, *, timeout_ms: int = 45_000) -> None:
+        """
+        Bloqueia ate workspace_ready ou estoura. Usado APOS login
+        (depois do _wait_for_login_outcome) e ANTES de buscar processo.
+        """
+        deadline = time.monotonic() + max(timeout_ms / 1000, 1)
+        while time.monotonic() < deadline:
+            if self._is_workspace_ready():
+                return
+            self._page.wait_for_timeout(500)
+        debug = self._dump_login_state("workspace-not-ready")
+        raise AjusRunnerError(
+            f"AJUS nao liberou workspace dentro do timeout. {debug}",
+        )
+
+    def _is_minimal_shell(self) -> bool:
+        """
+        Detecta pagina shell-only do AJUS (apenas 'menu' / 'menu search'
+        no body). Significa que sessao salva carregou mas nao liberou
+        o workspace.
+        """
+        try:
+            body = self._page.locator("body").inner_text(timeout=2000)
+        except Exception:
+            return False
+        normalized = " ".join(body.split()).strip().lower()
+        return normalized in {"menu search", "menu"} or normalized.startswith("menu search ")
+
+    # ── Helpers de Locator (porte do Mirror) ───────────────────────
+
+    def _is_hit_target(self, locator) -> bool:
+        """
+        Confirma que o locator eh o elemento real no ponto central
+        (nao tem outro elemento sobreposto). Util pra evitar clicks
+        em elementos visualmente cobertos por overlays/modals.
+        """
+        try:
+            return bool(
+                locator.evaluate(
+                    """element => {
+                        if (!element) return false;
+                        const rect = element.getBoundingClientRect();
+                        if (!element.offsetParent || rect.width <= 0 || rect.height <= 0) return false;
+                        const cx = rect.left + rect.width / 2;
+                        const cy = rect.top + rect.height / 2;
+                        const top = document.elementFromPoint(cx, cy);
+                        return !!top && (top === element || element.contains(top) || top.contains(element));
+                    }"""
+                )
+            )
+        except Exception:
+            return False
+
+    def _locator(self, selector: str):
+        """
+        Retorna o melhor locator pra um selector que pode matchear
+        varios elementos. Prefere visivel + hit-target; senao primeiro
+        visivel; senao primeiro do match.
+        """
+        loc = self._page.locator(selector)
+        try:
+            count = loc.count()
+        except Exception:
+            count = 0
+        fallback = loc.first
+        visible_fallback = loc.first
+        for index in range(count):
+            candidate = loc.nth(index)
+            fallback = candidate
+            try:
+                if candidate.is_visible():
+                    visible_fallback = candidate
+                    if self._is_hit_target(candidate):
+                        return candidate
+            except Exception:
+                continue
+        return visible_fallback if count else fallback
+
+    def _visible_locator(self, selector: str, *, timeout_s: int = 15):
+        """
+        Como `_locator`, mas com retry com timeout. Espera ate algum
+        elemento ficar visivel (e idealmente hit-target).
+        """
+        loc = self._page.locator(selector)
+        deadline = time.monotonic() + max(timeout_s, 1)
+        visible_fallback = loc.first
+        while time.monotonic() < deadline:
+            try:
+                count = loc.count()
+            except Exception:
+                count = 0
+            for index in range(count):
+                candidate = loc.nth(index)
+                try:
+                    if candidate.is_visible():
+                        visible_fallback = candidate
+                        if self._is_hit_target(candidate):
+                            return candidate
+                except Exception:
+                    continue
+            self._page.wait_for_timeout(250)
+        return visible_fallback
+
+    def _can_click(self, selector: Optional[str]) -> bool:
+        """Testa se o selector tem um elemento clicavel agora."""
+        if not selector:
+            return False
+        try:
+            loc = self._visible_locator(selector, timeout_s=2)
+        except Exception:
+            return False
+        try:
+            loc.click(trial=True, timeout=1500)
+            return True
+        except Exception:
+            return False
+
+    def _click(self, selector: str, *, double: bool = False):
+        """
+        Click robusto: scroll into view + click normal -> click force ->
+        evaluate JS click. Suporta dblclick.
+        """
+        loc = self._visible_locator(selector)
+        try:
+            loc.scroll_into_view_if_needed(timeout=3000)
+        except Exception:
+            pass
+        try:
+            if double:
+                loc.dblclick()
+            else:
+                loc.click()
+            return loc
+        except Exception:
+            pass
+        try:
+            if double:
+                loc.dblclick(force=True)
+            else:
+                loc.click(force=True)
+            return loc
+        except Exception:
+            pass
+        if double:
+            loc.evaluate(
+                "element => element.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }))"
+            )
+        else:
+            loc.evaluate("element => element.click()")
+        return loc
 
     def _wait_for_login_form(self, *, timeout_ms: int) -> bool:
         """Aguarda DOMAIN_SELECTOR ficar visivel (Playwright nativo)."""
@@ -564,46 +720,543 @@ class AjusClassifRunner:
                 item.id, item.cnj_number, msg,
             )
 
+    def _find_process_search_input(self):
+        """
+        Acha o input de busca rapida do AJUS. Estrategia (Mirror):
+          1. Tenta seletor configurado.
+          2. Tenta seletores fallback genericos.
+          3. Se nenhum visivel, clica no `a.search` pra expandir busca.
+          4. Se ainda nao, clica no menu de processos (fallback).
+          5. Loop com timeout de 15s.
+        """
+        candidates = [portal.PROCESS_SEARCH_INPUT_SELECTOR]
+        candidates.extend(portal.PROCESS_QUICK_SEARCH_FALLBACK_SELECTORS)
+
+        deadline = time.monotonic() + 15
+        clicked_search_trigger = False
+        clicked_menu_fallback = False
+
+        while time.monotonic() < deadline:
+            for sel in candidates:
+                if self._is_visible(sel):
+                    return self._visible_locator(sel)
+
+            if not clicked_search_trigger and self._is_visible(portal.PROCESS_SEARCH_TRIGGER_SELECTOR):
+                self._click(portal.PROCESS_SEARCH_TRIGGER_SELECTOR)
+                self._settle(wait_ms=1500)
+                clicked_search_trigger = True
+                continue
+
+            if not clicked_menu_fallback and self._is_visible(portal.MENU_PROCESSES_SELECTOR):
+                self._click(portal.MENU_PROCESSES_SELECTOR)
+                self._settle(wait_ms=1500)
+                clicked_menu_fallback = True
+                continue
+
+            self._page.wait_for_timeout(500)
+
+        debug = self._dump_login_state("search-input-not-found")
+        raise AjusRunnerError(
+            f"Nao foi possivel localizar a busca rapida do AJUS. {debug}",
+        )
+
+    def _type_process_search(self, search_input, cnj: str) -> None:
+        """
+        Limpa o campo e digita o CNJ caractere por caractere com delay.
+        Necessario porque ExtJS escuta keyup events pra disparar query
+        no store — `fill()` sozinho nao trigga.
+        """
+        try:
+            search_input.press("Control+A")
+            search_input.press("Delete")
+        except Exception:
+            pass
+        try:
+            search_input.fill("")
+        except Exception:
+            pass
+        try:
+            search_input.press_sequentially(cnj, delay=35)
+        except Exception:
+            self._page.keyboard.type(cnj, delay=35)
+
+    def _find_process_result(self, cnj: str):
+        """
+        Acha o item do dropdown que matcheia o CNJ. Estrategia (Mirror):
+          1. Selector template configurado.
+          2. Fallback xpath generico.
+          3. Fallback `text={cnj}` simples.
+        """
+        candidates = []
+        candidates.append(
+            portal.PROCESS_RESULT_SELECTOR_TEMPLATE.format(process_number=cnj),
+        )
+        candidates.append(
+            portal.PROCESS_RESULT_FALLBACK_SELECTOR_TEMPLATE.format(process_number=cnj),
+        )
+        candidates.append(f"text={cnj}")
+
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            for sel in candidates:
+                if self._is_visible(sel):
+                    return self._visible_locator(sel, timeout_s=3)
+            self._page.wait_for_timeout(500)
+
+        debug = self._dump_login_state("search-result-not-found")
+        raise AjusRunnerError(
+            f"Resultado da busca pra CNJ {cnj} nao apareceu. {debug}",
+        )
+
     def _open_process_by_cnj(self, cnj: str) -> None:
         """
-        Abre a tela do processo no AJUS via busca rápida (overlay
-        esquerdo): clica no input, digita o CNJ, espera o dropdown
-        ExtJS aparecer, clica no item correspondente.
+        Abre a tela do processo no AJUS via busca rapida (porte fiel
+        do `_open_process` do Mirror).
 
-        AJUS não aceita URL direta com CNJ — o portal é um workspace
-        ExtJS single-page. Tem que passar pela busca.
+        Sequencia:
+          1. Aguarda workspace ready (45s).
+          2. Acha o input de busca rapida (com fallbacks).
+          3. Clica e digita o CNJ caractere por caractere (delay=35ms).
+          4. Espera 2s pelo AJUS resolver no store.
+          5. Acha o resultado e da DOUBLE-CLICK (nao single).
+          6. Settle 2s.
         """
-        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+        # Etapa 1: workspace ready
+        self._wait_for_workspace_ready(timeout_ms=45_000)
 
+        # Etapa 2 + 3: input + digita
+        search_input = self._find_process_search_input()
         try:
-            search = self._page.locator(
-                portal.PROCESS_SEARCH_INPUT_SELECTOR,
-            ).first
-            search.click()
-            search.fill(cnj)
-            self._page.wait_for_timeout(800)  # autocomplete
+            search_input.click()
+        except Exception:
+            try:
+                search_input.click(force=True)
+            except Exception:
+                pass
+        self._type_process_search(search_input, cnj)
 
-            # Clica no item do dropdown que contém o CNJ. Sem isso o
-            # ExtJS combobox não navega — só mostra resultados.
-            result_selector = portal.PROCESS_RESULT_SELECTOR_TEMPLATE.format(
-                process_number=cnj,
+        # Etapa 4: AJUS resolve a busca
+        self._page.wait_for_timeout(2000)
+
+        # Etapa 5: dblclick no resultado
+        result = self._find_process_result(cnj)
+        try:
+            result.scroll_into_view_if_needed(timeout=3000)
+        except Exception:
+            pass
+        try:
+            result.dblclick()
+        except Exception:
+            try:
+                result.dblclick(force=True)
+            except Exception:
+                # Fallback: dispara dblclick via JS
+                result.evaluate(
+                    "element => element.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }))"
+                )
+
+        self._settle(wait_ms=2000)
+
+    # ── Preenchimento de campos ExtJS (porte do Mirror) ───────────
+
+    def _associated_visible_input_id(self, locator) -> Optional[str]:
+        """
+        Pra um input hidden ExtJS, retorna o id do input "companheiro"
+        visivel (mesmo wrapper). ExtJS guarda valor real no hidden e
+        display no visivel.
+        """
+        try:
+            companion_id = locator.evaluate(
+                """element => {
+                    const wrapper =
+                        element.closest('.x-form-field-wrap, .x-form-element, .x-trigger-wrap-focus') ||
+                        element.parentElement;
+                    if (!wrapper) return '';
+                    const visible = Array.from(wrapper.querySelectorAll('input, textarea')).find(
+                        candidate =>
+                            candidate !== element &&
+                            candidate.type !== 'hidden' &&
+                            candidate.offsetParent !== null
+                    );
+                    return visible?.id || '';
+                }"""
             )
-            result = self._page.locator(result_selector).first
-            result.wait_for(state="visible", timeout=5_000)
-            result.click()
-            self._page.wait_for_timeout(2000)
-        except PlaywrightTimeoutError as exc:
+            return companion_id or None
+        except Exception:
+            return None
+
+    def _is_ext_combo(self, locator) -> bool:
+        """Detecta se o elemento eh um combobox ExtJS (tem store + doQuery)."""
+        try:
+            return bool(
+                locator.evaluate(
+                    """element => {
+                        const cmp = element?.id && window.Ext ? Ext.getCmp(element.id) : null;
+                        return !!cmp && !!cmp.store && typeof cmp.doQuery === 'function' && !!cmp.displayField;
+                    }"""
+                )
+            )
+        except Exception:
+            return False
+
+    def _set_ext_component_value(self, locator, value: str) -> bool:
+        """
+        Set value via Ext.getCmp(id).setValue(). Disparas eventos
+        input/change/blur. Trata caso especial de date. Retorna True
+        se conseguiu setar e o valor foi confirmado.
+        """
+        try:
+            return bool(
+                locator.evaluate(
+                    """(element, desiredValue) => {
+                        if (!element || !window.Ext) return false;
+                        const wrapper =
+                            element.closest('.x-form-field-wrap, .x-form-element, .x-trigger-wrap-focus') ||
+                            element.parentElement;
+                        const candidates = [];
+                        const push = c => { if (c && !candidates.includes(c)) candidates.push(c); };
+                        push(element);
+                        push(element.previousElementSibling);
+                        push(element.nextElementSibling);
+                        if (wrapper) {
+                            Array.from(wrapper.querySelectorAll('input, textarea')).forEach(push);
+                        }
+                        let cmp = null;
+                        let cmpInput = null;
+                        for (const c of candidates) {
+                            const id = c?.id || '';
+                            if (!id) continue;
+                            const current = Ext.getCmp(id);
+                            if (current && typeof current.setValue === 'function') {
+                                cmp = current; cmpInput = c; break;
+                            }
+                        }
+                        if (!cmp) return false;
+                        const visibleTargets = [];
+                        const hiddenTargets = [];
+                        const remember = (b, c) => { if (c && !b.includes(c)) b.push(c); };
+                        const rawValue = String(desiredValue ?? '');
+                        if (wrapper) {
+                            for (const c of wrapper.querySelectorAll('input, textarea')) {
+                                if (c instanceof HTMLInputElement && c.type === 'hidden') remember(hiddenTargets, c);
+                                else remember(visibleTargets, c);
+                            }
+                        }
+                        remember(visibleTargets, cmpInput);
+                        const dispatch = n => {
+                            n?.dispatchEvent?.(new Event('input', { bubbles: true }));
+                            n?.dispatchEvent?.(new Event('change', { bubbles: true }));
+                            n?.dispatchEvent?.(new Event('blur', { bubbles: true }));
+                        };
+                        const setNV = (n, v) => { if (n) { n.value = v; dispatch(n); } };
+                        try {
+                            cmp.clearInvalid?.(); cmp.clearValue?.(); cmp.setRawValue?.('');
+                            cmp.lastQuery = null;
+                        } catch (e) {}
+                        visibleTargets.forEach(n => setNV(n, ''));
+                        hiddenTargets.forEach(n => setNV(n, ''));
+                        const xtype = String(cmp.xtype || cmp.constructor?.xtype || '').toLowerCase();
+                        const looksLikeDate = xtype.includes('date') ||
+                            hiddenTargets.some(n => /data(evento|agendamento|fatal)/i.test(n.name || '')) ||
+                            visibleTargets.some(n => String(n.className || '').includes('x-form-date'));
+                        try {
+                            cmp.setValue?.(rawValue);
+                            cmp.setRawValue?.(rawValue);
+                            cmp.validate?.(); cmp.triggerBlur?.();
+                            cmp.fireEvent?.('change', cmp, cmp.getValue?.(), null);
+                            cmp.fireEvent?.('blur', cmp);
+                        } catch (e) { return false; }
+                        if (!looksLikeDate) {
+                            hiddenTargets.forEach(n => setNV(n, rawValue));
+                            if (cmp.hiddenField) setNV(cmp.hiddenField, rawValue);
+                        }
+                        for (const n of visibleTargets) {
+                            if (String(n.value || '').trim() !== rawValue) setNV(n, rawValue);
+                        }
+                        const cv = cmp.getValue?.();
+                        const dateOk = !looksLikeDate || (cv instanceof Date && !Number.isNaN(cv.getTime()));
+                        const cd = String(cmp.getRawValue ? cmp.getRawValue() : '').trim() ||
+                            String(visibleTargets.find(n => String(n.value || '').trim())?.value || '').trim();
+                        return dateOk && cd === rawValue;
+                    }""",
+                    value,
+                )
+            )
+        except Exception:
+            return False
+
+    def _select_ext_combo_value(self, locator, value: str) -> bool:
+        """
+        Seleciona valor num combobox ExtJS via JS evaluate. Faz query
+        no store, encontra record matching pelo displayField, chama
+        cmp.onSelect/cmp.select. Fallback pra picker visivel se falhar.
+        """
+        try:
+            selected = bool(
+                locator.evaluate(
+                    """(element, desiredValue) => {
+                        const normalize = s => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().trim();
+                        const id = element?.id || "";
+                        const cmp = id && window.Ext ? Ext.getCmp(id) : null;
+                        if (!cmp || !cmp.store || typeof cmp.doQuery !== "function" || !cmp.displayField) return false;
+                        const target = normalize(desiredValue);
+                        const store = cmp.store;
+                        const wrapper = element.closest('.x-form-field-wrap, .x-form-element, .x-trigger-wrap-focus') || element.parentElement;
+                        const visibleInput = wrapper ? Array.from(wrapper.querySelectorAll('input, textarea')).find(c => c.type !== 'hidden' && c.offsetParent !== null) : null;
+                        const hiddenInputs = wrapper ? Array.from(wrapper.querySelectorAll('input[type="hidden"]')) : [];
+                        const dispatch = n => {
+                            n?.dispatchEvent?.(new Event('input', { bubbles: true }));
+                            n?.dispatchEvent?.(new Event('change', { bubbles: true }));
+                            n?.dispatchEvent?.(new Event('blur', { bubbles: true }));
+                        };
+                        const setNV = (n, v) => { if (n) { n.value = v; dispatch(n); } };
+                        const clearState = () => {
+                            try {
+                                cmp.clearInvalid?.(); cmp.clearValue?.(); cmp.setRawValue?.('');
+                                cmp.lastSelectionText = ''; cmp.lastQuery = null;
+                            } catch (e) {}
+                            setNV(visibleInput, '');
+                            hiddenInputs.forEach(n => setNV(n, ''));
+                            if (cmp.hiddenField) setNV(cmp.hiddenField, '');
+                        };
+                        const findRecord = allowContains => {
+                            const count = store.getCount ? store.getCount() : 0;
+                            let containsMatch = null;
+                            for (let i = 0; i < count; i += 1) {
+                                const r = store.getAt(i); if (!r) continue;
+                                const display = normalize(r.get?.(cmp.displayField) ?? r.data?.[cmp.displayField]);
+                                if (!display) continue;
+                                if (display === target) return { record: r, index: i, exact: true };
+                                if (allowContains && !containsMatch && (display.includes(target) || target.includes(display))) {
+                                    containsMatch = { record: r, index: i, exact: false };
+                                }
+                            }
+                            return containsMatch;
+                        };
+                        const applyRecord = m => {
+                            if (!m || !m.record) return false;
+                            try {
+                                const { record, index } = m;
+                                const rawValue = String(record.get?.(cmp.displayField) ?? record.data?.[cmp.displayField] ?? desiredValue).trim();
+                                const storedValue = record.get?.(cmp.valueField) ?? record.data?.[cmp.valueField] ?? rawValue;
+                                cmp.expand?.();
+                                if (typeof cmp.onSelect === "function") cmp.onSelect(record, index ?? 0);
+                                else if (typeof cmp.select === "function") cmp.select(record, true);
+                                else { cmp.setValue?.(storedValue); cmp.setRawValue?.(rawValue); }
+                                cmp.lastSelectionText = rawValue;
+                                setNV(visibleInput, rawValue);
+                                hiddenInputs.forEach(n => setNV(n, String(storedValue ?? '')));
+                                if (cmp.hiddenField) setNV(cmp.hiddenField, String(storedValue ?? ''));
+                                cmp.assertValue?.();
+                                cmp.fireEvent?.("select", cmp, record, index ?? 0);
+                                cmp.fireEvent?.("change", cmp, storedValue, null);
+                                cmp.collapse?.(); cmp.triggerBlur?.();
+                                const cd = normalize(cmp.getRawValue ? cmp.getRawValue() : "") || normalize(visibleInput?.value || "");
+                                return cd === target;
+                            } catch (e) { return false; }
+                        };
+                        return new Promise(resolve => {
+                            let finished = false;
+                            const finish = r => {
+                                if (finished) return;
+                                finished = true;
+                                try { store.un?.("load", onLoad); } catch (e) {}
+                                clearTimeout(timeoutId);
+                                resolve(r);
+                            };
+                            const trySelect = ac => {
+                                const m = findRecord(ac);
+                                if (applyRecord(m)) finish(true);
+                            };
+                            const onLoad = () => setTimeout(() => trySelect(false), 120);
+                            const timeoutId = setTimeout(() => finish(false), 5000);
+                            try {
+                                store.on?.("load", onLoad);
+                                clearState(); cmp.expand?.(); cmp.onTriggerClick?.();
+                                cmp.setRawValue?.(desiredValue);
+                                cmp.lastQuery = null;
+                                cmp.doQuery?.(desiredValue, false);
+                                setTimeout(() => {
+                                    if (finished) return;
+                                    trySelect(false);
+                                    if (finished) return;
+                                    cmp.lastQuery = null;
+                                    cmp.doQuery?.(desiredValue, true);
+                                    setTimeout(() => {
+                                        if (!finished) {
+                                            trySelect(true);
+                                            if (!finished) finish(false);
+                                        }
+                                    }, 250);
+                                }, 250);
+                            } catch (e) { finish(false); }
+                        });
+                    }""",
+                    value,
+                )
+            )
+            if selected:
+                return True
+        except Exception:
+            pass
+        # Fallback: tenta clicar no item visivel da picker (boundlist)
+        return self._select_ext_combo_value_from_visible_picker(locator, value)
+
+    def _select_ext_combo_value_from_visible_picker(self, locator, value: str) -> bool:
+        """
+        Fallback pro combobox: abre o dropdown e clica no item pelo
+        texto visivel. Usado quando o JS evaluate falha.
+        """
+        target = _normalize_text(value)
+        try:
+            locator.click()
+        except Exception:
+            try: locator.click(force=True)
+            except Exception: return False
+        self._page.wait_for_timeout(400)
+        # Procura items na boundlist visivel
+        items = self._page.locator(
+            "xpath=//div[contains(@class,'x-boundlist') "
+            "and not(contains(@style,'display:none')) "
+            "and not(contains(@style,'visibility: hidden'))]"
+            "//*[contains(@class,'x-boundlist-item') or contains(@class,'x-combo-list-item')]"
+        )
+        try:
+            count = items.count()
+        except Exception:
+            count = 0
+        for i in range(count):
+            item = items.nth(i)
+            try:
+                if not item.is_visible():
+                    continue
+                if _normalize_text(item.inner_text()) != target:
+                    continue
+                try: item.scroll_into_view_if_needed(timeout=2000)
+                except Exception: pass
+                try: item.click()
+                except Exception: item.click(force=True)
+                self._page.wait_for_timeout(500)
+                return True
+            except Exception:
+                continue
+        return False
+
+    def _fill_field(self, label: str, selector: str, value: str) -> None:
+        """
+        Preenche UM campo da capa (porte do Mirror `_fill_field`).
+        Decide o caminho:
+          - <select> nativo: select_option.
+          - Combobox ExtJS: _select_ext_combo_value (com fallback picker).
+          - Input texto: scroll + click + remove readonly + Control+A +
+            Delete + press_sequentially(delay=35) + Enter + Tab.
+        """
+        locator = self._visible_locator(selector)
+        try:
+            tag_name = locator.evaluate("element => element.tagName.toLowerCase()")
+        except Exception:
+            tag_name = ""
+
+        if tag_name == "select":
+            try: locator.select_option(label=value)
+            except Exception: locator.select_option(value=value)
+            return
+
+        if self._is_ext_combo(locator):
+            if self._select_ext_combo_value(locator, value):
+                self._page.wait_for_timeout(400)
+                return
             raise AjusRunnerError(
-                f"Não consegui abrir o processo {cnj} via busca rápida: {exc}",
-            ) from exc
+                f"Nao consegui selecionar '{value}' no campo {label} (combobox ExtJS).",
+            )
+
+        # Input de texto comum
+        try: locator.scroll_into_view_if_needed(timeout=3000)
+        except Exception: pass
+        locator.click()
+        try:
+            locator.evaluate(
+                """element => {
+                    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+                        element.readOnly = false;
+                    }
+                }"""
+            )
+        except Exception:
+            pass
+        try:
+            self._page.keyboard.press("Control+A")
+            self._page.keyboard.press("Delete")
+        except Exception:
+            pass
+        try: locator.fill("")
+        except Exception: pass
+        try: locator.press_sequentially(value, delay=35)
+        except Exception: self._page.keyboard.type(value, delay=35)
+        self._page.wait_for_timeout(700)
+        try: self._page.keyboard.press("Enter")
+        except Exception: pass
+        self._page.wait_for_timeout(400)
+        self._page.keyboard.press("Tab")
+
+    def _wait_for_process_cover_dependency(self, label: str, selector: str) -> None:
+        """
+        Aguarda um campo dependente ficar visivel (ex.: Comarca depende
+        de UF estar setada — o AJUS so habilita Comarca depois).
+        """
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            loc = self._page.locator(selector)
+            try:
+                if loc.count() and loc.first.is_visible():
+                    self._page.wait_for_timeout(250)
+                    return
+            except Exception:
+                pass
+            self._page.wait_for_timeout(250)
+        raise AjusRunnerError(
+            f"Campo dependente '{label}' nao ficou visivel no AJUS apos o anterior.",
+        )
+
+    def _read_locator_display_value(self, locator) -> str:
+        """
+        Le o display value de um campo. Pra inputs/textarea/select usa
+        input_value(); pra outros elementos usa inner_text(). NAO usa
+        Ext.getCmp.getRawValue() porque o display visual ja eh o que
+        precisamos comparar.
+        """
+        try:
+            tag_name = locator.evaluate("element => element.tagName.toLowerCase()")
+        except Exception:
+            tag_name = ""
+        if tag_name in {"input", "textarea", "select"}:
+            try:
+                return (locator.input_value() or "").strip()
+            except Exception:
+                pass
+        try:
+            return (locator.inner_text() or "").strip()
+        except Exception:
+            return ""
+
+    def _read_field_display_value(self, selector: str) -> str:
+        loc = self._locator(selector)
+        return self._read_locator_display_value(loc)
+
+    # ── Atualizacao da capa do processo ────────────────────────────
 
     def _update_process_cover(self, item: AjusClassificacaoQueue) -> None:
-        """Preenche os 5 campos da capa via ExtJS."""
+        """
+        Preenche os 5 campos da capa via _fill_field (porte fiel do
+        Mirror `_update_process_fields`).
+
+        Ordem importa: UF antes de Comarca (Comarca depende de UF).
+        """
         for required, value in [
             ("UF", item.uf),
             ("Comarca", item.comarca),
-            ("Matéria", item.matter),
-            ("Justiça/Honorário", item.justice_fee),
+            ("Materia", item.matter),
+            ("Justica/Honorario", item.justice_fee),
             ("Risco/Prob. Perda", item.risk_loss_probability),
         ]:
             if not value or not value.strip():
@@ -612,68 +1265,35 @@ class AjusClassifRunner:
                     f"operador precisa editar antes do dispatch.",
                 )
 
-        self._fill_combo("UF", portal.PROCESS_UF_SELECTOR, item.uf)
-        self._fill_combo("Comarca", portal.PROCESS_COMARCA_SELECTOR, item.comarca)
-        self._fill_combo("Matéria", portal.PROCESS_MATTER_SELECTOR, item.matter)
-        self._fill_combo(
-            "Justiça/Honorário",
-            portal.PROCESS_JUSTICE_FEE_SELECTOR,
-            item.justice_fee,
-        )
-        self._fill_combo(
-            "Risco/Prob. Perda",
-            portal.PROCESS_RISK_SELECTOR,
-            item.risk_loss_probability,
-        )
+        self._fill_field("UF", portal.PROCESS_UF_SELECTOR, item.uf)
+        # Comarca depende de UF estar setada — espera ela ficar habilitada
+        self._wait_for_process_cover_dependency("Comarca", portal.PROCESS_COMARCA_SELECTOR)
+        self._fill_field("Comarca", portal.PROCESS_COMARCA_SELECTOR, item.comarca)
+        self._fill_field("Materia", portal.PROCESS_MATTER_SELECTOR, item.matter)
+        self._fill_field("Justica/Honorario", portal.PROCESS_JUSTICE_FEE_SELECTOR, item.justice_fee)
+        self._fill_field("Risco/Prob. Perda", portal.PROCESS_RISK_SELECTOR, item.risk_loss_probability)
 
-        self._page.click(portal.PROCESS_SAVE_SELECTOR)
-        self._page.wait_for_timeout(1500)
-
-    def _fill_combo(
-        self, label: str, selector: str, value: str,
-    ) -> None:
-        """
-        Preenche um combobox ExtJS:
-          1. Clica no campo
-          2. Limpa
-          3. Digita o valor
-          4. Espera 800ms (autocomplete)
-          5. Press ArrowDown + Enter pra selecionar primeiro match
-        Se o portal mudar layout, o ajuste é em
-        `app/services/ajus/portal_constants.py`.
-        """
-        loc = self._page.locator(selector).first
-        loc.click()
-        self._page.keyboard.press("Control+a")
-        self._page.keyboard.press("Delete")
-        loc.fill(value)
-        self._page.wait_for_timeout(800)
-        self._page.keyboard.press("ArrowDown")
-        self._page.keyboard.press("Enter")
-        self._page.wait_for_timeout(400)
+        # Salvar
+        self._click(portal.PROCESS_SAVE_SELECTOR)
+        self._settle(wait_ms=1500)
 
     def _validate_process_cover(self, item: AjusClassificacaoQueue) -> None:
         """
-        Re-lê os 5 campos da capa e compara com o esperado.
-        Levanta se algum não bater (normalizado — case/acentos
-        ignorados).
+        Re-le os 5 campos da capa apos save e compara com expected.
+        Usa _read_field_display_value (display visual normalizado).
         """
         actual = {
-            "UF": self._read_field_value(portal.PROCESS_UF_SELECTOR),
-            "Comarca": self._read_field_value(portal.PROCESS_COMARCA_SELECTOR),
-            "Matéria": self._read_field_value(portal.PROCESS_MATTER_SELECTOR),
-            "Justiça/Honorário": self._read_field_value(
-                portal.PROCESS_JUSTICE_FEE_SELECTOR,
-            ),
-            "Risco/Prob. Perda": self._read_field_value(
-                portal.PROCESS_RISK_SELECTOR,
-            ),
+            "UF": self._read_field_display_value(portal.PROCESS_UF_SELECTOR),
+            "Comarca": self._read_field_display_value(portal.PROCESS_COMARCA_SELECTOR),
+            "Materia": self._read_field_display_value(portal.PROCESS_MATTER_SELECTOR),
+            "Justica/Honorario": self._read_field_display_value(portal.PROCESS_JUSTICE_FEE_SELECTOR),
+            "Risco/Prob. Perda": self._read_field_display_value(portal.PROCESS_RISK_SELECTOR),
         }
         expected = {
             "UF": item.uf or "",
             "Comarca": item.comarca or "",
-            "Matéria": item.matter or "",
-            "Justiça/Honorário": item.justice_fee or "",
+            "Materia": item.matter or "",
+            "Justica/Honorario": item.justice_fee or "",
             "Risco/Prob. Perda": item.risk_loss_probability or "",
         }
         mismatches = []
@@ -683,17 +1303,6 @@ class AjusClassifRunner:
                 mismatches.append(f"{label}: esperado '{exp}', encontrado '{got}'")
         if mismatches:
             raise AjusRunnerError(
-                "Capa não ficou com valores esperados após o save: "
+                "Capa nao ficou com os valores esperados apos o save: "
                 + " | ".join(mismatches),
             )
-
-    def _read_field_value(self, selector: str) -> str:
-        try:
-            loc = self._page.locator(selector).first
-            return (loc.input_value() or "").strip()
-        except Exception:
-            try:
-                loc = self._page.locator(selector).first
-                return (loc.text_content() or "").strip()
-            except Exception:
-                return ""

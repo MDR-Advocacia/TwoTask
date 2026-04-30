@@ -106,3 +106,27 @@ PROCESS_RISK_SELECTOR = (
     "/following-sibling::input[@type='text']"
 )
 PROCESS_SAVE_SELECTOR = "button.disk_edit"
+
+# ─── Fallbacks (porte do Mirror) ──────────────────────────────────────
+# Quando o seletor exato falha (layout muda, ExtJS render lazy, etc),
+# Mirror tenta esses xpaths genericos pra achar input/resultado.
+
+PROCESS_QUICK_SEARCH_FALLBACK_SELECTORS = (
+    "xpath=(//input[contains(@class,'x-form-text') "
+    "and not(@type='hidden') and not(@readonly) "
+    "and not(ancestor::*[contains(@style,'display:none')])])[1]",
+    "xpath=(//input[not(@type='hidden') and not(@readonly) "
+    "and not(ancestor::*[contains(@style,'display:none')])])[1]",
+)
+
+PROCESS_RESULT_FALLBACK_SELECTOR_TEMPLATE = (
+    "xpath=(//*[self::a or self::div or self::span or self::td]"
+    "[contains(normalize-space(.), '{process_number}') "
+    "and not(ancestor::*[contains(@style,'display:none')])])[1]"
+)
+
+# Selector secundario do menu de processos (fallback se a busca rapida
+# nao expandir). Pra MDR/banco_master nao costuma ser usado, mas mantem
+# por compatibilidade com Mirror.
+MENU_PROCESSES_SELECTOR = "text=Ações Judiciais"
+
