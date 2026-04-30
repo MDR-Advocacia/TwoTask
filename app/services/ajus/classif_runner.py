@@ -887,15 +887,14 @@ class AjusClassifRunner:
 
     def _type_process_search(self, search_input, cnj: str) -> None:
         """
-        Limpa o campo e digita o CNJ MASCARADO (NNNNNNN-DD.AAAA.J.TT.OOOO)
-        caractere por caractere com delay. Necessario porque:
-          1. ExtJS escuta keyup events pra disparar query no store —
-             `fill()` sozinho nao trigga.
-          2. AJUS espera o CNJ mascarado no input — o XHR pra
-             BuscaRapidaController.php envia `query=` mascarado e
-             o card de resultado renderiza o mesmo formato no DOM.
-             Sem mascara, o resultado pode aparecer mas o selector
-             que usa `contains(., '{cnj}')` nao bate (Mirror confirma).
+        Limpa o campo e digita o CNJ MASCARADO (NNNNNNN-DD.AAAA.J.TT.OOOO).
+        Apos digitar, FORCA o ExtJS combobox a disparar a query via
+        Ext.getCmp(id).doQuery(value, true) — bypassa cache de lastQuery
+        e garante que o XHR /ajax.handler.php?ajax=BuscaRapidaController.php
+        sempre dispare. Sem isso, observamos casos onde o keyup nao chega
+        ou o ExtJS dedupe a query (lastQuery=mesmo valor) e o XHR nao roda.
+        Quando o XHR nao roda, o painel "sem resultados" tambem nao
+        renderiza, entao a deteccao de nao_encontrado fica engasgada.
         """
         masked = _format_cnj_mask(cnj)
         try:
@@ -907,10 +906,74 @@ class AjusClassifRunner:
             search_input.fill("")
         except Exception:
             pass
+        # Tipar normalmente — alguns flows do AJUS dependem do typing
+        # pra mostrar autocomplete antes do submit.
         try:
             search_input.press_sequentially(masked, delay=35)
         except Exception:
             self._page.keyboard.type(masked, delay=35)
+
+        # Forcar a query via JS — bypassa eventual deduplicacao do
+        # ExtJS (lastQuery==masked) e garante XHR sempre dispara.
+        # Estrategia: pegar o id do input visivel, achar o componente
+        # ExtJS, e chamar doQuery(value, true). O `true` forca refresh
+        # mesmo que lastQuery seja igual.
+        try:
+            search_input.evaluate(
+                """(el, value) => {
+                    if (!window.Ext) return 'no_ext';
+                    // Procura o componente ExtJS dono do input. ExtJS antigo
+                    // associa o input a um componente via id ou closest.
+                    let cmp = null;
+                    try {
+                        if (el.id && Ext.getCmp) {
+                            cmp = Ext.getCmp(el.id);
+                        }
+                    } catch (e) {}
+                    if (!cmp) {
+                        // Fallback: procura por todos os comboboxes que
+                        // tem doQuery e pega o que tem o input visivel.
+                        try {
+                            const all = (Ext.ComponentMgr && Ext.ComponentMgr.all)
+                                ? (Ext.ComponentMgr.all.items || Object.values(Ext.ComponentMgr.all))
+                                : ((Ext.ComponentManager && Ext.ComponentManager.all)
+                                    ? (Ext.ComponentManager.all.items || Object.values(Ext.ComponentManager.all))
+                                    : []);
+                            for (const c of (all || [])) {
+                                if (!c) continue;
+                                if (typeof c.doQuery !== 'function') continue;
+                                // Match por elemento (input do combo)
+                                try {
+                                    const ie = c.getEl && c.getEl();
+                                    const root = (ie && ie.dom) ? ie.dom : null;
+                                    if (root && (root === el || root.contains(el))) {
+                                        cmp = c; break;
+                                    }
+                                } catch (e2) {}
+                            }
+                        } catch (e3) {}
+                    }
+                    if (!cmp || typeof cmp.doQuery !== 'function') return 'no_cmp';
+                    try {
+                        // setValue + doQuery(value, true) — o `true` sinaliza
+                        // forceAll/forceQuery dependendo da versao do ExtJS;
+                        // nas versoes antigas do AJUS bypassa o `if (q==lastQuery)`.
+                        if (typeof cmp.setValue === 'function') {
+                            try { cmp.setValue(value); } catch (e) {}
+                        }
+                        cmp.doQuery(value, true);
+                        return 'ok';
+                    } catch (e) {
+                        return 'doQuery_error: ' + (e && e.message);
+                    }
+                }""",
+                masked,
+            )
+        except Exception as exc:
+            logger.warning(
+                "AJUS runner: falha ao forcar doQuery via JS: %s — "
+                "depende do keyup nativo.", exc,
+            )
 
     def _is_search_empty_result_visible(self) -> bool:
         """
@@ -985,29 +1048,43 @@ class AjusClassifRunner:
                 f"//*[contains(normalize-space(.), '{form}')])[1]",
             )
 
-        # Hook em network.response pra capturar a ultima resposta de busca.
-        # ExtJS bate normalmente em /processo/buscaRapida ou similar.
+        # Hook em network.response pra capturar a resposta da busca.
+        # AJUS bate em /ajax.handler.php?ajax=BuscaRapidaController.php
+        # — separamos o capture em 2 niveis: o que CASA com BuscaRapida
+        # (XHR oficial da busca) tem prioridade; outros XHRs do
+        # ajax.handler ficam em fallback (workspace housekeeping).
         last_search_response: dict[str, str] = {}
+        last_other_response: dict[str, str] = {}
+
+        def _store(target: dict, response):
+            try:
+                target["url"] = response.url or ""
+                target["status"] = str(response.status)
+                try:
+                    body = response.text()[:500]
+                except Exception:
+                    body = "(body indisponivel)"
+                target["body"] = body
+            except Exception:
+                pass
 
         def _capture_response(response):
             try:
-                url = response.url or ""
+                url = (response.url or "").lower()
+                if not url:
+                    return
+                # Prioridade 1: XHR EXATO da busca rapida.
+                if "buscarapida" in url or "buscaracaojudicial" in url:
+                    _store(last_search_response, response)
+                    return
+                # Prioridade 2: outros XHRs do ajax.handler — fallback.
                 if any(
-                    fragment in url.lower()
+                    fragment in url
                     for fragment in (
-                        "buscarapidacontroller", "buscarapida", "busca-rapida",
-                        "buscaracaojudicial", "buscaracao", "buscar",
-                        "search", "processo", "ajax.handler.php",
+                        "ajax.handler.php", "buscar", "search", "processo",
                     )
                 ):
-                    last_search_response["url"] = url
-                    last_search_response["status"] = str(response.status)
-                    try:
-                        # Body curto pra nao explodir log
-                        body = response.text()[:500]
-                    except Exception:
-                        body = "(body indisponivel)"
-                    last_search_response["body"] = body
+                    _store(last_other_response, response)
             except Exception:
                 pass
 
@@ -1056,6 +1133,7 @@ class AjusClassifRunner:
                             candidates=candidates,
                             search_input=search_input,
                             last_search_response=last_search_response,
+                            last_other_response=last_other_response,
                         )
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(
@@ -1072,6 +1150,7 @@ class AjusClassifRunner:
                 candidates=candidates,
                 search_input=search_input,
                 last_search_response=last_search_response,
+                last_other_response=last_other_response,
             )
             raise AjusRunnerError(
                 f"Resultado da busca pra CNJ {cnj} nao apareceu. {debug}",
@@ -1090,6 +1169,7 @@ class AjusClassifRunner:
         candidates: list[str],
         search_input=None,
         last_search_response: Optional[dict] = None,
+        last_other_response: Optional[dict] = None,
     ) -> str:
         """
         Dump rico do estado da busca — screenshot + URL + titulo +
@@ -1106,17 +1186,29 @@ class AjusClassifRunner:
         # Coleta extras
         extras: list[str] = []
 
-        # 1. Valor real do input de busca (sequencial pode perder caractere)
+        # 1. Valor real do input de busca — comparar contra ambas as
+        # formas (mascarada e crua) pra dar resultado correto sem
+        # falso-positivo de "DIFERENTE" quando o input ta no formato certo.
         try:
             if search_input is not None:
                 actual_value = search_input.input_value(timeout=2000)
-                if actual_value != cnj:
+                masked_form = _format_cnj_mask(cnj)
+                raw_form = _cnj_digits(cnj)
+                if actual_value == masked_form:
+                    extras.append(f"input_value={actual_value!r} OK (mascarado)")
+                elif actual_value == raw_form:
+                    extras.append(f"input_value={actual_value!r} OK (cru)")
+                elif _cnj_digits(actual_value) == raw_form:
                     extras.append(
-                        f"input_value={actual_value!r} (esperado: {cnj!r}) "
-                        f"DIFERENTE — possivel perda de caractere"
+                        f"input_value={actual_value!r} OK (mesmos digitos, "
+                        f"formato diferente)"
                     )
                 else:
-                    extras.append(f"input_value={actual_value!r} OK")
+                    extras.append(
+                        f"input_value={actual_value!r} DIFERENTE — "
+                        f"esperado mascarado={masked_form!r} ou raw={raw_form!r}. "
+                        f"Possivel perda de caractere."
+                    )
         except Exception as exc:  # noqa: BLE001
             extras.append(f"input_value=ERRO({exc})")
 
@@ -1194,9 +1286,14 @@ class AjusClassifRunner:
         except Exception as exc:  # noqa: BLE001
             extras.append(f"selector_counts=ERRO({exc})")
 
-        # 5. Ultima resposta de busca (HTTP)
+        # 5. Ultima resposta de busca (HTTP) — prioriza BuscaRapida
         if last_search_response:
-            extras.append(f"last_xhr={last_search_response}")
+            extras.append(f"last_xhr_search={last_search_response}")
+        elif last_other_response:
+            extras.append(
+                f"last_xhr_search=(nao capturada — XHR de busca NAO disparou). "
+                f"Outro XHR recente: {last_other_response}"
+            )
         else:
             extras.append("last_xhr=(nenhuma request capturada)")
 
