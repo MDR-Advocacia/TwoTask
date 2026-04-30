@@ -46,25 +46,33 @@ logger = logging.getLogger(__name__)
 _METRICS_TZ = ZoneInfo("America/Fortaleza")
 
 # ── Checagem de duplicatas no L1 (agendamento) ─────────────────────────
-# Status de Tarefa que consideramos "em aberto" e portanto bloqueiam um
-# novo agendamento com o mesmo subtipo/processo. Validado com TI MDR:
-#   0 = Pendente   |   1 = Em Andamento   |   2 = Aguardando
-# Status que NÃO bloqueiam (Concluída, Cancelada etc.) são filtrados
-# implicitamente por não estarem nessa lista.
-L1_BLOCKING_STATUS_IDS = (0, 1, 2)
-L1_STATUS_LABELS = {0: "Pendente", 1: "Em Andamento", 2: "Aguardando"}
+# Status IDs do Legal One. Mapeamento validado em 2026-04-30 via
+# scripts/probe_l1_task_statuses.py (lawsuit 25878, uma task de cada
+# status, ids cruzados com a UI web L1):
+#   0 = Pendente       (azul)      -> bloqueia
+#   1 = Cumprido       (verde-es)  -> terminal
+#   2 = Nao cumprido   (laranja)   -> terminal
+#   3 = Cancelado      (cinza)     -> terminal
+#   4 = Iniciado       (verde-cl)  -> bloqueia
+#   5 = Reagendado     (vermelho)  -> terminal
+# Bloqueantes = tasks "em curso" (Pendente + Iniciado). Os demais sao
+# fechamentos (cumprida/nao cumprida/cancelada/reagendada) e nao impedem
+# novo agendamento do mesmo subtipo no processo. Mapeamento anterior
+# (0=Pendente, 1=Em Andamento, 2=Aguardando, 3=Concluida, ...) era
+# inferido e estava errado: tasks Cumpridas (id=1) apareciam como "Em
+# Andamento" no detalhe da publicacao E bloqueavam novos agendamentos.
+L1_BLOCKING_STATUS_IDS = (0, 4)
+L1_STATUS_LABELS = {0: "Pendente", 4: "Iniciado"}
 
-# Mapeamento estendido pro endpoint de "tarefas do processo" (detalhe da
-# publicação) — inclui status terminais. IDs 3+ inferidos do `treatStatus=3`
-# usado nas URLs de publicação L1 ("treated/processed"). Pra IDs desconhecidos
-# o caller usa fallback "Status N".
+# Mapeamento completo pro endpoint de "tarefas do processo" (detalhe da
+# publicacao. Pra IDs fora do mapa o caller usa fallback "Status N".
 L1_STATUS_LABELS_FULL = {
     0: "Pendente",
-    1: "Em Andamento",
-    2: "Aguardando",
-    3: "Concluída",
-    4: "Cancelada",
-    5: "Substituída",
+    1: "Cumprido",
+    2: "Não cumprido",
+    3: "Cancelado",
+    4: "Iniciado",
+    5: "Reagendado",
 }
 
 # Base URL do painel web do L1 do MDR. Usada pra gerar deep-link que o
