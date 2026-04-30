@@ -1092,21 +1092,27 @@ class PublicationSearchService:
             ):
                 lawsuit_ids_needing_responsible.add(rec.linked_lawsuit_id)
 
-        # Lê responsáveis de pasta somente do cache pré-aquecido no envio do
-        # batch. Templates já completos não precisam nem consultar o cache.
+        # Resolve responsaveis de pasta (cache + fallback API). Antes era
+        # cache-only confiando no prefetch do submit_batch, mas isso falha
+        # silenciosamente quando: (a) prefetch do background task quebrou,
+        # (b) caminho nao passa pelo prefetch (reclassify_records,
+        # rebuild-proposals, reclassificacao automatica). Usar
+        # prefetch_lawsuit_responsibles_cache garante que cache miss vira
+        # chamada L1 sincrona paralela (max_workers=2) e ja cacheia pra
+        # proximas confirmacoes (TTL 24h).
         lawsuit_responsibles: dict = {}
         if lawsuit_ids_needing_responsible:
             try:
                 from app.services.legal_one_client import LegalOneApiClient
                 lo_client = LegalOneApiClient()
                 lawsuit_ids = sorted(lawsuit_ids_needing_responsible)
-                lawsuit_responsibles = lo_client.get_cached_lawsuit_responsibles_batch(lawsuit_ids)
+                lawsuit_responsibles = lo_client.prefetch_lawsuit_responsibles_cache(lawsuit_ids)
                 logger.info(
-                    "Responsaveis de pasta lidos do cache para templates sem responsavel: %d de %d processos.",
+                    "Responsaveis de pasta resolvidos para templates sem responsavel: %d de %d processos.",
                     len(lawsuit_responsibles), len(lawsuit_ids),
                 )
             except Exception as exc:
-                logger.warning("Falha ao ler responsaveis de pasta do cache: %s", exc)
+                logger.warning("Falha ao resolver responsaveis de pasta: %s", exc)
 
         for rec in records:
             if not rec.category:
