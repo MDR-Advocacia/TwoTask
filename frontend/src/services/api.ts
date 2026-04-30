@@ -911,6 +911,30 @@ export function ajusClassifTemplateXlsxUrl(): string {
   return `/api/v1/ajus/classificacao/template.xlsx`;
 }
 
+/**
+ * Baixa o XLSX modelo de classificacao via apiFetch (com token JWT) e
+ * dispara o download no navegador. Necessario porque <a href download>
+ * direto nao envia o header Authorization e o endpoint responde 401.
+ */
+export async function downloadAjusClassifTemplate(): Promise<void> {
+  const res = await apiFetch(`/api/v1/ajus/classificacao/template.xlsx`);
+  if (!res.ok) {
+    throw new Error(`Falha ao baixar template (${res.status})`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "ajus-classificacao-modelo.xlsx";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    setTimeout(() => { try { URL.revokeObjectURL(url); } catch { /* noop */ } }, 1000);
+  }
+}
+
 export interface AjusDebugScreenshot {
   name: string;
   size: number;

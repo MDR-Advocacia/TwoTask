@@ -75,6 +75,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import {
   ajusClassifTemplateXlsxUrl,
+  downloadAjusClassifTemplate,
   cancelAjusClassifItem,
   cancelAjusClassifPendentes,
   dispatchAjusClassif,
@@ -822,16 +823,20 @@ export function ClassificacaoTab() {
               <Button
                 size="sm"
                 variant="outline"
-                asChild
+                onClick={async () => {
+                  try {
+                    await downloadAjusClassifTemplate();
+                  } catch (e) {
+                    toast({
+                      title: "Erro ao baixar modelo",
+                      description: e instanceof Error ? e.message : String(e),
+                      variant: "destructive",
+                    });
+                  }
+                }}
               >
-                <a
-                  href={ajusClassifTemplateXlsxUrl()}
-                  download
-                  rel="noopener noreferrer"
-                >
-                  <Download className="mr-2 h-3.5 w-3.5" />
-                  Modelo XLSX
-                </a>
+                <Download className="mr-2 h-3.5 w-3.5" />
+                Modelo XLSX
               </Button>
               <Button
                 size="sm"
