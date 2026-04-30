@@ -20,11 +20,13 @@ import {
   Bug,
   Download,
   Loader2,
+  Pause,
   Pencil,
   Play,
   RefreshCw,
   RotateCcw,
   Save,
+  StopCircle,
   Upload,
 } from "lucide-react";
 
@@ -67,11 +69,14 @@ import { useToast } from "@/hooks/use-toast";
 import {
   ajusClassifTemplateXlsxUrl,
   cancelAjusClassifItem,
+  cancelAjusClassifPendentes,
   dispatchAjusClassif,
   fetchAjusClassif,
   fetchAjusClassifDefaults,
   fetchAjusDebugScreenshotBlobUrl,
   listAjusDebugScreenshots,
+  pauseAjusClassif,
+  resumeAjusClassif,
   retryAjusClassifErrorsBulk,
   retryAjusClassifItem,
   updateAjusClassifDefaults,
@@ -403,6 +408,59 @@ export function ClassificacaoTab() {
     }
   };
 
+  // ─── Pause / Resume / Cancel pendentes ────────────────────────────
+  const [pauseLoading, setPauseLoading] = useState(false);
+  const [cancelPendentesLoading, setCancelPendentesLoading] = useState(false);
+  const isPaused = !!defaults?.is_paused;
+
+  const handlePauseToggle = async () => {
+    setPauseLoading(true);
+    try {
+      const updated = isPaused ? await resumeAjusClassif() : await pauseAjusClassif();
+      setDefaults(updated);
+      toast({
+        title: updated.is_paused ? "Dispatcher pausado" : "Dispatcher retomado",
+        description: updated.is_paused
+          ? "Itens em curso vao terminar; novos batches nao serao claimados ate retomar."
+          : "Dispatcher voltou ao normal.",
+      });
+    } catch (e: unknown) {
+      toast({
+        title: "Erro ao alternar pausa",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setPauseLoading(false);
+    }
+  };
+
+  const handleCancelPendentes = async () => {
+    const pendCount = items.filter((i) => i.status === "pendente").length;
+    const msg =
+      `Cancelar TODOS os itens em status 'pendente' que ainda nao foram ` +
+      `processados? (Itens em curso continuarao normalmente.)\n\n` +
+      `${pendCount} item(ns) pendente(s) na visao atual.`;
+    if (!window.confirm(msg)) return;
+    setCancelPendentesLoading(true);
+    try {
+      const res = await cancelAjusClassifPendentes();
+      toast({
+        title: "Pendentes cancelados",
+        description: `${res.cancelled} item(ns) marcado(s) como cancelado.`,
+      });
+      await loadItems();
+    } catch (e: unknown) {
+      toast({
+        title: "Erro ao cancelar pendentes",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setCancelPendentesLoading(false);
+    }
+  };
+
   // ─── Retry em massa dos itens em erro ─────────────────────────────
   const handleRetryAllErrors = async () => {
     const errorCount = items.filter((i) => i.status === "erro").length;
@@ -539,10 +597,33 @@ export function ClassificacaoTab() {
         <CardHeader className="pb-3">
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
-              <CardTitle className="text-base">Fila de classificação</CardTitle>
+              <CardTitle className="text-base">
+                Fila de classificação
+                {isPaused && (
+                  <Badge
+                    variant="outline"
+                    className="ml-2 bg-amber-100 text-amber-900 border-amber-400 align-middle"
+                    title={
+                      defaults?.paused_at
+                        ? `Pausado em ${new Date(defaults.paused_at).toLocaleString("pt-BR")}`
+                            + (defaults?.paused_by ? ` por ${defaults.paused_by}` : "")
+                        : "Dispatcher pausado"
+                    }
+                  >
+                    <Pause className="mr-1 h-3 w-3" />
+                    PAUSADO
+                  </Badge>
+                )}
+              </CardTitle>
               <CardDescription>
                 {total} item(ns). Origem "Auto" vem dos intakes de Prazos
                 Iniciais; "Planilha" vem do upload manual.
+                {isPaused && (
+                  <span className="block mt-1 text-amber-800">
+                    Dispatcher pausado — itens em curso terminam, novos
+                    batches NAO serao claimados ate retomar.
+                  </span>
+                )}
               </CardDescription>
             </div>
             <div className="flex flex-wrap items-end gap-2">
@@ -620,8 +701,16 @@ export function ClassificacaoTab() {
               <Button
                 size="sm"
                 onClick={handleDispatch}
-                disabled={dispatching || items.filter((i) => i.status === "pendente").length === 0}
-                title="Distribui itens pendentes entre as contas online (round-robin) e processa em batches de 5 por conta."
+                disabled={
+                  dispatching
+                  || isPaused
+                  || items.filter((i) => i.status === "pendente").length === 0
+                }
+                title={
+                  isPaused
+                    ? "Dispatcher esta pausado. Retome antes de disparar."
+                    : "Distribui itens pendentes entre as contas online (round-robin) e processa em batches de 5 por conta."
+                }
               >
                 {dispatching ? (
                   <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
@@ -629,6 +718,43 @@ export function ClassificacaoTab() {
                   <Play className="mr-2 h-3.5 w-3.5" />
                 )}
                 Disparar pendentes
+              </Button>
+              <Button
+                size="sm"
+                variant={isPaused ? "default" : "outline"}
+                onClick={handlePauseToggle}
+                disabled={pauseLoading}
+                title={
+                  isPaused
+                    ? "Dispatcher esta pausado. Clique pra retomar."
+                    : "Pausar dispatcher (itens em curso terminam; novos batches nao sao claimados)."
+                }
+              >
+                {pauseLoading ? (
+                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                ) : isPaused ? (
+                  <Play className="mr-2 h-3.5 w-3.5" />
+                ) : (
+                  <Pause className="mr-2 h-3.5 w-3.5" />
+                )}
+                {isPaused ? "Retomar" : "Pausar"}
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={handleCancelPendentes}
+                disabled={
+                  cancelPendentesLoading
+                  || items.filter((i) => i.status === "pendente").length === 0
+                }
+                title="Cancela TODOS os itens em status 'pendente' que ainda nao foram processados. Itens em curso continuam."
+              >
+                {cancelPendentesLoading ? (
+                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <StopCircle className="mr-2 h-3.5 w-3.5" />
+                )}
+                Cancelar pendentes
               </Button>
               <Button
                 size="sm"

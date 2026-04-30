@@ -550,6 +550,14 @@ export interface AjusClassifDefaults {
   default_matter: string | null;
   default_risk_loss_probability: string | null;
   updated_at: string | null;
+  is_paused: boolean;
+  paused_at: string | null;
+  paused_by: string | null;
+}
+
+export interface AjusClassifCancelResponse {
+  cancelled: number;
+  ids: number[];
 }
 
 export interface AjusClassifQueueItem {

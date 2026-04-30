@@ -128,6 +128,10 @@ class AjusClassifDispatcher:
         N contas em paralelo de verdade, a paralelização está no nível
         do worker — cada conta tem seu próprio container/process. Esse
         método é mais útil pro endpoint manual.
+
+        Respeita o flag global de pausa: se `is_paused=True`, retorna
+        sem claimar nada (itens ja em curso por outro dispatcher
+        terminam normalmente — pause eh "soft").
         """
         result = DispatchResult(
             candidates=0,
@@ -138,9 +142,24 @@ class AjusClassifDispatcher:
             accounts_used=[],
         )
 
+        # Pausa global — se ativada, nao pega nenhum item.
+        if self.classif_service.is_paused():
+            logger.info(
+                "AJUS dispatcher: pausa global ativa — nao claimando.",
+            )
+            return result
+
         # Claim N contas — para de tentar quando não há mais online.
         max_iterations = 20  # defensivo
         for _ in range(max_iterations):
+            # Re-checa pausa a cada iteracao (operador pode pausar
+            # entre batches numa execucao longa)
+            if self.classif_service.is_paused():
+                logger.info(
+                    "AJUS dispatcher: pausa global ativada mid-loop — "
+                    "interrompendo apos batch atual.",
+                )
+                break
             account = self.session_service.claim_for_run()
             if account is None:
                 break
@@ -183,7 +202,12 @@ class AjusClassifDispatcher:
         """
         Versão pública pra ser chamada pelo worker — assume que a conta
         já está online e disponível. Faz claim, processa, libera.
+
+        Respeita o flag global de pausa.
         """
+        # Pausa global — worker nao pega nada.
+        if self.classif_service.is_paused():
+            return DispatchResult(0, 0, 0, [], [], [])
         account = self.session_service.get_account(account_id)
         if account.status != AJUS_ACCOUNT_ONLINE:
             return DispatchResult(0, 0, 0, [], [], [])

@@ -245,6 +245,15 @@ class AjusClassificacaoDefaults(Base):
     default_matter = Column(String(255), nullable=True)
     default_risk_loss_probability = Column(String(255), nullable=True)
 
+    # Pausa global do dispatcher — quando True, dispatcher para de
+    # claimar novos batches. Itens ja claimados terminam normalmente.
+    # Reversível via endpoint /classificacao/resume.
+    is_paused = Column(
+        Boolean(), nullable=False, server_default="false", default=False,
+    )
+    paused_at = Column(DateTime(timezone=True), nullable=True)
+    paused_by = Column(String(128), nullable=True)
+
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )

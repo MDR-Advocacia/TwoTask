@@ -171,6 +171,60 @@ class AjusClassificacaoService:
         self.db.refresh(obj)
         return obj
 
+    # ── Pause / Resume / Cancel global ──────────────────────────────
+
+    def is_paused(self) -> bool:
+        """Retorna True se o dispatcher esta pausado globalmente."""
+        return bool(self.get_defaults().is_paused)
+
+    def set_paused(
+        self, *, paused: bool, by_user: Optional[str] = None,
+    ) -> AjusClassificacaoDefaults:
+        """
+        Define o estado de pausa global. Quando paused=True, dispatcher
+        para de claimar novos batches. Itens em curso terminam normalmente.
+        """
+        obj = self.get_defaults()
+        obj.is_paused = bool(paused)
+        if paused:
+            obj.paused_at = datetime.now(timezone.utc)
+            obj.paused_by = (by_user or "").strip()[:128] or None
+        else:
+            obj.paused_at = None
+            obj.paused_by = None
+        self.db.commit()
+        self.db.refresh(obj)
+        return obj
+
+    def cancel_pendentes(
+        self, *, by_user: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        Marca todos os itens em status=pendente AND
+        dispatched_by_account_id IS NULL como cancelado. NAO interrompe
+        itens ja em curso (status=processando ou pendente+dispatched).
+
+        Retorna {cancelled: int, ids: [...]}.
+        """
+        items = (
+            self.db.query(AjusClassificacaoQueue)
+            .filter(AjusClassificacaoQueue.status == AJUS_CLASSIF_PENDENTE)
+            .filter(AjusClassificacaoQueue.dispatched_by_account_id.is_(None))
+            .all()
+        )
+        ids: list[int] = []
+        msg_suffix = f" (cancelado por {by_user})" if by_user else ""
+        for item in items:
+            item.status = AJUS_CLASSIF_CANCELADO
+            item.error_message = (
+                "Cancelado em massa via /classificacao/cancel-pendentes"
+                + msg_suffix
+            )[:4000]
+            ids.append(item.id)
+        if ids:
+            self.db.commit()
+        return {"cancelled": len(ids), "ids": ids}
+
     # ── Enqueue origem=intake_auto ──────────────────────────────────
 
     def enqueue_from_intake(

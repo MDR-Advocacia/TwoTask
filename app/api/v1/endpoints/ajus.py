@@ -371,6 +371,9 @@ class ClassifDefaultsOut(BaseModel):
     default_matter: Optional[str]
     default_risk_loss_probability: Optional[str]
     updated_at: Optional[str] = None
+    is_paused: bool = False
+    paused_at: Optional[str] = None
+    paused_by: Optional[str] = None
 
 
 class ClassifQueueOut(BaseModel):
@@ -443,11 +446,7 @@ def get_classif_defaults(
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
     obj = AjusClassificacaoService(db).get_defaults()
-    return ClassifDefaultsOut(
-        default_matter=obj.default_matter,
-        default_risk_loss_probability=obj.default_risk_loss_probability,
-        updated_at=obj.updated_at.isoformat() if obj.updated_at else None,
-    )
+    return _defaults_to_out(obj)
 
 
 @router.put("/classificacao/defaults", response_model=ClassifDefaultsOut)
@@ -460,11 +459,81 @@ def update_classif_defaults(
         default_matter=payload.default_matter,
         default_risk_loss_probability=payload.default_risk_loss_probability,
     )
+    return _defaults_to_out(obj)
+
+
+def _defaults_to_out(obj) -> ClassifDefaultsOut:
     return ClassifDefaultsOut(
         default_matter=obj.default_matter,
         default_risk_loss_probability=obj.default_risk_loss_probability,
         updated_at=obj.updated_at.isoformat() if obj.updated_at else None,
+        is_paused=bool(obj.is_paused),
+        paused_at=obj.paused_at.isoformat() if obj.paused_at else None,
+        paused_by=obj.paused_by,
     )
+
+
+# ── Pause / Resume / Cancelar pendentes (controle global) ──────────
+
+
+class ClassifPauseIn(BaseModel):
+    paused: bool = True
+
+
+class ClassifCancelOut(BaseModel):
+    cancelled: int
+    ids: list[int]
+
+
+@router.post(
+    "/classificacao/pause",
+    response_model=ClassifDefaultsOut,
+    summary=(
+        "Pausa o dispatcher AJUS. Itens em curso terminam normalmente; "
+        "novos batches NAO sao claimados ate /resume."
+    ),
+)
+def pause_classif(
+    payload: ClassifPauseIn = ClassifPauseIn(),
+    db: Session = Depends(get_db),
+    user: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    obj = AjusClassificacaoService(db).set_paused(
+        paused=bool(payload.paused),
+        by_user=getattr(user, "login", None) or getattr(user, "email", None),
+    )
+    return _defaults_to_out(obj)
+
+
+@router.post(
+    "/classificacao/resume",
+    response_model=ClassifDefaultsOut,
+    summary="Retoma o dispatcher AJUS apos uma pausa.",
+)
+def resume_classif(
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    obj = AjusClassificacaoService(db).set_paused(paused=False)
+    return _defaults_to_out(obj)
+
+
+@router.post(
+    "/classificacao/cancel-pendentes",
+    response_model=ClassifCancelOut,
+    summary=(
+        "Cancela TODOS os itens em status=pendente que ainda nao foram "
+        "claimados por uma conta. NAO interrompe o que ja esta em curso."
+    ),
+)
+def cancel_classif_pendentes(
+    db: Session = Depends(get_db),
+    user: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    res = AjusClassificacaoService(db).cancel_pendentes(
+        by_user=getattr(user, "login", None) or getattr(user, "email", None),
+    )
+    return ClassifCancelOut(**res)
 
 
 # ── Lista + detalhe ─────────────────────────────────────────────────
@@ -1019,8 +1088,21 @@ def dispatch_classif(
     executando = len(executando_account_ids)
 
     em_curso = processando + em_curso_pendente_claimed
+    is_paused = AjusClassificacaoService(db).is_paused()
 
-    if pendentes == 0 and em_curso == 0:
+    if is_paused:
+        if em_curso > 0:
+            msg = (
+                f"Dispatcher PAUSADO. {em_curso} item(ns) em curso vao "
+                f"terminar; novos batches nao serao claimados ate retomar. "
+                f"({pendentes} pendente(s) na fila aguardando)."
+            )
+        else:
+            msg = (
+                f"Dispatcher PAUSADO. {pendentes} item(ns) na fila aguardando "
+                "retomada."
+            )
+    elif pendentes == 0 and em_curso == 0:
         msg = "Nenhum item pendente na fila."
     elif pendentes == 0 and em_curso > 0:
         # Runner ja esta cuidando — nao tem o que sinalizar.
@@ -1060,7 +1142,7 @@ def dispatch_classif(
         success_ids=[],
         errored=[],
         accounts_used=[],
-        accepted=(pendentes > 0 and (online > 0 or executando > 0)),
+        accepted=(pendentes > 0 and (online > 0 or executando > 0) and not is_paused),
         accounts_online=online,
         message=msg,
     )

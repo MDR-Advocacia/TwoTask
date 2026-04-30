@@ -1,6 +1,7 @@
 import { apiFetch } from "@/lib/api-client";
 import {
   AjusAndamentoQueueListResponse,
+  AjusClassifCancelResponse,
   AjusClassifDefaults,
   AjusClassifQueueItem,
   AjusClassifQueueListResponse,
@@ -1043,4 +1044,30 @@ export async function dispatchAjusClassif(): Promise<AjusClassifDispatchResponse
     method: "POST",
   });
   return expectJson<AjusClassifDispatchResponse>(res);
+}
+
+/** Pausa o dispatcher AJUS (itens em curso terminam; novos batches nao sao claimados). */
+export async function pauseAjusClassif(): Promise<AjusClassifDefaults> {
+  const res = await apiFetch(`/api/v1/ajus/classificacao/pause`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paused: true }),
+  });
+  return expectJson<AjusClassifDefaults>(res);
+}
+
+/** Retoma o dispatcher AJUS apos uma pausa. */
+export async function resumeAjusClassif(): Promise<AjusClassifDefaults> {
+  const res = await apiFetch(`/api/v1/ajus/classificacao/resume`, {
+    method: "POST",
+  });
+  return expectJson<AjusClassifDefaults>(res);
+}
+
+/** Cancela todos os itens pendentes nao-claimados (em curso continuam). */
+export async function cancelAjusClassifPendentes(): Promise<AjusClassifCancelResponse> {
+  const res = await apiFetch(`/api/v1/ajus/classificacao/cancel-pendentes`, {
+    method: "POST",
+  });
+  return expectJson<AjusClassifCancelResponse>(res);
 }
