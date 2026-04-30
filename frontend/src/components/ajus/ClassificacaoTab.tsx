@@ -283,6 +283,19 @@ export function ClassificacaoTab() {
   useEffect(() => { loadDefaults(); }, [loadDefaults]);
   useEffect(() => { loadItems(); }, [loadItems]);
 
+  // Auto-refresh — quando ha items em transicao (pendente claimed,
+  // processando), polla a cada 3s pra refletir progresso do runner
+  // sem o operador precisar apertar "Atualizar". Para sozinho quando
+  // nao ha mais nada em curso.
+  useEffect(() => {
+    const inFlight = items.some(
+      (i) => i.status === "processando" || (i.status === "pendente" && i.dispatched_by_account_id),
+    );
+    if (!inFlight) return;
+    const id = setInterval(() => { void loadItems(); }, 3000);
+    return () => clearInterval(id);
+  }, [items, loadItems]);
+
   // ─── Defaults ─────────────────────────────────────────────────────
   const dirtyDefaults = useMemo(() => {
     if (!defaults) return false;
@@ -822,8 +835,19 @@ export function ClassificacaoTab() {
                 const stBadge = STATUS_BADGE[item.status] || { label: item.status, className: "" };
                 const orBadge = ORIGEM_BADGE[item.origem] || { label: item.origem, className: "" };
                 const editable = item.status === "pendente" || item.status === "erro";
+                const isProcessing = item.status === "processando";
+                const isClaimed = item.status === "pendente" && !!item.dispatched_by_account_id;
                 return (
-                  <TableRow key={item.id}>
+                  <TableRow
+                    key={item.id}
+                    className={
+                      isProcessing
+                        ? "bg-blue-50 animate-pulse border-l-4 border-blue-500"
+                        : isClaimed
+                        ? "bg-blue-50/40 border-l-4 border-blue-300"
+                        : undefined
+                    }
+                  >
                     <TableCell className="font-mono text-xs">
                       {formatCnj(item.cnj_number)}
                     </TableCell>
@@ -844,7 +868,13 @@ export function ClassificacaoTab() {
                       {item.risk_loss_probability || <span className="text-amber-700">—</span>}
                     </TableCell>
                     <TableCell>
-                      <Badge variant="outline" className={stBadge.className}>{stBadge.label}</Badge>
+                      <Badge variant="outline" className={stBadge.className}>
+                        {isProcessing && <Loader2 className="mr-1 h-3 w-3 animate-spin inline" />}
+                        {isClaimed && !isProcessing && (
+                          <span className="mr-1 inline-block h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
+                        )}
+                        {isProcessing ? "Em execução" : isClaimed ? "Na fila do runner" : stBadge.label}
+                      </Badge>
                       {item.error_message && (
                         <div
                           className="mt-1 max-w-[260px] truncate text-xs text-destructive"

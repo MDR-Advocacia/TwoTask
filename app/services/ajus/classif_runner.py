@@ -711,6 +711,67 @@ class AjusClassifRunner:
 
     # ── Classificacao ───────────────────────────────────────────────
 
+    def _reset_workspace(self) -> None:
+        """
+        Reseta o workspace pra um estado limpo entre itens. Mirror
+        nao precisa disso porque abre browser novo por item, mas como
+        nossa arquitetura compartilha browser por batch, o tab da
+        Acao Judicial aberta no item anterior fica residual e quebra
+        a busca rapida do proximo item.
+
+        Estrategia:
+          1. Aceita qualquer dialog "alteracoes nao salvas" automaticamente.
+          2. Navega pra base URL (descarta tabs abertas).
+          3. Aguarda workspace ready (45s) — pode precisar relogar
+             se a sessao caiu, mas storage_state cobre isso.
+        """
+        # 1. Auto-accept dialog se aparecer (page.goto pode disparar)
+        def _accept_dialog(dialog):
+            try:
+                dialog.accept()
+            except Exception:
+                pass
+        try:
+            self._page.on("dialog", _accept_dialog)
+        except Exception:
+            pass
+
+        # 2. Navega pra base URL (workspace fresco)
+        try:
+            self._page.goto(
+                portal.PORTAL_BASE_URL.rstrip("/") + "/#",
+                wait_until="commit",
+                timeout=30_000,
+            )
+        except Exception as exc:
+            logger.warning(
+                "AJUS runner: falha resetando workspace via goto: %s — "
+                "tentando reload.", exc,
+            )
+            try:
+                self._page.reload(wait_until="commit", timeout=30_000)
+            except Exception as exc2:
+                logger.warning(
+                    "AJUS runner: reload tambem falhou: %s", exc2,
+                )
+
+        # 3. Settle + workspace ready
+        self._settle(wait_ms=2000)
+        try:
+            self._wait_for_workspace_ready(timeout_ms=45_000)
+        except Exception as exc:
+            logger.warning(
+                "AJUS runner: workspace nao ficou ready apos reset: %s. "
+                "Proximo item pode falhar — release de account na sequencia.",
+                exc,
+            )
+
+        # 4. Remove o handler de dialog pra nao acumular entre resets
+        try:
+            self._page.remove_listener("dialog", _accept_dialog)
+        except Exception:
+            pass
+
     def classify_item(self, item: AjusClassificacaoQueue) -> None:
         """
         Classifica um único item da fila. Atualiza status (processando
@@ -748,6 +809,21 @@ class AjusClassifRunner:
                 "AJUS runner: falha classificando item %d (cnj=%s): %s",
                 item.id, item.cnj_number, msg,
             )
+        finally:
+            # SEMPRE resetar workspace entre itens (sucesso ou erro).
+            # Sem isso, o tab/foco do processo anterior fica residual
+            # e o _find_process_search_input do proximo item recebe
+            # o input errado / dropdown nao aparece. Mirror nao precisa
+            # porque abre browser novo por item; nos compartilhamos
+            # browser por batch entao precisamos do reset explicito.
+            try:
+                self._reset_workspace()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "AJUS runner: reset_workspace falhou apos item %d: %s. "
+                    "Proximo item pode acumular state-bleed.",
+                    item.id, exc,
+                )
 
     def _find_process_search_input(self):
         """
