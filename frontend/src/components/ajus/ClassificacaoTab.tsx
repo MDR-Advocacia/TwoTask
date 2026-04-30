@@ -97,7 +97,8 @@ const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "pendente", label: "Pendentes" },
   { value: "processando", label: "Processando" },
   { value: "sucesso", label: "Sucessos" },
-  { value: "erro", label: "Erros" },
+  { value: "erro", label: "Erros (técnicos)" },
+  { value: "nao_encontrado", label: "Não encontrados no AJUS" },
   { value: "cancelado", label: "Cancelados" },
 ];
 
@@ -113,6 +114,7 @@ const STATUS_BADGE: Record<AjusClassifStatus, { label: string; className: string
   sucesso: { label: "Sucesso", className: "bg-emerald-50 text-emerald-800 border-emerald-300" },
   erro: { label: "Erro", className: "bg-rose-50 text-rose-800 border-rose-300" },
   cancelado: { label: "Cancelado", className: "bg-slate-50 text-slate-700 border-slate-300" },
+  nao_encontrado: { label: "Não encontrado", className: "bg-orange-50 text-orange-800 border-orange-300" },
 };
 
 const ORIGEM_BADGE: Record<string, { label: string; className: string }> = {
@@ -897,18 +899,24 @@ export function ClassificacaoTab() {
                             Editar
                           </Button>
                         )}
-                        {item.status === "erro" && (
+                        {(item.status === "erro" || item.status === "nao_encontrado") && (
                           <Button
                             size="sm"
                             variant="outline"
                             onClick={() => handleRetry(item.id)}
                             disabled={actionId === item.id}
+                            title={
+                              item.status === "nao_encontrado"
+                                ? "Reenfileira esse item — use depois que o time cadastrar o processo no AJUS."
+                                : "Reenfileira esse item pra nova tentativa do runner."
+                            }
                           >
                             <RotateCcw className="mr-1 h-3 w-3" />
                             Retry
                           </Button>
                         )}
-                        {item.status === "erro" && item.dispatched_by_account_id && (
+                        {(item.status === "erro" || item.status === "nao_encontrado")
+                          && item.dispatched_by_account_id && (
                           <Button
                             size="sm"
                             variant="outline"
@@ -920,7 +928,7 @@ export function ClassificacaoTab() {
                             Debug
                           </Button>
                         )}
-                        {(item.status === "pendente" || item.status === "erro") && (
+                        {(item.status === "pendente" || item.status === "erro" || item.status === "nao_encontrado") && (
                           <Button
                             size="sm"
                             variant="outline"

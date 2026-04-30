@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 from app.models.ajus import (
     AJUS_CLASSIF_CANCELADO,
     AJUS_CLASSIF_ERRO,
+    AJUS_CLASSIF_NAO_ENCONTRADO,
     AJUS_CLASSIF_ORIGEM_INTAKE,
     AJUS_CLASSIF_ORIGEM_PLANILHA,
     AJUS_CLASSIF_PENDENTE,
@@ -461,9 +462,11 @@ class AjusClassificacaoService:
 
     def retry(self, item_id: int) -> AjusClassificacaoQueue:
         item = self.get(item_id)
-        if item.status != AJUS_CLASSIF_ERRO:
+        # Retry vale pra `erro` (tecnico) E pra `nao_encontrado` (operador
+        # cadastrou no AJUS e quer tentar de novo).
+        if item.status not in (AJUS_CLASSIF_ERRO, AJUS_CLASSIF_NAO_ENCONTRADO):
             raise RuntimeError(
-                f"Retry permitido apenas em status 'erro'. "
+                f"Retry permitido apenas em status 'erro' ou 'nao_encontrado'. "
                 f"Atual: {item.status}.",
             )
         item.status = AJUS_CLASSIF_PENDENTE
@@ -546,6 +549,31 @@ class AjusClassificacaoService:
         item = self.get(item_id)
         item.status = AJUS_CLASSIF_ERRO
         item.error_message = error_message[:4000]
+        if last_log is not None:
+            item.last_log = last_log
+        self.db.commit()
+        self.db.refresh(item)
+        return item
+
+    def mark_not_found(
+        self,
+        item_id: int,
+        *,
+        details: Optional[str] = None,
+        last_log: Optional[str] = None,
+    ) -> AjusClassificacaoQueue:
+        """
+        Marca item como `nao_encontrado` — AJUS retornou explicitamente
+        que nao tem o processo cadastrado. Diferente de `erro`: nao deve
+        ser retentado automaticamente porque a falha eh persistente
+        ate o time de implantacao cadastrar o processo no AJUS.
+        """
+        item = self.get(item_id)
+        item.status = AJUS_CLASSIF_NAO_ENCONTRADO
+        msg = "Processo nao cadastrado no AJUS dessa conta."
+        if details:
+            msg = f"{msg} {details}"
+        item.error_message = msg[:4000]
         if last_log is not None:
             item.last_log = last_log
         self.db.commit()

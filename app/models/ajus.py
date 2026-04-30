@@ -210,6 +210,10 @@ AJUS_CLASSIF_PROCESSANDO = "processando"
 AJUS_CLASSIF_SUCESSO = "sucesso"
 AJUS_CLASSIF_ERRO = "erro"
 AJUS_CLASSIF_CANCELADO = "cancelado"
+# Status dedicado pra "AJUS retornou explicitamente que nao encontrou
+# o processo" — separado de `erro` (que eh tecnico). Permite filtrar e
+# tratar diferente: nao-encontrados nao devem ser retentados.
+AJUS_CLASSIF_NAO_ENCONTRADO = "nao_encontrado"
 
 AJUS_CLASSIF_STATUSES = frozenset({
     AJUS_CLASSIF_PENDENTE,
@@ -217,6 +221,7 @@ AJUS_CLASSIF_STATUSES = frozenset({
     AJUS_CLASSIF_SUCESSO,
     AJUS_CLASSIF_ERRO,
     AJUS_CLASSIF_CANCELADO,
+    AJUS_CLASSIF_NAO_ENCONTRADO,
 })
 
 # Origem do item na fila de classificação

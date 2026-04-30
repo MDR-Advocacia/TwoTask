@@ -542,7 +542,8 @@ export type AjusClassifStatus =
   | "processando"
   | "sucesso"
   | "erro"
-  | "cancelado";
+  | "cancelado"
+  | "nao_encontrado";
 
 export type AjusClassifOrigem = "intake_auto" | "planilha";
 

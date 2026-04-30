@@ -77,6 +77,15 @@ class AjusLoginExpiredError(AjusRunnerError):
     """Sessão salva não é mais válida — precisa re-logar."""
 
 
+class AjusProcessNotFoundError(AjusRunnerError):
+    """
+    AJUS retornou explicitamente que nao encontrou o processo na busca
+    rapida (texto "Desculpe, mas nenhuma acao foi encontrada"). Nao eh
+    erro tecnico — eh um caso legitimo de "processo nao cadastrado no
+    AJUS dessa conta".
+    """
+
+
 # ─── Helpers de texto ────────────────────────────────────────────────
 
 
@@ -802,6 +811,17 @@ class AjusClassifRunner:
                 "AJUS runner: item %d (cnj=%s) classificado com sucesso",
                 item.id, item.cnj_number,
             )
+        except AjusProcessNotFoundError as exc:
+            # Caso "AJUS nao tem esse processo" — distinto de erro tecnico.
+            # Nao retentar automaticamente.
+            self.classif_service.mark_not_found(
+                item.id,
+                details=str(exc)[:500],
+            )
+            logger.info(
+                "AJUS runner: item %d (cnj=%s) NAO ENCONTRADO no AJUS: %s",
+                item.id, item.cnj_number, exc,
+            )
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)[:4000]
             self.classif_service.mark_error(item.id, error_message=msg)
@@ -892,6 +912,38 @@ class AjusClassifRunner:
         except Exception:
             self._page.keyboard.type(masked, delay=35)
 
+    def _is_search_empty_result_visible(self) -> bool:
+        """
+        Detecta o painel amarelo do AJUS quando a busca rapida retorna
+        zero resultados. Markers (texto visivel no DOM):
+
+          1. "Desculpe, mas nenhuma acao foi encontrada com os termos
+             pesquisados!" (caixa amarela de aviso)
+          2. "Nao ha registros para exibir" (rodape da paginacao)
+
+        Os 2 aparecem juntos quando a busca resolve sem hits. Detectar
+        QUALQUER um dos 2 eh suficiente — o outro eh redundante.
+
+        Robusto a acentuacao: testa com e sem acento (alguns ambientes
+        do AJUS retornam UTF-8 sem acento dependendo do encoding).
+        """
+        markers = [
+            # Caixa amarela — eh a mais visivel e proxima ao input
+            "text=Desculpe, mas nenhuma",
+            "text=nenhuma ação foi encontrada",
+            "text=nenhuma acao foi encontrada",
+            # Paginacao vazia — fallback secundario
+            "text=Não há registros para exibir",
+            "text=Nao ha registros para exibir",
+        ]
+        for sel in markers:
+            try:
+                if self._is_visible(sel):
+                    return True
+            except Exception:
+                continue
+        return False
+
     def _find_process_result(self, cnj: str, search_input=None):
         """
         Acha o item do dropdown que matcheia o CNJ. Estrategia (Mirror):
@@ -965,13 +1017,33 @@ class AjusClassifRunner:
             pass
 
         try:
-            deadline = time.monotonic() + 60
+            # Da um primeiro grace de 3s pra busca resolver — antes
+            # disso o painel "sem resultados" pode nao ter renderizado
+            # ainda e a gente perde tempo.
+            grace_deadline = time.monotonic() + 3
+            while time.monotonic() < grace_deadline:
+                for sel in candidates:
+                    if self._is_visible(sel):
+                        return self._visible_locator(sel, timeout_s=3)
+                self._page.wait_for_timeout(300)
+
+            deadline = time.monotonic() + 57  # total ~60s incluindo grace
             mid_dump_done = False
-            mid_deadline = time.monotonic() + 30
+            mid_deadline = time.monotonic() + 27
             while time.monotonic() < deadline:
                 for sel in candidates:
                     if self._is_visible(sel):
                         return self._visible_locator(sel, timeout_s=3)
+
+                # Detecta painel "AJUS nao encontrou o processo" —
+                # raise NotFound IMEDIATAMENTE (nao espera timeout final).
+                # Marcadores observados: texto explicito + paginacao vazia.
+                if self._is_search_empty_result_visible():
+                    raise AjusProcessNotFoundError(
+                        f"AJUS retornou 'sem resultados' pra CNJ {cnj}. "
+                        f"Processo provavelmente nao esta cadastrado nesse "
+                        f"sistema."
+                    )
 
                 # Dump intermediario aos 30s — captura estado quando o
                 # AJUS ainda esta processando a busca, ajuda a entender
