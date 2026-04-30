@@ -6,6 +6,10 @@
 services:
   postgres:
     image: postgres:16-alpine
+    # `missing` baixa a imagem se nao estiver no host. Evita erro
+    # "No such image: postgres:16-alpine" quando o Coolify recria
+    # containers e a imagem foi removida por prune/limpeza.
+    pull_policy: missing
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-onetask}
