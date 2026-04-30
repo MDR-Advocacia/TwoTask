@@ -203,180 +203,234 @@ class AjusClassifRunner:
 
     def ensure_logged_in(self) -> None:
         """
-        Garante que a conta está autenticada. Se já tem storage_state
-        válido, reaproveita. Senão, faz login completo (com tratamento
-        de IP-code se AJUS pedir). Atualiza status da conta no DB.
+        Garante que a conta esta autenticada (porte do flow do Mirror).
+
+        Ordem de checagem:
+          1. Carrega URL de login (wait_until="commit" — leve, sem
+             travar em sites ExtJS que nunca ficam network-idle).
+          2. Tenta detectar IP-auth surface primeiro (timeout 5s).
+             Se aparecer, processa validacao de IP.
+          3. Tenta detectar login form depois (timeout 15s).
+             Se aparecer, preenche e submete.
+          4. Se nada disso aparecer, assume que a sessao foi
+             reaproveitada (storage_state valido).
+        """
+        login_url = f"{portal.PORTAL_BASE_URL.rstrip('/')}{portal.LOGIN_PATH}"
+        self._goto(login_url)
+
+        # 1. IP-auth surface (sessao reaproveitada mas IP novo)
+        if self._wait_for_ip_auth_surface(timeout_ms=5000) or self._is_ip_auth_flow_visible():
+            self._handle_ip_validation()
+            self._persist_storage_state()
+            self.session_service.set_status(
+                self.account.id, AJUS_ACCOUNT_ONLINE,
+            )
+            return
+
+        # 2. Login form
+        if self._wait_for_login_form(timeout_ms=15000) or self._is_login_form_visible():
+            password = self.session_service.get_password(self.account)
+            try:
+                self._page.fill(portal.DOMAIN_SELECTOR, portal.LOGIN_DOMAIN)
+                self._page.fill(portal.USER_SELECTOR, self.account.login)
+                self._page.fill(portal.PASSWORD_SELECTOR, password)
+                self._page.click(portal.LOGIN_BUTTON_SELECTOR)
+            except Exception as exc:  # noqa: BLE001
+                debug = self._dump_login_state("login-fill-failed")
+                self.session_service.set_status(
+                    self.account.id, AJUS_ACCOUNT_OFFLINE,
+                    error_message=f"Falha preenchendo form de login: {exc} | {debug}",
+                )
+                raise AjusRunnerError(
+                    f"Falha preenchendo form de login: {exc}",
+                ) from exc
+
+            self._settle(wait_ms=2000)
+
+            outcome = self._wait_for_login_outcome(
+                timeout_ms=settings.ajus_login_outcome_timeout_ms,
+            )
+
+            if outcome == "ip_auth":
+                self._handle_ip_validation()
+                outcome = self._wait_for_login_outcome(
+                    timeout_ms=settings.ajus_login_outcome_timeout_ms,
+                )
+
+            if outcome != "workspace":
+                debug = self._dump_login_state("login-failed")
+                self.session_service.set_status(
+                    self.account.id, AJUS_ACCOUNT_OFFLINE,
+                    error_message=(
+                        f"AJUS nao concluiu login apos enviar credenciais. "
+                        f"outcome={outcome} | {debug}"
+                    ),
+                )
+                raise AjusRunnerError(
+                    f"AJUS nao chegou no workspace apos login (outcome={outcome}). "
+                    f"Veja {debug}",
+                )
+
+            self._persist_storage_state()
+            self.session_service.set_status(
+                self.account.id, AJUS_ACCOUNT_ONLINE,
+            )
+            return
+
+        # 3. Sessao reaproveitada — nem login form nem IP-auth aparecem.
+        self._persist_storage_state()
+        self.session_service.set_status(
+            self.account.id, AJUS_ACCOUNT_ONLINE,
+        )
+        logger.info(
+            "AJUS runner: account %d — sessao reaproveitada (sem login form)",
+            self.account.id,
+        )
+
+    # ── Helpers do flow de login (porte do Mirror) ─────────────────
+
+    def _goto(self, url: str) -> None:
+        """
+        Navegacao tolerante: wait_until="commit" retorna assim que os
+        headers chegam. NAO espera DOM nem rede idle. Em portais ExtJS
+        com long-polling, networkidle nunca estoura — wait_until="commit"
+        evita o trava-trava.
         """
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-
-        login_url = f"{portal.PORTAL_BASE_URL.rstrip('/')}{portal.LOGIN_PATH}"
-
         try:
-            # `networkidle` espera o JS do AJUS terminar (ExtJS demora)
-            # antes de checarmos selectors. Sem isso, `_is_login_form_visible`
-            # retornava False porque o DOM ainda nao tinha renderizado, e
-            # o codigo marcava conta como online sem ter logado de verdade.
-            self._page.goto(login_url, wait_until="networkidle", timeout=30_000)
+            self._page.goto(url, wait_until="commit", timeout=30_000)
         except PlaywrightTimeoutError:
-            # networkidle pode estourar em portais que nunca ficam idle.
-            # Cai pro DOMcontentloaded com pequeno wait pra estabilizar.
-            try:
-                self._page.goto(login_url, wait_until="domcontentloaded")
-                self._page.wait_for_timeout(2500)
-            except PlaywrightTimeoutError as exc2:
-                raise AjusRunnerError(
-                    f"Nao consegui abrir {login_url}: {exc2}",
-                ) from exc2
+            pass
+        self._settle(wait_ms=1500)
 
-        # Garante mais tempo pro DOM estabilizar antes de checar selectors.
-        # Sem isso, race entre carregamento do form e nossa heuristica.
-        self._page.wait_for_timeout(1500)
-
-        # Sessao salva — soh assumimos workspace se VEMOS um marker positivo
-        # do workspace (input de busca rapida). Sem marker positivo, melhor
-        # tentar login do que dar false-positive de "ja logado".
-        ws_marker_visible = self._is_workspace_marker_visible()
-        if (
-            ws_marker_visible
-            and not self._is_login_form_visible()
-            and not self._is_ip_auth_visible()
-        ):
-            self._persist_storage_state()
-            self.session_service.set_status(
-                self.account.id, AJUS_ACCOUNT_ONLINE,
-            )
-            logger.info(
-                "AJUS runner: account %d ja logada (workspace marker visivel)",
-                self.account.id,
-            )
-            return
-
-        # Validação de IP — pode aparecer antes do form
-        if self._is_ip_auth_visible():
-            self._handle_ip_validation()
-            self._persist_storage_state()
-            self.session_service.set_status(
-                self.account.id, AJUS_ACCOUNT_ONLINE,
-            )
-            return
-
-        # Form de login regular — AJUS pede 3 campos: domínio, usuário,
-        # senha. Domínio é fixo: cliente MDR usa `banco_master`
-        # (ver portal_constants.LOGIN_DOMAIN).
-        password = self.session_service.get_password(self.account)
+    def _settle(self, *, wait_ms: int = 1500) -> None:
+        """Espera DOM carregar (best-effort) + pausa."""
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
         try:
-            el = self._page.query_selector(portal.DOMAIN_SELECTOR)
-            if el is not None:
-                self._page.fill(portal.DOMAIN_SELECTOR, portal.LOGIN_DOMAIN)
-            self._page.fill(portal.USER_SELECTOR, self.account.login)
-            self._page.fill(portal.PASSWORD_SELECTOR, password)
-            self._page.click(portal.LOGIN_BUTTON_SELECTOR)
-        except PlaywrightTimeoutError as exc:
-            raise AjusRunnerError(f"Falha preenchendo form de login: {exc}") from exc
+            self._page.wait_for_load_state("domcontentloaded", timeout=5000)
+        except PlaywrightTimeoutError:
+            pass
+        self._page.wait_for_timeout(wait_ms)
 
-        # Espera processo do login terminar: pequena pausa pra request
-        # ir e voltar antes do polling do _wait_for_login_outcome.
-        self._page.wait_for_timeout(2000)
-
-        # Espera resultado: workspace OU IP-code OU erro
-        outcome = self._wait_for_login_outcome()
-        if outcome == "ip_auth":
-            self._handle_ip_validation()
-            outcome = self._wait_for_login_outcome()
-        if outcome != "workspace":
-            debug = self._dump_login_state("login-failed")
-            self.session_service.set_status(
-                self.account.id, AJUS_ACCOUNT_OFFLINE,
-                error_message=(
-                    "AJUS nao fechou a tela de login apos enviar credenciais. "
-                    f"outcome={outcome} | {debug}"
-                ),
-            )
-            raise AjusRunnerError(
-                f"AJUS nao chegou no workspace apos login (outcome={outcome}). "
-                f"Veja {debug}",
-            )
-
-        self._persist_storage_state()
-        self.session_service.set_status(self.account.id, AJUS_ACCOUNT_ONLINE)
-
-    def _is_workspace_marker_visible(self) -> bool:
-        """
-        Marker POSITIVO de que estamos dentro do workspace (logado).
-        Usa o input de busca rapida (mesmo selector usado pra abrir
-        processo). Se ele esta visivel, com seguranca estamos logados.
-        """
+    def _is_visible(self, selector: Optional[str]) -> bool:
+        """Util — retorna True se algum elemento desse selector eh visivel."""
+        if not selector:
+            return False
         try:
-            el = self._page.query_selector(portal.PROCESS_SEARCH_INPUT_SELECTOR)
-            return bool(el and el.is_visible())
+            loc = self._page.locator(selector)
+            count = loc.count()
+            for i in range(count):
+                try:
+                    if loc.nth(i).is_visible():
+                        return True
+                except Exception:
+                    continue
+            return False
         except Exception:
             return False
 
     def _is_login_form_visible(self) -> bool:
-        try:
-            user_el = self._page.query_selector(portal.USER_SELECTOR)
-            btn_el = self._page.query_selector(portal.LOGIN_BUTTON_SELECTOR)
-            return bool(user_el and user_el.is_visible() and btn_el and btn_el.is_visible())
-        except Exception:
-            return False
+        """
+        Marker do form de login: domain selector + login button.
+        (Mirror checa esses 2; #username sozinho nao basta.)
+        """
+        return self._is_visible(portal.DOMAIN_SELECTOR) and self._is_visible(
+            portal.LOGIN_BUTTON_SELECTOR,
+        )
 
     def _is_ip_auth_visible(self) -> bool:
+        """Inputs do codigo de validacao de IP visiveis?"""
+        return self._is_visible(portal.IP_AUTH_INPUT_SELECTOR)
+
+    def _is_ip_auth_request_visible(self) -> bool:
+        """Botao 'Receber codigo' visivel? (1a tela do flow de IP-auth)"""
+        return self._is_visible(portal.IP_AUTH_REQUEST_SELECTOR)
+
+    def _is_ip_auth_flow_visible(self) -> bool:
+        """Qualquer tela de IP-auth (request ou inputs) visivel?"""
+        return self._is_ip_auth_request_visible() or self._is_ip_auth_visible()
+
+    def _is_workspace_marker_visible(self) -> bool:
+        """Marker positivo do workspace: input de busca rapida visivel."""
+        return self._is_visible(portal.PROCESS_SEARCH_INPUT_SELECTOR)
+
+    def _is_workspace_ready(self) -> bool:
         """
-        AJUS mostra um campo de validação de IP depois do login regular.
-        Tenta primeiro o selector exato (porte do Mirror). Se nao casar,
-        cai em heuristicas (texto "validacao", "codigo", "IP") — layouts
-        novos do AJUS podem ter renomeado o input.
+        Workspace esta pronto pra interagir? Excluir explicitamente
+        se ainda esta no login form ou IP-auth.
         """
-        try:
-            el = self._page.query_selector(portal.IP_AUTH_INPUT_SELECTOR)
-            if el and el.is_visible():
-                return True
-            # Heuristica fallback
-            generic = self._page.query_selector(
-                "input[name*='codigo' i], input[name*='code' i], "
-                "input[id*='codigo' i], input[id*='auth' i]"
-            )
-            if generic and generic.is_visible():
-                return True
-            # Heuristica por texto visivel
-            for txt in ("Validação de IP", "Codigo de validação",
-                        "Código de validação", "Validar IP"):
-                loc = self._page.query_selector(f"text={txt}")
-                if loc and loc.is_visible():
-                    return True
+        if self._is_login_form_visible() or self._is_ip_auth_flow_visible():
             return False
+        return self._is_workspace_marker_visible()
+
+    def _wait_for_login_form(self, *, timeout_ms: int) -> bool:
+        """Aguarda DOMAIN_SELECTOR ficar visivel (Playwright nativo)."""
+        try:
+            self._page.locator(portal.DOMAIN_SELECTOR).first.wait_for(
+                state="visible", timeout=timeout_ms,
+            )
+            return True
         except Exception:
             return False
 
-    def _wait_for_login_outcome(self) -> str:
-        """
-        Aguarda ate `ajus_login_outcome_timeout_ms`. Retorna:
-          'workspace' — vimos o marker positivo do workspace
-          'ip_auth'   — AJUS pedindo codigo de IP
-          'login_form' — ainda no form (provavelmente erro)
-        """
-        deadline = time.monotonic() + (
-            settings.ajus_login_outcome_timeout_ms / 1000.0
-        )
+    def _wait_for_ip_auth_surface(self, *, timeout_ms: int) -> bool:
+        """Polling pra detectar tela de IP-auth (request ou inputs)."""
+        deadline = time.monotonic() + max(timeout_ms / 1000, 1)
         while time.monotonic() < deadline:
-            if self._is_ip_auth_visible():
+            if self._is_ip_auth_flow_visible():
+                return True
+            self._page.wait_for_timeout(500)
+        return False
+
+    def _wait_for_login_outcome(self, *, timeout_ms: int) -> str:
+        """
+        Apos o submit do login, aguarda ate timeout_ms. Retorna:
+          'ip_auth'    — IP-auth flow apareceu
+          'workspace'  — workspace esta pronto
+          'login_form' — timeout, form ainda visivel (login falhou)
+        """
+        deadline = time.monotonic() + max(timeout_ms / 1000, 1)
+        while time.monotonic() < deadline:
+            if self._is_ip_auth_flow_visible():
                 return "ip_auth"
-            # Marker POSITIVO: so retorna workspace quando vemos elemento
-            # caracteristico (input de busca rapida). Form sumir nao basta —
-            # pode ser tela em transicao.
-            if self._is_workspace_marker_visible():
+            if self._is_workspace_ready():
                 return "workspace"
-            time.sleep(0.5)
+            self._page.wait_for_timeout(500)
         return "login_form"
 
     def _handle_ip_validation(self) -> None:
         """
-        AJUS pediu código de validação de IP. Marca conta como
-        `aguardando_ip_code`, polla `pending_ip_code` no DB até o
-        operador submeter pela UI, preenche e tenta submeter.
+        Processa o flow de validacao de IP do AJUS:
+          1. Se botao 'Receber codigo' esta visivel, clica nele.
+          2. Espera operador submeter codigo via UI (polling DB).
+          3. Distribui os 6 digitos nos 6 inputs separados.
+          4. Clica 'Confirmar' (a[href='#finish']).
         """
-        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+        # Etapa 1: clica em "Receber codigo" se aparecer
+        if self._is_ip_auth_request_visible():
+            try:
+                self._page.click(portal.IP_AUTH_REQUEST_SELECTOR)
+                self._settle(wait_ms=2500)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "AJUS runner: nao consegui clicar 'Receber codigo': %s", exc,
+                )
 
+        # Apos o click, os 6 inputs devem aparecer
+        if not self._is_ip_auth_visible():
+            debug = self._dump_login_state("ip-auth-no-inputs")
+            self.session_service.set_status(
+                self.account.id, AJUS_ACCOUNT_OFFLINE,
+                error_message=(
+                    "AJUS pediu codigo de IP mas os campos nao apareceram "
+                    f"apos clicar 'Receber'. {debug}"
+                ),
+            )
+            raise AjusRunnerError(
+                f"Inputs do codigo de IP nao apareceram. {debug}",
+            )
+
+        # Etapa 2: aguarda operador submeter via UI
         self.session_service.set_status(
             self.account.id, AJUS_ACCOUNT_AGUARDANDO_IP,
         )
@@ -397,27 +451,54 @@ class AjusClassifRunner:
         if not code:
             self.session_service.set_status(
                 self.account.id, AJUS_ACCOUNT_OFFLINE,
-                error_message="Operador não submeteu IP-code dentro do prazo.",
+                error_message="Operador nao submeteu IP-code dentro do prazo.",
             )
             raise AjusRunnerError("Timeout esperando IP-code do operador.")
 
-        # Preenche e submete o IP-code. Selectors exatos (porte do
-        # Mirror) — input dedicado + link "Confirmar/Finish".
+        # Etapa 3: 6 digitos em 6 inputs separados
+        digits = code.strip()
+        if len(digits) != 6 or not digits.isdigit():
+            self.session_service.clear_ip_code(self.account.id)
+            raise AjusRunnerError(
+                f"IP-code deve ter exatamente 6 digitos, recebido: {len(digits)}",
+            )
+
         try:
-            self._page.fill(portal.IP_AUTH_INPUT_SELECTOR, code)
-            confirm = self._page.query_selector(portal.IP_AUTH_CONFIRM_SELECTOR)
-            if confirm is not None:
-                confirm.click()
-            else:
-                # Fallback se o link não estiver presente
-                self._page.keyboard.press("Enter")
-        except PlaywrightTimeoutError as exc:
+            input_count = self._page.locator(portal.IP_AUTH_INPUT_SELECTOR).count()
+            if input_count < 6:
+                debug = self._dump_login_state("ip-auth-too-few-inputs")
+                raise AjusRunnerError(
+                    f"AJUS espera 6 inputs de IP-code mas vimos {input_count}. {debug}",
+                )
+
+            for index, digit in enumerate(digits):
+                self._page.locator(portal.IP_AUTH_INPUT_SELECTOR).nth(index).fill(digit)
+
+            # Etapa 4: confirmar
+            self._page.click(portal.IP_AUTH_CONFIRM_SELECTOR)
+            self._settle(wait_ms=1800)
+        except Exception as exc:  # noqa: BLE001
             self.session_service.clear_ip_code(self.account.id)
             raise AjusRunnerError(f"Falha ao submeter IP-code: {exc}") from exc
 
         self.session_service.clear_ip_code(self.account.id)
 
-    # ── Classificação ───────────────────────────────────────────────
+        # Se ainda esta na tela de IP-auth, codigo foi rejeitado
+        if self._is_ip_auth_visible():
+            self.session_service.set_status(
+                self.account.id, AJUS_ACCOUNT_OFFLINE,
+                error_message="Codigo de validacao de IP nao foi aceito pelo AJUS.",
+            )
+            raise AjusRunnerError(
+                "Codigo de IP rejeitado pelo AJUS. Solicite novo codigo.",
+            )
+
+        logger.info(
+            "AJUS runner: account %d — IP-code validado com sucesso",
+            self.account.id,
+        )
+
+    # ── Classificacao ───────────────────────────────────────────────
 
     def classify_item(self, item: AjusClassificacaoQueue) -> None:
         """

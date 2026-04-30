@@ -40,6 +40,9 @@ LOGIN_BUTTON_SELECTOR = "button.login"
 
 IP_AUTH_INPUT_SELECTOR = "input[name='codigoAuth']"
 IP_AUTH_CONFIRM_SELECTOR = "a[href='#finish']"
+# Botao "Receber codigo" — primeiro click no flow de IP-auth, antes
+# dos inputs aparecerem. Porte do Mirror.
+IP_AUTH_REQUEST_SELECTOR = "xpath=//button[contains(normalize-space(.), 'Receber')]"
 
 
 # ─── Busca rápida do processo ─────────────────────────────────────────

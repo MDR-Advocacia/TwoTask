@@ -153,7 +153,10 @@ export function SessionsCard() {
         loadAccounts();
       }
     }, 5000);
-    // Carrega lista de screenshots de debug pra contas com erro/offline.
+    return () => clearInterval(id);
+  }, [accounts, loadAccounts]);
+
+  // Carrega lista de screenshots de debug pra contas com erro/offline.
   // Re-roda quando `accounts` muda — capta novos erros gerados pelo runner.
   useEffect(() => {
     const accountsWithError = accounts.filter(
@@ -177,9 +180,6 @@ export function SessionsCard() {
     })();
     return () => { cancelled = true; };
   }, [accounts]);
-
-  return () => clearInterval(id);
-  }, [accounts, loadAccounts]);
 
   // ─── Form handlers ────────────────────────────────────────────────
   const openCreate = () => { setForm(EMPTY_FORM); setFormOpen(true); };
