@@ -913,56 +913,105 @@ class AjusClassifRunner:
         except Exception:
             self._page.keyboard.type(masked, delay=35)
 
-        # Forcar a query via JS — estrategia tripla:
-        #   A) Ext.getCmp(input.id) — direto.
-        #   B) Iteracao em ComponentMgr/ComponentManager procurando
-        #      combobox cujo elemento contenha o input.
-        #   C) Fallback bruto: dispatchEvent('keyup' + 'input' + 'change')
-        #      — sempre executa, alguns flows do AJUS so reagem ao evento
-        #      nativo. Garante que o XHR de busca sempre dispara.
-        # Loga o status retornado pra termos visibilidade do que aconteceu.
+        # Forcar a query via JS — estrategia em camadas:
+        #   PRIMEIRO procuramos o cmp ExtJS da BUSCA RAPIDA (o que tem
+        #   store.proxy.url contendo "BuscaRapida"). Esse eh o cmp
+        #   correto independente de qual input visivel a gente pegou.
+        #   Esse passo eh CRUCIAL — o AJUS as vezes deixa instancias
+        #   antigas/orfas do componente no DOM, e Ext.getCmp(input.id)
+        #   pode retornar um cmp ERRADO (ex.: cmp 17708 quando o real
+        #   eh 1106). Filtrando por URL no proxy garantimos o certo.
+        #   Em paralelo, dispara dispatchEvent no input visivel pra
+        #   cobrir flows que dependem de evento nativo.
         try:
             doquery_status = search_input.evaluate(
                 """(el, value) => {
-                    const result = { ext: false, found_cmp: null, doQuery: null, fallback: null, errors: [] };
+                    const result = { ext: false, found_cmp: null, doQuery: null, fallback: null, errors: [], scanned: 0 };
                     if (!window.Ext) return result;
                     result.ext = true;
+                    function cmpStoreUrl(c) {
+                        try {
+                            const s = c && c.store;
+                            if (!s) return '';
+                            const p = s.proxy;
+                            if (p && p.url) return String(p.url);
+                            if (p && p.api && p.api.read) return String(p.api.read);
+                            if (s.url) return String(s.url);
+                            return '';
+                        } catch (e) { return ''; }
+                    }
+                    function isBuscaRapidaCmp(c) {
+                        if (!c || typeof c.doQuery !== 'function') return false;
+                        const url = cmpStoreUrl(c).toLowerCase();
+                        if (url && (url.indexOf('buscarapida') >= 0
+                                 || url.indexOf('buscaracaojudicial') >= 0)) {
+                            return true;
+                        }
+                        try {
+                            const bp = (c.store && c.store.baseParams) || {};
+                            const am = bp.acaoMenu || bp.action;
+                            if (am && String(am).toLowerCase().indexOf('buscaracaojudicial') >= 0) {
+                                return true;
+                            }
+                            if (am && String(am).toLowerCase() === 'buscarapida') {
+                                return true;
+                            }
+                        } catch (e) {}
+                        return false;
+                    }
                     let cmp = null;
                     try {
-                        if (el.id && Ext.getCmp) {
-                            const c = Ext.getCmp(el.id);
-                            if (c && typeof c.doQuery === 'function') {
-                                cmp = c; result.found_cmp = 'getCmp:' + el.id;
+                        const all = (Ext.ComponentMgr && Ext.ComponentMgr.all)
+                            ? (Ext.ComponentMgr.all.items || Object.values(Ext.ComponentMgr.all))
+                            : ((Ext.ComponentManager && Ext.ComponentManager.all)
+                                ? (Ext.ComponentManager.all.items || Object.values(Ext.ComponentManager.all))
+                                : []);
+                        result.scanned = all ? all.length : 0;
+                        for (const c of (all || [])) {
+                            if (!isBuscaRapidaCmp(c)) continue;
+                            try {
+                                const ie = c.getEl && c.getEl();
+                                const root = (ie && ie.dom) ? ie.dom : null;
+                                if (root && root.offsetParent !== null) {
+                                    cmp = c;
+                                    result.found_cmp = 'busca_rapida:' + (c.id || '?');
+                                    break;
+                                }
+                            } catch (e) {}
+                        }
+                        if (!cmp) {
+                            for (const c of (all || [])) {
+                                if (!isBuscaRapidaCmp(c)) continue;
+                                cmp = c;
+                                result.found_cmp = 'busca_rapida_hidden:' + (c.id || '?');
+                                break;
                             }
                         }
-                    } catch (e) { result.errors.push('getCmp:' + e.message); }
-                    if (!cmp) {
-                        try {
-                            const all = (Ext.ComponentMgr && Ext.ComponentMgr.all)
-                                ? (Ext.ComponentMgr.all.items || Object.values(Ext.ComponentMgr.all))
-                                : ((Ext.ComponentManager && Ext.ComponentManager.all)
-                                    ? (Ext.ComponentManager.all.items || Object.values(Ext.ComponentManager.all))
-                                    : []);
-                            result.errors.push('total:' + (all ? all.length : 0));
-                            for (const c of (all || [])) {
-                                if (!c || typeof c.doQuery !== 'function') continue;
-                                try {
-                                    const ie = c.getEl && c.getEl();
-                                    const root = (ie && ie.dom) ? ie.dom : null;
-                                    if (root && (root === el || root.contains(el))) {
-                                        cmp = c; result.found_cmp = 'iter:' + (c.id || '?'); break;
-                                    }
-                                } catch (e2) {}
+                        if (!cmp && el.id && Ext.getCmp) {
+                            const c = Ext.getCmp(el.id);
+                            if (c && typeof c.doQuery === 'function') {
+                                cmp = c;
+                                result.found_cmp = 'getCmp_fallback:' + el.id;
                             }
-                        } catch (e3) { result.errors.push('iter:' + e3.message); }
-                    }
+                        }
+                    } catch (e3) { result.errors.push('iter:' + e3.message); }
                     if (cmp && typeof cmp.doQuery === 'function') {
                         try {
-                            if (typeof cmp.setValue === 'function') { try { cmp.setValue(value); } catch(e){} }
+                            try { cmp.lastQuery = null; } catch(e) {}
+                            try {
+                                if (cmp.store && typeof cmp.store.removeAll === 'function') {
+                                    cmp.store.removeAll(true);
+                                }
+                            } catch (e) {}
+                            if (typeof cmp.setValue === 'function') {
+                                try { cmp.setValue(value); } catch (e4) {}
+                            }
                             cmp.doQuery(value, true);
                             result.doQuery = 'ok';
                         } catch (e5) { result.doQuery = 'error:' + e5.message; }
-                    } else { result.doQuery = 'no_cmp'; }
+                    } else {
+                        result.doQuery = 'no_cmp_busca_rapida';
+                    }
                     try {
                         el.focus();
                         el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
