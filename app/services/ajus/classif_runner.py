@@ -745,23 +745,36 @@ class AjusClassifRunner:
         except Exception:
             pass
 
-        # 2. Navega pra base URL (workspace fresco)
+        # 2. Reload PRIMARIO (destroi DOM + cmps ExtJS, evita leak).
+        # Observamos leak agressivo de componentes ExtJS com goto:
+        # ComponentMgr cresceu de 12k -> 38k em UMA navegacao, e o
+        # segundo CNJ falhava porque havia 2+ instancias do combobox
+        # de busca rapida no DOM (uma escondida com state da query
+        # anterior, outra "ativa" mas em scope errado de uma tab que
+        # ficou aberta). Reload destroi tudo e recria do zero.
+        # Storage_state mantem cookies de sessao -> sem re-login.
+        reloaded = False
         try:
-            self._page.goto(
-                portal.PORTAL_BASE_URL.rstrip("/") + "/#",
-                wait_until="commit",
-                timeout=30_000,
+            self._page.reload(wait_until="commit", timeout=30_000)
+            reloaded = True
+            logger.info(
+                "AJUS runner: workspace resetado via page.reload "
+                "(account=%d).", self.account.id,
             )
         except Exception as exc:
             logger.warning(
-                "AJUS runner: falha resetando workspace via goto: %s — "
-                "tentando reload.", exc,
+                "AJUS runner: page.reload falhou (%s) — fallback goto.", exc,
             )
+        if not reloaded:
             try:
-                self._page.reload(wait_until="commit", timeout=30_000)
+                self._page.goto(
+                    portal.PORTAL_BASE_URL.rstrip("/") + "/#",
+                    wait_until="commit",
+                    timeout=30_000,
+                )
             except Exception as exc2:
                 logger.warning(
-                    "AJUS runner: reload tambem falhou: %s", exc2,
+                    "AJUS runner: goto fallback tambem falhou: %s", exc2,
                 )
 
         # 3. Settle + workspace ready
