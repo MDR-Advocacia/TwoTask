@@ -117,6 +117,42 @@ def _format_cnj_mask(cnj: Optional[str]) -> str:
     return f"{digits[:7]}-{digits[7:9]}.{digits[9:13]}.{digits[13]}.{digits[14:16]}.{digits[16:20]}"
 
 
+# Mapa UF -> capital. Usado como fallback quando a comarca especifica
+# nao eh achada no combobox do AJUS (ex.: "Serrinha" nao existe na
+# lista, mas "Salvador" existe). Permite classificar mesmo quando
+# comarca interior nao esta cadastrada — operador pode editar depois
+# se quiser refinar.
+_UF_CAPITAL: dict[str, str] = {
+    "AC": "Rio Branco",
+    "AL": "Maceio",
+    "AP": "Macapa",
+    "AM": "Manaus",
+    "BA": "Salvador",
+    "CE": "Fortaleza",
+    "DF": "Brasilia",
+    "ES": "Vitoria",
+    "GO": "Goiania",
+    "MA": "Sao Luis",
+    "MT": "Cuiaba",
+    "MS": "Campo Grande",
+    "MG": "Belo Horizonte",
+    "PA": "Belem",
+    "PB": "Joao Pessoa",
+    "PR": "Curitiba",
+    "PE": "Recife",
+    "PI": "Teresina",
+    "RJ": "Rio de Janeiro",
+    "RN": "Natal",
+    "RS": "Porto Alegre",
+    "RO": "Porto Velho",
+    "RR": "Boa Vista",
+    "SC": "Florianopolis",
+    "SP": "Sao Paulo",
+    "SE": "Aracaju",
+    "TO": "Palmas",
+}
+
+
 def _normalize_text(value: Optional[str]) -> str:
     """Normaliza pra comparação (sem acentos, lower, trim)."""
     if value is None:
@@ -1813,12 +1849,66 @@ class AjusClassifRunner:
 
     # ── Atualizacao da capa do processo ────────────────────────────
 
+    def _placeholder_or_empty(self, value: str) -> bool:
+        """
+        Retorna True se o display do campo eh placeholder/vazio
+        (i.e., setValue nao firmou no ExtJS). Cobre as variacoes que o
+        AJUS mostra: "Selecione uma opcao", "Selecione...", vazio.
+        """
+        if not value:
+            return True
+        norm = _normalize_text(value)
+        return (
+            not norm
+            or "selecione" in norm
+            or norm == "—"
+            or norm == "-"
+        )
+
+    def _fill_field_with_verify(
+        self, label: str, selector: str, value: str, *, max_attempts: int = 3,
+    ) -> None:
+        """
+        Preenche um campo da capa e VERIFICA imediatamente que firmou —
+        evita o bug observado em item 25, onde o ExtJS aceitava setValue
+        mas nao persistia (display ficava em 'Selecione uma opcao' apos
+        save). Retry ate `max_attempts`. Falha definitiva = raise ANTES
+        do save (em vez de salvar capa vazia e descobrir no validate).
+        """
+        last_actual = ""
+        for attempt in range(1, max_attempts + 1):
+            self._fill_field(label, selector, value)
+            self._page.wait_for_timeout(400)
+            actual = self._read_field_display_value(selector)
+            last_actual = actual
+            if not self._placeholder_or_empty(actual):
+                if _normalize_text(actual) != _normalize_text(value):
+                    logger.info(
+                        "AJUS runner: campo %s firmou com display %r "
+                        "(esperado %r) — aceitando, validate vai conferir.",
+                        label, actual, value,
+                    )
+                return
+            logger.warning(
+                "AJUS runner: campo %s ficou em placeholder %r apos "
+                "tentativa %d/%d — retentando.",
+                label, actual, attempt, max_attempts,
+            )
+            self._page.wait_for_timeout(600)
+        raise AjusRunnerError(
+            f"Campo {label} nao firmou apos {max_attempts} tentativas — "
+            f"display final: {last_actual!r}, esperado: {value!r}. "
+            f"Abortando ANTES do save pra nao salvar capa vazia."
+        )
+
     def _update_process_cover(self, item: AjusClassificacaoQueue) -> None:
         """
-        Preenche os 5 campos da capa via _fill_field (porte fiel do
-        Mirror `_update_process_fields`).
+        Preenche os 5 campos da capa via _fill_field_with_verify
+        (porte do Mirror `_update_process_fields` com verificacao).
 
         Ordem importa: UF antes de Comarca (Comarca depende de UF).
+        Comarca tem fallback pra capital do estado se a comarca
+        especifica nao for achada no combobox.
         """
         for required, value in [
             ("UF", item.uf),
@@ -1833,15 +1923,55 @@ class AjusClassifRunner:
                     f"operador precisa editar antes do dispatch.",
                 )
 
-        self._fill_field("UF", portal.PROCESS_UF_SELECTOR, item.uf)
-        # Comarca depende de UF estar setada — espera ela ficar habilitada
+        self._fill_field_with_verify("UF", portal.PROCESS_UF_SELECTOR, item.uf)
         self._wait_for_process_cover_dependency("Comarca", portal.PROCESS_COMARCA_SELECTOR)
-        self._fill_field("Comarca", portal.PROCESS_COMARCA_SELECTOR, item.comarca)
-        self._fill_field("Materia", portal.PROCESS_MATTER_SELECTOR, item.matter)
-        self._fill_field("Justica/Honorario", portal.PROCESS_JUSTICE_FEE_SELECTOR, item.justice_fee)
-        self._fill_field("Risco/Prob. Perda", portal.PROCESS_RISK_SELECTOR, item.risk_loss_probability)
 
-        # Salvar
+        # Comarca: tenta a comarca especifica primeiro; se ExtJS nao
+        # achar a opcao no combobox, fallback pra capital do estado.
+        try:
+            self._fill_field_with_verify(
+                "Comarca", portal.PROCESS_COMARCA_SELECTOR, item.comarca,
+            )
+        except AjusRunnerError as exc:
+            uf_norm = (item.uf or "").strip().upper()
+            capital = _UF_CAPITAL.get(uf_norm)
+            if capital and _normalize_text(capital) != _normalize_text(item.comarca):
+                logger.warning(
+                    "AJUS runner: comarca %r nao firmou no combobox "
+                    "(item %d, UF=%s) — fallback pra capital %r. Erro: %s",
+                    item.comarca, item.id, uf_norm, capital, exc,
+                )
+                # Refilm depois do erro — combobox pode ter ficado em
+                # estado inconsistente. Settle antes pra UF se manter.
+                self._page.wait_for_timeout(500)
+                self._fill_field_with_verify(
+                    "Comarca", portal.PROCESS_COMARCA_SELECTOR, capital,
+                )
+                # Anotar no last_log do item que usamos fallback (pra
+                # operador saber depois e ajustar manual se quiser).
+                self.classif_service.mark_processing(item.id)
+                # Hack: re-escreve last_log apos mark_processing.
+                try:
+                    obj = self.classif_service.get(item.id)
+                    obj.last_log = (
+                        f"Comarca usada como fallback: {capital} "
+                        f"(original {item.comarca!r} nao foi achada "
+                        f"no combobox da UF {uf_norm}). "
+                        f"{(obj.last_log or '')[:1500]}"
+                    )[:4000]
+                    self.db.commit()
+                except Exception:
+                    pass
+            else:
+                # Sem capital pra UF (UF invalida) ou comarca ja era
+                # a capital — propaga o erro original.
+                raise
+
+        self._fill_field_with_verify("Materia", portal.PROCESS_MATTER_SELECTOR, item.matter)
+        self._fill_field_with_verify("Justica/Honorario", portal.PROCESS_JUSTICE_FEE_SELECTOR, item.justice_fee)
+        self._fill_field_with_verify("Risco/Prob. Perda", portal.PROCESS_RISK_SELECTOR, item.risk_loss_probability)
+
+        # Salvar — agora com seguranca de que TODOS os campos firmaram.
         self._click(portal.PROCESS_SAVE_SELECTOR)
         self._settle(wait_ms=1500)
 
