@@ -33,6 +33,7 @@ Helpers ExtJS:
 from __future__ import annotations
 
 import logging
+import re
 import time
 import unicodedata
 from contextlib import contextmanager
@@ -77,6 +78,34 @@ class AjusLoginExpiredError(AjusRunnerError):
 
 
 # ─── Helpers de texto ────────────────────────────────────────────────
+
+
+_CNJ_DIGITS_RE = re.compile(r"\D")
+
+
+def _cnj_digits(cnj: Optional[str]) -> str:
+    """Strip non-digits do CNJ. Aceita raw ou mascarado."""
+    if not cnj:
+        return ""
+    return _CNJ_DIGITS_RE.sub("", str(cnj))
+
+
+def _format_cnj_mask(cnj: Optional[str]) -> str:
+    """
+    Formata CNJ no padrao oficial NNNNNNN-DD.AAAA.J.TT.OOOO. Aceita
+    input cru (20 digitos) ou ja mascarado. Se nao tem 20 digitos
+    apos strip, devolve a string original sem mexer (fallback seguro).
+
+    Mirror digitava o CNJ MASCARADO no input do AJUS — o ExtJS de la
+    espera essa forma e renderiza o card de resultado com a mesma
+    string formatada (verificado no DOM via DevTools). Nosso intake
+    salva cnj_number cru (20 digits), entao precisamos formatar antes
+    de passar pra busca/selectors.
+    """
+    digits = _cnj_digits(cnj)
+    if len(digits) != 20:
+        return cnj or ""
+    return f"{digits[:7]}-{digits[7:9]}.{digits[9:13]}.{digits[13]}.{digits[14:16]}.{digits[16:20]}"
 
 
 def _normalize_text(value: Optional[str]) -> str:
@@ -762,10 +791,17 @@ class AjusClassifRunner:
 
     def _type_process_search(self, search_input, cnj: str) -> None:
         """
-        Limpa o campo e digita o CNJ caractere por caractere com delay.
-        Necessario porque ExtJS escuta keyup events pra disparar query
-        no store — `fill()` sozinho nao trigga.
+        Limpa o campo e digita o CNJ MASCARADO (NNNNNNN-DD.AAAA.J.TT.OOOO)
+        caractere por caractere com delay. Necessario porque:
+          1. ExtJS escuta keyup events pra disparar query no store —
+             `fill()` sozinho nao trigga.
+          2. AJUS espera o CNJ mascarado no input — o XHR pra
+             BuscaRapidaController.php envia `query=` mascarado e
+             o card de resultado renderiza o mesmo formato no DOM.
+             Sem mascara, o resultado pode aparecer mas o selector
+             que usa `contains(., '{cnj}')` nao bate (Mirror confirma).
         """
+        masked = _format_cnj_mask(cnj)
         try:
             search_input.press("Control+A")
             search_input.press("Delete")
@@ -776,9 +812,9 @@ class AjusClassifRunner:
         except Exception:
             pass
         try:
-            search_input.press_sequentially(cnj, delay=35)
+            search_input.press_sequentially(masked, delay=35)
         except Exception:
-            self._page.keyboard.type(cnj, delay=35)
+            self._page.keyboard.type(masked, delay=35)
 
     def _find_process_result(self, cnj: str, search_input=None):
         """
@@ -793,14 +829,33 @@ class AjusClassifRunner:
             (input value, store ExtJS, HTML do dropdown, contagens por
             selector candidato, ultima request XHR de busca).
         """
+        # Gera candidatos pra ambos os formatos: mascarado (forma
+        # canonica que o AJUS renderiza no DOM) e raw (defensive,
+        # caso algum nodo tenha o numero sem mascara).
+        masked = _format_cnj_mask(cnj)
+        raw = _cnj_digits(cnj)
+        forms = []
+        if masked:
+            forms.append(masked)
+        if raw and raw != masked:
+            forms.append(raw)
+
         candidates = []
-        candidates.append(
-            portal.PROCESS_RESULT_SELECTOR_TEMPLATE.format(process_number=cnj),
-        )
-        candidates.append(
-            portal.PROCESS_RESULT_FALLBACK_SELECTOR_TEMPLATE.format(process_number=cnj),
-        )
-        candidates.append(f"text={cnj}")
+        for form in forms:
+            candidates.append(
+                portal.PROCESS_RESULT_SELECTOR_TEMPLATE.format(process_number=form),
+            )
+            candidates.append(
+                portal.PROCESS_RESULT_FALLBACK_SELECTOR_TEMPLATE.format(process_number=form),
+            )
+            candidates.append(f"text={form}")
+        # Fallback adicional: card/grid (AJUS pode renderizar como
+        # Ext.grid em vez de combo-list em alguns casos)
+        for form in forms:
+            candidates.append(
+                f"xpath=(//div[contains(@class,'x-grid-row') or contains(@class,'x-grid-data-row')]"
+                f"//*[contains(normalize-space(.), '{form}')])[1]",
+            )
 
         # Hook em network.response pra capturar a ultima resposta de busca.
         # ExtJS bate normalmente em /processo/buscaRapida ou similar.
@@ -812,8 +867,9 @@ class AjusClassifRunner:
                 if any(
                     fragment in url.lower()
                     for fragment in (
-                        "buscarapida", "busca-rapida", "buscar", "search",
-                        "processo",
+                        "buscarapidacontroller", "buscarapida", "busca-rapida",
+                        "buscaracaojudicial", "buscaracao", "buscar",
+                        "search", "processo", "ajax.handler.php",
                     )
                 ):
                     last_search_response["url"] = url
@@ -921,17 +977,29 @@ class AjusClassifRunner:
             store_state = self._page.evaluate(
                 """() => {
                     if (!window.Ext) return { error: 'Ext nao definido' };
-                    // Procura todos comboboxes que tem store carregado
-                    const combos = Ext.ComponentQuery.query('combobox');
+                    // ExtJS antigo do AJUS nao tem ComponentQuery.query —
+                    // fallback: ComponentMgr.all (Ext 3) ou ComponentManager (Ext 4+).
+                    let combos = [];
+                    try {
+                        if (Ext.ComponentQuery && typeof Ext.ComponentQuery.query === 'function') {
+                            combos = Ext.ComponentQuery.query('combobox');
+                        } else if (Ext.ComponentMgr && Ext.ComponentMgr.all) {
+                            const all = Ext.ComponentMgr.all.items || Object.values(Ext.ComponentMgr.all);
+                            combos = (all || []).filter(c => c && c.store && typeof c.doQuery === 'function');
+                        } else if (Ext.ComponentManager && Ext.ComponentManager.all) {
+                            const all = Ext.ComponentManager.all.items || Object.values(Ext.ComponentManager.all);
+                            combos = (all || []).filter(c => c && c.store && typeof c.doQuery === 'function');
+                        }
+                    } catch (e) { return { error: 'fallback-failed: ' + e.message }; }
                     const result = [];
                     for (const cb of combos) {
-                        if (!cb.store) continue;
+                        if (!cb || !cb.store) continue;
                         try {
                             result.push({
                                 id: cb.id,
                                 count: cb.store.getCount(),
-                                lastQuery: cb.store.lastOptions?.params?.query || cb.lastQuery || null,
-                                isLoading: cb.store.isLoading?.() || false,
+                                lastQuery: (cb.store.lastOptions && cb.store.lastOptions.params && cb.store.lastOptions.params.query) || cb.lastQuery || null,
+                                isLoading: typeof cb.store.isLoading === 'function' ? cb.store.isLoading() : false,
                             });
                         } catch (e) {}
                     }
