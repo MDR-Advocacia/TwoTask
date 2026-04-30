@@ -16,6 +16,7 @@ Logs vão pra stdout, container do Coolify captura.
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import os
 import signal
@@ -113,28 +114,125 @@ def _login_pending_accounts(db) -> None:
             )
 
 
+def _process_account_isolated(account_id: int, batch_per_account: int) -> dict:
+    """
+    Roda um batch pra UMA conta em uma thread isolada — cria session
+    propria, dispatcher proprio, browser proprio (Playwright sync API
+    requer recursos por thread, nao compartilha entre threads).
+    Retorna dict com sucessos/erros pra agregacao no caller.
+    """
+    db = SessionLocal()
+    try:
+        result = AjusClassifDispatcher(db).run_for_account(
+            account_id, batch_size=batch_per_account,
+        )
+        return {
+            "account_id": account_id,
+            "candidates": result.candidates,
+            "success_count": result.success_count,
+            "error_count": result.error_count,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Falha no thread da account %d: %s", account_id, exc,
+        )
+        return {
+            "account_id": account_id,
+            "candidates": 0, "success_count": 0,
+            "error_count": 0, "exception": str(exc),
+        }
+    finally:
+        db.close()
+
+
 def _dispatch_pending_classifications(db) -> None:
     """
-    Se há itens pendentes, roda o dispatcher (que distribui em
-    round-robin entre contas online).
+    Se ha itens pendentes, dispara processamento PARALELO entre as
+    contas online ativas. Cada conta vira uma thread independente
+    (session + dispatcher + browser proprios). Mirror tinha esse
+    comportamento via ThreadPoolExecutor — sem ele, contas processam
+    sequencialmente (1 por vez) e desperdica capacidade.
+
+    Cap maximo de threads = min(qtd contas online, 8) — defensivo
+    contra bugs que possam acumular workers se contas crescerem muito.
     """
     if not _has_pending_items_for_anyone(db):
         return
-    try:
-        result = AjusClassifDispatcher(db).dispatch_all(
-            batch_per_account=settings.ajus_runner_batch_per_account,
-        )
-        if result.candidates > 0:
+
+    from app.services.ajus.classificacao_service import AjusClassificacaoService
+    if AjusClassificacaoService(db).is_paused():
+        logger.info("AJUS dispatcher: pausa global ativa — nao claimando.")
+        return
+
+    online_accounts = (
+        db.query(AjusSessionAccount.id)
+        .filter(AjusSessionAccount.is_active.is_(True))
+        .filter(AjusSessionAccount.status == AJUS_ACCOUNT_ONLINE)
+        .all()
+    )
+    account_ids = [a.id for a in online_accounts]
+    if not account_ids:
+        return
+
+    max_parallel = max(1, min(len(account_ids), 8))
+    batch_per_account = settings.ajus_runner_batch_per_account
+
+    if len(account_ids) == 1:
+        out = _process_account_isolated(account_ids[0], batch_per_account)
+        if out.get("candidates", 0) > 0:
             logger.info(
                 "Dispatch: %d candidato(s), %d sucesso(s), %d erro(s), "
-                "contas usadas: %s",
-                result.candidates,
-                result.success_count,
-                result.error_count,
-                result.accounts_used,
+                "contas usadas: [%d]",
+                out["candidates"], out["success_count"],
+                out["error_count"], out["account_id"],
             )
-    except Exception:  # noqa: BLE001
-        logger.exception("Falha não tratada no dispatch_all")
+        return
+
+    logger.info(
+        "AJUS dispatcher: paralelizando entre %d conta(s) "
+        "(max threads=%d, batch=%d).",
+        len(account_ids), max_parallel, batch_per_account,
+    )
+    total_candidates = 0
+    total_success = 0
+    total_errors = 0
+    accounts_used: list[int] = []
+    try:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_parallel,
+            thread_name_prefix="ajus-runner",
+        ) as executor:
+            futures = {
+                executor.submit(
+                    _process_account_isolated, acc_id, batch_per_account,
+                ): acc_id
+                for acc_id in account_ids
+            }
+            for future in concurrent.futures.as_completed(futures):
+                acc_id = futures[future]
+                try:
+                    res = future.result()
+                except Exception as exc:
+                    logger.exception(
+                        "Thread da account %d levantou: %s", acc_id, exc,
+                    )
+                    continue
+                cand = res.get("candidates", 0)
+                if cand > 0:
+                    accounts_used.append(res["account_id"])
+                total_candidates += cand
+                total_success += res.get("success_count", 0)
+                total_errors += res.get("error_count", 0)
+    except Exception:
+        logger.exception("Falha nao tratada no dispatch paralelo")
+        return
+
+    if total_candidates > 0:
+        logger.info(
+            "Dispatch (paralelo): %d candidato(s), %d sucesso(s), "
+            "%d erro(s), contas usadas: %s",
+            total_candidates, total_success, total_errors, accounts_used,
+        )
 
 
 # ─── Main loop ───────────────────────────────────────────────────────
