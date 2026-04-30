@@ -935,6 +935,27 @@ export function ajusDebugScreenshotUrl(
   return `/api/v1/ajus/classificacao/sessions/${accountId}/debug-screenshots/${encodeURIComponent(filename)}`;
 }
 
+/**
+ * Baixa o PNG do screenshot via apiFetch (com token JWT) e devolve um
+ * blob URL. Necessario porque abrir a URL direta no navegador resulta
+ * em "Not authenticated" — o endpoint exige header Authorization.
+ *
+ * O caller deve chamar URL.revokeObjectURL(blobUrl) quando descartar.
+ */
+export async function fetchAjusDebugScreenshotBlobUrl(
+  accountId: number,
+  filename: string,
+): Promise<string> {
+  const res = await apiFetch(
+    `/api/v1/ajus/classificacao/sessions/${accountId}/debug-screenshots/${encodeURIComponent(filename)}`,
+  );
+  if (!res.ok) {
+    throw new Error(`Falha ao buscar screenshot (${res.status})`);
+  }
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
 // ─── Sessões AJUS (Chunk 2) ─────────────────────────────────────────
 
 export async function fetchAjusSessionConfig(): Promise<AjusSessionConfig> {

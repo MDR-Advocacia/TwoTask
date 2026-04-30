@@ -88,6 +88,57 @@ git push origin main
 - Não inventar etapas extras (ex.: `git pull` antes do push, validação
   de diff, etc.) a não ser que o usuário peça.
 
+## ⚠️ EDIT/WRITE EM ARQUIVO GRANDE — TRUNCAMENTO RECORRENTE ⚠️
+
+**AS TOOLS `Edit` E `Write` ESTÃO TRUNCANDO ARQUIVOS GRANDES** (>~800
+linhas, ex.: `app/api/v1/endpoints/ajus.py`, `app/services/ajus/classif_runner.py`,
+`frontend/src/components/ajus/ClassificacaoTab.tsx`, `frontend/src/services/api.ts`).
+O sintoma é o arquivo terminar abruptamente no meio de uma função/string,
+com perda de dezenas a centenas de linhas a partir do ponto editado em
+diante. JÁ FALHOU 4+ VEZES.
+
+**REGRA OBRIGATÓRIA — não usar `Edit`/`Write` direto em arquivos grandes.**
+
+Quando precisar modificar um arquivo de ~800+ linhas (backend FastAPI
+agregado, runners Playwright, componentes React grandes), USE O FLUXO
+ABAIXO em vez do `Edit` tool:
+
+1. **Pegar o original do git** (não confiar no `Read` do estado atual,
+   que pode já estar truncado de edits anteriores):
+   ```bash
+   git show HEAD:caminho/do/arquivo > /tmp/orig.ext
+   ```
+
+2. **Aplicar as mudanças via Python `str.replace`** (heredoc bash com
+   `<< EOF` quotado pra evitar interpolação):
+   ```bash
+   python3 << 'PYEOF'
+   src = open('/tmp/orig.ext').read()
+   old = """<bloco exato a substituir>"""
+   new = """<bloco novo>"""
+   assert old in src, "old not found"
+   src = src.replace(old, new)
+   open('caminho/no/repo', 'w').write(src)
+   print("lines:", len(src.split(chr(10))))
+   PYEOF
+   ```
+
+3. **Validar integridade depois de toda mudança**:
+   ```bash
+   # Python: parse AST
+   python3 -c "import ast; ast.parse(open('arquivo.py').read()); print('OK')"
+   # Comparar contagem com git pra detectar perda de bytes:
+   wc -l arquivo
+   git show HEAD:arquivo | wc -l
+   tail -3 arquivo    # ver se termina em token válido
+   ```
+
+**GUARD DE TRUNCAMENTO NO COMMIT** — antes de entregar o bloco PowerShell,
+SEMPRE rodar a validação acima e bater contagem de linhas. Se faltar
+linhas vs git, RECUPERAR via git ANTES de commit. Sem guard = sem commit,
+sem exceção. Mesma lógica do guard do bloco PowerShell de commit
+(memory `feedback_truncamento_arquivos_grandes.md`).
+
 ## Stack
 
 - Backend: FastAPI + SQLAlchemy + Pydantic V2 + Alembic.

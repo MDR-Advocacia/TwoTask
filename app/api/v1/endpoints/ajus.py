@@ -32,8 +32,10 @@ from sqlalchemy.orm import Session
 from app.core import auth as auth_security
 from app.core.dependencies import get_db
 from app.models.ajus import (
+    AJUS_ACCOUNT_EXECUTANDO,
     AJUS_ACCOUNT_ONLINE,
     AJUS_CLASSIF_PENDENTE,
+    AJUS_CLASSIF_PROCESSANDO,
     AJUS_QUEUE_PENDENTE,
     AJUS_QUEUE_STATUSES,
     AjusAndamentoQueue,
@@ -387,6 +389,9 @@ class ClassifQueueOut(BaseModel):
     executed_at: Optional[str]
     created_at: Optional[str]
     updated_at: Optional[str]
+    # Conta que claimou esse item (preserva mesmo apos sucesso/erro pra
+    # frontend conseguir buscar screenshots de debug por item).
+    dispatched_by_account_id: Optional[int] = None
 
 
 class ClassifQueueListResponse(BaseModel):
@@ -425,6 +430,7 @@ def _classif_to_out(item: AjusClassificacaoQueue) -> ClassifQueueOut:
         executed_at=item.executed_at.isoformat() if item.executed_at else None,
         created_at=item.created_at.isoformat() if item.created_at else None,
         updated_at=item.updated_at.isoformat() if item.updated_at else None,
+        dispatched_by_account_id=item.dispatched_by_account_id,
     )
 
 
@@ -941,26 +947,47 @@ def dispatch_classif(
     # eh: API so SINALIZA; o container `ajus-runner` (em loop) processa.
 
     # Auto-heal de fantasmas: itens com status=pendente mas com
-    # dispatched_by_account_id preenchido sao residuos de crash do
-    # dispatcher (ex.: ModuleNotFoundError do Playwright em deploy
-    # antigo). O `_release_unprocessed` do dispatcher deveria limpar
-    # mas a sessao pode ter ficado abortada apos o raise. Limpamos
-    # aqui antes de contar pendentes — operacao idempotente e barata.
-    ghost_count = (
+    # dispatched_by_account_id preenchido podem ser residuos de crash
+    # do dispatcher (ex.: ModuleNotFoundError do Playwright em deploy
+    # antigo). MAS — atencao — se a conta dona desses itens estiver
+    # AGORA em EXECUTANDO, eles NAO sao fantasmas: o runner os claimou
+    # e ainda nao moveu pra status=processando (janela de ms entre
+    # _claim_pending_items e mark_processing). Zerar nesse caso causa
+    # corrida — o item pode ser re-claimado por outra iteracao do
+    # dispatch_all enquanto o runner antigo ainda processa.
+    #
+    # Logica corrigida: liberar somente itens cuja conta dona NAO esta
+    # em EXECUTANDO. Itens dispatched a contas online/erro/offline sao
+    # fantasmas legitimos e podem ser liberados.
+    executando_account_ids = [
+        a_id for (a_id,) in (
+            db.query(AjusSessionAccount.id)
+            .filter(AjusSessionAccount.status == AJUS_ACCOUNT_EXECUTANDO)
+            .all()
+        )
+    ]
+    ghost_q = (
         db.query(AjusClassificacaoQueue)
         .filter(AjusClassificacaoQueue.status == AJUS_CLASSIF_PENDENTE)
         .filter(AjusClassificacaoQueue.dispatched_by_account_id.isnot(None))
-        .update(
-            {AjusClassificacaoQueue.dispatched_by_account_id: None},
-            synchronize_session=False,
+    )
+    if executando_account_ids:
+        ghost_q = ghost_q.filter(
+            ~AjusClassificacaoQueue.dispatched_by_account_id.in_(
+                executando_account_ids,
+            )
         )
+    ghost_count = ghost_q.update(
+        {AjusClassificacaoQueue.dispatched_by_account_id: None},
+        synchronize_session=False,
     )
     if ghost_count:
         db.commit()
         logger.info(
             "AJUS dispatch auto-heal: %d fantasma(s) liberado(s) "
-            "(dispatched_by_account_id zerado em itens pendentes)",
-            ghost_count,
+            "(dispatched_by_account_id zerado em itens pendentes; "
+            "%d conta(s) em EXECUTANDO foram preservadas)",
+            ghost_count, len(executando_account_ids),
         )
 
     pendentes = (
@@ -969,24 +996,61 @@ def dispatch_classif(
         .filter(AjusClassificacaoQueue.dispatched_by_account_id.is_(None))
         .count()
     )
+    processando = (
+        db.query(AjusClassificacaoQueue)
+        .filter(AjusClassificacaoQueue.status == AJUS_CLASSIF_PROCESSANDO)
+        .count()
+    )
+    # Itens claimed pelo runner mas ainda em status=pendente (janela
+    # entre _claim_pending_items e mark_processing). Conta como "em
+    # curso" pra UI nao gritar "fila vazia" quando ha trabalho rodando.
+    em_curso_pendente_claimed = (
+        db.query(AjusClassificacaoQueue)
+        .filter(AjusClassificacaoQueue.status == AJUS_CLASSIF_PENDENTE)
+        .filter(AjusClassificacaoQueue.dispatched_by_account_id.isnot(None))
+        .count()
+    )
     online = (
         db.query(AjusSessionAccount)
         .filter(AjusSessionAccount.is_active.is_(True))
         .filter(AjusSessionAccount.status == AJUS_ACCOUNT_ONLINE)
         .count()
     )
+    executando = len(executando_account_ids)
 
-    if pendentes == 0:
+    em_curso = processando + em_curso_pendente_claimed
+
+    if pendentes == 0 and em_curso == 0:
         msg = "Nenhum item pendente na fila."
-    elif online == 0:
+    elif pendentes == 0 and em_curso > 0:
+        # Runner ja esta cuidando — nao tem o que sinalizar.
+        msg = (
+            f"Runner ja esta processando ({em_curso} item(ns) em curso "
+            f"em {executando} conta(s)). Aguarde — nada novo na fila."
+        )
+    elif online == 0 and executando == 0:
         msg = (
             f"{pendentes} item(ns) pendente(s) mas nenhuma conta online. "
             "Acesse o card 'Sessoes AJUS' e faca login em pelo menos uma."
         )
+    elif online == 0 and executando > 0:
+        # Tudo executando, sem conta livre. Operador clicou querendo
+        # acelerar — o que ja esta executando vai acabar e o worker
+        # periodico pega o resto.
+        msg = (
+            f"{pendentes} item(ns) pendente(s) na fila, {executando} conta(s) "
+            f"ja em execucao ({em_curso} item(ns) em curso). O proximo lote "
+            "sera pego automaticamente quando uma conta liberar."
+        )
     else:
         msg = (
             f"Sinalizado: {pendentes} item(ns) na fila, {online} conta(s) "
-            f"online. O ajus-runner pega em ate ~2s."
+            f"online"
+            + (
+                f" ({executando} ja em execucao com {em_curso} item(ns))"
+                if executando else ""
+            )
+            + ". O ajus-runner pega em ate ~2s."
         )
 
     return ClassifDispatchOut(
@@ -996,7 +1060,7 @@ def dispatch_classif(
         success_ids=[],
         errored=[],
         accounts_used=[],
-        accepted=(pendentes > 0 and online > 0),
+        accepted=(pendentes > 0 and (online > 0 or executando > 0)),
         accounts_online=online,
         message=msg,
     )
@@ -1086,6 +1150,7 @@ def get_classif(
     return _classif_to_out(item)
 
 
+@router.put("/classificacao/{item_id}", response_model=ClassifQueueOut)
 @router.put("/classificacao/{item_id}", response_model=ClassifQueueOut)
 def update_classif(
     payload: ClassifQueueUpdateIn,

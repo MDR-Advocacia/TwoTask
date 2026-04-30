@@ -780,12 +780,18 @@ class AjusClassifRunner:
         except Exception:
             self._page.keyboard.type(cnj, delay=35)
 
-    def _find_process_result(self, cnj: str):
+    def _find_process_result(self, cnj: str, search_input=None):
         """
         Acha o item do dropdown que matcheia o CNJ. Estrategia (Mirror):
           1. Selector template configurado.
           2. Fallback xpath generico.
           3. Fallback `text={cnj}` simples.
+
+        Logging detalhado pra depurar quando o dropdown nao aparece:
+          - Aos 30s (meio do timeout): screenshot intermediario + estado.
+          - Aos 60s (timeout): screenshot final + estado completo
+            (input value, store ExtJS, HTML do dropdown, contagens por
+            selector candidato, ultima request XHR de busca).
         """
         candidates = []
         candidates.append(
@@ -796,17 +802,191 @@ class AjusClassifRunner:
         )
         candidates.append(f"text={cnj}")
 
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline:
-            for sel in candidates:
-                if self._is_visible(sel):
-                    return self._visible_locator(sel, timeout_s=3)
-            self._page.wait_for_timeout(500)
+        # Hook em network.response pra capturar a ultima resposta de busca.
+        # ExtJS bate normalmente em /processo/buscaRapida ou similar.
+        last_search_response: dict[str, str] = {}
 
-        debug = self._dump_login_state("search-result-not-found")
-        raise AjusRunnerError(
-            f"Resultado da busca pra CNJ {cnj} nao apareceu. {debug}",
-        )
+        def _capture_response(response):
+            try:
+                url = response.url or ""
+                if any(
+                    fragment in url.lower()
+                    for fragment in (
+                        "buscarapida", "busca-rapida", "buscar", "search",
+                        "processo",
+                    )
+                ):
+                    last_search_response["url"] = url
+                    last_search_response["status"] = str(response.status)
+                    try:
+                        # Body curto pra nao explodir log
+                        body = response.text()[:500]
+                    except Exception:
+                        body = "(body indisponivel)"
+                    last_search_response["body"] = body
+            except Exception:
+                pass
+
+        try:
+            self._page.on("response", _capture_response)
+        except Exception:
+            pass
+
+        try:
+            deadline = time.monotonic() + 60
+            mid_dump_done = False
+            mid_deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                for sel in candidates:
+                    if self._is_visible(sel):
+                        return self._visible_locator(sel, timeout_s=3)
+
+                # Dump intermediario aos 30s — captura estado quando o
+                # AJUS ainda esta processando a busca, ajuda a entender
+                # se o resultado *apareceu* e sumiu antes do timeout.
+                if not mid_dump_done and time.monotonic() >= mid_deadline:
+                    try:
+                        self._dump_search_state(
+                            "search-result-mid-timeout",
+                            cnj=cnj,
+                            candidates=candidates,
+                            search_input=search_input,
+                            last_search_response=last_search_response,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "AJUS runner: falha no dump intermediario: %s", exc,
+                        )
+                    mid_dump_done = True
+
+                self._page.wait_for_timeout(500)
+
+            # Timeout final — dump completo
+            debug = self._dump_search_state(
+                "search-result-not-found",
+                cnj=cnj,
+                candidates=candidates,
+                search_input=search_input,
+                last_search_response=last_search_response,
+            )
+            raise AjusRunnerError(
+                f"Resultado da busca pra CNJ {cnj} nao apareceu. {debug}",
+            )
+        finally:
+            try:
+                self._page.remove_listener("response", _capture_response)
+            except Exception:
+                pass
+
+    def _dump_search_state(
+        self,
+        label: str,
+        *,
+        cnj: str,
+        candidates: list[str],
+        search_input=None,
+        last_search_response: Optional[dict] = None,
+    ) -> str:
+        """
+        Dump rico do estado da busca — screenshot + URL + titulo +
+        valor do input + store ExtJS + HTML do dropdown + contagens
+        por selector + ultima resposta XHR.
+
+        Usado em 2 momentos:
+          - Aos 30s: sinaliza que esta lento (mid-timeout).
+          - Aos 60s: timeout final (search-result-not-found).
+        """
+        # Reusa o screenshot + URL + title do _dump_login_state
+        base_debug = self._dump_login_state(label)
+
+        # Coleta extras
+        extras: list[str] = []
+
+        # 1. Valor real do input de busca (sequencial pode perder caractere)
+        try:
+            if search_input is not None:
+                actual_value = search_input.input_value(timeout=2000)
+                if actual_value != cnj:
+                    extras.append(
+                        f"input_value={actual_value!r} (esperado: {cnj!r}) "
+                        f"DIFERENTE — possivel perda de caractere"
+                    )
+                else:
+                    extras.append(f"input_value={actual_value!r} OK")
+        except Exception as exc:  # noqa: BLE001
+            extras.append(f"input_value=ERRO({exc})")
+
+        # 2. Estado do store ExtJS — count, lastQuery, isLoading
+        try:
+            store_state = self._page.evaluate(
+                """() => {
+                    if (!window.Ext) return { error: 'Ext nao definido' };
+                    // Procura todos comboboxes que tem store carregado
+                    const combos = Ext.ComponentQuery.query('combobox');
+                    const result = [];
+                    for (const cb of combos) {
+                        if (!cb.store) continue;
+                        try {
+                            result.push({
+                                id: cb.id,
+                                count: cb.store.getCount(),
+                                lastQuery: cb.store.lastOptions?.params?.query || cb.lastQuery || null,
+                                isLoading: cb.store.isLoading?.() || false,
+                            });
+                        } catch (e) {}
+                    }
+                    return result.slice(0, 5);
+                }"""
+            )
+            extras.append(f"ext_combos={store_state}")
+        except Exception as exc:  # noqa: BLE001
+            extras.append(f"ext_combos=ERRO({exc})")
+
+        # 3. HTML do dropdown (.x-boundlist) — mostra "Nenhum resultado"
+        try:
+            dropdown_html = self._page.evaluate(
+                """() => {
+                    const lists = document.querySelectorAll('.x-boundlist');
+                    const visible = [];
+                    for (const el of lists) {
+                        if (el.offsetParent !== null) {
+                            visible.push({
+                                items_count: el.querySelectorAll('.x-boundlist-item').length,
+                                empty_text: el.querySelector('.x-boundlist-empty-area')?.textContent?.trim() || null,
+                                inner_text: (el.innerText || '').slice(0, 200),
+                            });
+                        }
+                    }
+                    return visible;
+                }"""
+            )
+            extras.append(f"boundlist={dropdown_html}")
+        except Exception as exc:  # noqa: BLE001
+            extras.append(f"boundlist=ERRO({exc})")
+
+        # 4. Contagem por selector candidato (count > 0 mas nao visivel
+        #    significa que o elemento existe mas esta hidden)
+        try:
+            counts = []
+            for sel in candidates:
+                try:
+                    c = self._page.locator(sel).count()
+                    counts.append(f"{sel!r}=count={c}")
+                except Exception:
+                    counts.append(f"{sel!r}=ERRO")
+            extras.append(f"selector_counts=[{' | '.join(counts)}]")
+        except Exception as exc:  # noqa: BLE001
+            extras.append(f"selector_counts=ERRO({exc})")
+
+        # 5. Ultima resposta de busca (HTTP)
+        if last_search_response:
+            extras.append(f"last_xhr={last_search_response}")
+        else:
+            extras.append("last_xhr=(nenhuma request capturada)")
+
+        full = base_debug + " | " + " | ".join(extras)
+        logger.error("AJUS runner DEBUG[%s] cnj=%s extras: %s", label, cnj, " | ".join(extras))
+        return full
 
     def _open_process_by_cnj(self, cnj: str) -> None:
         """
@@ -839,7 +1019,7 @@ class AjusClassifRunner:
         self._page.wait_for_timeout(2000)
 
         # Etapa 5: dblclick no resultado
-        result = self._find_process_result(cnj)
+        result = self._find_process_result(cnj, search_input=search_input)
         try:
             result.scroll_into_view_if_needed(timeout=3000)
         except Exception:

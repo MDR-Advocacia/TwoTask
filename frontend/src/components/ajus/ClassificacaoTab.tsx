@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   Ban,
+  Bug,
   Download,
   Loader2,
   Pencil,
@@ -69,11 +70,14 @@ import {
   dispatchAjusClassif,
   fetchAjusClassif,
   fetchAjusClassifDefaults,
+  fetchAjusDebugScreenshotBlobUrl,
+  listAjusDebugScreenshots,
   retryAjusClassifErrorsBulk,
   retryAjusClassifItem,
   updateAjusClassifDefaults,
   updateAjusClassifItem,
   uploadAjusClassifXlsx,
+  type AjusDebugScreenshot,
 } from "@/services/api";
 import type {
   AjusClassifDefaults,
@@ -153,6 +157,83 @@ export function ClassificacaoTab() {
 
   // ─── Retry em massa dos erros ─────────────────────────────────────
   const [retryingBulk, setRetryingBulk] = useState(false);
+
+  // ─── Debug screenshots por item ───────────────────────────────────
+  // Mostra as PNGs que o runner salvou em volume quando o item falhou.
+  // Aberto pelo botao "Ver debug" no row de item com erro.
+  const [debugItem, setDebugItem] = useState<AjusClassifQueueItem | null>(null);
+  const [debugFiles, setDebugFiles] = useState<AjusDebugScreenshot[]>([]);
+  const [debugLoading, setDebugLoading] = useState(false);
+  const [debugBlobs, setDebugBlobs] = useState<Record<string, string>>({});
+
+  // Revoke blobs quando trocar/fechar pra evitar memory leak.
+  useEffect(() => {
+    return () => {
+      for (const url of Object.values(debugBlobs)) {
+        try { URL.revokeObjectURL(url); } catch { /* noop */ }
+      }
+    };
+  }, [debugBlobs]);
+
+  const openDebugDialog = useCallback(async (item: AjusClassifQueueItem) => {
+    if (!item.dispatched_by_account_id) {
+      toast({
+        title: "Sem screenshots",
+        description: "Esse item nao foi processado por nenhuma conta ainda.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setDebugItem(item);
+    setDebugLoading(true);
+    setDebugFiles([]);
+    setDebugBlobs({});
+    try {
+      const all = await listAjusDebugScreenshots(item.dispatched_by_account_id);
+      // Filtra screenshots gerados perto do executed_at do item
+      // (janela de +/- 10min). Se nao tiver executed_at, mostra todos
+      // os mais recentes (ate 10).
+      const ts = item.executed_at ? Date.parse(item.executed_at) / 1000 : null;
+      const window = 10 * 60; // 10 min
+      const filtered = ts
+        ? all.filter((f) => Math.abs(f.mtime - ts) <= window).slice(0, 20)
+        : all.slice(0, 10);
+      const finalFiles = filtered.length ? filtered : all.slice(0, 5);
+      setDebugFiles(finalFiles);
+
+      // Pre-carrega blobs (autenticados) — abre os mais recentes em
+      // sequencia pra UI ja mostrar a primeira imagem.
+      const blobs: Record<string, string> = {};
+      for (const f of finalFiles.slice(0, 5)) {
+        try {
+          blobs[f.name] = await fetchAjusDebugScreenshotBlobUrl(
+            item.dispatched_by_account_id, f.name,
+          );
+        } catch {
+          // ignora — UI mostra placeholder
+        }
+      }
+      setDebugBlobs(blobs);
+    } catch (e: unknown) {
+      toast({
+        title: "Erro ao carregar screenshots",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setDebugLoading(false);
+    }
+  }, [toast]);
+
+  const closeDebugDialog = useCallback(() => {
+    setDebugItem(null);
+    setDebugFiles([]);
+    // revoga blobs ao fechar
+    for (const url of Object.values(debugBlobs)) {
+      try { URL.revokeObjectURL(url); } catch { /* noop */ }
+    }
+    setDebugBlobs({});
+  }, [debugBlobs]);
 
   // ─── Loaders ──────────────────────────────────────────────────────
   const loadDefaults = useCallback(async () => {
@@ -671,6 +752,18 @@ export function ClassificacaoTab() {
                             Retry
                           </Button>
                         )}
+                        {item.status === "erro" && item.dispatched_by_account_id && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => openDebugDialog(item)}
+                            disabled={actionId === item.id}
+                            title="Ver screenshots de debug que o runner salvou na falha"
+                          >
+                            <Bug className="mr-1 h-3 w-3" />
+                            Debug
+                          </Button>
+                        )}
                         {(item.status === "pendente" || item.status === "erro") && (
                           <Button
                             size="sm"
@@ -758,6 +851,111 @@ export function ClassificacaoTab() {
                 <Save className="mr-2 h-3.5 w-3.5" />
               )}
               Salvar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de debug — screenshots que o runner salvou na falha do item */}
+      <Dialog
+        open={!!debugItem}
+        onOpenChange={(open) => { if (!open) closeDebugDialog(); }}
+      >
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              Debug do item — CNJ {debugItem?.cnj_number || ""}
+            </DialogTitle>
+            <DialogDescription>
+              Screenshots que o ajus-runner salvou no volume da conta{" "}
+              <code>{debugItem?.dispatched_by_account_id ?? "?"}</code>
+              {debugItem?.executed_at && (
+                <>
+                  {" "}— filtrados perto de{" "}
+                  <code>{new Date(debugItem.executed_at).toLocaleString("pt-BR")}</code>
+                </>
+              )}
+              .
+            </DialogDescription>
+          </DialogHeader>
+
+          {debugItem?.error_message && (
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertTitle>Mensagem de erro</AlertTitle>
+              <AlertDescription className="break-all text-xs">
+                {debugItem.error_message}
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {debugLoading ? (
+            <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Carregando screenshots...
+            </div>
+          ) : debugFiles.length === 0 ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">
+              Nenhum screenshot encontrado pra esse item. O volume{" "}
+              <code>/app/data/ajus-session/{debugItem?.dispatched_by_account_id}</code>{" "}
+              pode estar vazio ou nao montado neste container.
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {debugFiles.map((f) => (
+                <div key={f.name} className="rounded-md border bg-muted/30 p-2">
+                  <div className="mb-2 flex items-center justify-between gap-2 text-xs">
+                    <code className="truncate" title={f.name}>{f.name}</code>
+                    <span className="shrink-0 text-muted-foreground">
+                      {new Date(f.mtime * 1000).toLocaleString("pt-BR")} ·{" "}
+                      {(f.size / 1024).toFixed(1)} KB
+                    </span>
+                  </div>
+                  {debugBlobs[f.name] ? (
+                    <a
+                      href={debugBlobs[f.name]}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Abrir em tamanho real em nova aba"
+                    >
+                      <img
+                        src={debugBlobs[f.name]}
+                        alt={f.name}
+                        className="w-full rounded border"
+                        loading="lazy"
+                      />
+                    </a>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={async () => {
+                        if (!debugItem?.dispatched_by_account_id) return;
+                        try {
+                          const url = await fetchAjusDebugScreenshotBlobUrl(
+                            debugItem.dispatched_by_account_id, f.name,
+                          );
+                          setDebugBlobs((prev) => ({ ...prev, [f.name]: url }));
+                        } catch (e) {
+                          toast({
+                            title: "Falha ao carregar imagem",
+                            description: e instanceof Error ? e.message : String(e),
+                            variant: "destructive",
+                          });
+                        }
+                      }}
+                    >
+                      Carregar imagem
+                    </Button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={closeDebugDialog}>
+              Fechar
             </Button>
           </DialogFooter>
         </DialogContent>

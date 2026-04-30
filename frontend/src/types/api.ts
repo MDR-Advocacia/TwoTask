@@ -568,6 +568,7 @@ export interface AjusClassifQueueItem {
   executed_at: string | null;
   created_at: string | null;
   updated_at: string | null;
+  dispatched_by_account_id: number | null;
 }
 
 export interface AjusClassifQueueListResponse {
