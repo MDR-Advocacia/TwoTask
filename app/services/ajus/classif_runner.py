@@ -913,61 +913,74 @@ class AjusClassifRunner:
         except Exception:
             self._page.keyboard.type(masked, delay=35)
 
-        # Forcar a query via JS — bypassa eventual deduplicacao do
-        # ExtJS (lastQuery==masked) e garante XHR sempre dispara.
-        # Estrategia: pegar o id do input visivel, achar o componente
-        # ExtJS, e chamar doQuery(value, true). O `true` forca refresh
-        # mesmo que lastQuery seja igual.
+        # Forcar a query via JS — estrategia tripla:
+        #   A) Ext.getCmp(input.id) — direto.
+        #   B) Iteracao em ComponentMgr/ComponentManager procurando
+        #      combobox cujo elemento contenha o input.
+        #   C) Fallback bruto: dispatchEvent('keyup' + 'input' + 'change')
+        #      — sempre executa, alguns flows do AJUS so reagem ao evento
+        #      nativo. Garante que o XHR de busca sempre dispara.
+        # Loga o status retornado pra termos visibilidade do que aconteceu.
         try:
-            search_input.evaluate(
+            doquery_status = search_input.evaluate(
                 """(el, value) => {
-                    if (!window.Ext) return 'no_ext';
-                    // Procura o componente ExtJS dono do input. ExtJS antigo
-                    // associa o input a um componente via id ou closest.
+                    const result = { ext: false, found_cmp: null, doQuery: null, fallback: null, errors: [] };
+                    if (!window.Ext) return result;
+                    result.ext = true;
                     let cmp = null;
                     try {
                         if (el.id && Ext.getCmp) {
-                            cmp = Ext.getCmp(el.id);
+                            const c = Ext.getCmp(el.id);
+                            if (c && typeof c.doQuery === 'function') {
+                                cmp = c; result.found_cmp = 'getCmp:' + el.id;
+                            }
                         }
-                    } catch (e) {}
+                    } catch (e) { result.errors.push('getCmp:' + e.message); }
                     if (!cmp) {
-                        // Fallback: procura por todos os comboboxes que
-                        // tem doQuery e pega o que tem o input visivel.
                         try {
                             const all = (Ext.ComponentMgr && Ext.ComponentMgr.all)
                                 ? (Ext.ComponentMgr.all.items || Object.values(Ext.ComponentMgr.all))
                                 : ((Ext.ComponentManager && Ext.ComponentManager.all)
                                     ? (Ext.ComponentManager.all.items || Object.values(Ext.ComponentManager.all))
                                     : []);
+                            result.errors.push('total:' + (all ? all.length : 0));
                             for (const c of (all || [])) {
-                                if (!c) continue;
-                                if (typeof c.doQuery !== 'function') continue;
-                                // Match por elemento (input do combo)
+                                if (!c || typeof c.doQuery !== 'function') continue;
                                 try {
                                     const ie = c.getEl && c.getEl();
                                     const root = (ie && ie.dom) ? ie.dom : null;
                                     if (root && (root === el || root.contains(el))) {
-                                        cmp = c; break;
+                                        cmp = c; result.found_cmp = 'iter:' + (c.id || '?'); break;
                                     }
                                 } catch (e2) {}
                             }
-                        } catch (e3) {}
+                        } catch (e3) { result.errors.push('iter:' + e3.message); }
                     }
-                    if (!cmp || typeof cmp.doQuery !== 'function') return 'no_cmp';
+                    if (cmp && typeof cmp.doQuery === 'function') {
+                        try {
+                            if (typeof cmp.setValue === 'function') { try { cmp.setValue(value); } catch(e){} }
+                            cmp.doQuery(value, true);
+                            result.doQuery = 'ok';
+                        } catch (e5) { result.doQuery = 'error:' + e5.message; }
+                    } else { result.doQuery = 'no_cmp'; }
                     try {
-                        // setValue + doQuery(value, true) — o `true` sinaliza
-                        // forceAll/forceQuery dependendo da versao do ExtJS;
-                        // nas versoes antigas do AJUS bypassa o `if (q==lastQuery)`.
-                        if (typeof cmp.setValue === 'function') {
-                            try { cmp.setValue(value); } catch (e) {}
-                        }
-                        cmp.doQuery(value, true);
-                        return 'ok';
-                    } catch (e) {
-                        return 'doQuery_error: ' + (e && e.message);
-                    }
+                        el.focus();
+                        el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                        const lastChar = value && value.length ? value.charAt(value.length - 1) : '0';
+                        el.dispatchEvent(new KeyboardEvent('keyup', {
+                            key: lastChar, code: 'Digit' + lastChar,
+                            bubbles: true, cancelable: true,
+                        }));
+                        el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+                        result.fallback = 'dispatched';
+                    } catch (e6) { result.fallback = 'error:' + e6.message; }
+                    return result;
                 }""",
                 masked,
+            )
+            logger.info(
+                "AJUS runner: doQuery trigger pra %s -> %s",
+                masked, doquery_status,
             )
         except Exception as exc:
             logger.warning(
@@ -1243,7 +1256,7 @@ class AjusClassifRunner:
                             });
                         } catch (e) {}
                     }
-                    return result.slice(0, 5);
+                    return result.slice(0, 10);
                 }"""
             )
             extras.append(f"ext_combos={store_state}")
