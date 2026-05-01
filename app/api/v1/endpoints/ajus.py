@@ -1007,13 +1007,26 @@ class ClassifDispatchOut(BaseModel):
 )
 def dispatch_classif(
     db: Session = Depends(get_db),
-    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+    user: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
     # IMPORTANTE: este endpoint vive no container `api` que NAO tem
     # Playwright instalado. Chamar AjusClassifDispatcher direto aqui
     # estourava `ModuleNotFoundError: No module named 'playwright'`
     # quando o runner tentava abrir o browser. A arquitetura correta
     # eh: API so SINALIZA; o container `ajus-runner` (em loop) processa.
+
+    # Auto-despausa: o estado padrao do sistema eh "pausado" (modo
+    # manual). Quando o operador clica "Disparar pendentes", a
+    # intencao eh COMECAR a rodar — entao o endpoint /dispatch
+    # despausa automaticamente antes de sinalizar. Se o operador
+    # quiser parar de novo, usa o botao "Pausar" explicitamente.
+    classif_service_for_pause = AjusClassificacaoService(db)
+    was_paused = classif_service_for_pause.is_paused()
+    if was_paused:
+        classif_service_for_pause.set_paused(
+            paused=False,
+            by_user=getattr(user, "login", None) or getattr(user, "email", None),
+        )
 
     # Auto-heal de fantasmas: itens com status=pendente mas com
     # dispatched_by_account_id preenchido podem ser residuos de crash
@@ -1088,9 +1101,15 @@ def dispatch_classif(
     executando = len(executando_account_ids)
 
     em_curso = processando + em_curso_pendente_claimed
+    # Apos o auto-despausa no inicio do endpoint, is_paused agora eh
+    # False. Mantemos a referencia `was_paused` pra incluir na mensagem
+    # quando relevante (deixa o operador saber que estava parado e
+    # acabou de iniciar).
     is_paused = AjusClassificacaoService(db).is_paused()
 
     if is_paused:
+        # Defesa: nao deveria acontecer apos auto-despausa, mas se algo
+        # racou e ainda esta pausado, preserva a mensagem antiga.
         if em_curso > 0:
             msg = (
                 f"Dispatcher PAUSADO. {em_curso} item(ns) em curso vao "
@@ -1125,14 +1144,16 @@ def dispatch_classif(
             "sera pego automaticamente quando uma conta liberar."
         )
     else:
+        prefix = "Iniciado" if was_paused else "Sinalizado"
         msg = (
-            f"Sinalizado: {pendentes} item(ns) na fila, {online} conta(s) "
+            f"{prefix}: {pendentes} item(ns) na fila, {online} conta(s) "
             f"online"
             + (
                 f" ({executando} ja em execucao com {em_curso} item(ns))"
                 if executando else ""
             )
-            + ". O ajus-runner pega em ate ~2s."
+            + ". O ajus-runner pega em ate ~2s. "
+              "Pra parar, clique 'Pausar'."
         )
 
     return ClassifDispatchOut(

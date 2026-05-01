@@ -154,6 +154,10 @@ export function ClassificacaoTab() {
   const [items, setItems] = useState<AjusClassifQueueItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  // Paginacao — fila pode ter milhares de itens, nao da pra carregar
+  // tudo numa visita. Default 50/pagina, opcoes 25/50/100/200.
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(50);
   const [statusFilter, setStatusFilter] = useState<string[]>([]);
   const [origemFilter, setOrigemFilter] = useState("__all__");
   const [cnjFilter, setCnjFilter] = useState("");
@@ -272,7 +276,10 @@ export function ClassificacaoTab() {
   const loadItems = useCallback(async () => {
     setLoading(true);
     try {
-      const filters: Parameters<typeof fetchAjusClassif>[0] = { limit: 200 };
+      const filters: Parameters<typeof fetchAjusClassif>[0] = {
+        limit: pageSize,
+        offset: page * pageSize,
+      };
       if (statusFilter.length > 0) filters.status = statusFilter.join(",");
       if (origemFilter !== "__all__") filters.origem = origemFilter as "intake_auto" | "planilha";
       if (cnjFilter.trim()) filters.cnj_search = cnjFilter.trim();
@@ -288,7 +295,13 @@ export function ClassificacaoTab() {
     } finally {
       setLoading(false);
     }
-  }, [statusFilter, origemFilter, cnjFilter, toast]);
+  }, [statusFilter, origemFilter, cnjFilter, page, pageSize, toast]);
+
+  // Sempre que filtros mudarem, volta pra pagina 0 (senao pode ficar
+  // em pagina que nao existe mais com o filtro novo).
+  useEffect(() => {
+    setPage(0);
+  }, [statusFilter, origemFilter, cnjFilter, pageSize]);
 
   useEffect(() => { loadDefaults(); }, [loadDefaults]);
   useEffect(() => { loadItems(); }, [loadItems]);
@@ -1001,6 +1014,75 @@ export function ClassificacaoTab() {
               })}
             </TableBody>
           </Table>
+
+          {total > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t px-4 py-3 text-xs">
+              <div className="text-muted-foreground">
+                {total === 0
+                  ? "0 itens"
+                  : `Mostrando ${page * pageSize + 1}-${Math.min((page + 1) * pageSize, total)} de ${total}`}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Itens por pagina:</span>
+                <Select
+                  value={String(pageSize)}
+                  onValueChange={(v) => setPageSize(Number(v))}
+                >
+                  <SelectTrigger className="h-7 w-[70px] text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {[25, 50, 100, 200].map((n) => (
+                      <SelectItem key={n} value={String(n)} className="text-xs">{n}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2"
+                  onClick={() => setPage(0)}
+                  disabled={page === 0 || loading}
+                  title="Primeira pagina"
+                >
+                  «
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2"
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                  disabled={page === 0 || loading}
+                  title="Pagina anterior"
+                >
+                  ‹ Anterior
+                </Button>
+                <span className="px-2 font-medium">
+                  Pagina {page + 1} de {Math.max(1, Math.ceil(total / pageSize))}
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2"
+                  onClick={() => setPage((p) => p + 1)}
+                  disabled={(page + 1) * pageSize >= total || loading}
+                  title="Proxima pagina"
+                >
+                  Proxima ›
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2"
+                  onClick={() => setPage(Math.max(0, Math.ceil(total / pageSize) - 1))}
+                  disabled={(page + 1) * pageSize >= total || loading}
+                  title="Ultima pagina"
+                >
+                  »
+                </Button>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 

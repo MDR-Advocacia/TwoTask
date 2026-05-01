@@ -60,10 +60,12 @@ from app.services.classifier.prazos_iniciais_schema import (
     TIPO_PRAZO_AUDIENCIA,
     TIPO_PRAZO_CONTESTAR,
     TIPO_PRAZO_CONTRARRAZOES,
+    TIPO_PRAZO_INDETERMINADO,
     TIPO_PRAZO_JULGAMENTO,
     TIPO_PRAZO_LIMINAR,
     TIPO_PRAZO_MANIFESTACAO_AVULSA,
     TIPO_PRAZO_SEM_DETERMINACAO,
+    TIPO_PRAZO_SEM_PRAZO_EM_ABERTO,
     BlocoAudiencia,
     BlocoContestar,
     BlocoContrarrazoes,
@@ -730,6 +732,33 @@ class PrazosIniciaisBatchClassifier:
 
         if tipo_prazo == TIPO_PRAZO_SEM_DETERMINACAO:
             payload["sem_determinacao"] = True
+            sugestao.payload_proposto = payload
+            return sugestao
+
+        if tipo_prazo == TIPO_PRAZO_SEM_PRAZO_EM_ABERTO:
+            # Persiste motivo + descricao da IA no payload pra UI mostrar.
+            # `bloco` aqui e o proprio response (passado por `blocos_aplicaveis`),
+            # nao um sub-bloco.
+            payload["sem_prazo_em_aberto"] = True
+            motivo = getattr(bloco, "motivo_sem_prazo", None)
+            motivo_desc = getattr(bloco, "motivo_descricao", None)
+            if motivo:
+                payload["motivo_sem_prazo"] = motivo
+                sugestao.subtipo = motivo  # facilita filtro por motivo na UI
+            if motivo_desc:
+                payload["motivo_descricao"] = motivo_desc
+                sugestao.justificativa = motivo_desc
+            sugestao.payload_proposto = payload
+            return sugestao
+
+        if tipo_prazo == TIPO_PRAZO_INDETERMINADO:
+            # Indeterminado nao tem motivo categorico (a IA nao soube),
+            # so a descricao explicando o que confundiu.
+            payload["indeterminado"] = True
+            motivo_desc = getattr(bloco, "motivo_descricao", None)
+            if motivo_desc:
+                payload["motivo_descricao"] = motivo_desc
+                sugestao.justificativa = motivo_desc
             sugestao.payload_proposto = payload
             return sugestao
 

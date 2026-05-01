@@ -250,11 +250,13 @@ class AjusClassificacaoDefaults(Base):
     default_matter = Column(String(255), nullable=True)
     default_risk_loss_probability = Column(String(255), nullable=True)
 
-    # Pausa global do dispatcher — quando True, dispatcher para de
-    # claimar novos batches. Itens ja claimados terminam normalmente.
-    # Reversível via endpoint /classificacao/resume.
+    # Pausa global do dispatcher — DEFAULT TRUE (modo manual). Itens
+    # entram na fila mas o worker so processa quando o operador clica
+    # "Disparar pendentes" (que chama /dispatch e auto-despausa).
+    # Operador pode pausar de novo a qualquer momento via "Pausar".
+    # Itens ja claimados terminam normalmente quando pausa eh ativada.
     is_paused = Column(
-        Boolean(), nullable=False, server_default="false", default=False,
+        Boolean(), nullable=False, server_default="true", default=True,
     )
     paused_at = Column(DateTime(timezone=True), nullable=True)
     paused_by = Column(String(128), nullable=True)

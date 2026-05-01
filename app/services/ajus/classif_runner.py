@@ -32,6 +32,7 @@ Helpers ExtJS:
 
 from __future__ import annotations
 
+import gc
 import logging
 import re
 import time
@@ -215,6 +216,14 @@ class AjusClassifRunner:
         self.close()
 
     def close(self) -> None:
+        # Limpa todos os listeners antes de fechar — defesa contra
+        # leaks de handlers residuais (ja vimos isso causar problema
+        # em sessoes longas).
+        try:
+            if self._page:
+                self._page.remove_all_listeners()
+        except Exception:
+            pass
         try:
             if self._page:
                 self._page.close()
@@ -849,6 +858,16 @@ class AjusClassifRunner:
         except Exception:
             pass
 
+        # Forca coleta de lixo do Python — libera refs orfas de
+        # locators, response objects, closures, etc. acumuladas
+        # durante o processamento do item anterior. Reduz leak
+        # progressivo do processo Python ao longo de longas
+        # sessoes (centenas/milhares de items).
+        try:
+            gc.collect()
+        except Exception:
+            pass
+
     def classify_item(self, item: AjusClassificacaoQueue) -> None:
         """
         Classifica um único item da fila. Atualiza status (processando
@@ -867,36 +886,69 @@ class AjusClassifRunner:
         item.dispatched_by_account_id = self.account.id
         self.db.commit()
 
+        # Retry de capa: se _validate_process_cover acusar mismatch
+        # (capa não ficou com valores esperados), tentar de novo até
+        # max_capa_retries vezes — costuma ser timing/race no save do
+        # ExtJS, e re-tentar do zero (com reset_workspace entre tries)
+        # resolve sem precisar reclassificar manualmente.
+        max_capa_retries = 3
         try:
-            self._open_process_by_cnj(item.cnj_number)
-            self._update_process_cover(item)
-            self._validate_process_cover(item)
-            self.classif_service.mark_success(
-                item.id,
-                last_log=f"Classificado por account_id={self.account.id} em {datetime.now(timezone.utc).isoformat()}",
-            )
-            logger.info(
-                "AJUS runner: item %d (cnj=%s) classificado com sucesso",
-                item.id, item.cnj_number,
-            )
-        except AjusProcessNotFoundError as exc:
-            # Caso "AJUS nao tem esse processo" — distinto de erro tecnico.
-            # Nao retentar automaticamente.
-            self.classif_service.mark_not_found(
-                item.id,
-                details=str(exc)[:500],
-            )
-            logger.info(
-                "AJUS runner: item %d (cnj=%s) NAO ENCONTRADO no AJUS: %s",
-                item.id, item.cnj_number, exc,
-            )
-        except Exception as exc:  # noqa: BLE001
-            msg = str(exc)[:4000]
-            self.classif_service.mark_error(item.id, error_message=msg)
-            logger.exception(
-                "AJUS runner: falha classificando item %d (cnj=%s): %s",
-                item.id, item.cnj_number, msg,
-            )
+            for attempt in range(1, max_capa_retries + 1):
+                try:
+                    self._open_process_by_cnj(item.cnj_number)
+                    self._update_process_cover(item)
+                    self._validate_process_cover(item)
+                    self.classif_service.mark_success(
+                        item.id,
+                        last_log=f"Classificado por account_id={self.account.id} em {datetime.now(timezone.utc).isoformat()}",
+                    )
+                    logger.info(
+                        "AJUS runner: item %d (cnj=%s) classificado com sucesso (tentativa %d/%d)",
+                        item.id, item.cnj_number, attempt, max_capa_retries,
+                    )
+                    break
+                except AjusProcessNotFoundError as exc:
+                    # Caso "AJUS nao tem esse processo" — distinto de erro tecnico.
+                    # Nao retentar automaticamente.
+                    self.classif_service.mark_not_found(
+                        item.id,
+                        details=str(exc)[:500],
+                    )
+                    logger.info(
+                        "AJUS runner: item %d (cnj=%s) NAO ENCONTRADO no AJUS: %s",
+                        item.id, item.cnj_number, exc,
+                    )
+                    break
+                except AjusRunnerError as exc:
+                    is_capa_error = "capa nao ficou com os valores esperados" in str(exc).lower()
+                    if is_capa_error and attempt < max_capa_retries:
+                        logger.warning(
+                            "AJUS runner: tentativa %d/%d — capa nao validou pra item %d (cnj=%s): %s — resetando workspace e tentando de novo",
+                            attempt, max_capa_retries, item.id, item.cnj_number, exc,
+                        )
+                        try:
+                            self._reset_workspace()
+                        except Exception as reset_exc:  # noqa: BLE001
+                            logger.warning(
+                                "AJUS runner: reset_workspace falhou no retry de capa: %s",
+                                reset_exc,
+                            )
+                        continue
+                    msg = str(exc)[:4000]
+                    self.classif_service.mark_error(item.id, error_message=msg)
+                    logger.exception(
+                        "AJUS runner: falha classificando item %d (cnj=%s): %s",
+                        item.id, item.cnj_number, msg,
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    msg = str(exc)[:4000]
+                    self.classif_service.mark_error(item.id, error_message=msg)
+                    logger.exception(
+                        "AJUS runner: falha classificando item %d (cnj=%s): %s",
+                        item.id, item.cnj_number, msg,
+                    )
+                    break
         finally:
             # SEMPRE resetar workspace entre itens (sucesso ou erro).
             # Sem isso, o tab/foco do processo anterior fica residual
@@ -1080,22 +1132,33 @@ class AjusClassifRunner:
                     } else {
                         result.doQuery = 'no_cmp_busca_rapida';
                     }
-                    try {
-                        el.focus();
-                        el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
-                        const lastChar = value && value.length ? value.charAt(value.length - 1) : '0';
-                        el.dispatchEvent(new KeyboardEvent('keyup', {
-                            key: lastChar, code: 'Digit' + lastChar,
-                            bubbles: true, cancelable: true,
-                        }));
-                        el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-                        result.fallback = 'dispatched';
-                    } catch (e6) { result.fallback = 'error:' + e6.message; }
+                    // dispatchEvent eh fallback — roda APENAS se doQuery
+                    // falhou (cmp nao achado ou erro). Quando doQuery
+                    // funcionou, o XHR ja foi disparado e dispatchEvent
+                    // soh adicionaria carga sem benefício.
+                    if (result.doQuery !== 'ok') {
+                        try {
+                            el.focus();
+                            el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                            const lastChar = value && value.length ? value.charAt(value.length - 1) : '0';
+                            el.dispatchEvent(new KeyboardEvent('keyup', {
+                                key: lastChar, code: 'Digit' + lastChar,
+                                bubbles: true, cancelable: true,
+                            }));
+                            el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+                            result.fallback = 'dispatched';
+                        } catch (e6) { result.fallback = 'error:' + e6.message; }
+                    } else {
+                        result.fallback = 'skipped';
+                    }
                     return result;
                 }""",
                 masked,
             )
-            logger.info(
+            # Em DEBUG pra nao poluir log de producao (1 linha por item
+            # × 2000 items = ruido). Sobe pra INFO via LOG_LEVEL=DEBUG
+            # se precisar investigar.
+            logger.debug(
                 "AJUS runner: doQuery trigger pra %s -> %s",
                 masked, doquery_status,
             )
@@ -1218,6 +1281,14 @@ class AjusClassifRunner:
             except Exception:
                 pass
 
+        # Limpa qualquer listener residual de chamadas anteriores antes
+        # de adicionar o novo (defesa contra leak progressivo — se o
+        # remove_listener no finally falhar, o `remove_all_listeners`
+        # garante que cada item comeca com slate limpo).
+        try:
+            self._page.remove_all_listeners("response")
+        except Exception:
+            pass
         try:
             self._page.on("response", _capture_response)
         except Exception:
@@ -1287,7 +1358,7 @@ class AjusClassifRunner:
             )
         finally:
             try:
-                self._page.remove_listener("response", _capture_response)
+                self._page.remove_all_listeners("response")
             except Exception:
                 pass
 

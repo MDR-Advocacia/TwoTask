@@ -49,7 +49,19 @@ TIPO_PRAZO_LIMINAR = "LIMINAR"
 TIPO_PRAZO_MANIFESTACAO_AVULSA = "MANIFESTACAO_AVULSA"
 TIPO_PRAZO_AUDIENCIA = "AUDIENCIA"
 TIPO_PRAZO_JULGAMENTO = "JULGAMENTO"
+# DEPRECATED — mantido pra compat com sugestões persistidas antes da
+# divisão em SEM_PRAZO_EM_ABERTO + INDETERMINADO. A IA não emite mais.
+# Operador pode reclassificar via endpoint /reclassify pros antigos.
 TIPO_PRAZO_SEM_DETERMINACAO = "SEM_DETERMINACAO"
+# A IA confidentemente identificou que NÃO há prazo aberto pra Ré
+# (autor com prazo, processo suspenso, julgado e transitado, etc.).
+# Caso clássico de "finalizar sem providência" — operador confirma e
+# o intake vai pro CONCLUIDO_SEM_PROVIDENCIA + GED + cancel da legada.
+TIPO_PRAZO_SEM_PRAZO_EM_ABERTO = "SEM_PRAZO_EM_ABERTO"
+# A IA NÃO conseguiu classificar com confiança (despacho ambíguo,
+# texto truncado, falta de contexto). Operador OBRIGATORIAMENTE precisa
+# revisar manualmente — não há sugestão segura aqui.
+TIPO_PRAZO_INDETERMINADO = "INDETERMINADO"
 TIPO_PRAZO_CONTRARRAZOES = "CONTRARRAZOES"
 
 TIPOS_PRAZO_VALIDOS = frozenset({
@@ -58,7 +70,9 @@ TIPOS_PRAZO_VALIDOS = frozenset({
     TIPO_PRAZO_MANIFESTACAO_AVULSA,
     TIPO_PRAZO_AUDIENCIA,
     TIPO_PRAZO_JULGAMENTO,
-    TIPO_PRAZO_SEM_DETERMINACAO,
+    TIPO_PRAZO_SEM_DETERMINACAO,  # legado
+    TIPO_PRAZO_SEM_PRAZO_EM_ABERTO,
+    TIPO_PRAZO_INDETERMINADO,
     TIPO_PRAZO_CONTRARRAZOES,
 })
 
@@ -72,8 +86,41 @@ TIPO_PRAZO_LABELS = {
     TIPO_PRAZO_MANIFESTACAO_AVULSA: "Manifestação avulsa",
     TIPO_PRAZO_AUDIENCIA: "Audiência",
     TIPO_PRAZO_JULGAMENTO: "Julgamento",
-    TIPO_PRAZO_SEM_DETERMINACAO: "Sem determinação",
+    TIPO_PRAZO_SEM_DETERMINACAO: "Sem determinação (legado)",
+    TIPO_PRAZO_SEM_PRAZO_EM_ABERTO: "Sem prazo em aberto",
+    TIPO_PRAZO_INDETERMINADO: "Indeterminado",
     TIPO_PRAZO_CONTRARRAZOES: "Contrarrazões",
+}
+
+
+# ─── Motivos de SEM_PRAZO_EM_ABERTO ──────────────────────────────────
+# Quando a IA marca SEM_PRAZO_EM_ABERTO, ela DEVE indicar o motivo —
+# ajuda o operador a validar rapidamente sem ler o processo todo, e
+# permite relatórios futuros do tipo "X% dos intakes vieram suspensos".
+
+MOTIVO_SEM_PRAZO_AGUARDANDO_AUTOR = "AGUARDANDO_AUTOR"
+MOTIVO_SEM_PRAZO_AGUARDANDO_JUIZ = "AGUARDANDO_JUIZ"
+MOTIVO_SEM_PRAZO_SUSPENSO_SOBRESTADO = "SUSPENSO_SOBRESTADO"
+MOTIVO_SEM_PRAZO_JULGADO_SEM_RECURSO = "JULGADO_SEM_RECURSO_ABERTO"
+MOTIVO_SEM_PRAZO_RECURSO_OUTRA_PARTE = "RECURSO_OUTRA_PARTE_SEM_PRAZO_RE"
+MOTIVO_SEM_PRAZO_OUTRO = "OUTRO"
+
+MOTIVOS_SEM_PRAZO_VALIDOS = frozenset({
+    MOTIVO_SEM_PRAZO_AGUARDANDO_AUTOR,
+    MOTIVO_SEM_PRAZO_AGUARDANDO_JUIZ,
+    MOTIVO_SEM_PRAZO_SUSPENSO_SOBRESTADO,
+    MOTIVO_SEM_PRAZO_JULGADO_SEM_RECURSO,
+    MOTIVO_SEM_PRAZO_RECURSO_OUTRA_PARTE,
+    MOTIVO_SEM_PRAZO_OUTRO,
+})
+
+MOTIVO_SEM_PRAZO_LABELS = {
+    MOTIVO_SEM_PRAZO_AGUARDANDO_AUTOR: "Aguardando manifestação do autor",
+    MOTIVO_SEM_PRAZO_AGUARDANDO_JUIZ: "Aguardando despacho do juiz",
+    MOTIVO_SEM_PRAZO_SUSPENSO_SOBRESTADO: "Processo suspenso ou sobrestado",
+    MOTIVO_SEM_PRAZO_JULGADO_SEM_RECURSO: "Julgado, sem recurso aberto pra Ré",
+    MOTIVO_SEM_PRAZO_RECURSO_OUTRA_PARTE: "Recurso da outra parte, sem prazo pra Ré",
+    MOTIVO_SEM_PRAZO_OUTRO: "Outro (ver descrição)",
 }
 
 
@@ -475,8 +522,50 @@ class PrazoInicialClassificationResponse(BaseModel):
     # ramo das 6 perguntas clássicas (mais conservador que pular para
     # AGRAVO, onde só CONTRARRAZOES é considerada).
 
-    # Pergunta 5 (flag guarda-chuva).
+    # ── Estado terminal "sem ação pra Ré" (Fase 4 — split do antigo
+    # `sem_determinacao`). Mutuamente excludente com qualquer bloco
+    # `aplica=true`. Quando preenchido, NÃO emite blocos — emite uma
+    # única sugestão sintética com tipo SEM_PRAZO_EM_ABERTO ou
+    # INDETERMINADO conforme o caso.
+    #
+    # - `sem_prazo_em_aberto=True`: IA tem CERTEZA que não há prazo aberto.
+    #   Operador apenas confirma "finalizar sem providência" no HITL.
+    # - `indeterminado=True`: IA NÃO conseguiu classificar com segurança.
+    #   Operador OBRIGATORIAMENTE revisa manualmente o processo.
+    #
+    # Apenas UMA das duas pode estar True simultaneamente; o validador
+    # `_enforce_estado_terminal` abaixo garante isso.
+    sem_prazo_em_aberto: bool = False
+    indeterminado: bool = False
+
+    # ── Backward-compat com schema antigo ──
+    # Aceita o campo `sem_determinacao` legado pra não quebrar lotes
+    # (Anthropic batches que rodaram antes do split). Quando vem True,
+    # `_normalize_legacy_sem_determinacao` mapeia pra `sem_prazo_em_aberto`
+    # (assume o caso "feliz" — operador re-classifica via UI se quiser).
     sem_determinacao: bool = False
+
+    # ── Motivo do estado terminal ──
+    # Obrigatório quando `sem_prazo_em_aberto=True` — explicita por que
+    # a IA chegou nesse veredito (aguardando autor / suspenso / julgado /
+    # etc.). NULL quando há blocos aplicando ou quando indeterminado=True
+    # (no caso de indeterminado a IA explica em `motivo_descricao`).
+    motivo_sem_prazo: Optional[
+        Literal[
+            "AGUARDANDO_AUTOR",
+            "AGUARDANDO_JUIZ",
+            "SUSPENSO_SOBRESTADO",
+            "JULGADO_SEM_RECURSO_ABERTO",
+            "RECURSO_OUTRA_PARTE_SEM_PRAZO_RE",
+            "OUTRO",
+        ]
+    ] = None
+
+    # Texto livre da IA explicando o veredito. Útil tanto pra
+    # SEM_PRAZO_EM_ABERTO (validar o motivo) quanto pra INDETERMINADO
+    # (entender o que confundiu a IA — texto truncado, despacho ambíguo,
+    # falta de contexto, etc.). Operador lê isso no HITL.
+    motivo_descricao: Optional[str] = None
 
     # Perguntas 1-4, 6 (ramos COMUM/JUIZADO/OUTRO).
     contestar: BlocoContestar
@@ -522,14 +611,38 @@ class PrazoInicialClassificationResponse(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _enforce_sem_determinacao(self) -> "PrazoInicialClassificationResponse":
+    def _normalize_legacy_sem_determinacao(self) -> "PrazoInicialClassificationResponse":
         """
-        Se `sem_determinacao=True`, força todos os blocos a `aplica=False`.
-        Evita que o modelo misture "não há determinação para a Ré" com uma
-        audiência marcada — nesse caso, `sem_determinacao` deve ser False
-        (há ação pra Ré: comparecer na audiência). Se o modelo retornou
-        conflitante, quem ganha é o conteúdo específico (blocos) e tiramos
-        o `sem_determinacao`.
+        Backward-compat: se a IA (ou um teste/fixture antigo) retornou
+        `sem_determinacao=True` mas nenhum dos novos campos
+        (`sem_prazo_em_aberto` / `indeterminado`), assume
+        `sem_prazo_em_aberto=True` com motivo OUTRO. Operador pode
+        reclassificar manualmente via /reclassify se quiser.
+        """
+        if self.sem_determinacao and not (self.sem_prazo_em_aberto or self.indeterminado):
+            self.sem_prazo_em_aberto = True
+            if not self.motivo_sem_prazo:
+                self.motivo_sem_prazo = "OUTRO"
+            if not self.motivo_descricao:
+                self.motivo_descricao = (
+                    "Migrado de SEM_DETERMINACAO legado — IA antiga não "
+                    "diferenciava motivo. Operador deve revisar."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_estado_terminal(self) -> "PrazoInicialClassificationResponse":
+        """
+        Garante consistência entre estados terminais e blocos aplicáveis.
+
+        Regras:
+          1. `sem_prazo_em_aberto` e `indeterminado` são mutuamente excludentes.
+             Se ambos True → `indeterminado` ganha (mais conservador, força HITL).
+          2. Se algum bloco `aplica=True`, ambos os flags terminais viram False
+             (existe ação pra Ré → não está nem sem prazo nem indeterminado).
+          3. Se nem bloco aplica nem flag terminal estão setadas, força
+             `indeterminado=True` por default — melhor surfacear pra operador
+             que silenciosamente persistir 0 sugestões.
         """
         qualquer_bloco_aplica = (
             self.contestar.aplica
@@ -539,9 +652,33 @@ class PrazoInicialClassificationResponse(BaseModel):
             or self.julgamento.aplica
             or self.contrarrazoes.aplica
         )
-        if self.sem_determinacao and qualquer_bloco_aplica:
-            # Conflito: prioriza os blocos específicos.
-            self.sem_determinacao = False
+
+        # 1. Mutual exclusion entre os dois estados terminais.
+        if self.sem_prazo_em_aberto and self.indeterminado:
+            self.sem_prazo_em_aberto = False
+            # Mantém indeterminado=True (caso conservador → HITL).
+
+        # 2. Bloco aplicando ganha sobre flag terminal.
+        if qualquer_bloco_aplica:
+            self.sem_prazo_em_aberto = False
+            self.indeterminado = False
+            self.sem_determinacao = False  # legado
+            self.motivo_sem_prazo = None
+            # `motivo_descricao` mantém — pode ter contexto útil.
+
+        # 3. Default defensivo: nada aplica e nada flagado → INDETERMINADO.
+        elif not (self.sem_prazo_em_aberto or self.indeterminado):
+            self.indeterminado = True
+            if not self.motivo_descricao:
+                self.motivo_descricao = (
+                    "IA não emitiu nem blocos nem estado terminal explícito; "
+                    "marcado INDETERMINADO defensivamente. Operador deve revisar."
+                )
+
+        # 4. Limpa motivo_sem_prazo quando não é caso de SEM_PRAZO.
+        if not self.sem_prazo_em_aberto:
+            self.motivo_sem_prazo = None
+
         return self
 
     def blocos_aplicaveis(self) -> list[tuple[str, BaseModel]]:
@@ -575,6 +712,14 @@ class PrazoInicialClassificationResponse(BaseModel):
                 pares.append((TIPO_PRAZO_AUDIENCIA, self.audiencia))
             if self.julgamento.aplica:
                 pares.append((TIPO_PRAZO_JULGAMENTO, self.julgamento))
-        if not pares and self.sem_determinacao:
-            pares.append((TIPO_PRAZO_SEM_DETERMINACAO, self))
+        if not pares:
+            # Estados terminais (mutuamente excludentes via validador).
+            if self.sem_prazo_em_aberto:
+                pares.append((TIPO_PRAZO_SEM_PRAZO_EM_ABERTO, self))
+            elif self.indeterminado:
+                pares.append((TIPO_PRAZO_INDETERMINADO, self))
+            elif self.sem_determinacao:
+                # Backward-compat — não deve cair aqui após o normalizer
+                # legado, mas mantém defesa em profundidade.
+                pares.append((TIPO_PRAZO_SEM_DETERMINACAO, self))
         return pares

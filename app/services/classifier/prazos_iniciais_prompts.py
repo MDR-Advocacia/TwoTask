@@ -85,8 +85,35 @@ Preencher campos + `assunto`.
 Data + hora conhecidas (`designo audiência`, `audiência redesignada`, pauta).
 Preencher: `data` (YYYY-MM-DD), `hora` (HH:MM 24h), `tipo` (`conciliacao`/`instrucao`/`una`/`outra`), `link` (URL virtual: meet/zoom/teams/pje/cnj — senão null), `endereco` (presencial — senão null), `justificativa`. Híbrida → preencha ambos.
 
-## 5. SEM DETERMINAÇÃO pendente
-Aguardando manifestação do AUTOR, despacho do juiz, suspensão, sobrestamento, recurso da outra parte sem prazo aberto. Marque `sem_determinacao=true` e DEIXE blocos 1-4 e 6 com `aplica=false`.
+## 5. ESTADO TERMINAL (sem ação pra Ré agora)
+
+Quando NENHUM dos blocos 1-4/6 aplica, escolha UM dos dois estados terminais:
+
+### 5a. `sem_prazo_em_aberto=true` (CASO CLARO)
+A IA tem CERTEZA que não há prazo aberto pra Ré. Os 4 cenários típicos:
+- Aguardando manifestação do AUTOR (réplica, especificação, etc.)
+- Aguardando despacho do JUIZ (conclusão, vista ao MP, AR)
+- Processo SUSPENSO ou SOBRESTADO (Tema repetitivo, REsp afetado, art. 313 CPC)
+- JULGADO sem recurso aberto pra Ré (sentença/acórdão transitado, ou em prazo de outra parte)
+
+Preencha:
+- `motivo_sem_prazo`: UM de `AGUARDANDO_AUTOR` | `AGUARDANDO_JUIZ` | `SUSPENSO_SOBRESTADO` | `JULGADO_SEM_RECURSO_ABERTO` | `RECURSO_OUTRA_PARTE_SEM_PRAZO_RE` | `OUTRO`.
+- `motivo_descricao`: 1-2 frases citando o trecho/movimentação que sustenta. Operador valida sem reler o processo.
+
+### 5b. `indeterminado=true` (CASO CONFUSO)
+A IA NÃO conseguiu classificar com confiança — algo está faltando ou ambíguo. Use quando:
+- Última movimentação é texto truncado / ilegível
+- Despacho ambíguo (não é claro a quem o comando se destina)
+- Falta contexto da movimentação anterior pra interpretar
+- Há contradição entre movimentações recentes
+- Capa/íntegra não bate (CNJ diferente, processo errado)
+
+Preencha:
+- `motivo_descricao`: 1-3 frases explicando EXATAMENTE o que confundiu. Operador usa pra decidir se reclassifica, ajusta payload manual, ou pede pra automação re-extrair.
+
+NÃO marque `indeterminado=true` quando você TEM certeza que não há prazo — isso é `sem_prazo_em_aberto`. Indeterminado é "não sei", não "não há".
+
+REGRA CRÍTICA: Apenas UM de `sem_prazo_em_aberto`/`indeterminado` pode ser true. Se ambos vierem, o validador força `indeterminado` (mais conservador). Se nenhum vier e nenhum bloco aplica, o validador força `indeterminado=true` por default.
 
 ## 6. JULGAMENTO já proferido
 Sentença/acórdão/decisão monocrática que põe fim ao processo (não interlocutória).
@@ -98,12 +125,13 @@ Preencher: `tipo` (`merito` | `extincao_sem_merito` (CPC 485) | `outro`), `data`
 Banco Master é agravado. Intimação pra contrarrazões? (`intime-se o agravado para... contrarrazões`, `dê-se vista ao agravado`).
 Preencher campos + `recurso` (identificação curta).
 
-Se Agravo aguarda julgamento ou já julgado sem prazo aberto pra Ré → `sem_determinacao=true`.
+Se Agravo aguarda julgamento ou já julgado sem prazo aberto pra Ré → `sem_prazo_em_aberto=true` + motivo (`AGUARDANDO_JUIZ` ou `JULGADO_SEM_RECURSO_ABERTO`).
+Se a íntegra do agravo é truncada/confusa e você não sabe → `indeterminado=true` + descrição.
 
 # REGRAS
 
 1. **Polo passivo sempre.** Determinação ao autor/agravante NÃO marca.
-2. **Sem_determinacao × bloco**: se algum bloco `aplica=true`, `sem_determinacao=false`. Mutuamente excludentes.
+2. **Estado terminal × bloco**: se algum bloco `aplica=true`, `sem_prazo_em_aberto=false` E `indeterminado=false`. Mutuamente excludentes.
 3. **Múltiplas determinações coexistem** (COMUM/JUIZADO/OUTRO): contestação + audiência + manifestação podem ser simultâneas.
 4. **Liminar concedida em sentença**: marque julgamento + liminar.
 5. **Audiência redesignada após sentença**: marque os dois apenas se a audiência segue ativa em pauta. Se cancelada pela sentença, só julgamento.
@@ -165,7 +193,10 @@ Extraia TODOS os pedidos da PI. Um pedido = uma pretensão.
 {
   "produto": null,
   "natureza_processo": "COMUM",
-  "sem_determinacao": false,
+  "sem_prazo_em_aberto": false,
+  "indeterminado": false,
+  "motivo_sem_prazo": null,
+  "motivo_descricao": null,
   "contestar": {"aplica": false, "prazo_dias": null, "prazo_tipo": null, "data_base": null, "prazo_fatal_data": null, "prazo_fatal_fundamentacao": null, "prazo_base_decisao": null, "justificativa": ""},
   "liminar": {"aplica": false, "prazo_dias": null, "prazo_tipo": null, "data_base": null, "prazo_fatal_data": null, "prazo_fatal_fundamentacao": null, "prazo_base_decisao": null, "objeto": null, "justificativa": ""},
   "manifestacao_avulsa": {"aplica": false, "prazo_dias": null, "prazo_tipo": null, "data_base": null, "prazo_fatal_data": null, "prazo_fatal_fundamentacao": null, "prazo_base_decisao": null, "assunto": null, "justificativa": ""},
@@ -194,7 +225,10 @@ PI: revisão de cláusulas de contrato de empréstimo consignado; pede declaraç
 {
   "produto": "EMPRESTIMO_CONSIGNADO",
   "natureza_processo": "COMUM",
-  "sem_determinacao": false,
+  "sem_prazo_em_aberto": false,
+  "indeterminado": false,
+  "motivo_sem_prazo": null,
+  "motivo_descricao": null,
   "contestar": {"aplica": true, "prazo_dias": 15, "prazo_tipo": "util", "data_base": "2026-05-12", "prazo_fatal_data": "2026-06-02", "prazo_fatal_fundamentacao": "CPC 335 I (15 dias úteis a contar da audiência de conciliação) c/c 219", "prazo_base_decisao": "Despacho cite-se com audiência designada para 12/05/2026; prazo conta da audiência.", "justificativa": "Audiência de conciliação ex art. 334 marca início do prazo (CPC 335 I)."},
   "liminar": {"aplica": false, "prazo_dias": null, "prazo_tipo": null, "data_base": null, "prazo_fatal_data": null, "prazo_fatal_fundamentacao": null, "prazo_base_decisao": null, "objeto": null, "justificativa": ""},
   "manifestacao_avulsa": {"aplica": false, "prazo_dias": null, "prazo_tipo": null, "data_base": null, "prazo_fatal_data": null, "prazo_fatal_fundamentacao": null, "prazo_base_decisao": null, "assunto": null, "justificativa": ""},
@@ -223,7 +257,10 @@ Decisão agravada (1º grau): indeferiu suspensão dos descontos em folha por au
 {
   "produto": "EMPRESTIMO_CONSIGNADO",
   "natureza_processo": "AGRAVO_INSTRUMENTO",
-  "sem_determinacao": false,
+  "sem_prazo_em_aberto": false,
+  "indeterminado": false,
+  "motivo_sem_prazo": null,
+  "motivo_descricao": null,
   "contestar": {"aplica": false, "prazo_dias": null, "prazo_tipo": null, "data_base": null, "prazo_fatal_data": null, "prazo_fatal_fundamentacao": null, "prazo_base_decisao": null, "justificativa": ""},
   "liminar": {"aplica": false, "prazo_dias": null, "prazo_tipo": null, "data_base": null, "prazo_fatal_data": null, "prazo_fatal_fundamentacao": null, "prazo_base_decisao": null, "objeto": null, "justificativa": ""},
   "manifestacao_avulsa": {"aplica": false, "prazo_dias": null, "prazo_tipo": null, "data_base": null, "prazo_fatal_data": null, "prazo_fatal_fundamentacao": null, "prazo_base_decisao": null, "assunto": null, "justificativa": ""},
@@ -235,6 +272,62 @@ Decisão agravada (1º grau): indeferiu suspensão dos descontos em folha por au
   "analise_estrategica": "Posição do banco favorável: tutela recursal indeferida e decisão agravada já é pró-réu. Aprovisionamento R$ 0; sem pedidos quantificáveis no recurso.",
   "confianca_geral": "alta",
   "observacoes": null
+}
+```
+
+## Ex. 3 — COMUM com processo SUSPENSO (`sem_prazo_em_aberto`)
+
+Capa: Procedimento Comum, Vara Cível, autor PF, réu Banco Master.
+Íntegra (última mov.): "Suspendo o processo nos termos do art. 1.037, II do CPC, em razão da afetação do Tema 1.061/STJ pela Corte Especial. Aguarde-se julgamento."
+PI: revisão de cláusulas de cartão consignado.
+
+```json
+{
+  "produto": "CARTAO_CREDITO_CONSIGNADO",
+  "natureza_processo": "COMUM",
+  "sem_prazo_em_aberto": true,
+  "indeterminado": false,
+  "motivo_sem_prazo": "SUSPENSO_SOBRESTADO",
+  "motivo_descricao": "Processo suspenso por afetação do Tema 1.061/STJ (CPC 1.037 II). Sem prazo correndo pra Ré até o julgamento do paradigma.",
+  "contestar": {"aplica": false, "prazo_dias": null, "prazo_tipo": null, "data_base": null, "prazo_fatal_data": null, "prazo_fatal_fundamentacao": null, "prazo_base_decisao": null, "justificativa": ""},
+  "liminar": {"aplica": false, "prazo_dias": null, "prazo_tipo": null, "data_base": null, "prazo_fatal_data": null, "prazo_fatal_fundamentacao": null, "prazo_base_decisao": null, "objeto": null, "justificativa": ""},
+  "manifestacao_avulsa": {"aplica": false, "prazo_dias": null, "prazo_tipo": null, "data_base": null, "prazo_fatal_data": null, "prazo_fatal_fundamentacao": null, "prazo_base_decisao": null, "assunto": null, "justificativa": ""},
+  "audiencia": {"aplica": false, "data": null, "hora": null, "tipo": null, "link": null, "endereco": null, "justificativa": ""},
+  "julgamento": {"aplica": false, "tipo": null, "data": null, "justificativa": ""},
+  "contrarrazoes": {"aplica": false, "prazo_dias": null, "prazo_tipo": null, "data_base": null, "prazo_fatal_data": null, "prazo_fatal_fundamentacao": null, "prazo_base_decisao": null, "recurso": null, "justificativa": ""},
+  "agravo": null,
+  "pedidos": [],
+  "analise_estrategica": "Processo paralisado por suspensao sistemica. Aprovisionamento mantido conforme ultima analise; sem acoes pendentes.",
+  "confianca_geral": "alta",
+  "observacoes": null
+}
+```
+
+## Ex. 4 — Despacho ambiguo (`indeterminado`)
+
+Capa: Procedimento Comum, autor PF.
+Integra (ultima mov.): "Manifeste-se a parte interessada no prazo de 5 dias, sob pena de extincao. Decisao de 28/04/2026."
+Sem outras movimentacoes claras pra contextualizar quem e a "parte interessada".
+
+```json
+{
+  "produto": null,
+  "natureza_processo": "COMUM",
+  "sem_prazo_em_aberto": false,
+  "indeterminado": true,
+  "motivo_sem_prazo": null,
+  "motivo_descricao": "Despacho de 28/04/2026 determina manifestacao da parte interessada em 5 dias sem especificar polo. Nao da pra concluir se e o autor ou a Re sem mais contexto da movimentacao anterior.",
+  "contestar": {"aplica": false, "prazo_dias": null, "prazo_tipo": null, "data_base": null, "prazo_fatal_data": null, "prazo_fatal_fundamentacao": null, "prazo_base_decisao": null, "justificativa": ""},
+  "liminar": {"aplica": false, "prazo_dias": null, "prazo_tipo": null, "data_base": null, "prazo_fatal_data": null, "prazo_fatal_fundamentacao": null, "prazo_base_decisao": null, "objeto": null, "justificativa": ""},
+  "manifestacao_avulsa": {"aplica": false, "prazo_dias": null, "prazo_tipo": null, "data_base": null, "prazo_fatal_data": null, "prazo_fatal_fundamentacao": null, "prazo_base_decisao": null, "assunto": null, "justificativa": ""},
+  "audiencia": {"aplica": false, "data": null, "hora": null, "tipo": null, "link": null, "endereco": null, "justificativa": ""},
+  "julgamento": {"aplica": false, "tipo": null, "data": null, "justificativa": ""},
+  "contrarrazoes": {"aplica": false, "prazo_dias": null, "prazo_tipo": null, "data_base": null, "prazo_fatal_data": null, "prazo_fatal_fundamentacao": null, "prazo_base_decisao": null, "recurso": null, "justificativa": ""},
+  "agravo": null,
+  "pedidos": [],
+  "analise_estrategica": "Nao foi possivel determinar a posicao estrategica sem identificar o destinatario do prazo. Operador deve ler a movimentacao anterior antes de decidir.",
+  "confianca_geral": "baixa",
+  "observacoes": "Despacho ambiguo — operador precisa abrir o processo e ler o despacho anterior."
 }
 ```
 

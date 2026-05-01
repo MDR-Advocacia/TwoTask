@@ -1947,6 +1947,35 @@ export default function PrazosIniciaisPage() {
           ) : null}
 
           <DialogFooter className="flex-wrap justify-end gap-2 sm:space-x-0">
+            {/* Reprocessar CNJ — habilitado quando o L1 ainda nao tinha o
+                processo na primeira tentativa de resolucao. Cobre o caso
+                comum de intake chegar antes do cadastro no L1. */}
+            <Button
+              variant="outline"
+              onClick={onReprocessarCnj}
+              disabled={
+                !detail ||
+                actionLoading ||
+                (detail.status !== "PROCESSO_NAO_ENCONTRADO" &&
+                  detail.status !== "RECEBIDO")
+              }
+              title={
+                detail?.status === "PROCESSO_NAO_ENCONTRADO"
+                  ? "Tenta resolver o processo no Legal One de novo (caso tenha sido cadastrado depois)"
+                  : detail?.status === "RECEBIDO"
+                    ? "Forca nova tentativa de resolucao do CNJ"
+                    : "Disponivel apenas em PROCESSO_NAO_ENCONTRADO ou RECEBIDO"
+              }
+              className="border-blue-300 text-blue-700 hover:bg-blue-50 hover:text-blue-900"
+            >
+              {actionLoading ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-2 h-4 w-4" />
+              )}
+              Reprocessar CNJ
+            </Button>
+
             <Button
               variant="destructive"
               onClick={onCancelar}

@@ -8,6 +8,12 @@ services:
       - "5433:5432"
 
   api:
+    # Em dev local, injeta TODO o .env dentro do container (Coolify
+    # injeta automaticamente via painel; aqui o compose precisa de
+    # env_file explícito). Sem isso, AJUS_FERNET_KEY, SECRET_KEY,
+    # ANTHROPIC_API_KEY, etc. não chegam no processo Python.
+    env_file:
+      - .env
     environment:
       PYTHONPATH: /app
       RELOAD: "true"
@@ -24,6 +30,12 @@ services:
       uvicorn main:app
       --host 0.0.0.0 --port 8000
       --reload --reload-dir /app/app --reload-dir /app
+
+  ajus-runner:
+    # Mesma razão do `api` — runner precisa de AJUS_FERNET_KEY pra
+    # decodificar senhas das contas, AJUS_SESSION_PATH, etc.
+    env_file:
+      - .env
 
   # Em dev roda o Vite dev server direto, sem passar pelo nginx.
   # Pra testar o build de produção localmente: docker compose -f docker-compose.yml up --build
