@@ -657,43 +657,62 @@ class AjusClassifRunner:
     def _handle_ip_validation(self) -> None:
         """
         Processa o flow de validacao de IP do AJUS:
-          1. Se botao 'Receber codigo' esta visivel, clica nele.
-          2. Espera operador submeter codigo via UI (polling DB).
-          3. Distribui os 6 digitos nos 6 inputs separados.
-          4. Clica 'Confirmar' (a[href='#finish']).
+          1. Marca status=AGUARDANDO_IP IMEDIATAMENTE — operador ja vai
+             ver o botao "Enviar codigo" mesmo se o AJUS demorar pra
+             renderizar os 6 inputs. Antes disso ficava preso em
+             "logando" e o operador nao tinha como submeter o codigo
+             que chegou no email.
+          2. Se botao 'Receber codigo' esta visivel, clica nele.
+          3. Aguarda os 6 inputs aparecerem (timeout generoso).
+          4. Espera operador submeter codigo via UI (polling DB).
+          5. Distribui os 6 digitos nos 6 inputs separados.
+          6. Clica 'Confirmar' (a[href='#finish']).
         """
-        # Etapa 1: clica em "Receber codigo" se aparecer
+        # Etapa 1: marca AGUARDANDO_IP imediatamente (UI ja libera form
+        # de codigo). Importante porque o email com o codigo chega antes
+        # do AJUS renderizar os 6 inputs as vezes.
+        self.session_service.set_status(
+            self.account.id, AJUS_ACCOUNT_AGUARDANDO_IP,
+        )
+        logger.info(
+            "AJUS runner: account %d aguardando IP-code "
+            "(operador submete via UI)",
+            self.account.id,
+        )
+
+        # Etapa 2: clica em "Receber codigo" se aparecer
         if self._is_ip_auth_request_visible():
             try:
                 self._page.click(portal.IP_AUTH_REQUEST_SELECTOR)
-                self._settle(wait_ms=2500)
+                # Antes era 2500ms, mas o AJUS as vezes demora mais
+                # de 5s pra renderizar os 6 inputs apos o click. 8s
+                # da folga sem prejudicar o flow.
+                self._settle(wait_ms=8000)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "AJUS runner: nao consegui clicar 'Receber codigo': %s", exc,
+                    "AJUS runner: nao consegui clicar 'Receber codigo': %s",
+                    exc,
                 )
 
-        # Apos o click, os 6 inputs devem aparecer
-        if not self._is_ip_auth_visible():
+        # Etapa 3: poll por ate 15s pelos 6 inputs aparecerem (mais
+        # robusto que checagem unica). AJUS pode estar lento.
+        deadline_inputs = time.monotonic() + 15
+        while time.monotonic() < deadline_inputs:
+            if self._is_ip_auth_visible():
+                break
+            self._page.wait_for_timeout(500)
+        else:
             debug = self._dump_login_state("ip-auth-no-inputs")
             self.session_service.set_status(
                 self.account.id, AJUS_ACCOUNT_OFFLINE,
                 error_message=(
-                    "AJUS pediu codigo de IP mas os campos nao apareceram "
-                    f"apos clicar 'Receber'. {debug}"
+                    "AJUS pediu codigo de IP mas os campos nao "
+                    f"apareceram apos clicar 'Receber'. {debug}"
                 ),
             )
             raise AjusRunnerError(
                 f"Inputs do codigo de IP nao apareceram. {debug}",
             )
-
-        # Etapa 2: aguarda operador submeter via UI
-        self.session_service.set_status(
-            self.account.id, AJUS_ACCOUNT_AGUARDANDO_IP,
-        )
-        logger.info(
-            "AJUS runner: account %d aguardando IP-code (operador submete via UI)",
-            self.account.id,
-        )
 
         deadline = time.monotonic() + settings.ajus_ip_code_wait_seconds
         code: Optional[str] = None
