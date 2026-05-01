@@ -230,6 +230,34 @@ class IntakeService:
                 intake_id, lawsuit_id, responsible_office_id,
             )
 
+            # Auto-enfileiramento na fila do Tratamento Web
+            # Assim que o lawsuit_id e resolvido, o intake ja vai pra fila
+            # de cancelamento da legada "Agendar Prazos" (status PENDENTE).
+            # O DISPARO do cancel e 100% manual (worker periodico desligado
+            # via settings.prazos_iniciais_legacy_task_cancellation_enabled
+            # = False) - operador clica "Processar selecionados" no
+            # Tratamento Web. Ver memoria project_dispatch_treatment_web_decoupling.
+            try:
+                from app.services.prazos_iniciais.legacy_task_queue_service import (
+                    PrazosIniciaisLegacyTaskQueueService,
+                )
+                queue_svc = PrazosIniciaisLegacyTaskQueueService(db)
+                queue_svc.sync_item_from_intake(intake, force_queue=True)
+                logger.info(
+                    "Intake %d enfileirado no Tratamento Web (cancel legada).",
+                    intake_id,
+                )
+            except Exception:  # noqa: BLE001
+                # Falha aqui nao pode interromper o fluxo - operador pode
+                # enfileirar manualmente depois pelo Tratamento Web. Loga
+                # e segue: o intake ja esta PRONTO_PARA_CLASSIFICAR e a
+                # classificacao roda independente da fila de cancel.
+                logger.exception(
+                    "Falha nao-fatal ao enfileirar intake %d no Tratamento Web "
+                    "(seguindo sem fila - operador pode enfileirar manual).",
+                    intake_id,
+                )
+
 
 def _extract_office_id(db: Session, lawsuit: dict[str, Any]) -> Optional[int]:
     """

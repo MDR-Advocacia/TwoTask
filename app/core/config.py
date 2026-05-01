@@ -96,10 +96,14 @@ class Settings(BaseSettings):
     prazos_iniciais_auto_classification_enabled: bool = False
     # Intervalo entre execuções do worker (segundos).
     prazos_iniciais_auto_classification_interval_seconds: int = 300
-    # Fila de cancelamento da task legada "Agendar Prazos". Só consome
-    # itens que já foram explicitamente enfileirados ao final do fluxo de
-    # confirmação, então pode ficar ligada por padrão sem efeitos colaterais.
-    prazos_iniciais_legacy_task_cancellation_enabled: bool = True
+    # Fila de cancelamento da task legada "Agendar Prazos". A partir do
+    # auto-enfileiramento na chegada (intake_service.resolve_lawsuit_for_intake),
+    # itens entram na fila assim que o CNJ e resolvido - antes mesmo da
+    # classificacao. Pra evitar cancelar tasks legadas de processos que
+    # ainda nem foram revisados pelo HITL, o worker periodico fica DESLIGADO
+    # por default. Operador dispara manualmente pelo botao "Processar"
+    # no Tratamento Web.
+    prazos_iniciais_legacy_task_cancellation_enabled: bool = False
     prazos_iniciais_legacy_task_cancellation_interval_seconds: int = 60
     prazos_iniciais_legacy_task_cancellation_batch_size: int = 10
     # Rate limit entre items consecutivos na fila (evita martelar o Legal One
