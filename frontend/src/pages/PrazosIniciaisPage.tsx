@@ -12,6 +12,7 @@ import {
   Loader2,
   Play,
   RefreshCw,
+  RotateCcw,
   Search,
   Sparkles,
   Undo2,
@@ -50,6 +51,7 @@ import { apiFetch } from "@/lib/api-client";
 import {
   applyPrazosIniciaisBatch,
   cancelarPrazoInicial,
+  reclassifyPrazoInicial,
   confirmarAgendamentoPrazoInicial,
   dispatchPrazoInicialPendingBatch,
   dispatchPrazoInicialTreatmentWeb,
@@ -686,6 +688,34 @@ export default function PrazosIniciaisPage() {
       toast({
         title: "Erro ao reprocessar",
         description: error instanceof Error ? error.message : "Nao foi possivel reprocessar o intake.",
+        variant: "destructive",
+      });
+    } finally {
+      setActionLoading(false);
+    }
+  }, [loadDetail, loadIntakes, selectedId, toast]);
+
+  const onReclassify = useCallback(async () => {
+    if (!selectedId) return;
+    const confirmed = window.confirm(
+      "Reclassificar este intake? Todas as sugestoes e pedidos atuais serao APAGADOS, " +
+      "e o intake voltara pra fila de classificacao no proximo batch. Util pra casos antigos " +
+      "com SEM_DETERMINACAO ou pra reclassificar depois de ajustar templates/integra.",
+    );
+    if (!confirmed) return;
+
+    setActionLoading(true);
+    try {
+      await reclassifyPrazoInicial(selectedId);
+      toast({
+        title: "Reclassificacao solicitada",
+        description: "Sugestoes e pedidos antigos foram apagados. O intake entra no proximo batch de classificacao.",
+      });
+      await Promise.all([loadDetail(selectedId), loadIntakes()]);
+    } catch (error) {
+      toast({
+        title: "Erro ao reclassificar",
+        description: error instanceof Error ? error.message : "Nao foi possivel reclassificar o intake.",
         variant: "destructive",
       });
     } finally {
@@ -1947,6 +1977,43 @@ export default function PrazosIniciaisPage() {
           ) : null}
 
           <DialogFooter className="flex-wrap justify-end gap-2 sm:space-x-0">
+            {/* Reclassificar - habilitado quando ja houve uma classificacao
+                (CLASSIFICADO/AGUARDANDO_TEMPLATE/EM_REVISAO/ERRO) e voce quer
+                jogar fora as sugestoes/pedidos atuais e re-classificar do
+                zero. Util pros antigos com SEM_DETERMINACAO legado. */}
+            <Button
+              variant="outline"
+              onClick={onReclassify}
+              disabled={
+                !detail ||
+                actionLoading ||
+                (detail.status !== "CLASSIFICADO" &&
+                  detail.status !== "AGUARDANDO_CONFIG_TEMPLATE" &&
+                  detail.status !== "EM_REVISAO" &&
+                  detail.status !== "ERRO_CLASSIFICACAO")
+              }
+              title={
+                detail
+                  ? (
+                      detail.status === "CLASSIFICADO" ||
+                      detail.status === "AGUARDANDO_CONFIG_TEMPLATE" ||
+                      detail.status === "EM_REVISAO" ||
+                      detail.status === "ERRO_CLASSIFICACAO"
+                    )
+                    ? "Apaga sugestoes e pedidos atuais e reenvia o intake pra proxima rodada de classificacao"
+                    : "Disponivel apenas em estados pos-classificacao"
+                  : ""
+              }
+              className="border-purple-300 text-purple-700 hover:bg-purple-50 hover:text-purple-900"
+            >
+              {actionLoading ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <RotateCcw className="mr-2 h-4 w-4" />
+              )}
+              Reclassificar
+            </Button>
+
             {/* Reprocessar CNJ — habilitado quando o L1 ainda nao tinha o
                 processo na primeira tentativa de resolucao. Cobre o caso
                 comum de intake chegar antes do cadastro no L1. */}

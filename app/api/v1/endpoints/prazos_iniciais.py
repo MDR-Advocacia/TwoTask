@@ -42,7 +42,11 @@ from app.core.config import settings
 from app.core.dependencies import get_db
 from app.models.legal_one import LegalOneOffice, LegalOneTaskSubType, LegalOneUser
 from app.models.prazo_inicial import (
+    INTAKE_STATUS_AWAITING_TEMPLATE_CONFIG,
     INTAKE_STATUS_CANCELLED,
+    INTAKE_STATUS_CLASSIFICATION_ERROR,
+    INTAKE_STATUS_CLASSIFIED,
+    INTAKE_STATUS_IN_REVIEW,
     INTAKE_STATUS_LAWSUIT_NOT_FOUND,
     INTAKE_STATUS_RECEIVED,
     PrazoInicialIntake,
@@ -888,6 +892,97 @@ def cancel_intake(
     intake.error_message = f"Cancelado por {current_user.email}."
     db.commit()
     db.refresh(intake)
+    return _intake_to_summary(intake)
+
+
+# ── Status elegiveis pra reclassificacao ─────────────────────────────
+# Reclassificar = jogar o intake de volta pra PRONTO_PARA_CLASSIFICAR
+# e apagar todas as sugestoes/pedidos atuais. Util pra:
+#   1. Casos antigos com SEM_DETERMINACAO legado que voce quer
+#      reclassificar pelo prompt novo (split SEM_PRAZO/INDETERMINADO).
+#   2. INDETERMINADO em que voce ajustou a integra externamente.
+#   3. AGUARDANDO_CONFIG_TEMPLATE em que cadastrou template depois.
+#   4. ERRO_CLASSIFICACAO pra retentar.
+# Bloqueia em estados terminais (AGENDADO, CONCLUIDO, CANCELADO,
+# CONCLUIDO_SEM_PROVIDENCIA, GED_ENVIADO) - dai precisa cancelar
+# antes ou usar o botao "Reprocessar CNJ" se for resolucao.
+_RECLASSIFY_ALLOWED_STATUSES = frozenset({
+    INTAKE_STATUS_CLASSIFIED,
+    INTAKE_STATUS_AWAITING_TEMPLATE_CONFIG,
+    INTAKE_STATUS_IN_REVIEW,
+    INTAKE_STATUS_CLASSIFICATION_ERROR,
+})
+
+
+@router.post(
+    "/intakes/{intake_id}/reclassify",
+    response_model=IntakeSummary,
+    summary="Volta intake pra PRONTO_PARA_CLASSIFICAR e apaga sugestoes/pedidos atuais.",
+)
+def reclassify_intake(
+    intake_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(
+        auth_security.require_permission("prazos_iniciais")
+    ),
+):
+    """
+    Re-encaminha o intake para nova classificacao. Apaga sugestoes e
+    pedidos persistidos da rodada anterior, limpa campos derivados pelo
+    classifier (natureza, produto, agravo, agregados), e volta o status
+    pra PRONTO_PARA_CLASSIFICAR pra entrar no proximo batch.
+
+    NAO mexe no PDF da habilitacao, no lawsuit_id, no office_id nem na
+    fila do Tratamento Web - se ja foi enfileirado pra cancel da legada,
+    continua la (operador decide se cancela ou nao).
+    """
+    intake = db.get(PrazoInicialIntake, intake_id)
+    if intake is None:
+        raise HTTPException(status_code=404, detail="Intake nao encontrado.")
+    if intake.status not in _RECLASSIFY_ALLOWED_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Reclassificacao permitida apenas em CLASSIFICADO / "
+                f"AGUARDANDO_CONFIG_TEMPLATE / EM_REVISAO / ERRO_CLASSIFICACAO. "
+                f"Status atual: {intake.status}."
+            ),
+        )
+
+    # Apaga sugestoes (cascade=all,delete-orphan cuida via relationship,
+    # mas explicito e mais seguro contra reordenacao do SA).
+    sugestoes_apagadas = 0
+    for old_sug in list(intake.sugestoes):
+        db.delete(old_sug)
+        sugestoes_apagadas += 1
+
+    # Apaga pedidos da rodada anterior (cascade tambem cuida, idem).
+    pedidos_apagados = 0
+    for old_ped in list(intake.pedidos):
+        db.delete(old_ped)
+        pedidos_apagados += 1
+
+    # Limpa campos derivados da classificacao anterior. NAO mexe em
+    # lawsuit_id/office_id (resolucao do L1 nao precisa rodar de novo).
+    intake.status = INTAKE_STATUS_READY_TO_CLASSIFY
+    intake.classification_batch_id = None
+    intake.error_message = None
+    intake.natureza_processo = None
+    intake.produto = None
+    intake.agravo_processo_origem_cnj = None
+    intake.agravo_decisao_agravada_resumo = None
+    intake.valor_total_pedido = None
+    intake.valor_total_estimado = None
+    intake.aprovisionamento_sugerido = None
+    intake.probabilidade_exito_global = None
+    intake.analise_estrategica = None
+
+    db.commit()
+    db.refresh(intake)
+    logger.info(
+        "Intake %d reclassificado por %s: %d sugestao(oes) e %d pedido(s) apagados.",
+        intake.id, current_user.email, sugestoes_apagadas, pedidos_apagados,
+    )
     return _intake_to_summary(intake)
 
 

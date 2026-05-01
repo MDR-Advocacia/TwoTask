@@ -258,6 +258,24 @@ export async function cancelarPrazoInicial(
   return expectJson<PrazoInicialIntakeSummary>(response);
 }
 
+
+/**
+ * Re-encaminha o intake pra nova classificacao. Apaga sugestoes e
+ * pedidos persistidos da rodada anterior, limpa campos derivados pelo
+ * classifier, e volta o status pra PRONTO_PARA_CLASSIFICAR. Util pros
+ * casos antigos com SEM_DETERMINACAO legado e pros INDETERMINADO em
+ * que a integra foi corrigida externamente.
+ */
+export async function reclassifyPrazoInicial(
+  intakeId: number,
+): Promise<PrazoInicialIntakeSummary> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/intakes/${intakeId}/reclassify`,
+    { method: "POST" },
+  );
+  return expectJson<PrazoInicialIntakeSummary>(response);
+}
+
 /**
  * HARD DELETE de um intake (admin only). Apaga registro + PDF + cascata.
  * Usado pra reinjetar o mesmo processo do zero durante testes. Vai virar
