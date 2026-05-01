@@ -952,7 +952,7 @@ export function ClassificacaoTab() {
                             Editar
                           </Button>
                         )}
-                        {(item.status === "erro" || item.status === "nao_encontrado") && (
+                        {(item.status === "erro" || item.status === "nao_encontrado" || item.status === "cancelado") && (
                           <Button
                             size="sm"
                             variant="outline"
@@ -961,6 +961,8 @@ export function ClassificacaoTab() {
                             title={
                               item.status === "nao_encontrado"
                                 ? "Reenfileira esse item — use depois que o time cadastrar o processo no AJUS."
+                                : item.status === "cancelado"
+                                ? "Reanima o item cancelado e devolve pra fila."
                                 : "Reenfileira esse item pra nova tentativa do runner."
                             }
                           >

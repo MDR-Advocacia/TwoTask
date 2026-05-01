@@ -462,12 +462,17 @@ class AjusClassificacaoService:
 
     def retry(self, item_id: int) -> AjusClassificacaoQueue:
         item = self.get(item_id)
-        # Retry vale pra `erro` (tecnico) E pra `nao_encontrado` (operador
-        # cadastrou no AJUS e quer tentar de novo).
-        if item.status not in (AJUS_CLASSIF_ERRO, AJUS_CLASSIF_NAO_ENCONTRADO):
+        # Retry vale pra `erro` (tecnico), `nao_encontrado` (operador
+        # cadastrou no AJUS e quer tentar de novo) E `cancelado`
+        # (operador pode reanimar item que cancelou em massa).
+        if item.status not in (
+            AJUS_CLASSIF_ERRO,
+            AJUS_CLASSIF_NAO_ENCONTRADO,
+            AJUS_CLASSIF_CANCELADO,
+        ):
             raise RuntimeError(
-                f"Retry permitido apenas em status 'erro' ou 'nao_encontrado'. "
-                f"Atual: {item.status}.",
+                f"Retry permitido apenas em status 'erro', 'nao_encontrado' "
+                f"ou 'cancelado'. Atual: {item.status}.",
             )
         item.status = AJUS_CLASSIF_PENDENTE
         item.error_message = None
