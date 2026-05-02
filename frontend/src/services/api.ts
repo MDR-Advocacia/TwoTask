@@ -277,6 +277,48 @@ export async function reclassifyPrazoInicial(
 }
 
 /**
+ * Reaplica templates em lote nas sugestoes ja materializadas dos
+ * intakes filtrados. NAO chama IA (ao contrario de reclassify) — so
+ * re-roda match_templates com a config atual e atualiza
+ * task_subtype_id/responsavel/payload. Usado quando operador cadastra
+ * template novo e quer aplicar no backlog em AGUARDANDO_CONFIG_TEMPLATE.
+ *
+ * Suporta dry_run pra preview do impacto antes de confirmar.
+ */
+export interface ReapplyTemplatesPayload {
+  status_in?: string[]; // default: ["AGUARDANDO_CONFIG_TEMPLATE"]
+  office_ids?: number[] | null;
+  tipos_prazo?: string[] | null;
+  dry_run?: boolean;
+}
+
+export interface ReapplyTemplatesResult {
+  intakes_processed: number;
+  intakes_promoted: number;
+  sugestoes_updated: number;
+  sugestoes_skipped_already_in_l1: number;
+  sugestoes_skipped_edited: number;
+  sugestoes_no_match: number;
+  intake_ids_processed: number[];
+  intake_ids_promoted: number[];
+  dry_run: boolean;
+}
+
+export async function reapplyPrazosIniciaisTemplates(
+  payload: ReapplyTemplatesPayload,
+): Promise<ReapplyTemplatesResult> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/intakes/reapply-templates`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+  return expectJson<ReapplyTemplatesResult>(response);
+}
+
+/**
  * HARD DELETE de um intake (admin only). Apaga registro + PDF + cascata.
  * Usado pra reinjetar o mesmo processo do zero durante testes. Vai virar
  * arquivamento depois.

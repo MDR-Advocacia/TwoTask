@@ -69,10 +69,12 @@ import {
   reanalyzePrazoInicial,
   exportPrazosIniciaisXlsx,
   fetchPrazoInicialPdfBlob,
+  reapplyPrazosIniciaisTemplates,
   recomputePrazoInicialGlobals,
   refreshPrazosIniciaisBatch,
   reprocessarPrazoInicialCnj,
   submitPrazosIniciaisClassifyPending,
+  type ReapplyTemplatesResult,
 } from "@/services/api";
 import { useAuth } from "@/hooks/useAuth";
 import type {
@@ -274,6 +276,18 @@ export default function PrazosIniciaisPage() {
   const [batchesLoading, setBatchesLoading] = useState(false);
   const [classifyingPending, setClassifyingPending] = useState(false);
   const [batchActionId, setBatchActionId] = useState<number | null>(null);
+
+  // Reaplicar templates em lote — re-roda match_templates nas sugestoes
+  // existentes sem chamar IA. Usado quando operador cadastra/edita
+  // template novo e quer aplicar no backlog.
+  const [reapplyDialogOpen, setReapplyDialogOpen] = useState(false);
+  const [reapplyStatuses, setReapplyStatuses] = useState<string[]>([
+    "AGUARDANDO_CONFIG_TEMPLATE",
+  ]);
+  const [reapplyDryRunResult, setReapplyDryRunResult] =
+    useState<ReapplyTemplatesResult | null>(null);
+  const [reapplyDryRunLoading, setReapplyDryRunLoading] = useState(false);
+  const [reapplyConfirmLoading, setReapplyConfirmLoading] = useState(false);
 
   const loadIntakes = useCallback(
     async (resetPage = false) => {
@@ -921,6 +935,81 @@ export default function PrazosIniciaisPage() {
     }
   }, [loadBatches, loadIntakes, toast]);
 
+  // Reaplicar templates em lote — abre modal limpo, calcula dry_run sob
+  // demanda quando o operador clica "Visualizar impacto".
+  const openReapplyDialog = useCallback(() => {
+    setReapplyDryRunResult(null);
+    setReapplyDialogOpen(true);
+  }, []);
+
+  const toggleReapplyStatus = useCallback((status: string) => {
+    setReapplyStatuses((prev) =>
+      prev.includes(status)
+        ? prev.filter((s) => s !== status)
+        : [...prev, status],
+    );
+    // Mudou filtro → dry-run anterior fica stale. Limpa pra forçar
+    // novo "Visualizar impacto" antes de confirmar.
+    setReapplyDryRunResult(null);
+  }, []);
+
+  const handleReapplyDryRun = useCallback(async () => {
+    if (reapplyStatuses.length === 0) {
+      toast({
+        title: "Selecione pelo menos um status",
+        variant: "destructive",
+      });
+      return;
+    }
+    setReapplyDryRunLoading(true);
+    try {
+      const result = await reapplyPrazosIniciaisTemplates({
+        status_in: reapplyStatuses,
+        dry_run: true,
+      });
+      setReapplyDryRunResult(result);
+    } catch (error) {
+      toast({
+        title: "Falha ao calcular impacto",
+        description:
+          error instanceof Error ? error.message : "Erro desconhecido.",
+        variant: "destructive",
+      });
+    } finally {
+      setReapplyDryRunLoading(false);
+    }
+  }, [reapplyStatuses, toast]);
+
+  const handleReapplyConfirm = useCallback(async () => {
+    if (reapplyStatuses.length === 0) return;
+    setReapplyConfirmLoading(true);
+    try {
+      const result = await reapplyPrazosIniciaisTemplates({
+        status_in: reapplyStatuses,
+        dry_run: false,
+      });
+      toast({
+        title: "Templates reaplicados",
+        description:
+          `${result.sugestoes_updated} sugestão(ões) atualizada(s) em ` +
+          `${result.intakes_processed} intake(s). ` +
+          `${result.intakes_promoted} intake(s) promovido(s) pra CLASSIFICADO.`,
+      });
+      setReapplyDialogOpen(false);
+      setReapplyDryRunResult(null);
+      await loadIntakes();
+    } catch (error) {
+      toast({
+        title: "Falha ao reaplicar",
+        description:
+          error instanceof Error ? error.message : "Erro desconhecido.",
+        variant: "destructive",
+      });
+    } finally {
+      setReapplyConfirmLoading(false);
+    }
+  }, [reapplyStatuses, toast, loadIntakes]);
+
   const handleRefreshBatch = useCallback(
     async (batchId: number) => {
       setBatchActionId(batchId);
@@ -1069,6 +1158,15 @@ export default function PrazosIniciaisPage() {
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             ) : null}
             Disparar próximos 10
+          </Button>
+          <Button
+            variant="outline"
+            className="w-full sm:w-auto"
+            onClick={openReapplyDialog}
+            title="Re-roda match_templates nas sugestoes existentes (sem chamar IA). Util pra aplicar templates novos no backlog."
+          >
+            <RotateCcw className="mr-2 h-4 w-4" />
+            Reaplicar templates
           </Button>
           <Button
             variant="outline"
@@ -2130,6 +2228,166 @@ export default function PrazosIniciaisPage() {
                 <CheckCircle2 className="mr-2 h-4 w-4" />
               )}
               Confirmar agendamentos
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Modal: Reaplicar templates em lote ─────────────────────── */}
+      <Dialog open={reapplyDialogOpen} onOpenChange={setReapplyDialogOpen}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <RotateCcw className="h-4 w-4" />
+              Reaplicar templates em lote
+            </DialogTitle>
+            <DialogDescription>
+              Re-roda o casamento de templates nas sugestões já existentes
+              dos intakes filtrados. <strong>Não chama a IA</strong> —
+              apenas atualiza o mapeamento Legal One das sugestões com a
+              configuração atual de templates. Use depois de cadastrar ou
+              editar templates pra aplicar no backlog.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">
+                Aplicar em intakes nos status:
+              </Label>
+              <div className="space-y-2">
+                {[
+                  {
+                    value: "AGUARDANDO_CONFIG_TEMPLATE",
+                    label: "Aguardando config de template",
+                    hint: "Caso típico — intakes que ficaram sem template casado.",
+                  },
+                  {
+                    value: "CLASSIFICADO",
+                    label: "Classificado",
+                    hint: "Re-aplica em intakes já com template (sobrescreve mapeamento atual).",
+                  },
+                  {
+                    value: "EM_REVISAO",
+                    label: "Em revisão",
+                    hint: "Idem — apenas sugestões não-editadas e sem task no L1.",
+                  },
+                ].map((opt) => (
+                  <div
+                    key={opt.value}
+                    className="flex items-start gap-2 rounded-md border p-3"
+                  >
+                    <Checkbox
+                      id={`reapply-status-${opt.value}`}
+                      checked={reapplyStatuses.includes(opt.value)}
+                      onCheckedChange={() => toggleReapplyStatus(opt.value)}
+                      className="mt-0.5"
+                    />
+                    <div className="space-y-0.5">
+                      <Label
+                        htmlFor={`reapply-status-${opt.value}`}
+                        className="cursor-pointer"
+                      >
+                        {opt.label}
+                      </Label>
+                      <p className="text-xs text-muted-foreground">{opt.hint}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <Alert>
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription className="text-xs">
+                Sugestões com tarefa já criada no Legal One ou editadas
+                manualmente pelo operador são <strong>preservadas</strong>{" "}
+                (não são tocadas pelo reapply).
+              </AlertDescription>
+            </Alert>
+
+            {reapplyDryRunResult ? (
+              <div className="rounded-md border bg-muted/30 p-3 space-y-1 text-sm">
+                <p className="text-xs font-semibold uppercase text-muted-foreground tracking-wide">
+                  Impacto previsto
+                </p>
+                <p>
+                  <strong>{reapplyDryRunResult.intakes_processed}</strong>{" "}
+                  intake(s) afetado(s)
+                </p>
+                <p>
+                  <strong>{reapplyDryRunResult.sugestoes_updated}</strong>{" "}
+                  sugestão(ões) com mapeamento atualizado
+                </p>
+                <p>
+                  <strong>{reapplyDryRunResult.intakes_promoted}</strong>{" "}
+                  intake(s) saem de AGUARDANDO_CONFIG_TEMPLATE para
+                  CLASSIFICADO
+                </p>
+                {reapplyDryRunResult.sugestoes_no_match > 0 && (
+                  <p className="text-muted-foreground">
+                    {reapplyDryRunResult.sugestoes_no_match} sugestão(ões)
+                    sem template casado (mantidas como estão)
+                  </p>
+                )}
+                {reapplyDryRunResult.sugestoes_skipped_already_in_l1 > 0 && (
+                  <p className="text-muted-foreground">
+                    {reapplyDryRunResult.sugestoes_skipped_already_in_l1}{" "}
+                    sugestão(ões) puladas (task já no L1)
+                  </p>
+                )}
+                {reapplyDryRunResult.sugestoes_skipped_edited > 0 && (
+                  <p className="text-muted-foreground">
+                    {reapplyDryRunResult.sugestoes_skipped_edited}{" "}
+                    sugestão(ões) puladas (editadas manualmente)
+                  </p>
+                )}
+              </div>
+            ) : null}
+          </div>
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              variant="outline"
+              onClick={() => setReapplyDialogOpen(false)}
+              disabled={reapplyDryRunLoading || reapplyConfirmLoading}
+            >
+              Cancelar
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleReapplyDryRun}
+              disabled={
+                reapplyDryRunLoading ||
+                reapplyConfirmLoading ||
+                reapplyStatuses.length === 0
+              }
+            >
+              {reapplyDryRunLoading ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : null}
+              Visualizar impacto
+            </Button>
+            <Button
+              onClick={handleReapplyConfirm}
+              disabled={
+                reapplyDryRunLoading ||
+                reapplyConfirmLoading ||
+                reapplyStatuses.length === 0 ||
+                !reapplyDryRunResult
+              }
+              title={
+                !reapplyDryRunResult
+                  ? "Visualize o impacto antes de confirmar"
+                  : undefined
+              }
+            >
+              {reapplyConfirmLoading ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <CheckCircle2 className="mr-2 h-4 w-4" />
+              )}
+              Confirmar reaplicação
             </Button>
           </DialogFooter>
         </DialogContent>

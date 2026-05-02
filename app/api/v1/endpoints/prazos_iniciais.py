@@ -1009,6 +1009,94 @@ def reclassify_intake(
     return _intake_to_summary(intake)
 
 
+# ── Reaplicar templates em lote ──────────────────────────────────────
+# Re-roda match_templates nas sugestoes existentes dos intakes filtrados
+# (sem chamar IA de novo). Usado quando o operador cadastra/edita
+# template novo e quer aplicar no backlog em AGUARDANDO_CONFIG_TEMPLATE.
+# Suporta dry_run pra preview do impacto antes de confirmar.
+
+class ReapplyTemplatesRequest(BaseModel):
+    """Body do POST /intakes/reapply-templates."""
+
+    # Status dos intakes elegiveis. Default: so AGUARDANDO_CONFIG_TEMPLATE
+    # (caso de uso primario). Operador pode marcar CLASSIFICADO/EM_REVISAO
+    # pra reaplicar tambem em intakes ja com template antigo.
+    status_in: list[str] = Field(
+        default_factory=lambda: ["AGUARDANDO_CONFIG_TEMPLATE"],
+        min_length=1,
+    )
+    office_ids: Optional[list[int]] = None
+    tipos_prazo: Optional[list[str]] = None
+    # Se True, calcula metricas mas faz rollback no fim. Usado pelo
+    # botao "Visualizar impacto" na UI.
+    dry_run: bool = False
+
+
+class ReapplyTemplatesResponse(BaseModel):
+    """Metricas devolvidas pelo reapply (dry_run ou real)."""
+
+    intakes_processed: int
+    intakes_promoted: int
+    sugestoes_updated: int
+    sugestoes_skipped_already_in_l1: int
+    sugestoes_skipped_edited: int
+    sugestoes_no_match: int
+    intake_ids_processed: list[int]
+    intake_ids_promoted: list[int]
+    dry_run: bool
+
+
+@router.post(
+    "/intakes/reapply-templates",
+    response_model=ReapplyTemplatesResponse,
+    summary="Re-roda match_templates em sugestoes existentes (sem chamar IA).",
+)
+def reapply_templates_endpoint(
+    body: ReapplyTemplatesRequest,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(
+        auth_security.require_permission("prazos_iniciais")
+    ),
+):
+    """
+    Reaplica templates em lote nas sugestoes ja materializadas dos
+    intakes filtrados. NAO chama a IA de novo — so re-roda
+    `match_templates` com a configuracao atual de templates e atualiza
+    `task_subtype_id`/`responsavel_sugerido_id`/`payload_proposto`.
+
+    Salvaguardas (sempre aplicadas):
+    - Sugestoes com `created_task_id` NOT NULL: puladas (task ja
+      existe no L1).
+    - Sugestoes com `review_status='editado'`: puladas (operador
+      ajustou na mao).
+
+    Promocao de status: intakes em AGUARDANDO_CONFIG_TEMPLATE cuja
+    TODAS as sugestoes passaram a ter template (ou skip_task_creation)
+    sao promovidos pra CLASSIFICADO. Operador confirma na tela como
+    sempre (esse endpoint NAO cria tarefa no L1).
+    """
+    from app.services.prazos_iniciais.template_reapply_service import (
+        reapply_templates_bulk,
+    )
+
+    try:
+        metrics = reapply_templates_bulk(
+            db,
+            status_in=body.status_in,
+            office_ids=body.office_ids,
+            tipos_prazo=body.tipos_prazo,
+            dry_run=body.dry_run,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    logger.info(
+        "Reapply templates por %s: dry_run=%s metrics=%s",
+        current_user.email, body.dry_run, metrics.to_dict(),
+    )
+    return ReapplyTemplatesResponse(dry_run=body.dry_run, **metrics.to_dict())
+
+
 @router.delete(
     "/intakes/{intake_id}",
     status_code=204,
