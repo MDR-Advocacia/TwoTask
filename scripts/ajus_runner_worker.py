@@ -34,9 +34,11 @@ if ROOT not in sys.path:
 from app.core.config import settings  # noqa: E402
 from app.db.session import engine  # noqa: E402
 from app.models.ajus import (  # noqa: E402
+    AJUS_ACCOUNT_EXECUTANDO,
     AJUS_ACCOUNT_LOGANDO,
     AJUS_ACCOUNT_ONLINE,
     AJUS_CLASSIF_PENDENTE,
+    AJUS_CLASSIF_PROCESSANDO,
     AjusClassificacaoQueue,
     AjusSessionAccount,
 )
@@ -69,6 +71,73 @@ signal.signal(signal.SIGINT, _on_signal)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────
+
+
+def _recover_stale_state(db) -> None:
+    """
+    Recovery one-shot no boot do worker.
+
+    Se o container anterior morreu mid-batch (SIGKILL/OOM/redeploy
+    abrupto), o `finally` que chama `release_run()` nao roda — entao
+    contas ficam presas em status `executando` pra sempre, e o
+    dispatcher (que so pega contas `online`) nao tem como pegar
+    nada. Resultado: worker idle silencioso, fila parada, todos os
+    cards mostrando "Executando" sem nada acontecer.
+
+    Por definicao, no boot do worker nenhum batch esta rodando, entao
+    qualquer estado em-andamento eh stale e seguro de limpar:
+      - contas `executando` -> volta pra `online`
+      - itens `processando` -> volta pra `pendente` + libera claim
+      - itens `pendente` com claim -> libera claim (proximo dispatch
+        re-distribui entre as contas)
+    """
+    stale_accounts = (
+        db.query(AjusSessionAccount)
+        .filter(AjusSessionAccount.status == AJUS_ACCOUNT_EXECUTANDO)
+        .all()
+    )
+    for acc in stale_accounts:
+        logger.warning(
+            "Recovery: conta %d (%s) presa em 'executando' — "
+            "runner anterior morreu mid-batch. Voltando pra 'online'.",
+            acc.id, acc.label,
+        )
+        acc.status = AJUS_ACCOUNT_ONLINE
+
+    proc_count = (
+        db.query(AjusClassificacaoQueue)
+        .filter(AjusClassificacaoQueue.status == AJUS_CLASSIF_PROCESSANDO)
+        .update(
+            {
+                AjusClassificacaoQueue.status: AJUS_CLASSIF_PENDENTE,
+                AjusClassificacaoQueue.dispatched_by_account_id: None,
+            },
+            synchronize_session=False,
+        )
+    )
+
+    released_count = (
+        db.query(AjusClassificacaoQueue)
+        .filter(
+            AjusClassificacaoQueue.status == AJUS_CLASSIF_PENDENTE,
+            AjusClassificacaoQueue.dispatched_by_account_id.isnot(None),
+        )
+        .update(
+            {AjusClassificacaoQueue.dispatched_by_account_id: None},
+            synchronize_session=False,
+        )
+    )
+
+    if stale_accounts or proc_count or released_count:
+        db.commit()
+        logger.warning(
+            "Recovery concluido: %d conta(s) destravada(s), "
+            "%d item(ns) 'processando' voltaram pra fila, "
+            "%d item(ns) pendentes liberados de claim.",
+            len(stale_accounts), proc_count, released_count,
+        )
+    else:
+        logger.info("Recovery: nenhum estado stale encontrado.")
 
 
 def _has_pending_items_for_anyone(db) -> bool:
@@ -246,6 +315,16 @@ def main() -> int:
         "AJUS runner worker iniciado. Poll interval: %ds. Aguardando trabalho…",
         interval,
     )
+
+    # Recovery one-shot: limpa estado stale de runner anterior que
+    # morreu mid-batch (sem rodar release_run/finally). Sem isso,
+    # contas ficam presas em 'executando' e o dispatcher nao acha
+    # nada pra processar — worker idle silencioso pra sempre.
+    try:
+        with SessionLocal() as recovery_db:
+            _recover_stale_state(recovery_db)
+    except Exception:  # noqa: BLE001
+        logger.exception("Recovery no boot falhou — segue mesmo assim.")
 
     while not _shutdown:
         db = SessionLocal()
