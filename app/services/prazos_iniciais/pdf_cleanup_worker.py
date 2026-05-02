@@ -1,17 +1,23 @@
 """
 Cron defensivo de cleanup dos PDFs locais da habilitação.
 
-Critério: intakes com `ged_uploaded_at IS NOT NULL AND pdf_path IS NOT NULL`
-já tiveram o documento enviado ao GED do L1 — o arquivo local virou
-redundante. O fluxo "feliz" apaga o arquivo imediatamente no
-`scheduling_service._cleanup_local_pdf` logo após o upload, mas se
-aquela chamada falhar por qualquer motivo (I/O, crash do container
-entre o upload e o delete), este worker pega os resíduos.
+Caminho 1 — pós-GED: intakes com `ged_uploaded_at IS NOT NULL AND
+pdf_path IS NOT NULL` já tiveram o documento enviado ao GED do L1
+— o arquivo local virou redundante. O fluxo "feliz" apaga o arquivo
+imediatamente no `scheduling_service._cleanup_local_pdf` logo após
+o upload, mas se aquela chamada falhar por qualquer motivo (I/O,
+crash do container entre o upload e o delete), este worker pega os
+resíduos.
 
-Também limpa por retenção temporal: mesmo sem confirmação de GED,
-arquivos mais antigos que `prazos_iniciais_retention_days` dias são
-removidos pra não estourar o volume (cenário de intakes que travaram
-em ERRO_CLASSIFICACAO/AGUARDANDO_CONFIG_TEMPLATE por semanas).
+Caminho 2 — retenção temporal de descartes: limpa apenas intakes
+em status terminais de descarte (CANCELADO, ERRO_CLASSIFICACAO,
+PROCESSO_NAO_ENCONTRADO) onde a habilitação claramente não vai mais
+ser usada. Enquanto o tratamento web ainda pode acontecer (intake
+em AGENDADO/EM_REVISAO/AGUARDANDO_CONFIG_TEMPLATE/ERRO_GED/
+CONCLUIDO_SEM_PROVIDENCIA com dispatch_pending, etc.), o PDF é
+preservado indefinidamente — o disparo precisa do arquivo pra subir
+no GED do L1 (e futuramente no AJUS), e perder isso forçaria
+reenvio manual pelo originador.
 
 Registrado no APScheduler em `main.py` — rodando uma vez por dia de
 madrugada (quando o operador não está mexendo).
@@ -67,7 +73,15 @@ def cleanup_local_pdfs(db: Session) -> dict[str, int]:
             )
             stats["failures"] += 1
 
-    # ── Caminho 2: retenção temporal (PDFs velhos sem GED) ──
+    # ── Caminho 2: retenção temporal só pra descartes ──
+    # Inversão de lógica: em vez de listar status "preserva", listamos
+    # explicitamente os terminais de descarte onde dá pra apagar com
+    # segurança. Qualquer outro status (incluindo AGENDADO+pending,
+    # EM_REVISAO, ERRO_GED, AGUARDANDO_CONFIG_TEMPLATE) preserva o PDF
+    # indefinidamente — o tratamento web ainda pode rodar e precisa do
+    # arquivo. Os terminais "felizes" (GED_ENVIADO, CONCLUIDO) não
+    # caem aqui porque já têm ged_uploaded_at NOT NULL e foram tratados
+    # no Caminho 1.
     retention_days = settings.prazos_iniciais_retention_days
     if retention_days > 0:
         cutoff = _utcnow() - timedelta(days=retention_days)
@@ -76,13 +90,10 @@ def cleanup_local_pdfs(db: Session) -> dict[str, int]:
             .filter(
                 PrazoInicialIntake.pdf_path.isnot(None),
                 PrazoInicialIntake.received_at < cutoff,
-                # Só estourou retenção se não tá no meio do fluxo crítico
-                # (se ainda está RECEBIDO/PRONTO_PARA_CLASSIFICAR/EM_CLASSIFICACAO,
-                # mantém pro operador conseguir reprocessar).
-                ~PrazoInicialIntake.status.in_([
-                    "RECEBIDO",
-                    "PRONTO_PARA_CLASSIFICAR",
-                    "EM_CLASSIFICACAO",
+                PrazoInicialIntake.status.in_([
+                    "CANCELADO",
+                    "ERRO_CLASSIFICACAO",
+                    "PROCESSO_NAO_ENCONTRADO",
                 ]),
             )
             .all()

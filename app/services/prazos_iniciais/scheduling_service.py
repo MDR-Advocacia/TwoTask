@@ -435,6 +435,12 @@ class PrazosIniciaisSchedulingService:
                         continue
                     if sugestao.created_task_id is not None:
                         continue
+                    # Template "no-op" (pin014): sugestao casou template
+                    # marcado pra finalizar caso sem providencia. Pula a
+                    # criacao no L1 — o intake ainda sobe habilitacao e
+                    # cancela a legacy task no dispatch_treatment_web.
+                    if (sugestao.payload_proposto or {}).get("skip_task_creation"):
+                        continue
                     # Cria no L1 de verdade
                     task_id = self._create_task_in_legal_one(
                         sugestao=sugestao, intake=intake,
@@ -487,7 +493,23 @@ class PrazosIniciaisSchedulingService:
                 created_task_ids.append(int(sugestao.created_task_id))
             confirmed_ids.append(sugestao.id)
 
-        intake.status = INTAKE_STATUS_SCHEDULED
+        # Template "no-op" (pin014): se TODAS as sugestoes confirmadas
+        # vieram de template marcado pra finalizar sem providencia (sem
+        # task criada no L1), o intake termina como
+        # CONCLUIDO_SEM_PROVIDENCIA — mesmo terminal do "Finalizar sem
+        # providencia" manual, separa em relatorios "tasks criadas" de
+        # "no-ops". Mistura (algumas sugestoes com task + algumas no-op)
+        # mantem AGENDADO porque pelo menos 1 task foi criada no L1.
+        all_no_op = all(
+            (s.created_task_id is None)
+            and bool((s.payload_proposto or {}).get("skip_task_creation"))
+            for s, _ in selected
+        )
+        intake.status = (
+            INTAKE_STATUS_COMPLETED_WITHOUT_PROVIDENCE
+            if all_no_op
+            else INTAKE_STATUS_SCHEDULED
+        )
         intake.error_message = None
         # Registra QUEM tratou finalisticamente o intake (pin011)
         intake.treated_by_user_id = confirmed_by_user_id

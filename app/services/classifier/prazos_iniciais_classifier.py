@@ -911,8 +911,15 @@ def _apply_template_to_sugestao(
     Preenche os campos L1 da sugestão com dados do template e renderiza
     os placeholders dos campos `description_template` / `notes_template`.
     """
-    sugestao.task_subtype_id = template.task_subtype_external_id
-    sugestao.responsavel_sugerido_id = template.responsible_user_external_id
+    # Template "no-op" (pin014): casa normal, mas NAO cria tarefa no L1.
+    # task_subtype_id e responsavel_sugerido_id ficam NULL — a sugestao
+    # eh materializada com `skip_task_creation` no payload pra que a
+    # confirmacao no scheduling_service pule a criacao no L1 e finalize
+    # o intake como CONCLUIDO_SEM_PROVIDENCIA.
+    skip = bool(getattr(template, "skip_task_creation", False))
+    if not skip:
+        sugestao.task_subtype_id = template.task_subtype_external_id
+        sugestao.responsavel_sugerido_id = template.responsible_user_external_id
 
     payload: dict[str, Any] = dict(sugestao.payload_proposto or {})
     payload["template_id"] = template.id
@@ -923,6 +930,8 @@ def _apply_template_to_sugestao(
     payload["template_match"] = (
         "specific" if template.office_external_id is not None else "global"
     )
+    if skip:
+        payload["skip_task_creation"] = True
 
     render_ctx = _build_render_context(
         intake=intake,

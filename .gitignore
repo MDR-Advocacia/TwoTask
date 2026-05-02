@@ -83,3 +83,8 @@ legal-one-firms-brazil-api.json
 
 # Dados de teste locais (PDFs + JSONs de intake pra testes manuais)
 test-data/
+
+# Worktrees do Claude Code (sandbox isolado — nao deve virar submodule
+# do repo principal). Sem isso, `git add` na raiz captura a worktree
+# como gitlink/submodule (mode 160000).
+.claude/worktrees/

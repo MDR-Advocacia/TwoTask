@@ -35,7 +35,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core import auth as auth_security
 from app.core.config import settings
@@ -228,6 +228,11 @@ class IntakeSummary(BaseModel):
     received_at: datetime
     updated_at: datetime
     sugestoes_count: int
+    # Tipos de prazo distintos das sugestoes do intake — usado pela UI
+    # de listagem pra exibir a "classificacao" (ex.: ["CONTESTAR",
+    # "AUDIENCIA"]). Mantem ordem de criacao das sugestoes pra
+    # estabilidade visual. Lista vazia se intake nao foi classificado.
+    tipos_prazo: list[str] = []
     # Tratado por (pin011) — quem confirmou agendamentos OU finalizou
     # sem providência. NULL enquanto intake estiver em fluxo.
     treated_by_user_id: Optional[int] = None
@@ -426,6 +431,17 @@ router = APIRouter(prefix="/prazos-iniciais", tags=["Prazos Iniciais"])
 
 
 def _intake_to_summary(intake: PrazoInicialIntake) -> IntakeSummary:
+    # Agrega tipos_prazo distintos das sugestoes preservando a ordem de
+    # criacao (estabilidade visual na listagem). Lista vazia se intake
+    # nao foi classificado ou nao tem sugestoes ainda.
+    seen_tipos: set[str] = set()
+    tipos_prazo: list[str] = []
+    for s in intake.sugestoes or []:
+        tp = s.tipo_prazo
+        if tp and tp not in seen_tipos:
+            seen_tipos.add(tp)
+            tipos_prazo.append(tp)
+
     return IntakeSummary(
         id=intake.id,
         external_id=intake.external_id,
@@ -450,6 +466,7 @@ def _intake_to_summary(intake: PrazoInicialIntake) -> IntakeSummary:
         received_at=intake.received_at,
         updated_at=intake.updated_at,
         sugestoes_count=len(intake.sugestoes or []),
+        tipos_prazo=tipos_prazo,
         treated_by_user_id=intake.treated_by_user_id,
         treated_by_email=intake.treated_by_email,
         treated_by_name=intake.treated_by_name,
@@ -610,7 +627,13 @@ def list_intakes(
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
-    query = db.query(PrazoInicialIntake)
+    # selectinload das sugestoes evita N+1 quando o summary agrega
+    # tipos_prazo. selectin (em vez de joined) gera 1 SELECT extra com
+    # IN no intake_ids — mais leve que multiplicar linhas via JOIN
+    # quando ha muitas sugestoes por intake.
+    query = db.query(PrazoInicialIntake).options(
+        selectinload(PrazoInicialIntake.sugestoes),
+    )
 
     # status — CSV, IN quando múltiplo
     status_list = _parse_csv_strs(status_filter)
@@ -1257,8 +1280,15 @@ class TemplateBase(BaseModel):
     # regra de override nessa dimensão (ver template_matching_service).
     natureza_aplicavel: Optional[str] = Field(default=None, max_length=64)
     office_external_id: Optional[int] = Field(default=None, ge=1)
-    task_subtype_external_id: int = Field(..., ge=1)
-    responsible_user_external_id: int = Field(..., ge=1)
+    # Template "no-op" (pin014): quando True, casa normal mas NAO cria
+    # tarefa no L1 — intake vira CONCLUIDO_SEM_PROVIDENCIA na confirmação.
+    # task_subtype_external_id e responsible_user_external_id ficam NULL
+    # (validado em `_validate_skip_task_creation_fields`).
+    skip_task_creation: bool = False
+    # Optional pra suportar template no-op. Em template normal, exigido
+    # via `_validate_skip_task_creation_fields`.
+    task_subtype_external_id: Optional[int] = Field(default=None, ge=1)
+    responsible_user_external_id: Optional[int] = Field(default=None, ge=1)
     priority: str = Field(default="Normal")
     # Offset em dias úteis a partir da `due_date_reference`. Negativo = antes
     # (D-N, caso típico em prazos iniciais); 0 = no dia; positivo = depois.
@@ -1358,10 +1388,14 @@ def _validate_foreign_keys(
     db: Session,
     *,
     office_external_id: Optional[int],
-    task_subtype_external_id: int,
-    responsible_user_external_id: int,
+    task_subtype_external_id: Optional[int],
+    responsible_user_external_id: Optional[int],
 ) -> None:
-    """Confirma que os external_ids existem nas tabelas do L1. 422 em caso de ausência."""
+    """
+    Confirma que os external_ids existem nas tabelas do L1. 422 em
+    caso de ausência. IDs None são pulados — usado por templates no-op
+    (skip_task_creation=True), onde task_subtype/responsible são NULL.
+    """
     if office_external_id is not None:
         exists = (
             db.query(LegalOneOffice.id)
@@ -1374,33 +1408,74 @@ def _validate_foreign_keys(
                 detail=f"office_external_id não encontrado: {office_external_id}.",
             )
 
-    exists = (
-        db.query(LegalOneTaskSubType.id)
-        .filter(LegalOneTaskSubType.external_id == task_subtype_external_id)
-        .first()
-    )
-    if not exists:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"task_subtype_external_id não encontrado: "
-                f"{task_subtype_external_id}."
-            ),
+    if task_subtype_external_id is not None:
+        exists = (
+            db.query(LegalOneTaskSubType.id)
+            .filter(LegalOneTaskSubType.external_id == task_subtype_external_id)
+            .first()
         )
+        if not exists:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"task_subtype_external_id não encontrado: "
+                    f"{task_subtype_external_id}."
+                ),
+            )
 
-    exists = (
-        db.query(LegalOneUser.id)
-        .filter(LegalOneUser.external_id == responsible_user_external_id)
-        .first()
-    )
-    if not exists:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"responsible_user_external_id não encontrado: "
-                f"{responsible_user_external_id}."
-            ),
+    if responsible_user_external_id is not None:
+        exists = (
+            db.query(LegalOneUser.id)
+            .filter(LegalOneUser.external_id == responsible_user_external_id)
+            .first()
         )
+        if not exists:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"responsible_user_external_id não encontrado: "
+                    f"{responsible_user_external_id}."
+                ),
+            )
+
+
+def _validate_skip_task_creation_fields(
+    skip: bool,
+    task_subtype_external_id: Optional[int],
+    responsible_user_external_id: Optional[int],
+) -> None:
+    """
+    Garante consistência entre skip_task_creation e os campos de tarefa:
+    - skip=True: task_subtype/responsible devem ser NULL (operador
+      enviou IDs por engano? rejeita pra evitar dados orfãos no banco).
+    - skip=False: ambos devem estar preenchidos (template "normal"
+      precisa criar tarefa no L1).
+    Espelha a CheckConstraint `ck_pin_task_templates_skip_or_task_fields`
+    do banco — falha cedo no 422 em vez de IntegrityError no commit.
+    """
+    if skip:
+        if (
+            task_subtype_external_id is not None
+            or responsible_user_external_id is not None
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "Template no-op (skip_task_creation=true) não aceita "
+                    "task_subtype_external_id nem responsible_user_external_id. "
+                    "Envie ambos como null."
+                ),
+            )
+    else:
+        if task_subtype_external_id is None or responsible_user_external_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "Template normal (skip_task_creation=false) exige "
+                    "task_subtype_external_id e responsible_user_external_id "
+                    "preenchidos."
+                ),
+            )
 
 
 class TemplateCreate(TemplateBase):
@@ -1421,6 +1496,7 @@ class TemplateUpdate(BaseModel):
     subtipo: Optional[str] = Field(default=None, max_length=128)
     natureza_aplicavel: Optional[str] = Field(default=None, max_length=64)
     office_external_id: Optional[int] = Field(default=None, ge=1)
+    skip_task_creation: Optional[bool] = None
     task_subtype_external_id: Optional[int] = Field(default=None, ge=1)
     responsible_user_external_id: Optional[int] = Field(default=None, ge=1)
     priority: Optional[str] = None
@@ -1447,9 +1523,10 @@ class TemplateResponse(BaseModel):
     natureza_aplicavel: Optional[str]
     office_external_id: Optional[int]
     office_name: Optional[str] = None
-    task_subtype_external_id: int
+    skip_task_creation: bool = False
+    task_subtype_external_id: Optional[int] = None
     task_subtype_name: Optional[str] = None
-    responsible_user_external_id: int
+    responsible_user_external_id: Optional[int] = None
     responsible_user_name: Optional[str] = None
     priority: str
     due_business_days: int
@@ -1481,6 +1558,7 @@ def _template_to_response(
         natureza_aplicavel=t.natureza_aplicavel,
         office_external_id=t.office_external_id,
         office_name=office_name,
+        skip_task_creation=bool(getattr(t, "skip_task_creation", False)),
         task_subtype_external_id=t.task_subtype_external_id,
         task_subtype_name=task_subtype_name,
         responsible_user_external_id=t.responsible_user_external_id,
@@ -1512,21 +1590,29 @@ def _enrich_template_response(
             .first()
         )
         office_name = office[0] if office else None
-    sub = (
-        db.query(LegalOneTaskSubType.name)
-        .filter(LegalOneTaskSubType.external_id == t.task_subtype_external_id)
-        .first()
-    )
-    user = (
-        db.query(LegalOneUser.name)
-        .filter(LegalOneUser.external_id == t.responsible_user_external_id)
-        .first()
-    )
+    # Templates no-op podem ter task_subtype/responsible NULL — pula
+    # lookups quando ausentes (sem nome pra exibir).
+    sub_name = None
+    if t.task_subtype_external_id is not None:
+        sub = (
+            db.query(LegalOneTaskSubType.name)
+            .filter(LegalOneTaskSubType.external_id == t.task_subtype_external_id)
+            .first()
+        )
+        sub_name = sub[0] if sub else None
+    user_name = None
+    if t.responsible_user_external_id is not None:
+        user = (
+            db.query(LegalOneUser.name)
+            .filter(LegalOneUser.external_id == t.responsible_user_external_id)
+            .first()
+        )
+        user_name = user[0] if user else None
     return _template_to_response(
         t,
         office_name=office_name,
-        task_subtype_name=sub[0] if sub else None,
-        responsible_user_name=user[0] if user else None,
+        task_subtype_name=sub_name,
+        responsible_user_name=user_name,
     )
 
 
@@ -1618,6 +1704,11 @@ def create_template(
     _validate_tipo_subtipo(body.tipo_prazo, body.subtipo)
     _validate_natureza_aplicavel(body.natureza_aplicavel)
     _validate_priority_and_due_ref(body.priority, body.due_date_reference)
+    _validate_skip_task_creation_fields(
+        body.skip_task_creation,
+        body.task_subtype_external_id,
+        body.responsible_user_external_id,
+    )
     _validate_foreign_keys(
         db,
         office_external_id=body.office_external_id,
@@ -1635,6 +1726,7 @@ def create_template(
         subtipo=body.subtipo,
         natureza_aplicavel=body.natureza_aplicavel,
         office_external_id=body.office_external_id,
+        skip_task_creation=body.skip_task_creation,
         task_subtype_external_id=body.task_subtype_external_id,
         responsible_user_external_id=body.responsible_user_external_id,
         priority=body.priority,
@@ -1712,11 +1804,19 @@ def update_template(
         if "due_date_reference" in fields_set
         else template.due_date_reference
     )
+    eff_skip = (
+        body.skip_task_creation
+        if "skip_task_creation" in fields_set
+        else bool(getattr(template, "skip_task_creation", False))
+    )
 
     _validate_tipo_subtipo(eff_tipo, eff_subtipo)
     _validate_natureza_aplicavel(eff_natureza)
     _validate_priority_and_due_ref(eff_priority, eff_due_ref)
-    # FKs: só valida o que mudou (reduz queries).
+    _validate_skip_task_creation_fields(eff_skip, eff_task_sub, eff_resp)
+    # FKs: só valida o que mudou (reduz queries). task_sub/responsible
+    # podem ser None em template no-op — _validate_foreign_keys pula
+    # IDs None.
     _validate_foreign_keys(
         db,
         office_external_id=(
@@ -1724,8 +1824,16 @@ def update_template(
             if "office_external_id" in fields_set
             else None  # None aqui = não re-valida
         ),
-        task_subtype_external_id=eff_task_sub,
-        responsible_user_external_id=eff_resp,
+        task_subtype_external_id=(
+            eff_task_sub
+            if "task_subtype_external_id" in fields_set
+            else None
+        ),
+        responsible_user_external_id=(
+            eff_resp
+            if "responsible_user_external_id" in fields_set
+            else None
+        ),
     )
 
     # Sem checagem de unicidade na chave de casamento — múltiplos templates

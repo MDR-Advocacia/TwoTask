@@ -49,6 +49,11 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api-client";
 import {
+  naturezaLabel,
+  produtoLabel,
+  tipoPrazoLabel,
+} from "@/lib/prazos-iniciais-labels";
+import {
   applyPrazosIniciaisBatch,
   cancelarPrazoInicial,
   reclassifyPrazoInicial,
@@ -88,6 +93,7 @@ const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "PRONTO_PARA_CLASSIFICAR", label: "Pronto para classificar" },
   { value: "EM_CLASSIFICACAO", label: "Em classificacao" },
   { value: "CLASSIFICADO", label: "Classificado" },
+  { value: "AGUARDANDO_CONFIG_TEMPLATE", label: "Aguardando config de template" },
   { value: "EM_REVISAO", label: "Em revisao" },
   { value: "AGENDADO", label: "Agendado" },
   { value: "CONCLUIDO_SEM_PROVIDENCIA", label: "Concluido sem providencia" },
@@ -1437,6 +1443,7 @@ export default function PrazosIniciaisPage() {
                   <TableHead className="w-[160px]">Recebido</TableHead>
                   <TableHead>CNJ</TableHead>
                   <TableHead>Arquivo / origem</TableHead>
+                  <TableHead className="w-[200px]">Classificação</TableHead>
                   <TableHead className="w-[220px]">Status</TableHead>
                   <TableHead className="w-[120px] text-right">Sugestoes</TableHead>
                   <TableHead className="w-[120px] text-right">Acoes</TableHead>
@@ -1445,7 +1452,7 @@ export default function PrazosIniciaisPage() {
               <TableBody>
                 {isLoading && items.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="py-10 text-center">
+                    <TableCell colSpan={7} className="py-10 text-center">
                       <Loader2 className="mr-2 inline-block h-5 w-5 animate-spin" />
                       Carregando intakes...
                     </TableCell>
@@ -1454,7 +1461,7 @@ export default function PrazosIniciaisPage() {
 
                 {!isLoading && items.length === 0 && !loadError ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
+                    <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
                       Nenhum intake encontrado.
                     </TableCell>
                   </TableRow>
@@ -1468,8 +1475,8 @@ export default function PrazosIniciaisPage() {
                       <div className="space-y-1">
                         <div className="text-sm">{item.pdf_filename_original || item.external_id}</div>
                         <div className="text-xs text-muted-foreground">
-                          {item.natureza_processo || "Natureza pendente"}
-                          {item.produto ? ` · ${item.produto}` : ""}
+                          {naturezaLabel(item.natureza_processo) || "Natureza pendente"}
+                          {item.produto ? ` · ${produtoLabel(item.produto)}` : ""}
                         </div>
                         {item.treated_by_name ? (
                           <div className="text-xs text-muted-foreground">
@@ -1478,6 +1485,22 @@ export default function PrazosIniciaisPage() {
                           </div>
                         ) : null}
                       </div>
+                    </TableCell>
+                    <TableCell>
+                      {/* Classificacao = tipos_prazo distintos das sugestoes,
+                          normalizados via tipoPrazoLabel. Lista vertical de
+                          badges (sem cap) — o mais comum eh 1-2 sugestoes. */}
+                      {item.tipos_prazo && item.tipos_prazo.length > 0 ? (
+                        <div className="flex flex-col items-start gap-1">
+                          {item.tipos_prazo.map((tp) => (
+                            <Badge key={tp} variant="outline" className="font-normal">
+                              {tipoPrazoLabel(tp)}
+                            </Badge>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )}
                     </TableCell>
                     <TableCell>
                       <Badge variant={statusBadgeVariant(item.status)}>{STATUS_LABEL[item.status] ?? item.status}</Badge>

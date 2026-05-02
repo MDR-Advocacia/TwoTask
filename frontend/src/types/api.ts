@@ -226,6 +226,10 @@ export interface PrazoInicialIntakeSummary {
   received_at: string;
   updated_at: string;
   sugestoes_count: number;
+  // Tipos de prazo distintos das sugestoes do intake (ex.: ["CONTESTAR",
+  // "AUDIENCIA"]). Usado pela UI de listagem pra exibir a "classificacao".
+  // Lista vazia se intake nao foi classificado.
+  tipos_prazo?: string[];
   // Tratado por (pin011) — quem confirmou agendamentos OU finalizou.
   treated_by_user_id?: number | null;
   treated_by_email?: string | null;
@@ -700,9 +704,13 @@ export interface PrazoInicialTaskTemplate {
   natureza_aplicavel: string | null;
   office_external_id: number | null;
   office_name: string | null;
-  task_subtype_external_id: number;
+  // Template "no-op" (pin014): casa normal, mas finaliza sem criar
+  // tarefa no L1. Quando true, task_subtype_external_id e
+  // responsible_user_external_id sao null.
+  skip_task_creation: boolean;
+  task_subtype_external_id: number | null;
   task_subtype_name: string | null;
-  responsible_user_external_id: number;
+  responsible_user_external_id: number | null;
   responsible_user_name: string | null;
   priority: string;
   due_business_days: number;
@@ -725,8 +733,11 @@ export interface PrazoInicialTaskTemplateCreatePayload {
   subtipo?: string | null;
   natureza_aplicavel?: string | null;
   office_external_id?: number | null;
-  task_subtype_external_id: number;
-  responsible_user_external_id: number;
+  // Template "no-op" (pin014). Quando true, envie task_subtype/responsible
+  // como null — backend valida.
+  skip_task_creation?: boolean;
+  task_subtype_external_id?: number | null;
+  responsible_user_external_id?: number | null;
   priority?: string;
   due_business_days?: number;
   due_date_reference?: string;

@@ -64,6 +64,16 @@ class PrazoInicialTaskTemplate(Base):
             "due_business_days >= -365 AND due_business_days <= 30",
             name="ck_pin_task_templates_due_business_days_range",
         ),
+        # Template "no-op" (skip_task_creation=TRUE) finaliza o caso sem
+        # criar tarefa no L1 — task_subtype_external_id e
+        # responsible_user_external_id ficam NULL. Template normal exige
+        # ambos preenchidos. Migration: pin014.
+        CheckConstraint(
+            "(skip_task_creation = TRUE) OR ("
+            "task_subtype_external_id IS NOT NULL AND "
+            "responsible_user_external_id IS NOT NULL)",
+            name="ck_pin_task_templates_skip_or_task_fields",
+        ),
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -88,17 +98,28 @@ class PrazoInicialTaskTemplate(Base):
         index=True,
     )
 
+    # Template "no-op": casa normal mas NAO cria tarefa no L1. Usado
+    # quando o operador quer que a IA classifique e finalize sem
+    # providencia automaticamente (ex.: SEM_PRAZO_EM_ABERTO recorrente).
+    # Quando TRUE, task_subtype_external_id e responsible_user_external_id
+    # devem ser NULL (CheckConstraint acima). Migration: pin014.
+    skip_task_creation = Column(
+        Boolean, default=False, nullable=False, server_default="false",
+    )
+
     # ── Configuração da tarefa gerada no Legal One ────────────────────
+    # Nullable apenas pra suportar templates no-op (skip_task_creation=TRUE).
+    # Normal: ambos preenchidos. Garantia via CheckConstraint.
     task_subtype_external_id = Column(
         Integer,
         ForeignKey("legal_one_task_subtypes.external_id"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     responsible_user_external_id = Column(
         Integer,
         ForeignKey("legal_one_users.external_id"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
 

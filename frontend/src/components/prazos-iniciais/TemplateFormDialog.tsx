@@ -86,6 +86,10 @@ interface Props {
 // padrão de Publications (TaskTemplatesPage).
 interface TaskBlock {
   name: string;
+  // Template "no-op" (pin014): casa normal, mas NAO cria tarefa no L1.
+  // Quando true, esconde os campos de task (subtype/responsavel/prioridade/
+  // offset/refdata) — eles vao zerados no payload.
+  skip_task_creation: boolean;
   task_type_id: string; // helper UI (cascata task_type → subtype)
   task_subtype_external_id: string;
   responsible_user_external_id: string;
@@ -109,6 +113,7 @@ interface FormState {
 
 const BLANK_TASK_BLOCK: TaskBlock = {
   name: "",
+  skip_task_creation: false,
   task_type_id: "",
   task_subtype_external_id: "",
   responsible_user_external_id: "",
@@ -125,20 +130,31 @@ function templateToTaskBlock(
   taskTypes: TaskTypeOption[],
 ): TaskBlock {
   // Descobre qual task_type contém o subtype escolhido (cascata).
+  // Templates no-op (skip_task_creation=true) tem subtype=null — fica
+  // taskTypeId="" mesmo, sem cascata aplicavel.
   let taskTypeId = "";
-  for (const tt of taskTypes) {
-    if (
-      tt.sub_types.some((st) => st.external_id === t.task_subtype_external_id)
-    ) {
-      taskTypeId = String(tt.id);
-      break;
+  if (t.task_subtype_external_id != null) {
+    for (const tt of taskTypes) {
+      if (
+        tt.sub_types.some((st) => st.external_id === t.task_subtype_external_id)
+      ) {
+        taskTypeId = String(tt.id);
+        break;
+      }
     }
   }
   return {
     name: t.name || "",
+    skip_task_creation: !!t.skip_task_creation,
     task_type_id: taskTypeId,
-    task_subtype_external_id: String(t.task_subtype_external_id),
-    responsible_user_external_id: String(t.responsible_user_external_id),
+    task_subtype_external_id:
+      t.task_subtype_external_id != null
+        ? String(t.task_subtype_external_id)
+        : "",
+    responsible_user_external_id:
+      t.responsible_user_external_id != null
+        ? String(t.responsible_user_external_id)
+        : "",
     priority: t.priority || "Normal",
     due_business_days: String(t.due_business_days),
     due_date_reference: t.due_date_reference || "data_base",
@@ -309,6 +325,8 @@ export function TemplateFormDialog({
     const used = new Set<string>();
     form.taskBlocks.forEach((b, i) => {
       if (i === blockIdx) return;
+      // Blocos no-op nao reservam subtype (nao criam tarefa).
+      if (b.skip_task_creation) return;
       if (b.task_subtype_external_id) {
         used.add(b.task_subtype_external_id);
       }
@@ -334,10 +352,12 @@ export function TemplateFormDialog({
     // tarefa precisa de um subtype diferente — o backend rejeita
     // duplicata exata na chave (tipo_prazo, subtipo, natureza, office,
     // task_subtype) com 409, e a mensagem genérica não diz qual bloco
-    // está colidindo.
+    // está colidindo. Blocos no-op (skip_task_creation) nao usam subtype.
     const seenSubtypes = new Map<string, number>();
     for (let i = 0; i < form.taskBlocks.length; i++) {
-      const sub = form.taskBlocks[i].task_subtype_external_id;
+      const blk = form.taskBlocks[i];
+      if (blk.skip_task_creation) continue;
+      const sub = blk.task_subtype_external_id;
       if (!sub) continue;
       if (seenSubtypes.has(sub)) {
         const firstIdx = seenSubtypes.get(sub)!;
@@ -349,6 +369,9 @@ export function TemplateFormDialog({
     for (let i = 0; i < form.taskBlocks.length; i++) {
       const b = form.taskBlocks[i];
       const tag = `Tarefa ${i + 1}`;
+      // Bloco no-op: pula validacoes de campos de tarefa — eles vao
+      // como null no payload.
+      if (b.skip_task_creation) continue;
       if (!b.task_subtype_external_id) {
         return `${tag}: selecione a task do Legal One.`;
       }
@@ -385,11 +408,12 @@ export function TemplateFormDialog({
     block: TaskBlock,
   ): PrazoInicialTaskTemplateCreatePayload => {
     // Auto-nome: tipo_prazo (+ subtipo) — task_subtype. Se usuário preencheu
-    // name explicitamente, usa esse.
+    // name explicitamente, usa esse. Bloco no-op: nao tem subtype, label
+    // "— Sem providencia".
     const autoName =
       `${form.tipo_prazo}` +
       (form.subtipo ? ` / ${form.subtipo}` : "") +
-      ` — ${subtypeName(block.task_subtype_external_id)}`;
+      ` — ${block.skip_task_creation ? "Sem providência" : subtypeName(block.task_subtype_external_id)}`;
     return {
       name: block.name.trim() || autoName,
       tipo_prazo: form.tipo_prazo,
@@ -398,8 +422,15 @@ export function TemplateFormDialog({
       office_external_id: form.office_external_id
         ? Number(form.office_external_id)
         : null,
-      task_subtype_external_id: Number(block.task_subtype_external_id),
-      responsible_user_external_id: Number(block.responsible_user_external_id),
+      skip_task_creation: block.skip_task_creation,
+      // Bloco no-op: zera os IDs de tarefa (backend rejeita se viessem
+      // preenchidos com skip=true).
+      task_subtype_external_id: block.skip_task_creation
+        ? null
+        : Number(block.task_subtype_external_id),
+      responsible_user_external_id: block.skip_task_creation
+        ? null
+        : Number(block.responsible_user_external_id),
       priority: block.priority,
       due_business_days: Number(block.due_business_days),
       due_date_reference: block.due_date_reference,
@@ -678,6 +709,37 @@ export function TemplateFormDialog({
                         )}
                     </div>
 
+                    {/* Toggle no-op: nao agendar tarefa, finalizar caso */}
+                    <div className="flex items-start gap-2 rounded-md border bg-background p-3">
+                      <Checkbox
+                        id={`tpl-skip-${idx}`}
+                        checked={block.skip_task_creation}
+                        onCheckedChange={(v) =>
+                          setBlockField(
+                            idx,
+                            "skip_task_creation",
+                            Boolean(v),
+                          )
+                        }
+                        className="mt-0.5"
+                      />
+                      <div className="space-y-0.5">
+                        <Label
+                          htmlFor={`tpl-skip-${idx}`}
+                          className="cursor-pointer"
+                        >
+                          Não agendar tarefa — apenas finalizar caso
+                        </Label>
+                        <p className="text-xs text-muted-foreground">
+                          Quando essa classificação aparecer, o intake é
+                          finalizado como{" "}
+                          <em>concluído sem providência</em>: sobe a
+                          habilitação no GED e cancela a task legada, sem
+                          criar tarefa nova no Legal One.
+                        </p>
+                      </div>
+                    </div>
+
                     {/* Nome do template (opcional) */}
                     <div className="space-y-1 min-w-0">
                       <Label htmlFor={`tpl-name-${idx}`}>
@@ -696,6 +758,12 @@ export function TemplateFormDialog({
                       />
                     </div>
 
+                    {/* Bloco de configuracao da tarefa (oculto em template
+                        no-op — skip_task_creation=true). Cobre subtype,
+                        responsavel, prioridade/offset/refdata, e templates
+                        de descricao/anotacoes. */}
+                    {!block.skip_task_creation ? (
+                    <>
                     {/* Combobox unificado tipo+subtipo com busca, igual ao
                         modal de Confirmar Agendamento e ao form de templates
                         de publicação. Catálogo do L1 tem ~900 subtipos —
@@ -864,6 +932,8 @@ export function TemplateFormDialog({
                         placeholder="Texto livre — mesmos placeholders."
                       />
                     </div>
+                    </>
+                    ) : null}
 
                     {/* Ativo */}
                     <div className="flex items-center gap-2">
