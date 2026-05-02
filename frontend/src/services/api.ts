@@ -277,6 +277,50 @@ export async function reclassifyPrazoInicial(
 }
 
 /**
+ * Tarefas recentes do processo no Legal One (5 mais recentes concluidas
+ * + todas as pendentes). Reusa o endpoint de publicacoes —
+ * `/publications/groups/{lawsuit_id}/recent-tasks` — porque ele recebe
+ * lawsuit_id puro (nao tem nada de publicacao-especifico).
+ *
+ * Em prazos iniciais, usado no detalhe do intake pra dar contexto ao
+ * operador (que outras tarefas existem nesse processo) antes de
+ * confirmar agendamentos novos.
+ */
+export interface L1TaskRecent {
+  task_id: number;
+  description: string;
+  status_id: number;
+  status_label: string;
+  type_id: number | null;
+  type_name: string | null;
+  subtype_id: number | null;
+  subtype_name: string | null;
+  creation_date: string | null;
+  end_date_time: string | null;
+  effective_end_date_time: string | null;
+  l1_url: string;
+}
+
+export interface L1RecentTasksResult {
+  pending: L1TaskRecent[];
+  recent_completed: L1TaskRecent[];
+  pending_count: number;
+  recent_completed_count: number;
+  truncated: boolean;
+  check_failed: boolean;
+}
+
+export async function fetchRecentTasksForLawsuit(
+  lawsuitId: number,
+  limit = 5,
+): Promise<L1RecentTasksResult> {
+  const response = await apiFetch(
+    `/api/v1/publications/groups/${lawsuitId}/recent-tasks?limit=${limit}`,
+  );
+  return expectJson<L1RecentTasksResult>(response);
+}
+
+/**
  * Reaplica templates em lote nas sugestoes ja materializadas dos
  * intakes filtrados. NAO chama IA (ao contrario de reclassify) — so
  * re-roda match_templates com a config atual e atualiza

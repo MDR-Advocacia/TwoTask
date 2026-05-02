@@ -4,6 +4,8 @@ import {
   AlertCircle,
   CalendarClock,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Cpu,
   ExternalLink,
   FileDown,
@@ -36,6 +38,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { SubtypePicker } from "@/components/ui/SubtypePicker";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -69,16 +73,20 @@ import {
   reanalyzePrazoInicial,
   exportPrazosIniciaisXlsx,
   fetchPrazoInicialPdfBlob,
+  fetchRecentTasksForLawsuit,
   reapplyPrazosIniciaisTemplates,
   recomputePrazoInicialGlobals,
   refreshPrazosIniciaisBatch,
   reprocessarPrazoInicialCnj,
   submitPrazosIniciaisClassifyPending,
+  type L1RecentTasksResult,
+  type L1TaskRecent,
   type ReapplyTemplatesResult,
 } from "@/services/api";
 import { useAuth } from "@/hooks/useAuth";
 import type {
   PrazoInicialBatchSummary,
+  PrazoInicialCustomTaskPayload,
   PrazoInicialEnums,
   PrazoInicialIntakeDetail,
   PrazoInicialIntakeStatus,
@@ -86,7 +94,29 @@ import type {
   PrazoInicialSugestao,
 } from "@/types/api";
 
-const PAGE_SIZE = 25;
+// PAGE_SIZE_DEFAULT = primeiro carregamento; operador pode trocar via
+// dropdown 25/50/100 (mesmo padrao da pagina de Publicacoes).
+const PAGE_SIZE_DEFAULT: 25 | 50 | 100 = 25;
+
+// Status considerados "pendentes de tratamento final" — sao o foco
+// operacional da pagina de Intakes (precisam acao do operador). Os
+// finalizados (AGENDADO, CONCLUIDO, CONCLUIDO_SEM_PROVIDENCIA,
+// GED_ENVIADO, CANCELADO) ficam fora do default; operador marca
+// explicitamente nos filtros pra ver. Indicador visual no header da
+// listagem avisa que o filtro padrao esta ativo.
+const DEFAULT_PENDING_STATUSES = [
+  "RECEBIDO",
+  "PROCESSO_NAO_ENCONTRADO",
+  "PRONTO_PARA_CLASSIFICAR",
+  "EM_CLASSIFICACAO",
+  "CLASSIFICADO",
+  "AGUARDANDO_CONFIG_TEMPLATE",
+  "EM_REVISAO",
+  "ERRO_CLASSIFICACAO",
+  "ERRO_AGENDAMENTO",
+  "ERRO_GED",
+];
+const DEFAULT_PENDING_STATUSES_CSV = DEFAULT_PENDING_STATUSES.join(",");
 
 const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "__all__", label: "Todos os status" },
@@ -173,6 +203,46 @@ function formatDate(value: string | null | undefined): string {
   return formatDateTime(value);
 }
 
+/**
+ * Conta dias uteis (seg-sex, sem feriados) entre `today` e `target`.
+ * Negativo = `target` no passado. Aproximacao operacional pra colorir
+ * urgencia na listagem; nao substitui calculo oficial de prazo.
+ */
+function diasUteisAte(targetIso: string): number | null {
+  if (!targetIso || !/^\d{4}-\d{2}-\d{2}$/.test(targetIso)) return null;
+  const [ty, tm, td] = targetIso.split("-").map(Number);
+  const target = new Date(ty, tm - 1, td);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (target.getTime() === today.getTime()) return 0;
+  const past = target < today;
+  const cursor = new Date(past ? target : today);
+  const end = past ? today : target;
+  let dias = 0;
+  while (cursor < end) {
+    cursor.setDate(cursor.getDate() + 1);
+    const dow = cursor.getDay();
+    if (dow !== 0 && dow !== 6) dias += 1;
+  }
+  return past ? -dias : dias;
+}
+
+/**
+ * Tailwind classes pra colorir o badge de prazo fatal por urgencia.
+ * Vencido = vermelho; <=3 dias uteis = ambar; <=7 = amarelo claro;
+ * >7 = neutro. Operador prioriza pela cor sem ler o numero.
+ */
+function prazoFatalBadgeClass(diasUteis: number | null): string {
+  if (diasUteis == null) return "bg-slate-100 text-slate-700 border-slate-200";
+  if (diasUteis < 0)
+    return "bg-red-100 text-red-800 border-red-300 font-semibold";
+  if (diasUteis <= 3)
+    return "bg-amber-100 text-amber-900 border-amber-300 font-semibold";
+  if (diasUteis <= 7)
+    return "bg-yellow-50 text-yellow-900 border-yellow-200";
+  return "bg-slate-50 text-slate-700 border-slate-200";
+}
+
 function formatBytes(bytes: number | null | undefined): string {
   if (!bytes || bytes <= 0) return "-";
   if (bytes < 1024) return `${bytes} B`;
@@ -204,6 +274,62 @@ function isConfirmableStatus(status: string): boolean {
   return CONFIRMABLE_STATUSES.has(status);
 }
 
+/**
+ * Linha compacta de tarefa do L1 — usada no card "Tarefas no Legal One"
+ * dentro do detalhe do intake. Replica o estilo do card equivalente em
+ * publicacoes (status badge ambar pra pendentes, neutro pras
+ * concluidas, link "Abrir" em nova aba).
+ */
+function RecentTaskRow({
+  task,
+  pending,
+}: {
+  task: L1TaskRecent;
+  pending?: boolean;
+}) {
+  const dueIso = task.end_date_time || task.effective_end_date_time;
+  return (
+    <div className="flex items-start justify-between gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <Badge
+            variant="outline"
+            className={
+              pending
+                ? "bg-amber-100 text-amber-900 border-amber-300 font-normal"
+                : "bg-slate-50 text-slate-700 border-slate-200 font-normal"
+            }
+          >
+            {task.status_label}
+          </Badge>
+          {task.subtype_name ? (
+            <span className="text-muted-foreground truncate">
+              {task.type_name ? `${task.type_name} / ` : ""}
+              {task.subtype_name}
+            </span>
+          ) : null}
+        </div>
+        <p className="mt-0.5 line-clamp-2 break-words">{task.description}</p>
+        {dueIso ? (
+          <p className="mt-0.5 text-muted-foreground">
+            {pending ? "Vence" : "Concluída"}: {formatDateTime(dueIso)}
+          </p>
+        ) : null}
+      </div>
+      <a
+        href={task.l1_url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="shrink-0 inline-flex items-center gap-1 text-blue-600 hover:underline"
+        title="Abrir tarefa no Legal One"
+      >
+        Abrir
+        <ExternalLink className="h-3 w-3" />
+      </a>
+    </div>
+  );
+}
+
 export default function PrazosIniciaisPage() {
   const { toast } = useToast();
   const { isAdmin } = useAuth();
@@ -212,7 +338,9 @@ export default function PrazosIniciaisPage() {
   // Filtros - os "appliedXxx" são os que efetivamente vão pro GET, os
   // "xxxFilter" são os que o operador está editando antes de clicar "Aplicar".
   // Multi-select filtros guardam CSV (ex "CLASSIFICADO,AGENDADO").
-  const [statusFilter, setStatusFilter] = useState("");           // CSV
+  // Default = pendentes de tratamento final (omite AGENDADO,
+  // CONCLUIDO, etc.). Operador altera nos filtros pra ver finalizados.
+  const [statusFilter, setStatusFilter] = useState(DEFAULT_PENDING_STATUSES_CSV); // CSV
   const [cnjFilter, setCnjFilter] = useState("");
   const [officeFilter, setOfficeFilter] = useState("");           // CSV de ids
   const [naturezaFilter, setNaturezaFilter] = useState("");       // CSV
@@ -222,7 +350,7 @@ export default function PrazosIniciaisPage() {
   const [dateToFilter, setDateToFilter] = useState("");
   const [hasErrorFilter, setHasErrorFilter] = useState<"__all__" | "com" | "sem">("__all__");
 
-  const [appliedStatus, setAppliedStatus] = useState("");
+  const [appliedStatus, setAppliedStatus] = useState(DEFAULT_PENDING_STATUSES_CSV);
   const [appliedCnj, setAppliedCnj] = useState("");
   const [appliedOffice, setAppliedOffice] = useState("");
   const [appliedNatureza, setAppliedNatureza] = useState("");
@@ -232,6 +360,7 @@ export default function PrazosIniciaisPage() {
   const [appliedDateTo, setAppliedDateTo] = useState("");
   const [appliedHasError, setAppliedHasError] = useState<"__all__" | "com" | "sem">("__all__");
   const [offset, setOffset] = useState(0);
+  const [pageSize, setPageSize] = useState<25 | 50 | 100>(PAGE_SIZE_DEFAULT);
 
   const [items, setItems] = useState<PrazoInicialIntakeSummary[]>([]);
   const [total, setTotal] = useState(0);
@@ -242,6 +371,34 @@ export default function PrazosIniciaisPage() {
   const [detail, setDetail] = useState<PrazoInicialIntakeDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+
+  // Tarefas recentes do processo no Legal One — carregadas quando o
+  // detalhe abre com lawsuit_id resolvido. Reusa o endpoint de
+  // publicacoes (`/publications/groups/{lawsuit_id}/recent-tasks`).
+  const [recentTasks, setRecentTasks] = useState<L1RecentTasksResult | null>(null);
+  const [recentTasksLoading, setRecentTasksLoading] = useState(false);
+
+  // Catálogos do Legal One pra o form de "tarefa avulsa" no modal de
+  // Confirmar Agendamento. Carregados 1x no mount.
+  const [l1TaskTypes, setL1TaskTypes] = useState<
+    Array<{ id: number; name: string; sub_types: Array<{ external_id: number; name: string }> }>
+  >([]);
+  const [l1Users, setL1Users] = useState<Array<{ external_id: number; name: string }>>([]);
+
+  // Tarefas avulsas em edicao no modal — operador adiciona com botao
+  // "+ Adicionar tarefa avulsa". Vao no payload custom_tasks da
+  // confirmacao. Reset quando o modal fecha.
+  const [customTaskDrafts, setCustomTaskDrafts] = useState<
+    Array<{
+      id: string; // uuid local pra react key
+      task_subtype_external_id: number | null;
+      responsible_user_external_id: number | null;
+      description: string;
+      due_date: string; // YYYY-MM-DD
+      priority: string;
+      notes: string;
+    }>
+  >([]);
   const [actionLoading, setActionLoading] = useState(false);
 
   const [selectedSuggestions, setSelectedSuggestions] = useState<Record<number, boolean>>({});
@@ -309,7 +466,7 @@ export default function PrazosIniciaisPage() {
           date_from: appliedDateFrom || undefined,
           date_to: appliedDateTo || undefined,
           has_error,
-          limit: PAGE_SIZE,
+          limit: pageSize,
           offset: nextOffset,
         });
         setItems(payload.items);
@@ -350,10 +507,45 @@ export default function PrazosIniciaisPage() {
     if (selectedId === null) {
       setDetail(null);
       setDetailError(null);
+      setRecentTasks(null);
       return;
     }
     loadDetail(selectedId);
   }, [loadDetail, selectedId]);
+
+  // Carrega tarefas recentes do processo no L1 quando o detalhe abre
+  // com lawsuit_id resolvido. Falha graceful (UI continua funcional sem
+  // o card; check_failed=true mostra fallback).
+  useEffect(() => {
+    if (!detail?.lawsuit_id) {
+      setRecentTasks(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setRecentTasksLoading(true);
+      try {
+        const result = await fetchRecentTasksForLawsuit(detail.lawsuit_id!);
+        if (!cancelled) setRecentTasks(result);
+      } catch {
+        if (!cancelled) {
+          setRecentTasks({
+            pending: [],
+            recent_completed: [],
+            pending_count: 0,
+            recent_completed_count: 0,
+            truncated: false,
+            check_failed: true,
+          });
+        }
+      } finally {
+        if (!cancelled) setRecentTasksLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [detail?.lawsuit_id]);
 
   // Deep-link: ?intake=<id> abre o dialog do intake direto. Útil pros links
   // vindos da Treatment Page ou de logs/Slack — não precisa o usuário caçar
@@ -391,25 +583,33 @@ export default function PrazosIniciaisPage() {
 
   const pageInfo = useMemo(() => {
     const start = total === 0 ? 0 : offset + 1;
-    const end = Math.min(offset + PAGE_SIZE, total);
+    const end = Math.min(offset + pageSize, total);
+    const currentPage = Math.floor(offset / pageSize) + 1;
+    const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
     return {
       start,
       end,
+      currentPage,
+      totalPages,
       hasPrev: offset > 0,
-      hasNext: offset + PAGE_SIZE < total,
+      hasNext: offset + pageSize < total,
     };
-  }, [offset, total]);
+  }, [offset, total, pageSize]);
 
   const selectedSuggestionCount = useMemo(() => {
     if (!detail) return 0;
     return detail.sugestoes.filter((suggestion) => selectedSuggestions[suggestion.id]).length;
   }, [detail, selectedSuggestions]);
 
+  // Habilita o botao "Confirmar agendamentos" se ha pelo menos 1
+  // sugestao marcada OU 1 tarefa avulsa em edicao (validacao por
+  // campo acontece no submit). Antes exigia sugestoes existentes >0;
+  // com tarefa avulsa o operador pode confirmar mesmo sem sugestao
+  // (ex.: intake AGUARDANDO_CONFIG_TEMPLATE com tarefa manual).
   const canConfirmScheduling = Boolean(
     detail &&
       isConfirmableStatus(detail.status) &&
-      detail.sugestoes.length > 0 &&
-      selectedSuggestionCount > 0 &&
+      (selectedSuggestionCount > 0 || customTaskDrafts.length > 0) &&
       !actionLoading,
   );
 
@@ -427,7 +627,10 @@ export default function PrazosIniciaisPage() {
   };
 
   const onLimparFiltros = () => {
-    setStatusFilter("");
+    // "Limpar" volta pro default operacional (so pendentes), nao pro
+    // estado completamente vazio. Pra ver finalizados, operador usa
+    // o botao "Mostrar todos" no indicador do header da listagem.
+    setStatusFilter(DEFAULT_PENDING_STATUSES_CSV);
     setCnjFilter("");
     setOfficeFilter("");
     setNaturezaFilter("");
@@ -436,7 +639,7 @@ export default function PrazosIniciaisPage() {
     setDateFromFilter("");
     setDateToFilter("");
     setHasErrorFilter("__all__");
-    setAppliedStatus("");
+    setAppliedStatus(DEFAULT_PENDING_STATUSES_CSV);
     setAppliedCnj("");
     setAppliedOffice("");
     setAppliedNatureza("");
@@ -822,10 +1025,55 @@ export default function PrazosIniciaisPage() {
       });
     }
 
-    if (selectedPayload.length === 0) {
+    // Custom tasks tem que ter os campos minimos preenchidos antes do
+    // submit. Falha cedo com mensagem util (em vez de deixar 422 generico
+    // do backend voltar).
+    const customTasksPayload: PrazoInicialCustomTaskPayload[] = [];
+    for (let i = 0; i < customTaskDrafts.length; i++) {
+      const draft = customTaskDrafts[i];
+      const tag = `Tarefa avulsa ${i + 1}`;
+      if (!draft.task_subtype_external_id) {
+        toast({
+          title: `${tag}: selecione a task do Legal One`,
+          variant: "destructive",
+        });
+        return;
+      }
+      if (!draft.responsible_user_external_id) {
+        toast({
+          title: `${tag}: selecione o responsável`,
+          variant: "destructive",
+        });
+        return;
+      }
+      if (!draft.description.trim()) {
+        toast({
+          title: `${tag}: descrição obrigatória`,
+          variant: "destructive",
+        });
+        return;
+      }
+      if (!draft.due_date || !/^\d{4}-\d{2}-\d{2}$/.test(draft.due_date)) {
+        toast({
+          title: `${tag}: data fatal obrigatória (YYYY-MM-DD)`,
+          variant: "destructive",
+        });
+        return;
+      }
+      customTasksPayload.push({
+        task_subtype_external_id: draft.task_subtype_external_id,
+        responsible_user_external_id: draft.responsible_user_external_id,
+        description: draft.description.trim(),
+        due_date: draft.due_date,
+        priority: draft.priority || "Normal",
+        notes: draft.notes.trim() || null,
+      });
+    }
+
+    if (selectedPayload.length === 0 && customTasksPayload.length === 0) {
       toast({
-        title: "Nenhuma sugestao selecionada",
-        description: "Selecione pelo menos uma sugestao para confirmar os agendamentos do intake.",
+        title: "Nenhuma sugestão ou tarefa avulsa",
+        description: "Selecione ao menos uma sugestão OU adicione uma tarefa avulsa pra confirmar.",
         variant: "destructive",
       });
       return;
@@ -835,16 +1083,19 @@ export default function PrazosIniciaisPage() {
     try {
       const response = await confirmarAgendamentoPrazoInicial(selectedId, {
         suggestions: selectedPayload,
+        custom_tasks: customTasksPayload.length > 0 ? customTasksPayload : undefined,
         enqueue_legacy_task_cancellation: true,
       });
 
       const queueItem = response.legacy_task_cancellation_item;
+      const tarefaAvulsaCount = customTasksPayload.length;
       toast({
         title: "Agendamentos confirmados",
         description: queueItem
-          ? `Intake em AGENDADO e item #${queueItem.id} entrou na fila tecnica para cancelar a task legada.`
-          : "Intake atualizado para AGENDADO com sucesso.",
+          ? `Intake em AGENDADO${tarefaAvulsaCount > 0 ? ` (+${tarefaAvulsaCount} tarefa(s) avulsa(s))` : ""} e item #${queueItem.id} entrou na fila tecnica para cancelar a task legada.`
+          : `Intake atualizado para AGENDADO${tarefaAvulsaCount > 0 ? ` com ${tarefaAvulsaCount} tarefa(s) avulsa(s) criada(s).` : " com sucesso."}`,
       });
+      setCustomTaskDrafts([]);
 
       await Promise.all([loadDetail(selectedId), loadIntakes()]);
     } catch (error) {
@@ -907,6 +1158,38 @@ export default function PrazosIniciaisPage() {
     })();
     return () => { cancelled = true; };
   }, []);
+
+  // Carrega catalogos de task types + users 1x no mount, usados pelo
+  // form de "tarefa avulsa" no modal de Confirmar Agendamento. Silencioso
+  // em falha — UI continua funcional (operador nao vai conseguir adicionar
+  // tarefa avulsa, mas resto rola). Mesmo padrao do PrazosIniciaisTemplatesAdminPage.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [taskRes, usersRes] = await Promise.all([
+          apiFetch("/api/v1/tasks/task-creation-data"),
+          apiFetch("/api/v1/users/with-squads"),
+        ]);
+        if (!taskRes.ok || !usersRes.ok) return;
+        const taskJson = await taskRes.json();
+        const usersJson = await usersRes.json();
+        if (!cancelled) {
+          if (Array.isArray(taskJson?.task_types)) setL1TaskTypes(taskJson.task_types);
+          if (Array.isArray(usersJson)) setL1Users(usersJson);
+        }
+      } catch (err) {
+        console.warn("Falha ao carregar catalogos L1 (task types / users):", err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Reset custom tasks quando o modal fecha (evita carry-over entre
+  // intakes diferentes).
+  useEffect(() => {
+    if (selectedId === null) setCustomTaskDrafts([]);
+  }, [selectedId]);
 
   const handleClassifyPending = useCallback(async () => {
     setClassifyingPending(true);
@@ -1532,25 +1815,52 @@ export default function PrazosIniciaisPage() {
               Abra um intake para confirmar as tasks criadas e mandar o cancelamento da task legada para a fila tecnica.
             </div>
           </div>
+          {/* Aviso quando o filtro padrao "so pendentes" esta ativo —
+              evita que operador suspeite de bug ("cade os agendados?").
+              Botao "Mostrar todos" zera so o filtro de status. */}
+          {appliedStatus === DEFAULT_PENDING_STATUSES_CSV ? (
+            <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900">
+              <Filter className="h-3.5 w-3.5 shrink-0" />
+              <span>
+                Filtro padrão aplicado: mostrando só intakes pendentes de
+                tratamento. Finalizados (Agendado, Concluído, GED enviado,
+                Cancelado) estão ocultos.
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2 text-xs text-blue-900 hover:bg-blue-100"
+                onClick={() => {
+                  setStatusFilter("");
+                  setAppliedStatus("");
+                  setOffset(0);
+                }}
+                disabled={isLoading}
+              >
+                Mostrar todos
+              </Button>
+            </div>
+          ) : null}
         </CardHeader>
         <CardContent>
           <ScrollArea className="w-full">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[160px]">Recebido</TableHead>
-                  <TableHead>CNJ</TableHead>
-                  <TableHead>Arquivo / origem</TableHead>
+                  <TableHead className="w-[140px]">Recebido</TableHead>
+                  <TableHead className="w-[180px]">CNJ</TableHead>
+                  <TableHead className="min-w-[280px]">Arquivo / origem</TableHead>
                   <TableHead className="w-[200px]">Classificação</TableHead>
-                  <TableHead className="w-[220px]">Status</TableHead>
-                  <TableHead className="w-[120px] text-right">Sugestoes</TableHead>
-                  <TableHead className="w-[120px] text-right">Acoes</TableHead>
+                  <TableHead className="w-[140px]">Prazo fatal</TableHead>
+                  <TableHead className="w-[180px]">Status</TableHead>
+                  <TableHead className="w-[90px] text-right">Sugestões</TableHead>
+                  <TableHead className="w-[120px] text-right">Ações</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {isLoading && items.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-10 text-center">
+                    <TableCell colSpan={8} className="py-10 text-center">
                       <Loader2 className="mr-2 inline-block h-5 w-5 animate-spin" />
                       Carregando intakes...
                     </TableCell>
@@ -1559,7 +1869,7 @@ export default function PrazosIniciaisPage() {
 
                 {!isLoading && items.length === 0 && !loadError ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                    <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
                       Nenhum intake encontrado.
                     </TableCell>
                   </TableRow>
@@ -1597,6 +1907,38 @@ export default function PrazosIniciaisPage() {
                           ))}
                         </div>
                       ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {/* Prazo fatal mais proximo entre as sugestoes do intake.
+                          Cor por urgencia (vencido / <=3d uteis / <=7d / >7d). */}
+                      {item.prazo_fatal_mais_proximo ? (() => {
+                        const dias = diasUteisAte(item.prazo_fatal_mais_proximo);
+                        const label =
+                          dias == null
+                            ? formatDate(item.prazo_fatal_mais_proximo)
+                            : dias < 0
+                              ? `${formatDate(item.prazo_fatal_mais_proximo)} (vencido há ${Math.abs(dias)}d úteis)`
+                              : dias === 0
+                                ? `${formatDate(item.prazo_fatal_mais_proximo)} (hoje)`
+                                : `${formatDate(item.prazo_fatal_mais_proximo)} (${dias}d úteis)`;
+                        return (
+                          <Badge
+                            variant="outline"
+                            className={prazoFatalBadgeClass(dias)}
+                            title={`Prazo fatal mais próximo: ${label}`}
+                          >
+                            {dias == null
+                              ? formatDate(item.prazo_fatal_mais_proximo)
+                              : dias < 0
+                                ? `Vencido (${formatDate(item.prazo_fatal_mais_proximo)})`
+                                : dias === 0
+                                  ? `Hoje (${formatDate(item.prazo_fatal_mais_proximo)})`
+                                  : `${formatDate(item.prazo_fatal_mais_proximo)} · ${dias}d`}
+                          </Badge>
+                        );
+                      })() : (
                         <span className="text-xs text-muted-foreground">—</span>
                       )}
                     </TableCell>
@@ -1651,23 +1993,63 @@ export default function PrazosIniciaisPage() {
             </Table>
           </ScrollArea>
 
-          <div className="flex items-center justify-end gap-2 pt-4">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!pageInfo.hasPrev || isLoading}
-              onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-            >
-              Anterior
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!pageInfo.hasNext || isLoading}
-              onClick={() => setOffset(offset + PAGE_SIZE)}
-            >
-              Proxima
-            </Button>
+          {/* Paginador padrao igual a pagina de Publicacoes:
+              esquerda mostra "A-B de N", direita tem dropdown de page
+              size + chevrons + "Pagina X de Y". Trocar pageSize ou
+              filtros zera offset (ver onAplicarFiltros / handler do
+              dropdown). */}
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4">
+            <div className="text-sm text-muted-foreground">
+              {total === 0
+                ? "Nenhum registro."
+                : `Mostrando ${pageInfo.start}–${pageInfo.end} de ${total} registro(s).`}
+            </div>
+            <div className="flex items-center gap-3">
+              <Select
+                value={String(pageSize)}
+                onValueChange={(v) => {
+                  setPageSize(Number(v) as 25 | 50 | 100);
+                  setOffset(0);
+                }}
+                disabled={isLoading}
+              >
+                <SelectTrigger className="h-8 w-[140px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="25">25 por página</SelectItem>
+                  <SelectItem value="50">50 por página</SelectItem>
+                  <SelectItem value="100">100 por página</SelectItem>
+                </SelectContent>
+              </Select>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 w-8 p-0"
+                  disabled={!pageInfo.hasPrev || isLoading}
+                  onClick={() => setOffset(Math.max(0, offset - pageSize))}
+                  title="Página anterior"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                <span className="text-sm font-medium px-2 min-w-[110px] text-center">
+                  {pageInfo.totalPages === 0
+                    ? "—"
+                    : `Página ${pageInfo.currentPage} de ${pageInfo.totalPages}`}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 w-8 p-0"
+                  disabled={!pageInfo.hasNext || isLoading}
+                  onClick={() => setOffset(offset + pageSize)}
+                  title="Próxima página"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -1725,7 +2107,25 @@ export default function PrazosIniciaisPage() {
                 </div>
                 <div>
                   <div className="text-xs text-muted-foreground">Processo no Legal One</div>
-                  <div>{detail.lawsuit_id ? `lawsuit_id = ${detail.lawsuit_id}` : "Nao resolvido"}</div>
+                  <div className="flex items-center gap-2">
+                    {detail.lawsuit_id ? (
+                      <>
+                        <span className="text-sm">lawsuit_id = {detail.lawsuit_id}</span>
+                        <a
+                          href={`https://mdradvocacia.novajus.com.br/processos/Processos/DetailsCompromissosTarefas/${detail.lawsuit_id}?renderOnlySection=True`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline"
+                          title="Abrir processo no Legal One"
+                        >
+                          Abrir no L1
+                          <ExternalLink className="h-3 w-3" />
+                        </a>
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground">Nao resolvido</span>
+                    )}
+                  </div>
                 </div>
                 <div className="min-w-0">
                   <div className="text-xs text-muted-foreground">Escritorio</div>
@@ -1792,6 +2192,82 @@ export default function PrazosIniciaisPage() {
                   </div>
                 </div>
               </div>
+
+              {/* Tarefas existentes do processo no Legal One. So renderiza
+                  quando tem lawsuit_id resolvido. Reusa endpoint de
+                  publicacoes (`/publications/groups/{id}/recent-tasks`). */}
+              {detail.lawsuit_id ? (
+                <Card className="border-slate-200">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm flex items-center gap-2">
+                      <CalendarClock className="h-4 w-4" />
+                      Tarefas no Legal One
+                      {recentTasks && !recentTasks.check_failed ? (
+                        <span className="text-xs font-normal text-muted-foreground">
+                          ({recentTasks.pending_count} pendente
+                          {recentTasks.pending_count !== 1 ? "s" : ""},{" "}
+                          {recentTasks.recent_completed_count} recente
+                          {recentTasks.recent_completed_count !== 1 ? "s" : ""})
+                        </span>
+                      ) : null}
+                    </CardTitle>
+                    <CardDescription className="text-xs">
+                      Contexto de tarefas existentes deste processo no L1, pra
+                      evitar duplicar agendamentos.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {recentTasksLoading ? (
+                      <div className="text-center text-xs text-muted-foreground py-4">
+                        <Loader2 className="mr-2 inline-block h-3.5 w-3.5 animate-spin" />
+                        Buscando tarefas no Legal One...
+                      </div>
+                    ) : recentTasks?.check_failed ? (
+                      <Alert variant="destructive" className="py-2">
+                        <AlertCircle className="h-3.5 w-3.5" />
+                        <AlertDescription className="text-xs">
+                          Não foi possível consultar tarefas do processo no L1.
+                          Verifique manualmente antes de agendar pra evitar
+                          duplicatas.
+                        </AlertDescription>
+                      </Alert>
+                    ) : recentTasks &&
+                      recentTasks.pending.length === 0 &&
+                      recentTasks.recent_completed.length === 0 ? (
+                      <div className="text-xs text-muted-foreground py-2">
+                        Nenhuma tarefa registrada neste processo no L1.
+                      </div>
+                    ) : recentTasks ? (
+                      <div className="space-y-3">
+                        {recentTasks.pending.length > 0 ? (
+                          <div>
+                            <p className="text-xs font-semibold uppercase tracking-wide text-amber-900 mb-1">
+                              Pendentes ({recentTasks.pending.length})
+                            </p>
+                            <div className="space-y-1">
+                              {recentTasks.pending.map((t) => (
+                                <RecentTaskRow key={t.task_id} task={t} pending />
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                        {recentTasks.recent_completed.length > 0 ? (
+                          <div>
+                            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+                              Últimas concluídas ({recentTasks.recent_completed.length})
+                            </p>
+                            <div className="space-y-1">
+                              {recentTasks.recent_completed.map((t) => (
+                                <RecentTaskRow key={t.task_id} task={t} />
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </CardContent>
+                </Card>
+              ) : null}
 
               {detail.error_message ? (
                 <Alert variant="destructive">
@@ -2011,6 +2487,184 @@ export default function PrazosIniciaisPage() {
                   </AlertDescription>
                 </Alert>
               )}
+
+              {/* ─── Tarefas avulsas ─────────────────────────────────
+                  Operador adiciona tarefas que nao casam com sugestao
+                  da IA — mesmo padrao de "tarefa avulsa" de publicacoes.
+                  Vao no payload custom_tasks da confirmacao; backend
+                  cria no L1 e persiste sugestao sintetica. */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-semibold">
+                      Tarefas avulsas{" "}
+                      <span className="font-normal text-muted-foreground">
+                        ({customTaskDrafts.length})
+                      </span>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Adicione tarefas que não casam com sugestões da IA
+                      (ex.: providência específica desse caso). Vão pro L1
+                      junto com as sugestões marcadas acima.
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      setCustomTaskDrafts((prev) => [
+                        ...prev,
+                        {
+                          id: `ct-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                          task_subtype_external_id: null,
+                          responsible_user_external_id: null,
+                          description: "",
+                          due_date: "",
+                          priority: "Normal",
+                          notes: "",
+                        },
+                      ])
+                    }
+                    disabled={l1TaskTypes.length === 0 || l1Users.length === 0}
+                    title={
+                      l1TaskTypes.length === 0 || l1Users.length === 0
+                        ? "Carregando catálogos do Legal One..."
+                        : "Adicionar uma tarefa que não veio da classificação da IA"
+                    }
+                  >
+                    + Adicionar tarefa avulsa
+                  </Button>
+                </div>
+
+                {customTaskDrafts.map((draft, idx) => {
+                  const updateDraft = (patch: Partial<typeof draft>) =>
+                    setCustomTaskDrafts((prev) =>
+                      prev.map((d) => (d.id === draft.id ? { ...d, ...patch } : d)),
+                    );
+                  return (
+                    <div
+                      key={draft.id}
+                      className="rounded-md border bg-muted/20 p-3 space-y-3"
+                    >
+                      <div className="flex items-center justify-between">
+                        <Badge variant="outline" className="text-[10px]">
+                          Tarefa avulsa {idx + 1}
+                        </Badge>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCustomTaskDrafts((prev) =>
+                              prev.filter((d) => d.id !== draft.id),
+                            )
+                          }
+                          className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                          title="Remover tarefa avulsa"
+                        >
+                          <XCircle className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+
+                      <SubtypePicker
+                        value={draft.task_subtype_external_id}
+                        taskTypes={l1TaskTypes.map((tt) => ({
+                          external_id: tt.id,
+                          name: tt.name,
+                          subtypes: tt.sub_types,
+                        }))}
+                        onChange={(subId) =>
+                          updateDraft({ task_subtype_external_id: subId })
+                        }
+                        label="Task do Legal One"
+                        required
+                        placeholder="Selecione a task"
+                        searchPlaceholder="Buscar por categoria ou task..."
+                      />
+
+                      <div className="space-y-1">
+                        <Label className="text-xs">Responsável *</Label>
+                        <Select
+                          value={
+                            draft.responsible_user_external_id != null
+                              ? String(draft.responsible_user_external_id)
+                              : ""
+                          }
+                          onValueChange={(v) =>
+                            updateDraft({
+                              responsible_user_external_id: v ? Number(v) : null,
+                            })
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Selecione..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {l1Users.map((u) => (
+                              <SelectItem
+                                key={u.external_id}
+                                value={String(u.external_id)}
+                              >
+                                {u.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Data fatal *</Label>
+                          <Input
+                            type="date"
+                            value={draft.due_date}
+                            onChange={(e) =>
+                              updateDraft({ due_date: e.target.value })
+                            }
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Prioridade</Label>
+                          <Select
+                            value={draft.priority}
+                            onValueChange={(v) => updateDraft({ priority: v })}
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="Low">Low</SelectItem>
+                              <SelectItem value="Normal">Normal</SelectItem>
+                              <SelectItem value="High">High</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <Label className="text-xs">Descrição *</Label>
+                        <Input
+                          value={draft.description}
+                          onChange={(e) =>
+                            updateDraft({ description: e.target.value })
+                          }
+                          placeholder={`Ex: Providência avulsa — CNJ ${detail.cnj_number || ""}`}
+                          maxLength={250}
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <Label className="text-xs">Anotações (opcional)</Label>
+                        <Textarea
+                          rows={2}
+                          value={draft.notes}
+                          onChange={(e) => updateDraft({ notes: e.target.value })}
+                          placeholder="Texto livre — vai no campo notes da tarefa no L1."
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
 
               {detail.pedidos && detail.pedidos.length > 0 ? (
                 <div>

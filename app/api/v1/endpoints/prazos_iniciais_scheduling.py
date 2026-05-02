@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Query
@@ -94,8 +94,23 @@ class ConfirmSuggestionPayload(BaseModel):
     review_status: Optional[str] = None
 
 
+class CustomTaskPayload(BaseModel):
+    """
+    Tarefa avulsa adicionada pelo operador no modal de Confirmar
+    Agendamento — nao casa com sugestao da IA. Espelha o padrao de
+    "tarefa avulsa" de publicacoes.
+    """
+    task_subtype_external_id: int = Field(..., ge=1)
+    responsible_user_external_id: int = Field(..., ge=1)
+    description: str = Field(..., min_length=1)
+    due_date: date  # YYYY-MM-DD
+    priority: str = Field(default="Normal")
+    notes: Optional[str] = None
+
+
 class ConfirmSchedulingRequest(BaseModel):
     suggestions: list[ConfirmSuggestionPayload] = Field(default_factory=list)
+    custom_tasks: list[CustomTaskPayload] = Field(default_factory=list)
     enqueue_legacy_task_cancellation: bool = True
     legacy_task_type_external_id: int = Field(
         default=DEFAULT_LEGACY_TASK_TYPE_EXTERNAL_ID,
@@ -148,6 +163,10 @@ def confirm_intake_scheduling(
         auth_security.require_permission("prazos_iniciais")
     ),
 ):
+    from app.services.prazos_iniciais.scheduling_service import (
+        CustomTaskInput as _CustomTaskInput,
+    )
+
     service = PrazosIniciaisSchedulingService(db)
     try:
         result = service.confirm_intake_scheduling(
@@ -159,6 +178,18 @@ def confirm_intake_scheduling(
                     review_status=item.review_status,
                 )
                 for item in payload.suggestions
+            ]
+            or None,
+            custom_tasks=[
+                _CustomTaskInput(
+                    task_subtype_external_id=ct.task_subtype_external_id,
+                    responsible_user_external_id=ct.responsible_user_external_id,
+                    description=ct.description,
+                    due_date=ct.due_date,
+                    priority=ct.priority,
+                    notes=ct.notes,
+                )
+                for ct in payload.custom_tasks
             ]
             or None,
             confirmed_by_email=current_user.email,

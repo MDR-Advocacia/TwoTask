@@ -127,6 +127,19 @@ import { apiFetch } from "@/lib/api-client";
 const API = "/api/v1/publications";
 const API_V1 = "/api/v1";
 
+// Status considerados "pendentes de tratamento final" — sao o foco
+// operacional da pagina. Os finalizados (AGENDADO, IGNORADO, OBSOLETO,
+// DESCARTADO_DUPLICATA) ficam fora do default; operador marca
+// explicitamente nos filtros pra ver. ERRO entra no default porque
+// precisa atencao do operador (similar aos ERRO_* em prazos iniciais).
+const DEFAULT_PENDING_PUBLICATION_STATUSES = [
+  "NOVO",
+  "CLASSIFICADO",
+  "ERRO",
+];
+const DEFAULT_PENDING_PUBLICATION_STATUSES_CSV =
+  DEFAULT_PENDING_PUBLICATION_STATUSES.join(",");
+
 // ─── Timezone helpers ────────────────────────────────────────────────
 // O backend persiste datas/horas como ISO UTC (sufixo "Z"), e o L1
 // renderiza em BRT (UTC-3). O modal de agendamento precisa exibir e
@@ -671,7 +684,14 @@ const PublicationsPage = () => {
 
   // Grouped records
   const [grouped, setGrouped] = useState<GroupedResponse | null>(null);
-  const [filterStatus, setFilterStatus] = useState<string>("");
+  // Default = pendentes de tratamento final (NOVO + CLASSIFICADO + ERRO).
+  // Os finalizados (AGENDADO, IGNORADO, OBSOLETO, DESCARTADO_DUPLICATA)
+  // ficam fora do default; operador marca explicitamente nos filtros pra
+  // ver. Indicador visual no header da listagem avisa que o filtro padrao
+  // esta ativo + botao "Mostrar todos" pra zerar so o filtro de status.
+  const [filterStatus, setFilterStatus] = useState<string>(
+    DEFAULT_PENDING_PUBLICATION_STATUSES_CSV,
+  );
   const [filterOffice, setFilterOffice] = useState<string>("");
   const [filterDateFrom, setFilterDateFrom] = useState<string>("");
   const [filterDateTo, setFilterDateTo] = useState<string>("");
@@ -2785,6 +2805,21 @@ const PublicationsPage = () => {
                 <Save className="h-4 w-4 mr-2" />
                 Salvar Filtros
               </Button>
+              {filterStatus === DEFAULT_PENDING_PUBLICATION_STATUSES_CSV ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="border-blue-200 bg-blue-50 text-blue-900 hover:bg-blue-100"
+                  onClick={() => {
+                    setFilterStatus("");
+                    handleFilterChange("", filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj, filterScheduledBy);
+                  }}
+                  title="Filtro padrão mostra apenas pendentes (NOVO, CLASSIFICADO, ERRO). Clique pra ver também finalizados (Agendado, Ignorado, Obsoleto, Descartado)."
+                >
+                  <Filter className="h-4 w-4 mr-2" />
+                  Mostrar todos os status
+                </Button>
+              ) : null}
               {savedFilters.length > 0 && (
                 <Select onValueChange={(v) => {
                   const filter = savedFilters.find(f => f.id === parseInt(v));
@@ -3066,8 +3101,11 @@ const PublicationsPage = () => {
                 </div>
               </div>
 
-              {/* Botão limpar filtros (aparece quando há filtros ativos) */}
-              {(filterStatus || filterOffice || filterCategory || filterUf || filterVinculo || filterNatureza || filterPolo || filterDateFrom || filterDateTo || filterCnj || filterScheduledBy) && (
+              {/* Botão limpar filtros — volta pro default operacional
+                  (so pendentes), nao pro estado completamente vazio. Pra
+                  ver finalizados, operador usa "Mostrar todos" no
+                  indicador do header da listagem. */}
+              {((filterStatus && filterStatus !== DEFAULT_PENDING_PUBLICATION_STATUSES_CSV) || filterOffice || filterCategory || filterUf || filterVinculo || filterNatureza || filterPolo || filterDateFrom || filterDateTo || filterCnj || filterScheduledBy) && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -3075,7 +3113,7 @@ const PublicationsPage = () => {
                   onClick={() => {
                     setFilterCnj("");
                     setFilterScheduledBy("");
-                    handleFilterChange("", "", "", "", "", "", "", "", "", "", "");
+                    handleFilterChange(DEFAULT_PENDING_PUBLICATION_STATUSES_CSV, "", "", "", "", "", "", "", "", "", "");
                   }}
                 >
                   <XCircle className="h-3.5 w-3.5 mr-1" />

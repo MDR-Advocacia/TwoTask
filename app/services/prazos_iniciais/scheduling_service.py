@@ -58,6 +58,30 @@ class ConfirmedSuggestionInput:
     review_status: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class CustomTaskInput:
+    """
+    Tarefa avulsa adicionada pelo operador no modal de Confirmar
+    Agendamento — nao casa com sugestao da IA, vai direto pra criacao
+    no L1. Espelha o padrao de "tarefa avulsa" de publicacoes.
+
+    Persistida como sugestao sintetica (tipo_prazo='AVULSA',
+    review_status='aprovado', created_task_id preenchido) pra manter
+    rastreabilidade na pagina de detalhe.
+    """
+    task_subtype_external_id: int
+    responsible_user_external_id: int
+    description: str
+    due_date: date  # vira startDateTime/endDateTime no L1
+    priority: str = "Normal"
+    notes: Optional[str] = None
+
+
+# Tipo "sintetico" pra sugestao avulsa — fica como tipo_prazo da
+# sugestao persistida, evitando precisar de migracao pra novo enum.
+TIPO_PRAZO_AVULSA = "AVULSA"
+
+
 class PrazosIniciaisSchedulingService:
     def __init__(
         self,
@@ -244,6 +268,127 @@ class PrazosIniciaisSchedulingService:
                 )
         return task_id
 
+    def _create_custom_task(
+        self,
+        *,
+        intake: PrazoInicialIntake,
+        custom_task: "CustomTaskInput",
+        confirmed_by_email: str,
+        now: datetime,
+    ) -> tuple[PrazoInicialSugestao, int]:
+        """
+        Cria tarefa avulsa no L1 (vinculada ao processo se houver
+        lawsuit_id) e persiste sugestao sintetica pra rastreabilidade.
+        Retorna (sugestao_pendente_de_db_add, task_id_criado_no_L1).
+
+        Levanta ValueError ou RuntimeError em falha — caller faz
+        rollback transacional.
+        """
+        if not custom_task.task_subtype_external_id:
+            raise ValueError("Tarefa avulsa: task_subtype_external_id obrigatorio.")
+        if not custom_task.responsible_user_external_id:
+            raise ValueError("Tarefa avulsa: responsavel obrigatorio.")
+        if not custom_task.description or not custom_task.description.strip():
+            raise ValueError("Tarefa avulsa: description obrigatoria.")
+        if custom_task.due_date is None:
+            raise ValueError("Tarefa avulsa: due_date obrigatoria.")
+
+        type_id = self._resolve_parent_type_id(
+            custom_task.task_subtype_external_id,
+        )
+        if not type_id:
+            raise ValueError(
+                f"Tipo-pai do subTypeId={custom_task.task_subtype_external_id} "
+                "nao encontrado no catalogo local — sincronize o catalogo de "
+                "tasks do L1."
+            )
+
+        due_iso = f"{custom_task.due_date.isoformat()}T23:59:00Z"
+        publish_iso = f"{custom_task.due_date.isoformat()}T00:00:00Z"
+
+        description = custom_task.description.strip()
+        if len(description) > _L1_DESCRIPTION_MAX_CHARS:
+            description = (
+                description[: _L1_DESCRIPTION_MAX_CHARS - 1].rstrip() + "…"
+            )
+
+        priority = custom_task.priority or "Normal"
+
+        payload: dict[str, Any] = {
+            "description": description,
+            "priority": priority,
+            "startDateTime": due_iso,
+            "endDateTime": due_iso,
+            "publishDate": publish_iso,
+            "status": {"id": 0},
+            "typeId": int(type_id),
+            "subTypeId": int(custom_task.task_subtype_external_id),
+            "participants": [
+                {
+                    "contact": {
+                        "id": int(custom_task.responsible_user_external_id),
+                    },
+                    "isResponsible": True,
+                    "isExecuter": True,
+                    "isRequester": True,
+                }
+            ],
+        }
+        if custom_task.notes:
+            payload["notes"] = custom_task.notes
+        if intake.office_id:
+            payload["responsibleOfficeId"] = int(intake.office_id)
+            payload["originOfficeId"] = int(intake.office_id)
+
+        logger.info(
+            "prazos_iniciais.create_custom_task: intake=%s subType=%s cnj=%s",
+            intake.id, custom_task.task_subtype_external_id, intake.cnj_number,
+        )
+        created = self.l1_client.create_task(payload)
+        if not created or not created.get("id"):
+            l1_detail = self.l1_client.format_last_create_task_error()
+            raise RuntimeError(
+                l1_detail
+                or f"Legal One recusou a criacao da tarefa avulsa (intake {intake.id})."
+            )
+        task_id = int(created["id"])
+
+        if intake.lawsuit_id:
+            try:
+                self.l1_client.link_task_to_lawsuit(
+                    task_id,
+                    {"linkType": "Litigation", "linkId": int(intake.lawsuit_id)},
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "prazos_iniciais.link_custom_task falhou (task_id=%s "
+                    "lawsuit=%s): %s",
+                    task_id, intake.lawsuit_id, exc,
+                )
+
+        # Sugestao sintetica — review_status=APROVADO ja na criacao
+        # porque o operador acabou de submeter. created_task_id
+        # preenchido pra refletir que a task ja existe no L1.
+        sugestao = PrazoInicialSugestao(
+            intake_id=intake.id,
+            tipo_prazo=TIPO_PRAZO_AVULSA,
+            data_base=custom_task.due_date,
+            data_final_calculada=custom_task.due_date,
+            task_subtype_id=int(custom_task.task_subtype_external_id),
+            responsavel_sugerido_id=int(custom_task.responsible_user_external_id),
+            payload_proposto={
+                "is_custom_task": True,
+                "priority": priority,
+                "description": description,
+                "notes": custom_task.notes,
+            },
+            review_status=SUGESTAO_REVIEW_APPROVED,
+            reviewed_by_email=confirmed_by_email,
+            reviewed_at=now,
+            created_task_id=task_id,
+        )
+        return sugestao, task_id
+
     # ──────────────────────────────────────────────
     # Upload do PDF da habilitação no GED (Onda 3)
     # ──────────────────────────────────────────────
@@ -358,6 +503,7 @@ class PrazosIniciaisSchedulingService:
         confirmed_by_email: str,
         confirmed_by_user_id: Optional[int] = None,
         confirmed_by_name: Optional[str] = None,
+        custom_tasks: Optional[list[CustomTaskInput]] = None,
         enqueue_legacy_task_cancellation: bool = True,
         legacy_task_type_external_id: int = DEFAULT_LEGACY_TASK_TYPE_EXTERNAL_ID,
         legacy_task_subtype_external_id: int = DEFAULT_LEGACY_TASK_SUBTYPE_EXTERNAL_ID,
@@ -477,10 +623,48 @@ class PrazosIniciaisSchedulingService:
         # `dispatch_pending=True` no fim da FASE 3 — o disparo acontece
         # depois, em transação separada.
 
+        # ── FASE 2.6 — Tarefas avulsas (custom_tasks) ──
+        # Operador adicionou tarefas no modal de Confirmar Agendamento que
+        # nao casam com sugestao da IA. Sao criadas direto no L1 e
+        # persistidas como sugestao sintetica (tipo_prazo='AVULSA',
+        # review_status='aprovado', created_task_id preenchido) pra
+        # rastreabilidade. Mesma politica atomica da FASE 2: falha em
+        # qualquer uma → rollback + ERRO_AGENDAMENTO.
+        custom_created_ids: list[int] = []
+        if custom_tasks:
+            try:
+                for ct in custom_tasks:
+                    new_sug, task_id = self._create_custom_task(
+                        intake=intake,
+                        custom_task=ct,
+                        confirmed_by_email=confirmed_by_email,
+                        now=now,
+                    )
+                    self.db.add(new_sug)
+                    custom_created_ids.append(task_id)
+                    l1_created_ids.append(task_id)
+            except Exception as exc:  # noqa: BLE001
+                self.db.rollback()
+                intake = self._load_intake(intake_id)
+                if intake is not None:
+                    intake.status = INTAKE_STATUS_SCHEDULE_ERROR
+                    intake.error_message = (
+                        f"Falha ao criar tarefa avulsa: {str(exc)[:500]}"
+                    )
+                    self.db.commit()
+                logger.exception(
+                    "prazos_iniciais.confirm_intake_scheduling: falha em "
+                    "tarefa avulsa (intake_id=%s): %s",
+                    intake_id, exc,
+                )
+                raise RuntimeError(
+                    f"Falha ao criar tarefa avulsa (intake {intake_id}): {exc}"
+                ) from exc
+
         # ── FASE 3 — persiste review_status e promove intake ──
         # Só chega aqui se a FASE 2 completou sem exceção.
         confirmed_ids: list[int] = []
-        created_task_ids: list[int] = []
+        created_task_ids: list[int] = list(custom_created_ids)
         for sugestao, entry in selected:
             target_status = entry.review_status or sugestao.review_status or SUGESTAO_REVIEW_PENDING
             if target_status == SUGESTAO_REVIEW_PENDING:
@@ -495,15 +679,16 @@ class PrazosIniciaisSchedulingService:
 
         # Template "no-op" (pin014): se TODAS as sugestoes confirmadas
         # vieram de template marcado pra finalizar sem providencia (sem
-        # task criada no L1), o intake termina como
-        # CONCLUIDO_SEM_PROVIDENCIA — mesmo terminal do "Finalizar sem
-        # providencia" manual, separa em relatorios "tasks criadas" de
-        # "no-ops". Mistura (algumas sugestoes com task + algumas no-op)
-        # mantem AGENDADO porque pelo menos 1 task foi criada no L1.
-        all_no_op = all(
-            (s.created_task_id is None)
-            and bool((s.payload_proposto or {}).get("skip_task_creation"))
-            for s, _ in selected
+        # task criada no L1) E nao houve tarefa avulsa, o intake termina
+        # como CONCLUIDO_SEM_PROVIDENCIA. Tarefa avulsa adiciona task ao
+        # L1, entao SEMPRE promove pra AGENDADO.
+        all_no_op = (
+            not custom_created_ids
+            and all(
+                (s.created_task_id is None)
+                and bool((s.payload_proposto or {}).get("skip_task_creation"))
+                for s, _ in selected
+            )
         )
         intake.status = (
             INTAKE_STATUS_COMPLETED_WITHOUT_PROVIDENCE

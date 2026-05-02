@@ -233,6 +233,10 @@ class IntakeSummary(BaseModel):
     # "AUDIENCIA"]). Mantem ordem de criacao das sugestoes pra
     # estabilidade visual. Lista vazia se intake nao foi classificado.
     tipos_prazo: list[str] = []
+    # Data fatal mais proxima (min) entre as sugestoes do intake. Usada
+    # pela UI de listagem pra exibir urgencia (cor por proximidade).
+    # NULL se nenhuma sugestao tem prazo_fatal_data preenchido.
+    prazo_fatal_mais_proximo: Optional[date] = None
     # Tratado por (pin011) — quem confirmou agendamentos OU finalizou
     # sem providência. NULL enquanto intake estiver em fluxo.
     treated_by_user_id: Optional[int] = None
@@ -436,11 +440,16 @@ def _intake_to_summary(intake: PrazoInicialIntake) -> IntakeSummary:
     # nao foi classificado ou nao tem sugestoes ainda.
     seen_tipos: set[str] = set()
     tipos_prazo: list[str] = []
+    prazos_fatais: list[date] = []
     for s in intake.sugestoes or []:
         tp = s.tipo_prazo
         if tp and tp not in seen_tipos:
             seen_tipos.add(tp)
             tipos_prazo.append(tp)
+        if s.prazo_fatal_data is not None:
+            prazos_fatais.append(s.prazo_fatal_data)
+    # Min = data mais proxima/iminente (prazo fatal mais critico).
+    prazo_fatal_mais_proximo = min(prazos_fatais) if prazos_fatais else None
 
     return IntakeSummary(
         id=intake.id,
@@ -467,6 +476,7 @@ def _intake_to_summary(intake: PrazoInicialIntake) -> IntakeSummary:
         updated_at=intake.updated_at,
         sugestoes_count=len(intake.sugestoes or []),
         tipos_prazo=tipos_prazo,
+        prazo_fatal_mais_proximo=prazo_fatal_mais_proximo,
         treated_by_user_id=intake.treated_by_user_id,
         treated_by_email=intake.treated_by_email,
         treated_by_name=intake.treated_by_name,

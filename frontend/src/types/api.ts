@@ -230,6 +230,9 @@ export interface PrazoInicialIntakeSummary {
   // "AUDIENCIA"]). Usado pela UI de listagem pra exibir a "classificacao".
   // Lista vazia se intake nao foi classificado.
   tipos_prazo?: string[];
+  // Data fatal mais proxima entre as sugestoes (ISO YYYY-MM-DD ou null).
+  // UI usa pra exibir cor por urgencia.
+  prazo_fatal_mais_proximo?: string | null;
   // Tratado por (pin011) — quem confirmou agendamentos OU finalizou.
   treated_by_user_id?: number | null;
   treated_by_email?: string | null;
@@ -415,8 +418,23 @@ export interface PrazoInicialConfirmSchedulingSuggestion {
   review_status?: string | null;
 }
 
+/**
+ * Tarefa avulsa adicionada pelo operador no modal de Confirmar
+ * Agendamento — nao casa com sugestao da IA. Backend cria no L1 +
+ * persiste sugestao sintetica (tipo_prazo='AVULSA').
+ */
+export interface PrazoInicialCustomTaskPayload {
+  task_subtype_external_id: number;
+  responsible_user_external_id: number;
+  description: string;
+  due_date: string; // ISO YYYY-MM-DD
+  priority?: string; // Low/Normal/High
+  notes?: string | null;
+}
+
 export interface PrazoInicialSchedulingConfirmationPayload {
   suggestions?: PrazoInicialConfirmSchedulingSuggestion[];
+  custom_tasks?: PrazoInicialCustomTaskPayload[];
   enqueue_legacy_task_cancellation?: boolean;
   legacy_task_type_external_id?: number;
   legacy_task_subtype_external_id?: number;
