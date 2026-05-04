@@ -67,7 +67,7 @@ class SquadService:
         for member_info in squad_data.members:
             squad_member = models.SquadMember(
                 squad_id=new_squad.id,
-                legal_one_user_id=member_info.user_id,
+                legal_one_user_id=self._resolve_user_internal_id(member_info.user_id),
                 is_leader=member_info.is_leader,
                 is_assistant=getattr(member_info, "is_assistant", False),
             )
@@ -114,7 +114,7 @@ class SquadService:
             for member_info in squad_data.members:
                 squad_member = models.SquadMember(
                     squad_id=squad_id,
-                    legal_one_user_id=member_info.user_id,
+                    legal_one_user_id=self._resolve_user_internal_id(member_info.user_id),
                     is_leader=member_info.is_leader,
                     is_assistant=getattr(member_info, "is_assistant", False),
                 )
@@ -129,6 +129,31 @@ class SquadService:
     # member, ou alternar leader/assistant em 1 member sem reescrever a
     # lista inteira (que era o caminho do PUT /squads/{id}).
 
+    def _resolve_user_internal_id(self, user_id_or_external: int) -> int:
+        """O frontend opera em external_id (vindo do L1) mas a FK
+        `squad_members.legal_one_user_id` aponta pra PK interna. Aceita
+        external_id e converte. Levanta ValueError se nao achar."""
+        from app.models.legal_one import LegalOneUser
+        # Tenta como external_id primeiro (caso comum vindo do UserSelector)
+        user = (
+            self.db.query(LegalOneUser)
+            .filter(LegalOneUser.external_id == user_id_or_external)
+            .one_or_none()
+        )
+        if user is not None:
+            return user.id
+        # Fallback: pode ter sido enviado o id interno direto
+        user = (
+            self.db.query(LegalOneUser)
+            .filter(LegalOneUser.id == user_id_or_external)
+            .one_or_none()
+        )
+        if user is not None:
+            return user.id
+        raise ValueError(
+            f"Usuário {user_id_or_external} não encontrado no catálogo do Legal One."
+        )
+
     def add_member(
         self,
         squad_id: int,
@@ -140,12 +165,13 @@ class SquadService:
         squad = self.db.query(models.Squad).filter(models.Squad.id == squad_id).one_or_none()
         if squad is None:
             raise ValueError(f"Squad {squad_id} nao encontrada.")
+        legal_one_user_id = self._resolve_user_internal_id(user_id)
         # User ja' faz parte?
         existing = (
             self.db.query(models.SquadMember)
             .filter(
                 models.SquadMember.squad_id == squad_id,
-                models.SquadMember.legal_one_user_id == user_id,
+                models.SquadMember.legal_one_user_id == legal_one_user_id,
             )
             .one_or_none()
         )
@@ -159,7 +185,7 @@ class SquadService:
             self._unset_other_role(squad_id, "is_assistant")
         member = models.SquadMember(
             squad_id=squad_id,
-            legal_one_user_id=user_id,
+            legal_one_user_id=legal_one_user_id,
             is_leader=is_leader,
             is_assistant=is_assistant,
         )
