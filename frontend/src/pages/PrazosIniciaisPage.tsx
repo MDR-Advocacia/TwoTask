@@ -275,6 +275,42 @@ function isConfirmableStatus(status: string): boolean {
 }
 
 /**
+ * Sugestao "agendavel" no L1 = tem task_subtype_id + data_final_calculada
+ * preenchidos. Sugestao no-op (template skip_task_creation=true) eh
+ * agendavel mesmo sem esses campos — vai pular criacao no L1.
+ *
+ * Quando a IA classifica algo como CONTESTAR mas nao consegue derivar
+ * data_base (ex.: AR ainda nao registrado nos autos), data_final_calculada
+ * fica null — backend rejeita criar task no L1 sem data. Bloqueamos o
+ * checkbox no frontend pra evitar o erro 500 generico no submit.
+ */
+function isSuggestionSchedulable(suggestion: PrazoInicialSugestao): {
+  ok: boolean;
+  reason?: string;
+} {
+  const isNoOp = Boolean(
+    (suggestion.payload_proposto as Record<string, unknown> | null)
+      ?.skip_task_creation,
+  );
+  if (isNoOp) return { ok: true };
+  if (suggestion.task_subtype_id == null) {
+    return {
+      ok: false,
+      reason:
+        "Sugestão sem template casado (task_subtype_id = NULL). Cadastre um template ou Reclassifique.",
+    };
+  }
+  if (suggestion.data_final_calculada == null) {
+    return {
+      ok: false,
+      reason:
+        "Sem data_final_calculada — a IA não conseguiu derivar a data base (ex.: AR/intimação ainda não registrado). Reclassifique após corrigir os autos, ou edite a sugestão antes de agendar.",
+    };
+  }
+  return { ok: true };
+}
+
+/**
  * Linha compacta de tarefa do L1 — usada no card "Tarefas no Legal One"
  * dentro do detalhe do intake. Replica o estilo do card equivalente em
  * publicacoes (status badge ambar pra pendentes, neutro pras
@@ -379,11 +415,15 @@ export default function PrazosIniciaisPage() {
   const [recentTasksLoading, setRecentTasksLoading] = useState(false);
 
   // Catálogos do Legal One pra o form de "tarefa avulsa" no modal de
-  // Confirmar Agendamento. Carregados 1x no mount.
+  // Confirmar Agendamento. Carregados 1x no mount. Se a chamada falha
+  // (rede, 500), `l1CatalogsError` guarda mensagem e a UI mostra aviso
+  // + botao de "Tentar de novo" pra nao bloquear silenciosamente.
   const [l1TaskTypes, setL1TaskTypes] = useState<
     Array<{ id: number; name: string; sub_types: Array<{ external_id: number; name: string }> }>
   >([]);
   const [l1Users, setL1Users] = useState<Array<{ external_id: number; name: string }>>([]);
+  const [l1CatalogsLoading, setL1CatalogsLoading] = useState(false);
+  const [l1CatalogsError, setL1CatalogsError] = useState<string | null>(null);
 
   // Tarefas avulsas em edicao no modal — operador adiciona com botao
   // "+ Adicionar tarefa avulsa". Vao no payload custom_tasks da
@@ -977,6 +1017,13 @@ export default function PrazosIniciaisPage() {
       if (!detail) return;
       const next: Record<number, boolean> = {};
       detail.sugestoes.forEach((suggestion) => {
+        // "Selecionar todas" pula sugestoes nao-agendaveis (sem
+        // data_final_calculada / sem template). Senao o submit falha
+        // no backend com erro generico.
+        if (checked && !isSuggestionSchedulable(suggestion).ok) {
+          next[suggestion.id] = false;
+          return;
+        }
         next[suggestion.id] = checked;
       });
       setSelectedSuggestions(next);
@@ -1023,6 +1070,24 @@ export default function PrazosIniciaisPage() {
         created_task_id: parsedCreatedTaskId,
         review_status: reviewStatus,
       });
+    }
+
+    // Defesa em profundidade: bloqueia submit se alguma sugestao
+    // marcada nao eh agendavel (sem data_final_calculada e nao no-op).
+    // Os checkboxes ja sao disabled, mas operador pode ter marcado
+    // antes de carregar detalhe atualizado, ou via deep-link/URL.
+    const invalidSelected = detail.sugestoes.find(
+      (s) =>
+        selectedSuggestions[s.id] && !isSuggestionSchedulable(s).ok,
+    );
+    if (invalidSelected) {
+      const reason = isSuggestionSchedulable(invalidSelected).reason;
+      toast({
+        title: `Sugestão #${invalidSelected.id} não é agendável`,
+        description: reason || "Sugestão sem dados suficientes pra criar tarefa no L1.",
+        variant: "destructive",
+      });
+      return;
     }
 
     // Custom tasks tem que ter os campos minimos preenchidos antes do
@@ -1160,30 +1225,40 @@ export default function PrazosIniciaisPage() {
   }, []);
 
   // Carrega catalogos de task types + users 1x no mount, usados pelo
-  // form de "tarefa avulsa" no modal de Confirmar Agendamento. Silencioso
-  // em falha — UI continua funcional (operador nao vai conseguir adicionar
-  // tarefa avulsa, mas resto rola). Mesmo padrao do PrazosIniciaisTemplatesAdminPage.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const [taskRes, usersRes] = await Promise.all([
-          apiFetch("/api/v1/tasks/task-creation-data"),
-          apiFetch("/api/v1/users/with-squads"),
-        ]);
-        if (!taskRes.ok || !usersRes.ok) return;
-        const taskJson = await taskRes.json();
-        const usersJson = await usersRes.json();
-        if (!cancelled) {
-          if (Array.isArray(taskJson?.task_types)) setL1TaskTypes(taskJson.task_types);
-          if (Array.isArray(usersJson)) setL1Users(usersJson);
-        }
-      } catch (err) {
-        console.warn("Falha ao carregar catalogos L1 (task types / users):", err);
+  // form de "tarefa avulsa" no modal de Confirmar Agendamento. Em caso
+  // de falha, expoe `l1CatalogsError` pra UI mostrar aviso e botao
+  // "Tentar de novo" — antes era silencioso e o botao "Adicionar tarefa
+  // avulsa" ficava disabled sem operador entender por que.
+  const loadL1Catalogs = useCallback(async () => {
+    setL1CatalogsLoading(true);
+    setL1CatalogsError(null);
+    try {
+      const [taskRes, usersRes] = await Promise.all([
+        apiFetch("/api/v1/tasks/task-creation-data"),
+        apiFetch("/api/v1/users/with-squads"),
+      ]);
+      if (!taskRes.ok) {
+        throw new Error(`/tasks/task-creation-data devolveu ${taskRes.status}`);
       }
-    })();
-    return () => { cancelled = true; };
+      if (!usersRes.ok) {
+        throw new Error(`/users/with-squads devolveu ${usersRes.status}`);
+      }
+      const taskJson = await taskRes.json();
+      const usersJson = await usersRes.json();
+      if (Array.isArray(taskJson?.task_types)) setL1TaskTypes(taskJson.task_types);
+      if (Array.isArray(usersJson)) setL1Users(usersJson);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("Falha ao carregar catalogos L1:", msg);
+      setL1CatalogsError(msg);
+    } finally {
+      setL1CatalogsLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    loadL1Catalogs();
+  }, [loadL1Catalogs]);
 
   // Reset custom tasks quando o modal fecha (evita carry-over entre
   // intakes diferentes).
@@ -2418,7 +2493,9 @@ export default function PrazosIniciaisPage() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {detail.sugestoes.map((suggestion) => (
+                        {detail.sugestoes.map((suggestion) => {
+                          const schedulable = isSuggestionSchedulable(suggestion);
+                          return (
                           <TableRow key={suggestion.id}>
                             <TableCell>
                               <Checkbox
@@ -2429,7 +2506,9 @@ export default function PrazosIniciaisPage() {
                                     [suggestion.id]: checked === true,
                                   }))
                                 }
+                                disabled={!schedulable.ok}
                                 aria-label={`Selecionar sugestao ${suggestion.id}`}
+                                title={schedulable.reason}
                               />
                             </TableCell>
                             <TableCell>
@@ -2437,6 +2516,15 @@ export default function PrazosIniciaisPage() {
                               <div className="text-xs text-muted-foreground">
                                 {suggestion.subtipo || "Sem subtipo"} · sugestao #{suggestion.id}
                               </div>
+                              {!schedulable.ok ? (
+                                <div
+                                  className="mt-1 inline-flex items-center gap-1 rounded-sm bg-amber-50 border border-amber-200 px-1.5 py-0.5 text-[11px] text-amber-900 max-w-[360px]"
+                                  title={schedulable.reason}
+                                >
+                                  <AlertCircle className="h-3 w-3 shrink-0" />
+                                  <span>Não agendável — {schedulable.reason}</span>
+                                </div>
+                              ) : null}
                               {suggestion.justificativa ? (
                                 <div className="mt-1 max-w-[360px] text-xs text-muted-foreground">
                                   {suggestion.justificativa}
@@ -2473,7 +2561,8 @@ export default function PrazosIniciaisPage() {
                               />
                             </TableCell>
                           </TableRow>
-                        ))}
+                        );
+                        })}
                       </TableBody>
                     </Table>
                   </div>
@@ -2526,16 +2615,48 @@ export default function PrazosIniciaisPage() {
                         },
                       ])
                     }
-                    disabled={l1TaskTypes.length === 0 || l1Users.length === 0}
-                    title={
-                      l1TaskTypes.length === 0 || l1Users.length === 0
-                        ? "Carregando catálogos do Legal One..."
-                        : "Adicionar uma tarefa que não veio da classificação da IA"
-                    }
+                    title="Adicionar uma tarefa que não veio da classificação da IA"
                   >
                     + Adicionar tarefa avulsa
                   </Button>
                 </div>
+
+                {/* Aviso quando os catalogos do L1 nao carregaram —
+                    sem eles os Selects do form ficam vazios e o
+                    operador nao consegue cadastrar tarefa avulsa. Antes
+                    o botao ficava disabled silenciosamente. */}
+                {l1CatalogsError ? (
+                  <Alert variant="destructive" className="py-2">
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertTitle className="text-xs">
+                      Falha ao carregar catálogos do Legal One
+                    </AlertTitle>
+                    <AlertDescription className="text-xs flex items-center gap-2 flex-wrap">
+                      <span>
+                        Sem isso, os campos de Task e Responsável da tarefa
+                        avulsa ficam vazios. Erro: {l1CatalogsError}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-6 px-2 text-xs"
+                        onClick={loadL1Catalogs}
+                        disabled={l1CatalogsLoading}
+                      >
+                        {l1CatalogsLoading ? (
+                          <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                        ) : null}
+                        Tentar de novo
+                      </Button>
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
+                {!l1CatalogsError && l1CatalogsLoading && customTaskDrafts.length > 0 ? (
+                  <div className="text-xs text-muted-foreground">
+                    <Loader2 className="mr-1 inline-block h-3 w-3 animate-spin" />
+                    Carregando catálogos do Legal One...
+                  </div>
+                ) : null}
 
                 {customTaskDrafts.map((draft, idx) => {
                   const updateDraft = (patch: Partial<typeof draft>) =>
