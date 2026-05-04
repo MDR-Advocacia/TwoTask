@@ -797,8 +797,10 @@ export async function exportPrazosIniciaisXlsx(filters: {
   if (filters.date_from) params.set("date_from", filters.date_from);
   if (filters.date_to) params.set("date_to", filters.date_to);
   const qs = params.toString() ? `?${params.toString()}` : "";
+  // Path = /intakes-export.xlsx (NÃO /intakes/export.xlsx) — o segundo
+  // colide com /intakes/{intake_id:int} no backend e devolve 422.
   const res = await apiFetch(
-    `/api/v1/prazos-iniciais/intakes/export.xlsx${qs}`,
+    `/api/v1/prazos-iniciais/intakes-export.xlsx${qs}`,
   );
   if (!res.ok) {
     throw new Error(`HTTP error! status: ${res.status}`);
