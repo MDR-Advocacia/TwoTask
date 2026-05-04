@@ -511,10 +511,77 @@ export default function PrazosIniciaisPage() {
       due_date: string; // YYYY-MM-DD
       priority: string;
       notes: string;
+      assign_to_assistant: boolean;
+      // Preview do assistente resolvido — frontend faz fetch ao
+      // /squads/assistant-of/{user_id} quando o checkbox vira on e o
+      // responsavel esta' definido. null = ainda nao resolvido / falha.
+      resolved_assistant_name: string | null;
+      resolved_assistant_external_id: number | null;
+      resolution_warning: string | null;
     }>
   >([]);
   const [scheduleSubmitting, setScheduleSubmitting] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+
+  // Resolve preview do assistente da squad de um user e atualiza o
+  // draft de tarefa avulsa correspondente. Chamado quando o operador
+  // marca o checkbox "Atribuir ao assistente do responsável" ou troca
+  // o responsável com checkbox ativo.
+  const resolveAssistantPreview = useCallback(
+    async (draftId: string, userExternalId: number, taskSubtypeId: number | null) => {
+      try {
+        const params = new URLSearchParams();
+        if (taskSubtypeId) params.set("task_subtype_external_id", String(taskSubtypeId));
+        const url = `/api/v1/squads/assistant-of/${userExternalId}${params.toString() ? `?${params.toString()}` : ""}`;
+        const res = await apiFetch(url);
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          setCustomTaskDrafts((prev) =>
+            prev.map((d) => (d.id === draftId ? {
+              ...d,
+              resolved_assistant_name: null,
+              resolved_assistant_external_id: null,
+              resolution_warning: body.detail || `Erro ${res.status}`,
+            } : d)),
+          );
+          return;
+        }
+        const data = await res.json() as {
+          user_external_id: number;
+          squad_id: number | null;
+          squad_name: string | null;
+          fallback_reason: string | null;
+        };
+        // Acha o nome do user resolvido na lista de l1Users.
+        const resolvedUser = l1Users.find((u) => u.external_id === data.user_external_id);
+        const warning = (() => {
+          if (data.fallback_reason === "user_not_in_any_squad") return "responsável fora de squads — usado ele mesmo";
+          if (data.fallback_reason === "multiple_squads_ambiguous") return `múltiplas squads · usei "${data.squad_name || "?"}"`;
+          if (data.squad_name) return `squad "${data.squad_name}"`;
+          return null;
+        })();
+        setCustomTaskDrafts((prev) =>
+          prev.map((d) => (d.id === draftId ? {
+            ...d,
+            resolved_assistant_name: resolvedUser?.name || `user #${data.user_external_id}`,
+            resolved_assistant_external_id: data.user_external_id,
+            resolution_warning: warning,
+          } : d)),
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setCustomTaskDrafts((prev) =>
+          prev.map((d) => (d.id === draftId ? {
+            ...d,
+            resolved_assistant_name: null,
+            resolved_assistant_external_id: null,
+            resolution_warning: msg,
+          } : d)),
+        );
+      }
+    },
+    [l1Users],
+  );
 
   // Enums (naturezas, produtos, etc.) pra popular os MultiSelects dos filtros.
   // Carregado 1x no mount — valores vêm do /api/v1/prazos-iniciais/enums.
@@ -1283,6 +1350,7 @@ export default function PrazosIniciaisPage() {
         due_date: draft.due_date,
         priority: draft.priority || "Normal",
         notes: draft.notes.trim() || null,
+        assign_to_assistant: !!draft.assign_to_assistant,
       });
     }
 
@@ -3608,6 +3676,10 @@ export default function PrazosIniciaisPage() {
                           due_date: "",
                           priority: "Normal",
                           notes: "",
+                          assign_to_assistant: false,
+                          resolved_assistant_name: null,
+                          resolved_assistant_external_id: null,
+                          resolution_warning: null,
                         },
                       ])
                     }
@@ -3703,13 +3775,58 @@ export default function PrazosIniciaisPage() {
                               ? String(draft.responsible_user_external_id)
                               : null
                           }
-                          onChange={(v) =>
+                          onChange={(v) => {
+                            const newId = v ? Number(v) : null;
                             updateDraft({
-                              responsible_user_external_id: v ? Number(v) : null,
-                            })
-                          }
+                              responsible_user_external_id: newId,
+                              // Reseta preview ao trocar responsável; o
+                              // useEffect refaz se assign_to_assistant=true.
+                              resolved_assistant_name: null,
+                              resolved_assistant_external_id: null,
+                              resolution_warning: null,
+                            });
+                          }}
                           placeholder="Selecione um responsável..."
                         />
+                        <div className="flex items-start gap-2 pt-1">
+                          <Checkbox
+                            id={`assign-assistant-${draft.id}`}
+                            checked={draft.assign_to_assistant}
+                            onCheckedChange={(v) => {
+                              const next = !!v;
+                              updateDraft({
+                                assign_to_assistant: next,
+                                resolved_assistant_name: null,
+                                resolved_assistant_external_id: null,
+                                resolution_warning: null,
+                              });
+                              if (next && draft.responsible_user_external_id) {
+                                resolveAssistantPreview(draft.id, draft.responsible_user_external_id, draft.task_subtype_external_id);
+                              }
+                            }}
+                          />
+                          <Label
+                            htmlFor={`assign-assistant-${draft.id}`}
+                            className="text-xs font-normal leading-tight cursor-pointer"
+                          >
+                            Atribuir ao <strong>assistente</strong> do responsável
+                          </Label>
+                        </div>
+                        {draft.assign_to_assistant && draft.resolved_assistant_name && (
+                          <div className="rounded border bg-blue-50 px-2 py-1 text-xs">
+                            🤖 Atribuído a <strong>{draft.resolved_assistant_name}</strong>
+                            {draft.resolution_warning && (
+                              <span className="ml-1 text-amber-700">
+                                ({draft.resolution_warning})
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {draft.assign_to_assistant && draft.resolution_warning && !draft.resolved_assistant_name && (
+                          <div className="rounded border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-700">
+                            ⚠ {draft.resolution_warning}
+                          </div>
+                        )}
                       </div>
 
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

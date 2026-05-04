@@ -99,6 +99,10 @@ interface TaskBlock {
   description_template: string;
   notes_template: string;
   is_active: boolean;
+  // Quando true, ao criar a tarefa no L1 o backend redireciona pro
+  // assistente da squad do `responsible_user_external_id`. Persiste em
+  // `prazo_inicial_task_templates.target_role` ('principal' | 'assistente').
+  target_role_assistant: boolean;
 }
 
 interface FormState {
@@ -123,6 +127,7 @@ const BLANK_TASK_BLOCK: TaskBlock = {
   description_template: "",
   notes_template: "",
   is_active: true,
+  target_role_assistant: false,
 };
 
 function templateToTaskBlock(
@@ -161,6 +166,7 @@ function templateToTaskBlock(
     description_template: t.description_template || "",
     notes_template: t.notes_template || "",
     is_active: t.is_active ?? true,
+    target_role_assistant: (t as any).target_role === "assistente",
   };
 }
 
@@ -437,6 +443,7 @@ export function TemplateFormDialog({
       description_template: block.description_template.trim() || null,
       notes_template: block.notes_template.trim() || null,
       is_active: block.is_active,
+      target_role: block.target_role_assistant ? "assistente" : "principal",
     };
   };
 
@@ -832,6 +839,25 @@ export function TemplateFormDialog({
                           external_id: {selectedUser.external_id}
                         </p>
                       )}
+                      <div className="flex items-start gap-2 pt-1">
+                        <Checkbox
+                          id={`target-assistant-${idx}`}
+                          checked={block.target_role_assistant}
+                          onCheckedChange={(v) =>
+                            setBlockField(idx, "target_role_assistant", !!v)
+                          }
+                        />
+                        <Label
+                          htmlFor={`target-assistant-${idx}`}
+                          className="text-xs font-normal leading-tight cursor-pointer"
+                        >
+                          Atribuir ao <strong>assistente</strong> da squad do responsável
+                          <span className="block text-muted-foreground">
+                            Quando marcado, o responsável acima é o "líder de referência"
+                            e a tarefa cai pro assistente da squad dele.
+                          </span>
+                        </Label>
+                      </div>
                     </div>
 
                     {/* Linha: prioridade + due_days + due_ref */}

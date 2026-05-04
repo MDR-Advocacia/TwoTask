@@ -1396,6 +1396,10 @@ class TemplateBase(BaseModel):
     description_template: Optional[str] = None
     notes_template: Optional[str] = None
     is_active: bool = True
+    # 'principal' (default) ou 'assistente'. Quando 'assistente', o
+    # backend redireciona a tarefa pro assistente da squad do
+    # `responsible_user_external_id` no momento de criar no L1.
+    target_role: str = Field(default="principal", pattern="^(principal|assistente)$")
 
 
 def _validate_tipo_subtipo(tipo_prazo: str, subtipo: Optional[str]) -> None:
@@ -1604,6 +1608,7 @@ class TemplateUpdate(BaseModel):
     description_template: Optional[str] = None
     notes_template: Optional[str] = None
     is_active: Optional[bool] = None
+    target_role: Optional[str] = Field(default=None, pattern="^(principal|assistente)$")
     # Sentinelas pra permitir explicitamente "setar para NULL" em PATCH.
     # Na prática os campos acima já são Optional; se o cliente quer zerar,
     # manda null. Pra diferenciar "não mexer" de "zerar" usamos
@@ -1632,6 +1637,7 @@ class TemplateResponse(BaseModel):
     description_template: Optional[str]
     notes_template: Optional[str]
     is_active: bool
+    target_role: str = "principal"
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
 
@@ -1667,6 +1673,7 @@ def _template_to_response(
         description_template=t.description_template,
         notes_template=t.notes_template,
         is_active=t.is_active,
+        target_role=getattr(t, "target_role", None) or "principal",
         created_at=t.created_at,
         updated_at=t.updated_at,
     )
@@ -1833,6 +1840,7 @@ def create_template(
         description_template=body.description_template,
         notes_template=body.notes_template,
         is_active=body.is_active,
+        target_role=body.target_role,
     )
     db.add(template)
     db.commit()

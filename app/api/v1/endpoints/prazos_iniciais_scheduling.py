@@ -120,6 +120,10 @@ class CustomTaskPayload(BaseModel):
     due_date: date  # YYYY-MM-DD
     priority: str = Field(default="Normal")
     notes: Optional[str] = None
+    # Quando True, o backend redireciona pro assistente da squad do
+    # `responsible_user_external_id` via `resolve_assistant`. Equivale ao
+    # `target_role='assistente'` no template.
+    assign_to_assistant: bool = False
 
 
 class ConfirmSchedulingRequest(BaseModel):
@@ -211,6 +215,7 @@ def confirm_intake_scheduling(
                     due_date=ct.due_date,
                     priority=ct.priority,
                     notes=ct.notes,
+                    assign_to_assistant=ct.assign_to_assistant,
                 )
                 for ct in payload.custom_tasks
             ]

@@ -27,6 +27,10 @@ from app.services.legal_one_client import (
     LegalOneApiClient,
     LegalOneGedUploadError,
 )
+from app.services.squad_assistant_resolver import (
+    AssistantResolutionResult,
+    resolve_assistant,
+)
 from app.services.prazos_iniciais import storage as pdf_storage
 from app.services.prazos_iniciais.legacy_task_cancellation_service import (
     DEFAULT_LEGACY_TASK_SUBTYPE_EXTERNAL_ID,
@@ -104,6 +108,11 @@ class CustomTaskInput:
     due_date: date  # vira startDateTime/endDateTime no L1
     priority: str = "Normal"
     notes: Optional[str] = None
+    # Quando True, o `responsible_user_external_id` informado e' tratado
+    # como o "responsavel principal/lider" e a tarefa e' redirecionada pro
+    # assistente da squad dele via `resolve_assistant`. Equivalente a
+    # `target_role='assistente'` no template.
+    assign_to_assistant: bool = False
 
 
 # Tipo "sintetico" pra sugestao avulsa — fica como tipo_prazo da
@@ -159,6 +168,56 @@ class PrazosIniciaisSchedulingService:
         if subtype and subtype.parent_type:
             return subtype.parent_type.external_id
         return None
+
+    def _resolve_final_responsible(
+        self,
+        *,
+        candidate_user_external_id: int,
+        task_subtype_external_id: Optional[int],
+        target_role: str,
+    ) -> tuple[int, Optional[AssistantResolutionResult]]:
+        """
+        Resolve o user que vai virar `participants[0].contact.id` no L1.
+
+        - target_role='principal' (ou desconhecido): retorna o candidato
+          direto, resolution=None.
+        - target_role='assistente': chama `resolve_assistant`. Se a squad
+          do candidato nao tem assistente cadastrado, propaga ValueError
+          (caller mostra erro humano ao operador). Fallback silencioso pro
+          proprio user quando ele nao e' membro de nenhuma squad — sai
+          com `resolution.fallback_reason='user_not_in_any_squad'`.
+        """
+        if target_role != "assistente":
+            return int(candidate_user_external_id), None
+        result = resolve_assistant(
+            self.db,
+            responsible_user_external_id=int(candidate_user_external_id),
+            task_subtype_external_id=task_subtype_external_id,
+        )
+        return result.user_external_id, result
+
+    def _lookup_template_target_role(
+        self, sugestao: PrazoInicialSugestao,
+    ) -> str:
+        """Lookup de `target_role` via `payload_proposto.template_id`. Default
+        'principal' se a sugestao nao casou com template ou template foi
+        removido — preserva comportamento das sugestoes pre-feature."""
+        from app.models.prazo_inicial_task_template import (
+            PrazoInicialTaskTemplate,
+        )
+
+        payload = sugestao.payload_proposto or {}
+        template_id = payload.get("template_id")
+        if not template_id:
+            return "principal"
+        template = (
+            self.db.query(PrazoInicialTaskTemplate)
+            .filter(PrazoInicialTaskTemplate.id == int(template_id))
+            .one_or_none()
+        )
+        if template is None:
+            return "principal"
+        return template.target_role or "principal"
 
     def _build_l1_task_payload(
         self,
@@ -227,6 +286,24 @@ class PrazosIniciaisSchedulingService:
 
         office_id = intake.office_id
 
+        # Resolve responsavel final (aplicando regra do assistente se o
+        # template marcou target_role='assistente'). Override manual do
+        # operador (entry.override_responsible_user_external_id) ja' foi
+        # aplicado em `sugestao.responsavel_sugerido_id` antes desta
+        # chamada — entao o resolver opera sobre o valor "atual" da
+        # sugestao, que e' o que o operador realmente quer ver na squad.
+        target_role = self._lookup_template_target_role(sugestao)
+        try:
+            final_responsible_id, _resolution = self._resolve_final_responsible(
+                candidate_user_external_id=int(sugestao.responsavel_sugerido_id),
+                task_subtype_external_id=int(sugestao.task_subtype_id),
+                target_role=target_role,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"Sugestão {sugestao.id} (target_role={target_role!r}): {exc}"
+            ) from exc
+
         payload: dict[str, Any] = {
             "description": description,
             "priority": priority,
@@ -238,7 +315,7 @@ class PrazosIniciaisSchedulingService:
             "subTypeId": int(sugestao.task_subtype_id),
             "participants": [
                 {
-                    "contact": {"id": int(sugestao.responsavel_sugerido_id)},
+                    "contact": {"id": final_responsible_id},
                     "isResponsible": True,
                     "isExecuter": True,
                     "isRequester": True,
@@ -392,6 +469,23 @@ class PrazosIniciaisSchedulingService:
 
         priority = custom_task.priority or "Normal"
 
+        # Aplica regra do assistente quando o operador marcou o checkbox
+        # "Atribuir ao assistente do responsavel" no modal de Tarefa
+        # Avulsa. O `responsible_user_external_id` informado e' o lider/
+        # responsavel principal — `resolve_assistant` traduz pro assistente
+        # da squad dele.
+        target_role = "assistente" if custom_task.assign_to_assistant else "principal"
+        try:
+            final_responsible_id, _resolution = self._resolve_final_responsible(
+                candidate_user_external_id=int(custom_task.responsible_user_external_id),
+                task_subtype_external_id=int(custom_task.task_subtype_external_id),
+                target_role=target_role,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"Tarefa avulsa (target_role={target_role!r}): {exc}"
+            ) from exc
+
         payload: dict[str, Any] = {
             "description": description,
             "priority": priority,
@@ -403,9 +497,7 @@ class PrazosIniciaisSchedulingService:
             "subTypeId": int(custom_task.task_subtype_external_id),
             "participants": [
                 {
-                    "contact": {
-                        "id": int(custom_task.responsible_user_external_id),
-                    },
+                    "contact": {"id": final_responsible_id},
                     "isResponsible": True,
                     "isExecuter": True,
                     "isRequester": True,
