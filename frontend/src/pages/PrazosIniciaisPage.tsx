@@ -39,6 +39,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { SubtypePicker } from "@/components/ui/SubtypePicker";
+import UserSelector from "@/components/ui/UserSelector";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
@@ -438,6 +439,20 @@ export default function PrazosIniciaisPage() {
   const [l1Users, setL1Users] = useState<Array<{ external_id: number; name: string }>>([]);
   const [l1CatalogsLoading, setL1CatalogsLoading] = useState(false);
   const [l1CatalogsError, setL1CatalogsError] = useState<string | null>(null);
+
+  // Adapta `l1Users` (catalogo bruto do L1, sem squads) ao shape SelectableUser
+  // exigido pelo UserSelector. squads vazio porque a lista vem direto do
+  // /api/v1/users sem join — o filtro por squad nao se aplica nesse contexto.
+  const l1UsersForPicker = useMemo(
+    () =>
+      l1Users.map((u) => ({
+        id: u.external_id,
+        external_id: u.external_id,
+        name: u.name,
+        squads: [],
+      })),
+    [l1Users],
+  );
 
   // ─── Modal B: Agendar ────────────────────────────────────────────
   // Modal SEPARADO do detalhe (Modal A). Mesmo padrao de Publicacoes:
@@ -3410,34 +3425,22 @@ export default function PrazosIniciaisPage() {
                               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                 <div className="space-y-1">
                                   <Label className="text-xs">Responsável *</Label>
-                                  <Select
+                                  <UserSelector
+                                    users={l1UsersForPicker}
                                     value={
                                       form.responsible_user_external_id != null
                                         ? String(form.responsible_user_external_id)
-                                        : ""
+                                        : null
                                     }
-                                    onValueChange={(v) =>
+                                    onChange={(v) =>
                                       updateForm({
                                         responsible_user_external_id: v
                                           ? Number(v)
                                           : null,
                                       })
                                     }
-                                  >
-                                    <SelectTrigger>
-                                      <SelectValue placeholder="Selecione..." />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                      {l1Users.map((u) => (
-                                        <SelectItem
-                                          key={u.external_id}
-                                          value={String(u.external_id)}
-                                        >
-                                          {u.name}
-                                        </SelectItem>
-                                      ))}
-                                    </SelectContent>
-                                  </Select>
+                                    placeholder="Selecione um responsável..."
+                                  />
                                 </div>
                                 <div className="space-y-1">
                                   <Label className="text-xs">Prioridade</Label>
@@ -3693,32 +3696,20 @@ export default function PrazosIniciaisPage() {
 
                       <div className="space-y-1">
                         <Label className="text-xs">Responsável *</Label>
-                        <Select
+                        <UserSelector
+                          users={l1UsersForPicker}
                           value={
                             draft.responsible_user_external_id != null
                               ? String(draft.responsible_user_external_id)
-                              : ""
+                              : null
                           }
-                          onValueChange={(v) =>
+                          onChange={(v) =>
                             updateDraft({
                               responsible_user_external_id: v ? Number(v) : null,
                             })
                           }
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Selecione..." />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {l1Users.map((u) => (
-                              <SelectItem
-                                key={u.external_id}
-                                value={String(u.external_id)}
-                              >
-                                {u.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                          placeholder="Selecione um responsável..."
+                        />
                       </div>
 
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
