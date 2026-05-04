@@ -8,7 +8,7 @@
  *   4. Ao confirmar → tarefa criada no Legal One
  */
 
-import { useEffect, useRef, useState, useCallback, type ComponentType } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback, type ComponentType } from "react";
 import {
   AlertCircle,
   BarChart as BarChartIcon,
@@ -73,6 +73,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import UserSelector from "@/components/ui/UserSelector";
 import {
   Popover,
   PopoverContent,
@@ -654,6 +655,20 @@ const PublicationsPage = () => {
   const [offices, setOffices] = useState<Office[]>([]);
   const [taskTypes, setTaskTypes] = useState<TaskType[]>([]);
   const [appUsers, setAppUsers] = useState<AppUser[]>([]);
+  // Adapta `appUsers` (catalogo /api/v1/users sem squads) ao shape
+  // SelectableUser do UserSelector. Email preservado pra que `showEmail`
+  // funcione e `cmdk` filtre por email tambem.
+  const appUsersForPicker = useMemo(
+    () =>
+      appUsers.map((u) => ({
+        id: u.external_id,
+        external_id: u.external_id,
+        name: u.name,
+        email: u.email,
+        squads: [],
+      })),
+    [appUsers],
+  );
   const [taxonomy, setTaxonomy] = useState<Record<string, string[]>>({});
   const [reclassifyingGroup, setReclassifyingGroup] = useState<string | null>(null);
   const [stats, setStats] = useState<Statistics | null>(null);
@@ -4455,42 +4470,28 @@ const PublicationsPage = () => {
                                 {/* Responsável */}
                                 <div className="grid gap-1.5">
                                   <Label className="text-xs font-medium">Responsável *</Label>
-                                  <Select
-                                    value={currentRespId ? String(currentRespId) : ""}
-                                    onValueChange={(v) => {
-                                      const userId = parseInt(v, 10);
+                                  <UserSelector
+                                    users={appUsersForPicker}
+                                    value={currentRespId ? String(currentRespId) : null}
+                                    onChange={(v) => {
+                                      const userId = v ? parseInt(v, 10) : null;
                                       const next = [...editedPayloads];
                                       next[idx] = {
                                         ...next[idx],
-                                        participants: [{
-                                          contact: { id: userId },
-                                          isResponsible: true,
-                                          isExecuter: true,
-                                          isRequester: true,
-                                        }],
+                                        participants: userId
+                                          ? [{
+                                              contact: { id: userId },
+                                              isResponsible: true,
+                                              isExecuter: true,
+                                              isRequester: true,
+                                            }]
+                                          : [],
                                       };
                                       setEditedPayloads(next);
                                     }}
-                                  >
-                                    <SelectTrigger className="text-sm">
-                                      <SelectValue placeholder="Selecione um usuário" />
-                                    </SelectTrigger>
-                                    <SelectContent className="max-h-72">
-                                      {appUsers.map((u) => (
-                                        <SelectItem
-                                          key={u.external_id}
-                                          value={String(u.external_id)}
-                                        >
-                                          {u.name}
-                                          {u.email && (
-                                            <span className="ml-1 text-muted-foreground">
-                                              · {u.email}
-                                            </span>
-                                          )}
-                                        </SelectItem>
-                                      ))}
-                                    </SelectContent>
-                                  </Select>
+                                    placeholder="Selecione um usuário"
+                                    showEmail
+                                  />
                                   {payload.suggested_responsible &&
                                     payload.suggested_responsible.id !== currentRespId && (
                                       <button

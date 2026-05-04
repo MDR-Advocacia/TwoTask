@@ -31,6 +31,7 @@ export interface SelectableUser {
   external_id: number;
   name: string;
   squads: UserSquadInfo[];
+  email?: string | null;
 }
 
 interface UserSelectorProps {
@@ -43,6 +44,9 @@ interface UserSelectorProps {
   filterBySquadIds?: number[];
   disabled?: boolean;
   placeholder?: string;
+  // Quando true, mostra "nome · email" no trigger e na lista. Util pra
+  // desambiguar usuarios com nomes parecidos (ex.: catalogo do L1).
+  showEmail?: boolean;
 }
 
 const UserSelector = ({
@@ -52,6 +56,7 @@ const UserSelector = ({
   filterBySquadIds = [],
   disabled = false,
   placeholder = 'Selecione um responsável...',
+  showEmail = false,
 }: UserSelectorProps) => {
   const [open, setOpen] = useState(false);
 
@@ -96,7 +101,14 @@ const UserSelector = ({
             disabled={disabled}
           >
             {selectedUser ? (
-              <span className="truncate">{selectedUser.name}</span>
+              <span className="truncate">
+                {selectedUser.name}
+                {showEmail && selectedUser.email && (
+                  <span className="ml-1 text-muted-foreground">
+                    · {selectedUser.email}
+                  </span>
+                )}
+              </span>
             ) : (
               <span className="text-muted-foreground">{placeholder}</span>
             )}
@@ -123,8 +135,10 @@ const UserSelector = ({
                 {filteredUsers.map(user => (
                   <CommandItem
                     key={user.external_id}
-                    value={user.name}
-                    onSelect={handleSelect}
+                    // Concatena email no value pra que o cmdk filtre por
+                    // nome OU email (busca livre por qualquer pedaco).
+                    value={showEmail && user.email ? `${user.name} ${user.email}` : user.name}
+                    onSelect={() => handleSelect(user.name)}
                   >
                     <Check
                       className={cn(
@@ -135,7 +149,14 @@ const UserSelector = ({
                       )}
                     />
                     <div className="flex flex-col">
-                      <span>{user.name}</span>
+                      <span>
+                        {user.name}
+                        {showEmail && user.email && (
+                          <span className="ml-1 text-muted-foreground">
+                            · {user.email}
+                          </span>
+                        )}
+                      </span>
                       <div className="flex flex-wrap gap-1 text-xs">
                         {user.squads.map(squad => (
                           <Badge key={squad.id} variant="secondary">
