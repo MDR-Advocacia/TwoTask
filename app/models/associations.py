@@ -1,8 +1,5 @@
-from sqlalchemy import Table, Column, Integer, ForeignKey
-from app.db.session import Base
-
-squad_task_type_association = Table(
-    'squad_task_type_association', Base.metadata,
-    Column('squad_id', Integer, ForeignKey('squads.id'), primary_key=True),
-    Column('task_type_id', Integer, ForeignKey('legal_one_task_types.id'), primary_key=True)
-)
+# Tabela de associacao M2M entre Squads e tipos de tarefa foi removida
+# em sqd002 (2026-05-04). O tie-break do `resolve_assistant` agora usa
+# `Squad.office_external_id` ↔ `intake.office_id` em vez dessa M2M.
+# Mantemos esse modulo vazio pra evitar import errors em codigo legado;
+# pode ser removido no proximo cleanup.

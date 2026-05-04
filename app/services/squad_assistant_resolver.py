@@ -42,21 +42,23 @@ def resolve_assistant(
     *,
     responsible_user_external_id: int,
     task_subtype_external_id: Optional[int] = None,
+    office_external_id: Optional[int] = None,
 ) -> AssistantResolutionResult:
     """
     Resolve o assistente do responsavel.
 
     Tie-break (em ordem):
       1. Se o user e' membro de uma unica squad ativa, usa essa.
-      2. Se e' membro de varias, escolhe a squad cujo `sector_id` casa
-         com o setor inferido do `task_subtype_external_id` (cada
-         LegalOneTaskSubType pode ter um setor padrao via cataologo).
-         Quando o subtipo nao foi informado ou nao houver setor mapeado,
-         recorre a heuristica: filtra squads que TEM esse subtipo entre
-         seus `task_types` (M2M existente).
-      3. Se ainda assim sobrar mais de uma, retorna a primeira (sorted
-         por id) e marca `fallback_reason='multiple_squads_ambiguous'`
-         pra que a UI exiba aviso.
+      2. Se e' membro de varias, escolhe a squad cujo `office_external_id`
+         casa com o `office_external_id` informado (vem do intake/sugestao
+         no momento do agendamento). Esse e' o balizador no MDR — squads
+         sao por escritorio responsavel.
+      3. Se ainda assim sobrar mais de uma (mesmo office, multiplas squads
+         do user) ou se nenhuma casar, retorna a primeira por id e marca
+         `fallback_reason='multiple_squads_ambiguous'`.
+
+    `task_subtype_external_id` e' aceito por compat (chamadas antigas) mas
+    nao e' mais usado no tie-break — domain agora opera por escritorio.
 
     Edge cases (decididos com user em 2026-05-04):
       - User nao e' membro de nenhuma squad → fallback pro proprio user
@@ -66,6 +68,7 @@ def resolve_assistant(
       - Assistente da squad e' o proprio responsavel → retorna ele mesmo
         sem fallback_reason (caso valido — auto-atribuido).
     """
+    del task_subtype_external_id  # mantido na assinatura por compat
     user = (
         db.query(LegalOneUser)
         .filter(LegalOneUser.external_id == responsible_user_external_id)
@@ -78,7 +81,6 @@ def resolve_assistant(
             "MetadataSyncService."
         )
 
-    # Squads ativas onde o user e' membro
     member_rows = (
         db.query(SquadMember)
         .join(Squad, SquadMember.squad_id == Squad.id)
@@ -106,33 +108,16 @@ def resolve_assistant(
     if len(candidate_squads) == 1:
         chosen_squad = candidate_squads[0]
     else:
-        # Tie-break por setor inferido do subtipo
-        target_sector_id: Optional[int] = None
-        if task_subtype_external_id is not None:
-            subtype = (
-                db.query(LegalOneTaskSubType)
-                .filter(
-                    LegalOneTaskSubType.external_id == task_subtype_external_id
-                )
-                .one_or_none()
-            )
-            # Atualmente LegalOneTaskSubType nao tem sector_id direto.
-            # Caimos no fallback heuristico: filtra squads cujos
-            # `task_types` (M2M Squad↔LegalOneTaskType) inclui o tipo-pai
-            # do subtipo informado.
-            if subtype is not None and subtype.parent_type_external_id is not None:
-                parent_type_id = subtype.parent_type_external_id
-                squads_with_type = [
-                    s
-                    for s in candidate_squads
-                    if any(t.external_id == parent_type_id for t in s.task_types)
-                ]
-                if len(squads_with_type) == 1:
-                    chosen_squad = squads_with_type[0]
-                elif len(squads_with_type) > 1:
-                    chosen_squad = sorted(squads_with_type, key=lambda s: s.id)[0]
-                    fallback_reason = "multiple_squads_ambiguous"
-            del target_sector_id  # placeholder caso futuro: sector_id direto
+        if office_external_id is not None:
+            squads_in_office = [
+                s for s in candidate_squads
+                if s.office_external_id == office_external_id
+            ]
+            if len(squads_in_office) == 1:
+                chosen_squad = squads_in_office[0]
+            elif len(squads_in_office) > 1:
+                chosen_squad = sorted(squads_in_office, key=lambda s: s.id)[0]
+                fallback_reason = "multiple_squads_ambiguous"
 
         if chosen_squad is None:
             chosen_squad = sorted(candidate_squads, key=lambda s: s.id)[0]

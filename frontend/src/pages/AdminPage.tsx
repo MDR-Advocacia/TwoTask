@@ -48,9 +48,9 @@ interface Office {
 
 // --- Componente: Gerenciamento de Squads (membros + leader/assistente) ---
 //
-// Lista squads de um setor selecionado, expande membros com toggles de
-// papel (Líder / Assistente). Backend garante max 1 leader e 1 assistant
-// por squad. Adicionar membro usa UserSelector com busca.
+// Squads sao agrupadas por escritorio responsavel (LegalOneOffice). Cada
+// squad tem 1 leader e 1 assistente. Backend garante max 1 por papel.
+// Membros sao adicionados via UserSelector com busca + checkbox criar squad.
 //
 interface SquadMemberDetail {
   id: number;
@@ -58,25 +58,34 @@ interface SquadMemberDetail {
   is_assistant: boolean;
   user: { id: number; external_id: number; name: string; is_active: boolean };
 }
+interface OfficeRef {
+  external_id: number;
+  name: string;
+  path: string | null;
+}
 interface SquadDetail {
   id: number;
   name: string;
   is_active: boolean;
-  sector: { id: number; name: string };
+  office_external_id: number | null;
+  office: OfficeRef | null;
   members: SquadMemberDetail[];
 }
 interface L1User { external_id: number; name: string; is_active: boolean }
+interface OfficeOption { external_id: number; name: string; path: string }
 
 const SquadsManager = () => {
   const { toast } = useToast();
-  const [sectors, setSectors] = useState<Sector[]>([]);
-  const [selectedSector, setSelectedSector] = useState<string | null>(null);
+  const [offices, setOffices] = useState<OfficeOption[]>([]);
+  const [selectedOffice, setSelectedOffice] = useState<string | null>(null);
   const [squads, setSquads] = useState<SquadDetail[]>([]);
   const [allUsers, setAllUsers] = useState<L1User[]>([]);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState<number | null>(null); // squad_id sendo atualizado
-  const [addingTo, setAddingTo] = useState<number | null>(null); // squad_id com modal aberto
+  const [saving, setSaving] = useState<number | null>(null);
+  const [addingTo, setAddingTo] = useState<number | null>(null);
   const [pickedUserId, setPickedUserId] = useState<string | null>(null);
+  const [creatingSquad, setCreatingSquad] = useState(false);
+  const [newSquadName, setNewSquadName] = useState("");
 
   const usersForPicker = allUsers
     .filter((u) => u.is_active)
@@ -89,33 +98,25 @@ const SquadsManager = () => {
 
   const fetchInitial = async () => {
     setLoading(true);
-    // Fetches independentes — `legal-one-users` pode 404 quando vazio
-    // (tratamento ruim no backend), e isso nao deve impedir o dropdown
-    // de setores de carregar.
     try {
-      const sectorsRes = await apiFetch("/api/v1/sectors");
-      if (sectorsRes.ok) {
-        setSectors(await sectorsRes.json());
+      const officesRes = await apiFetch("/api/v1/offices");
+      if (officesRes.ok) {
+        setOffices(await officesRes.json());
       } else {
-        console.warn("SquadsManager: /sectors falhou", sectorsRes.status);
-        toast({ title: "Falha ao carregar setores", description: `HTTP ${sectorsRes.status}`, variant: "destructive" });
+        console.warn("SquadsManager: /offices falhou", officesRes.status);
+        toast({ title: "Falha ao carregar escritórios", description: `HTTP ${officesRes.status}`, variant: "destructive" });
       }
     } catch (err: any) {
-      console.error("SquadsManager: erro em /sectors", err);
-      toast({ title: "Erro de rede (setores)", description: err.message, variant: "destructive" });
+      console.error("SquadsManager: erro em /offices", err);
+      toast({ title: "Erro de rede (escritórios)", description: err.message, variant: "destructive" });
     }
     try {
-      // Fallback pra /api/v1/users/with-squads quando legal-one-users
-      // levanta 404 sem usuarios (legacy do squads.py).
       let usersRes = await apiFetch("/api/v1/squads/legal-one-users");
       if (!usersRes.ok) {
-        console.warn("SquadsManager: /squads/legal-one-users falhou, tentando /users/with-squads", usersRes.status);
         usersRes = await apiFetch("/api/v1/users/with-squads");
       }
       if (usersRes.ok) {
         setAllUsers(await usersRes.json());
-      } else {
-        toast({ title: "Falha ao carregar usuarios", description: `HTTP ${usersRes.status}`, variant: "destructive" });
       }
     } catch (err: any) {
       console.error("SquadsManager: erro em users", err);
@@ -123,9 +124,9 @@ const SquadsManager = () => {
     setLoading(false);
   };
 
-  const fetchSquads = async (sectorId: string) => {
+  const fetchSquads = async (officeExternalId: string) => {
     try {
-      const res = await apiFetch(`/api/v1/squads?sector_id=${sectorId}`);
+      const res = await apiFetch(`/api/v1/squads?office_external_id=${officeExternalId}`);
       if (!res.ok) throw new Error("Falha ao carregar squads.");
       setSquads(await res.json());
     } catch (err: any) {
@@ -135,9 +136,34 @@ const SquadsManager = () => {
 
   useEffect(() => { fetchInitial(); }, []);
   useEffect(() => {
-    if (selectedSector) fetchSquads(selectedSector);
+    if (selectedOffice) fetchSquads(selectedOffice);
     else setSquads([]);
-  }, [selectedSector]);
+  }, [selectedOffice]);
+
+  const createSquad = async () => {
+    if (!selectedOffice || !newSquadName.trim()) return;
+    try {
+      const res = await apiFetch("/api/v1/squads", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newSquadName.trim(),
+          office_external_id: parseInt(selectedOffice, 10),
+          members: [],
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `HTTP ${res.status}`);
+      }
+      toast({ title: "Squad criada" });
+      setCreatingSquad(false);
+      setNewSquadName("");
+      await fetchSquads(selectedOffice);
+    } catch (err: any) {
+      toast({ title: "Erro ao criar squad", description: err.message, variant: "destructive" });
+    }
+  };
 
   const toggleRole = async (
     squadId: number,
@@ -157,7 +183,7 @@ const SquadsManager = () => {
         throw new Error(body.detail || `HTTP ${res.status}`);
       }
       toast({ title: "Atualizado", description: nextValue ? "Papel definido." : "Papel removido." });
-      if (selectedSector) await fetchSquads(selectedSector);
+      if (selectedOffice) await fetchSquads(selectedOffice);
     } catch (err: any) {
       toast({ title: "Erro ao salvar", description: err.message, variant: "destructive" });
     } finally {
@@ -176,7 +202,7 @@ const SquadsManager = () => {
         throw new Error(`HTTP ${res.status}`);
       }
       toast({ title: "Removido" });
-      if (selectedSector) await fetchSquads(selectedSector);
+      if (selectedOffice) await fetchSquads(selectedOffice);
     } catch (err: any) {
       toast({ title: "Erro", description: err.message, variant: "destructive" });
     } finally {
@@ -204,7 +230,7 @@ const SquadsManager = () => {
       toast({ title: "Membro adicionado" });
       setAddingTo(null);
       setPickedUserId(null);
-      if (selectedSector) await fetchSquads(selectedSector);
+      if (selectedOffice) await fetchSquads(selectedOffice);
     } catch (err: any) {
       toast({ title: "Erro", description: err.message, variant: "destructive" });
     } finally {
@@ -217,18 +243,21 @@ const SquadsManager = () => {
       <CardHeader>
         <CardTitle>Squads — Membros e Papéis</CardTitle>
         <CardDescription>
-          Filtre por setor e gerencie quem é líder e assistente de cada squad. O assistente
-          recebe automaticamente as tarefas marcadas como "tarefa do assistente" no template.
+          Filtre por escritório responsável e gerencie quem é líder e assistente de cada
+          squad. O assistente recebe automaticamente as tarefas marcadas como "tarefa do
+          assistente" no template.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="max-w-xs">
-          <Label>Setor</Label>
-          <Select value={selectedSector || ""} onValueChange={(v) => setSelectedSector(v || null)}>
-            <SelectTrigger><SelectValue placeholder="Selecione um setor" /></SelectTrigger>
+        <div className="max-w-md">
+          <Label>Escritório responsável</Label>
+          <Select value={selectedOffice || ""} onValueChange={(v) => setSelectedOffice(v || null)}>
+            <SelectTrigger><SelectValue placeholder="Selecione um escritório" /></SelectTrigger>
             <SelectContent>
-              {sectors.map((s) => (
-                <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>
+              {offices.map((o) => (
+                <SelectItem key={o.external_id} value={String(o.external_id)}>
+                  {o.path || o.name}
+                </SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -236,8 +265,33 @@ const SquadsManager = () => {
 
         {loading && <p className="text-sm text-muted-foreground">Carregando…</p>}
 
-        {!loading && selectedSector && squads.length === 0 && (
-          <Alert><AlertDescription>Nenhuma squad ativa nesse setor.</AlertDescription></Alert>
+        {!loading && selectedOffice && (
+          <div className="flex items-center gap-2">
+            {creatingSquad ? (
+              <>
+                <Input
+                  placeholder="Nome da nova squad"
+                  value={newSquadName}
+                  onChange={(e) => setNewSquadName(e.target.value)}
+                  className="max-w-sm"
+                />
+                <Button size="sm" onClick={createSquad} disabled={!newSquadName.trim()}>
+                  Criar
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => { setCreatingSquad(false); setNewSquadName(""); }}>
+                  Cancelar
+                </Button>
+              </>
+            ) : (
+              <Button size="sm" variant="outline" onClick={() => setCreatingSquad(true)}>
+                + Criar squad neste escritório
+              </Button>
+            )}
+          </div>
+        )}
+
+        {!loading && selectedOffice && squads.length === 0 && !creatingSquad && (
+          <Alert><AlertDescription>Nenhuma squad ativa nesse escritório.</AlertDescription></Alert>
         )}
 
         {!loading && squads.length > 0 && (
@@ -354,46 +408,26 @@ const SquadsManager = () => {
 };
 
 
-// --- Componente de Associação (Código completo restaurado) ---
-const AssociateTasks = () => {
+// --- Componente: Renomear Grupos de Tipos de Tarefa ---
+// (versao reduzida apos sqd002 — a M2M Squad↔TaskType foi removida e
+// squads sao por escritorio agora. Sobra so' a renomeacao de grupos pais
+// custom — usada pra agrupar subtipos no UI sem mexer no catalogo do L1.)
+const TaskGroupsManager = () => {
     const { toast } = useToast();
     const [taskGroups, setTaskGroups] = useState<TaskTypeGroup[]>([]);
-    const [sectors, setSectors] = useState<Sector[]>([]);
-    const [squads, setSquads] = useState<Squad[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    const [saving, setSaving] = useState(false);
-    const [selectedSector, setSelectedSector] = useState<string | null>(null);
     const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
     const [editingGroup, setEditingGroup] = useState<{ id: number; name: string } | null>(null);
     const [newGroupName, setNewGroupName] = useState("");
-    const [selectedSquads, setSelectedSquads] = useState<Record<number, string[]>>({});
 
     const fetchInitialData = async () => {
         setLoading(true);
         setError(null);
         try {
-            const [tasksResponse, sectorsResponse] = await Promise.all([
-                apiFetch('/api/v1/admin/task-types'),
-                apiFetch('/api/v1/sectors'),
-            ]);
-            if (!tasksResponse.ok || !sectorsResponse.ok) throw new Error('Falha ao carregar dados iniciais.');
-            
-            const tasksData = await tasksResponse.json();
-            const sectorsData = await sectorsResponse.json();
-            setTaskGroups(tasksData);
-            setSectors(sectorsData);
-            setSquads([]);
-
-            const initialSelectedSquads: Record<number, string[]> = {};
-            tasksData.forEach((group: TaskTypeGroup) => {
-                const squadIdsInGroup = new Set<string>();
-                group.sub_types.forEach(st => {
-                    if (st.squad_ids) st.squad_ids.forEach(id => squadIdsInGroup.add(String(id)));
-                });
-                initialSelectedSquads[group.parent_id] = Array.from(squadIdsInGroup);
-            });
-            setSelectedSquads(initialSelectedSquads);
+            const tasksResponse = await apiFetch('/api/v1/admin/task-types');
+            if (!tasksResponse.ok) throw new Error('Falha ao carregar tipos de tarefa.');
+            setTaskGroups(await tasksResponse.json());
         } catch (err: any) {
             setError(err.message);
         } finally {
@@ -401,24 +435,7 @@ const AssociateTasks = () => {
         }
     };
 
-    const fetchSquadsBySector = async (sectorId: string) => {
-        try {
-            const res = await apiFetch(`/api/v1/squads?sector_id=${sectorId}`);
-            if (!res.ok) throw new Error('Falha ao buscar squads.');
-            setSquads(await res.json());
-        } catch (err: any) {
-            toast({ title: "Erro ao Carregar Squads", description: err.message, variant: "destructive" });
-        }
-    };
-
     useEffect(() => { fetchInitialData(); }, []);
-    useEffect(() => {
-        if (selectedSector) {
-            fetchSquadsBySector(selectedSector);
-        } else {
-            setSquads([]);
-        }
-    }, [selectedSector]);
 
     const handleEditClick = (group: { parent_id: number; parent_name: string }) => {
         setEditingGroup({ id: group.parent_id, name: group.parent_name });
@@ -443,80 +460,34 @@ const AssociateTasks = () => {
         }
     };
 
-    const handleSaveChanges = async (groupId: number) => {
-        const squadIds = selectedSquads[groupId] || [];
-        const group = taskGroups.find(g => g.parent_id === groupId);
-        if (!group) return;
-        setSaving(true);
-        try {
-            const res = await apiFetch('/api/v1/admin/task-types/associate', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    squad_ids: squadIds.map(id => parseInt(id, 10)),
-                    task_type_ids: group.sub_types.map(st => st.id),
-                }),
-            });
-            if (!res.ok) throw new Error((await res.json()).detail || "Falha ao salvar.");
-            toast({ title: "Sucesso!", description: "Associações salvas." });
-            fetchInitialData();
-        } catch (err: any) {
-            toast({ title: "Erro ao Salvar", description: err.message, variant: "destructive" });
-        } finally {
-            setSaving(false);
-        }
-    };
-
     if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin" /></div>;
     if (error) return <Alert variant="destructive"><AlertCircle className="h-4 w-4 mr-2" /><AlertTitle>Erro</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>;
 
     return (
         <Card>
             <CardHeader>
-                <CardTitle>Associação de Tipos de Tarefa a Squads</CardTitle>
-                <CardDescription>Filtre por setor, depois associe grupos de tarefas a um ou mais squads.</CardDescription>
+                <CardTitle>Grupos de Tipos de Tarefa</CardTitle>
+                <CardDescription>
+                    Renomeie grupos pais de tipos de tarefa pra organizar a UI.
+                    A atribuição de tarefas a squads agora é por escritório (ver tab "Squads").
+                </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-6">
-                <div className="w-full md:w-1/3">
-                    <Label htmlFor="sector-select">1. Selecione um Setor</Label>
-                    <Select onValueChange={setSelectedSector} value={selectedSector || ""}><SelectTrigger><SelectValue placeholder="Escolha um setor..." /></SelectTrigger><SelectContent>{sectors.map(s => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}</SelectContent></Select>
-                </div>
-                <div className="border-t pt-6">
-                    <h3 className="text-lg font-medium mb-4">2. Associe os Grupos de Tarefas</h3>
-                    <p className="text-sm text-muted-foreground mb-4">
-                        Cada grupo de tarefas abaixo pode ser associado a um ou mais squads do setor selecionado. As associações são salvas por grupo.
-                    </p>
-                    <Accordion type="single" collapsible className="w-full">
-                        {taskGroups.map(group => (
-                            <AccordionItem value={`item-${group.parent_id}`} key={group.parent_id}>
-                                <AccordionTrigger>
-                                    <span className="flex-grow text-left">{group.parent_name}</span>
-                                    <Button variant="ghost" size="icon" className="ml-4 h-8 w-8" onClick={(e) => { e.stopPropagation(); handleEditClick(group); }}><Pencil className="h-4 w-4" /></Button>
-                                </AccordionTrigger>
-                                <AccordionContent>
-                                    <div className="space-y-4 p-2">
-                                        <div className="flex flex-col md:flex-row items-start md:items-center gap-4 p-4 border rounded-lg">
-                                            <div className="flex-grow w-full">
-                                                <Label className={!selectedSector ? "text-muted-foreground" : ""}>Associar grupo aos Squads:</Label>
-                                                <MultiSelect
-                                                    options={squads.map(s => ({ label: s.name, value: String(s.id) }))}
-                                                    defaultValue={selectedSquads[group.parent_id] || []}
-                                                    onValueChange={(v) => setSelectedSquads(p => ({ ...p, [group.parent_id]: v }))}
-                                                    placeholder={!selectedSector ? "Selecione um setor para carregar squads" : "Selecione squads..."}
-                                                    disabled={!selectedSector || squads.length === 0}
-                                                />
-                                            </div>
-                                            <Button onClick={() => handleSaveChanges(group.parent_id)} disabled={saving || !selectedSector}>
-                                                <Save className="mr-2 h-4 w-4" />
-                                                {saving ? "Salvando..." : "Salvar"}
-                                            </Button>
-                                        </div>
-                                    </div>
-                                </AccordionContent>
-                            </AccordionItem>
-                        ))}
-                    </Accordion>
-                </div>
+            <CardContent>
+                <Accordion type="single" collapsible className="w-full">
+                    {taskGroups.map(group => (
+                        <AccordionItem value={`item-${group.parent_id}`} key={group.parent_id}>
+                            <AccordionTrigger>
+                                <span className="flex-grow text-left">{group.parent_name}</span>
+                                <Button variant="ghost" size="icon" className="ml-4 h-8 w-8" onClick={(e) => { e.stopPropagation(); handleEditClick(group); }}><Pencil className="h-4 w-4" /></Button>
+                            </AccordionTrigger>
+                            <AccordionContent>
+                                <div className="text-xs text-muted-foreground p-2">
+                                    Subtipos neste grupo: {group.sub_types.length}
+                                </div>
+                            </AccordionContent>
+                        </AccordionItem>
+                    ))}
+                </Accordion>
             </CardContent>
             <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}><DialogContent><DialogHeader><DialogTitle>Renomear Grupo</DialogTitle></DialogHeader><div className="py-4"><Label htmlFor="group-name">Novo nome para "{editingGroup?.name}"</Label><Input id="group-name" value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} className="mt-2" autoFocus /></div><DialogFooter><DialogClose asChild><Button type="button" variant="secondary">Cancelar</Button></DialogClose><Button type="button" onClick={handleRenameSave}>Salvar</Button></DialogFooter></DialogContent></Dialog>
         </Card>
@@ -1191,7 +1162,7 @@ const AdminPage = () => {
                     <SyncManager />
                 </TabsContent>
                 <TabsContent value="tasks" className="space-y-6">
-                    <AssociateTasks />
+                    <TaskGroupsManager />
                 </TabsContent>
                 <TabsContent value="squads" className="space-y-6">
                     <SquadsManager />

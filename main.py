@@ -19,7 +19,6 @@ from app.api.v1.endpoints import (
     prazos_iniciais_scheduling,
     publication_treatment,
     publications,
-    sectors,
     squads,
     task_templates,
     tasks,
@@ -241,7 +240,6 @@ app.include_router(capture_health.router, prefix="/api/v1/admin", tags=["Admin"]
 app.include_router(admin.me_router, prefix="/api/v1", tags=["User"], dependencies=protected_dependencies)
 app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["Dashboard"], dependencies=protected_dependencies)
 app.include_router(squads.router, prefix="/api/v1/squads", tags=["Squads"], dependencies=protected_dependencies)
-app.include_router(sectors.router, prefix="/api/v1/sectors", tags=["Sectors"], dependencies=protected_dependencies)
 app.include_router(tasks.router, prefix="/api/v1/tasks", tags=["Tasks"], dependencies=protected_dependencies)
 # Router de automação externa (OneSid, OneRequest): autenticado por
 # header X-Batch-Api-Key, SEM JWT. Separado pra não herdar o

@@ -35,14 +35,14 @@ from typing import Optional
 
 @router.get("", response_model=List[schemas.Squad])
 def get_squads(
-    sector_id: Optional[int] = None,
+    office_external_id: Optional[int] = None,
     service: SquadService = Depends(get_squad_service)
 ):
     """
     Endpoint para buscar todos os squads e membros ATIVOS.
-    Pode ser filtrado por `sector_id`.
+    Pode ser filtrado por `office_external_id`.
     """
-    squads = service.get_all_squads(sector_id=sector_id)
+    squads = service.get_all_squads(office_external_id=office_external_id)
     
     # Filtra membros inativos (com base no status do usuário do Legal One) na resposta
     active_squads_data = []
@@ -176,6 +176,7 @@ def update_squad_member_roles(
 def get_assistant_of_user(
     user_external_id: int,
     task_subtype_external_id: Optional[int] = None,
+    office_external_id: Optional[int] = None,
     db: Session = Depends(get_db),
 ):
     from app.services.squad_assistant_resolver import resolve_assistant
@@ -184,9 +185,9 @@ def get_assistant_of_user(
             db,
             responsible_user_external_id=user_external_id,
             task_subtype_external_id=task_subtype_external_id,
+            office_external_id=office_external_id,
         )
     except ValueError as exc:
-        # Squad sem assistente cadastrado, ou user fora do catalogo.
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return schemas.AssistantResolution(
         user_external_id=result.user_external_id,

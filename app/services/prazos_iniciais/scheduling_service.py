@@ -175,17 +175,18 @@ class PrazosIniciaisSchedulingService:
         candidate_user_external_id: int,
         task_subtype_external_id: Optional[int],
         target_role: str,
+        office_external_id: Optional[int] = None,
     ) -> tuple[int, Optional[AssistantResolutionResult]]:
         """
         Resolve o user que vai virar `participants[0].contact.id` no L1.
 
         - target_role='principal' (ou desconhecido): retorna o candidato
           direto, resolution=None.
-        - target_role='assistente': chama `resolve_assistant`. Se a squad
-          do candidato nao tem assistente cadastrado, propaga ValueError
-          (caller mostra erro humano ao operador). Fallback silencioso pro
-          proprio user quando ele nao e' membro de nenhuma squad — sai
-          com `resolution.fallback_reason='user_not_in_any_squad'`.
+        - target_role='assistente': chama `resolve_assistant` com o
+          office do intake como tie-break (squad cujo office_external_id
+          casa). Se a squad nao tem assistente cadastrado, propaga
+          ValueError. Fallback silencioso pro proprio user quando ele
+          nao e' membro de nenhuma squad.
         """
         if target_role != "assistente":
             return int(candidate_user_external_id), None
@@ -193,6 +194,7 @@ class PrazosIniciaisSchedulingService:
             self.db,
             responsible_user_external_id=int(candidate_user_external_id),
             task_subtype_external_id=task_subtype_external_id,
+            office_external_id=office_external_id,
         )
         return result.user_external_id, result
 
@@ -298,6 +300,7 @@ class PrazosIniciaisSchedulingService:
                 candidate_user_external_id=int(sugestao.responsavel_sugerido_id),
                 task_subtype_external_id=int(sugestao.task_subtype_id),
                 target_role=target_role,
+                office_external_id=intake.office_id,
             )
         except ValueError as exc:
             raise ValueError(
@@ -480,6 +483,7 @@ class PrazosIniciaisSchedulingService:
                 candidate_user_external_id=int(custom_task.responsible_user_external_id),
                 task_subtype_external_id=int(custom_task.task_subtype_external_id),
                 target_role=target_role,
+                office_external_id=intake.office_id,
             )
         except ValueError as exc:
             raise ValueError(

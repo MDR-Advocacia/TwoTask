@@ -5,8 +5,7 @@ import uuid
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Enum
 from sqlalchemy.orm import relationship
 from app.db.session import Base
-from app.models.legal_one import LegalOneUser, LegalOneTaskType
-from .associations import squad_task_type_association
+from app.models.legal_one import LegalOneUser, LegalOneTaskType, LegalOneOffice  # noqa: F401
 
 class ActionLogic(enum.Enum):
     ASSIGN_TO_LAWSUIT_LEADER = "ASSIGN_TO_LAWSUIT_LEADER"
@@ -45,38 +44,32 @@ class RuleAction(Base):
     logic = Column(Enum(ActionLogic), nullable=False)
     rule = relationship('Rule', back_populates='action')
 
-# --- MODELOS DE SETOR E SQUAD ---
-
-class Sector(Base):
-    """ Representa um setor ou área do escritório, ao qual squads podem ser associados. """
-    __tablename__ = 'sectors'
-
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False, unique=True)
-    is_active = Column(Boolean, default=True, nullable=False)
-
-    squads = relationship('Squad', back_populates='sector')
+# --- MODELO DE SQUAD ---
+# Squad e' agrupada por escritorio responsavel (LegalOneOffice). O
+# conceito de Sector foi removido em sqd002 (2026-05-04) — duplicava a
+# arvore de offices que ja' e' o balizador em todo o resto do dominio
+# (templates, intakes, publications).
 
 class Squad(Base):
-    """ Representa uma equipe ou squad, agora vinculada a um setor. """
+    """Equipe vinculada a um escritorio responsavel (LegalOneOffice)."""
     __tablename__ = 'squads'
-    
+
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False, unique=True)
     is_active = Column(Boolean, default=True, nullable=False)
-    
-    # Chave estrangeira para o setor
-    sector_id = Column(Integer, ForeignKey('sectors.id'), nullable=False)
-    sector = relationship('Sector', back_populates='squads')
+
+    # FK pro escritorio responsavel pela squad. Nullable=False na
+    # logica do admin (validado no SquadService); coluna no SQL ficou
+    # nullable=True na migration sqd002 pra suportar dados legados.
+    office_external_id = Column(
+        Integer,
+        ForeignKey('legal_one_offices.external_id'),
+        nullable=True,
+        index=True,
+    )
+    office = relationship('LegalOneOffice', foreign_keys=[office_external_id])
 
     members = relationship('SquadMember', back_populates='squad', cascade="all, delete-orphan")
-    
-    # Relação muitos-para-muitos com LegalOneTaskType
-    task_types = relationship(
-        'LegalOneTaskType',
-        secondary=squad_task_type_association,
-        back_populates='squads'
-    )
 
 class SquadMember(Base):
     """ Tabela de associação que conecta um LegalOneUser a um Squad. """
