@@ -561,6 +561,7 @@ function _buildLegacyQueueParams(
   const params = new URLSearchParams();
   if (filters.queue_status) params.set("queue_status", filters.queue_status);
   if (typeof filters.limit === "number") params.set("limit", String(filters.limit));
+  if (typeof filters.offset === "number") params.set("offset", String(filters.offset));
   if (typeof filters.intake_id === "number") {
     params.set("intake_id", String(filters.intake_id));
   }

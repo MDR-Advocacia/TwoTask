@@ -4,6 +4,8 @@ import {
   AlertCircle,
   AlertTriangle,
   Ban,
+  ChevronLeft,
+  ChevronRight,
   Download,
   ExternalLink,
   Eraser,
@@ -179,6 +181,11 @@ export default function PrazosIniciaisTreatmentPage() {
   const [metrics, setMetrics] = useState<PrazoInicialLegacyTaskQueueMetrics | null>(null);
   const [isCsvDownloading, setIsCsvDownloading] = useState(false);
   const [isResettingCircuitBreaker, setIsResettingCircuitBreaker] = useState(false);
+  // Paginacao da fila tecnica — backend pagina por offset/limit e
+  // devolve `total` absoluto (independente do recorte) pra UI mostrar
+  // "Pagina X de Y". Default 25 itens (alinhado com prazos iniciais).
+  const [pageSize, setPageSize] = useState<25 | 50 | 100>(25);
+  const [offset, setOffset] = useState(0);
 
   // Intakes pendentes de disparo (dispatch_pending=True). Etapa
   // ANTERIOR a fila de cancel da legada — sao os intakes que ja foram
@@ -198,7 +205,10 @@ export default function PrazosIniciaisTreatmentPage() {
   const debouncedIntakeFilter = useDebouncedValue(intakeFilter, 400);
 
   const buildFilters = (): PrazoInicialLegacyTaskQueueFilters => {
-    const filters: PrazoInicialLegacyTaskQueueFilters = { limit: 500 };
+    const filters: PrazoInicialLegacyTaskQueueFilters = {
+      limit: pageSize,
+      offset,
+    };
     if (statusFilter !== "__all__") filters.queue_status = statusFilter;
     const trimmedCnj = debouncedCnjFilter.trim();
     if (trimmedCnj) filters.cnj_number = trimmedCnj;
@@ -224,6 +234,7 @@ export default function PrazosIniciaisTreatmentPage() {
     setIntakeFilter("");
     setSinceFilter("");
     setUntilFilter("");
+    setOffset(0);
   };
 
   const loadPendingIntakes = async () => {
@@ -320,10 +331,16 @@ export default function PrazosIniciaisTreatmentPage() {
 
   // Reload sempre que mudar um filtro. Os textos passam por debounce — então
   // este effect só dispara depois que o usuário para de digitar por 400ms.
+  // Mudar filtro zera offset; mudar paginacao mantem filtros.
+  useEffect(() => {
+    setOffset(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusFilter, debouncedCnjFilter, debouncedIntakeFilter, sinceFilter, untilFilter]);
+
   useEffect(() => {
     loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statusFilter, debouncedCnjFilter, debouncedIntakeFilter, sinceFilter, untilFilter]);
+  }, [statusFilter, debouncedCnjFilter, debouncedIntakeFilter, sinceFilter, untilFilter, offset, pageSize]);
 
   // Lista de intakes pendentes de disparo carrega 1x e auto-refresh
   // junto com o restante (5s). Nao depende dos filtros da fila de cancel.
@@ -339,7 +356,7 @@ export default function PrazosIniciaisTreatmentPage() {
     }, 5000);
     return () => clearInterval(intervalId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statusFilter, debouncedCnjFilter, debouncedIntakeFilter, sinceFilter, untilFilter]);
+  }, [statusFilter, debouncedCnjFilter, debouncedIntakeFilter, sinceFilter, untilFilter, offset, pageSize]);
 
   // Totais globais vêm do endpoint /metrics (totals_by_status), pra os cards
   // de resumo não dependerem do recorte do filtro — se o usuário filtra por
@@ -1150,6 +1167,65 @@ export default function PrazosIniciaisTreatmentPage() {
                   )}
                 </TableBody>
               </Table>
+            </div>
+
+            {/* Paginador (igual aos demais — chevrons + dropdown
+                25/50/100 + "Mostrando A-B de N" + "Pagina X de Y").
+                `total` aqui eh o total absoluto da fila com os filtros
+                aplicados, devolvido pelo backend (count separado do
+                limit/offset). */}
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4">
+              <div className="text-sm text-muted-foreground">
+                {total === 0
+                  ? "Nenhum item na fila com os filtros atuais."
+                  : `Mostrando ${offset + 1}–${Math.min(offset + pageSize, total)} de ${total} item(ns).`}
+              </div>
+              <div className="flex items-center gap-3">
+                <Select
+                  value={String(pageSize)}
+                  onValueChange={(v) => {
+                    setPageSize(Number(v) as 25 | 50 | 100);
+                    setOffset(0);
+                  }}
+                  disabled={isLoading}
+                >
+                  <SelectTrigger className="h-8 w-[140px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="25">25 por página</SelectItem>
+                    <SelectItem value="50">50 por página</SelectItem>
+                    <SelectItem value="100">100 por página</SelectItem>
+                  </SelectContent>
+                </Select>
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 w-8 p-0"
+                    disabled={offset === 0 || isLoading}
+                    onClick={() => setOffset(Math.max(0, offset - pageSize))}
+                    title="Página anterior"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
+                  <span className="text-sm font-medium px-2 min-w-[110px] text-center">
+                    {total === 0
+                      ? "—"
+                      : `Página ${Math.floor(offset / pageSize) + 1} de ${Math.max(1, Math.ceil(total / pageSize))}`}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 w-8 p-0"
+                    disabled={offset + pageSize >= total || isLoading}
+                    onClick={() => setOffset(offset + pageSize)}
+                    title="Próxima página"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
             </div>
           </CardContent>
         </Card>

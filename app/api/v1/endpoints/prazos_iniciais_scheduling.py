@@ -324,6 +324,7 @@ def finalize_without_providence(
 def list_legacy_task_cancel_queue(
     queue_status: Optional[str] = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     intake_id: Optional[int] = Query(default=None, ge=1),
     cnj_number: Optional[str] = Query(default=None),
     since: Optional[datetime] = Query(
@@ -337,17 +338,23 @@ def list_legacy_task_cancel_queue(
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
+    """
+    Pagina a fila de cancelamento da task legada. `total` reflete o
+    universo absoluto que bate os filtros (nao a pagina visivel) — UI
+    usa pra "Mostrando A-B de N" e "Pagina X de Y".
+    """
     service = PrazosIniciaisLegacyTaskQueueService(db)
-    items = service.list_items(
+    filters_kwargs = dict(
         queue_status=queue_status,
-        limit=limit,
         intake_id=intake_id,
         cnj_number=cnj_number,
         since=since,
         until=until,
     )
+    items = service.list_items(limit=limit, offset=offset, **filters_kwargs)
+    total = service.count_items(**filters_kwargs)
     return {
-        "total": len(items),
+        "total": total,
         "items": items,
     }
 

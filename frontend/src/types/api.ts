@@ -486,6 +486,7 @@ export interface PrazoInicialLegacyTaskQueueFilters {
   since?: string; // ISO 8601
   until?: string; // ISO 8601
   limit?: number;
+  offset?: number;
 }
 
 export interface PrazoInicialLegacyTaskCircuitBreakerSnapshot {

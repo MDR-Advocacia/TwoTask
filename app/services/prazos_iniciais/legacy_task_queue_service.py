@@ -156,20 +156,18 @@ class PrazosIniciaisLegacyTaskQueueService:
             .first()
         )
 
-    def list_items(
+    def _build_list_query(
         self,
         *,
         queue_status: Optional[str] = None,
-        limit: int = 100,
         intake_id: Optional[int] = None,
         cnj_number: Optional[str] = None,
         since: Optional[datetime] = None,
         until: Optional[datetime] = None,
-    ) -> list[dict[str, Any]]:
-        query = (
-            self.db.query(PrazoInicialLegacyTaskCancellationItem)
-            .order_by(PrazoInicialLegacyTaskCancellationItem.id.desc())
-        )
+    ):
+        """Query base reusada por list_items + count_items pra garantir
+        que total e pagina visivel batem (mesmo conjunto de filtros)."""
+        query = self.db.query(PrazoInicialLegacyTaskCancellationItem)
         if queue_status:
             query = query.filter(PrazoInicialLegacyTaskCancellationItem.queue_status == queue_status)
         if intake_id is not None:
@@ -188,7 +186,50 @@ class PrazosIniciaisLegacyTaskQueueService:
             query = query.filter(
                 PrazoInicialLegacyTaskCancellationItem.updated_at <= until
             )
-        return [self._item_to_dict(item) for item in query.limit(limit).all()]
+        return query
+
+    def list_items(
+        self,
+        *,
+        queue_status: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+        intake_id: Optional[int] = None,
+        cnj_number: Optional[str] = None,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+    ) -> list[dict[str, Any]]:
+        query = self._build_list_query(
+            queue_status=queue_status,
+            intake_id=intake_id,
+            cnj_number=cnj_number,
+            since=since,
+            until=until,
+        ).order_by(PrazoInicialLegacyTaskCancellationItem.id.desc())
+        return [
+            self._item_to_dict(item)
+            for item in query.limit(limit).offset(offset).all()
+        ]
+
+    def count_items(
+        self,
+        *,
+        queue_status: Optional[str] = None,
+        intake_id: Optional[int] = None,
+        cnj_number: Optional[str] = None,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+    ) -> int:
+        """Total absoluto de items que batem com os filtros (independente
+        de limit/offset). Usado pelo paginador da UI mostrar 'Pagina X
+        de Y' corretamente."""
+        return self._build_list_query(
+            queue_status=queue_status,
+            intake_id=intake_id,
+            cnj_number=cnj_number,
+            since=since,
+            until=until,
+        ).count()
 
     def process_item(
         self,
