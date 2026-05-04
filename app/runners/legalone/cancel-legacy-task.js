@@ -327,6 +327,40 @@ async function dismissCookieBanner(page) {
   return false;
 }
 
+async function dismissPendoOverlay(page) {
+  // O L1 web exibe popups do Pendo (NPS, anuncios, tour) sobre o app.
+  // Esses overlays interceptam pointer events e impedem clicks no
+  // botao "Salvar" do modal de alteracao em lote. Em 2026-05-04 o popup
+  // "Sua opiniao constroi o futuro do Legal One" derrubou o cancelamento
+  // (RPA tentava clicar no botao por baixo, Pendo recebia o click).
+  //
+  // Estrategia: injeta CSS persistente que mata #pendo-base e qualquer
+  // descendente "_pendo-*". Como o Pendo recria o overlay quando o user
+  // dismissa via UI, o CSS garante que mesmo que volte a renderizar fica
+  // escondido. Nao depende de seletor especifico de botao "X" (que muda
+  // entre versoes do Pendo). Idempotente.
+  try {
+    await page.evaluate(() => {
+      const STYLE_ID = '__rpa_kill_pendo__';
+      if (!document.getElementById(STYLE_ID)) {
+        const style = document.createElement('style');
+        style.id = STYLE_ID;
+        style.textContent =
+          '#pendo-base, [id^="pendo-"], [class*="_pendo-"] { display: none !important; pointer-events: none !important; }';
+        document.head.appendChild(style);
+      }
+      document
+        .querySelectorAll('#pendo-base, [id^="pendo-"]')
+        .forEach((el) => {
+          el.style.display = 'none';
+          el.style.pointerEvents = 'none';
+        });
+    });
+  } catch (_) {
+    // page pode nao estar pronta ainda (navigation em andamento) — no-op.
+  }
+}
+
 async function submitCancellationViaBatchModal(page, item, loginConfig) {
   // Fluxo:
   //   1. Goto detailsUrl (lista de tasks do processo)
@@ -350,6 +384,7 @@ async function submitCancellationViaBatchModal(page, item, loginConfig) {
   for (let attempt = 1; attempt <= 3 && !loaded; attempt += 1) {
     await page.goto(detailsUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
     await dismissCookieBanner(page);
+    await dismissPendoOverlay(page);
     await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
 
     const ctx = await capturePageContext(page);
@@ -475,7 +510,10 @@ async function submitCancellationViaBatchModal(page, item, loginConfig) {
   );
 
   // 6) Clica em Salvar — o botao submit aparece DUAS vezes no DOM
-  // (um eh 0x0 invisivel). Filtra pelo visivel.
+  // (um eh 0x0 invisivel). Filtra pelo visivel. Mata o Pendo overlay
+  // imediatamente antes pra evitar pointer-events interception (Pendo
+  // pode renderizar o NPS popup tardiamente, depois do modal abrir).
+  await dismissPendoOverlay(page);
   await page.click('button.toolbar-modal-submit:visible', { timeout: 5000 });
 
   // 7) Aguarda o modal fechar (sumir do DOM ou virar invisible)
