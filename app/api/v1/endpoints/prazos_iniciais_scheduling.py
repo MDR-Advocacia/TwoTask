@@ -6,13 +6,14 @@ import logging
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Path, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core import auth as auth_security
-from app.core.dependencies import get_db
+from app.core.dependencies import get_api_client, get_db
+from app.services.legal_one_client import LegalOneApiClient, LegalOneGedUploadError
 from app.db.session import SessionLocal
 from app.models.legal_one import LegalOneUser
 from app.models.prazo_inicial import PrazoInicialIntake
@@ -324,7 +325,6 @@ def finalize_without_providence(
 def list_legacy_task_cancel_queue(
     queue_status: Optional[str] = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
     intake_id: Optional[int] = Query(default=None, ge=1),
     cnj_number: Optional[str] = Query(default=None),
     since: Optional[datetime] = Query(
@@ -338,23 +338,17 @@ def list_legacy_task_cancel_queue(
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
-    """
-    Pagina a fila de cancelamento da task legada. `total` reflete o
-    universo absoluto que bate os filtros (nao a pagina visivel) — UI
-    usa pra "Mostrando A-B de N" e "Pagina X de Y".
-    """
     service = PrazosIniciaisLegacyTaskQueueService(db)
-    filters_kwargs = dict(
+    items = service.list_items(
         queue_status=queue_status,
+        limit=limit,
         intake_id=intake_id,
         cnj_number=cnj_number,
         since=since,
         until=until,
     )
-    items = service.list_items(limit=limit, offset=offset, **filters_kwargs)
-    total = service.count_items(**filters_kwargs)
     return {
-        "total": total,
+        "total": len(items),
         "items": items,
     }
 
@@ -669,4 +663,58 @@ def dispatch_pending_intakes_batch(
         "success_ids": success,
         "skipped_ids": skipped,
         "failed": failed,
+    }
+
+
+# ─── Debug: GED upload via ECM API ─────────────────────────────
+# Rota isolada pra testar o fluxo ECM API (GET getcontainer -> PUT
+# Azure Blob -> POST /documents) com qualquer PDF e qualquer litigation,
+# sem precisar agendar intake real. Util pra mapear novos typeIds
+# ("type_N") em outras instancias L1 ou validar correcoes futuras.
+
+@router.post("/debug/ged-upload")
+async def debug_ged_upload(
+    litigation_id: int = Form(..., description="ID do processo (Litigation) no L1"),
+    type_id: Optional[str] = Form(None, description="typeId formato literal 'type_N' (ex.: 'type_48' = Habilitação, 'type_5' = Certidão). Omitir cria sem tipo. Catalogo completo: ver comentario em legal_one_client.upload_document_to_ged."),
+    archive_name: Optional[str] = Form(None, description="Nome visivel do arquivo (default: nome enviado)"),
+    description: Optional[str] = Form(None, description="Descricao livre"),
+    notes: Optional[str] = Form(None, description="Observacoes livres"),
+    file: UploadFile = File(..., description="PDF a enviar"),
+    client: LegalOneApiClient = Depends(get_api_client),
+    _=Depends(auth_security.get_current_user),
+):
+    """
+    Testa o fluxo ECM API end-to-end com um PDF arbitrario.
+
+    Retorna `{document_id, file_name_sent, archive_sent}` em caso de sucesso,
+    ou `{error, detail}` com 502 e o corpo do erro do L1 em caso de falha.
+    Os deltas GET->PUT e PUT->POST aparecem no log do container (procurar
+    por `delta_get_to_put_ms` e `delta_put_to_post_ms`).
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Arquivo sem nome.")
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Arquivo vazio.")
+
+    try:
+        document_id = client.upload_document_to_ged(
+            file_bytes=file_bytes,
+            file_name=file.filename,
+            type_id=type_id,
+            litigation_id=litigation_id,
+            archive_name=archive_name,
+            description=description,
+            notes=notes,
+        )
+    except LegalOneGedUploadError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    return {
+        "document_id": document_id,
+        "file_name_sent": file.filename,
+        "archive_sent": archive_name or file.filename,
+        "size_bytes": len(file_bytes),
+        "litigation_id": litigation_id,
+        "type_id": type_id,
     }

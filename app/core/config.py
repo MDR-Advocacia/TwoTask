@@ -86,7 +86,8 @@ class Settings(BaseSettings):
     prazos_iniciais_batch_min_size: int = 5
     prazos_iniciais_batch_max_size: int = 100
     # typeId usado no L1 para o documento de habilitação (Documento/Habilitação).
-    prazos_iniciais_ged_type_id: str = "2-48"
+    # Formato literal "type_N" descoberto em 2026-05-04 (type_48 = Habilitação).
+    prazos_iniciais_ged_type_id: str = "type_48"
     # Modelo Anthropic usado na classificação (Sonnet — mais sensível).
     prazos_iniciais_classifier_model: str = "claude-sonnet-4-6"
     prazos_iniciais_classifier_max_tokens: int = 4096

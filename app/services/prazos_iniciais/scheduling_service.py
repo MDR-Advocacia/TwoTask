@@ -32,7 +32,6 @@ from app.services.prazos_iniciais.legacy_task_cancellation_service import (
     DEFAULT_LEGACY_TASK_SUBTYPE_EXTERNAL_ID,
     DEFAULT_LEGACY_TASK_TYPE_EXTERNAL_ID,
 )
-from app.services.prazos_iniciais.ged_rpa_upload_service import GedRpaUploadService
 from app.services.prazos_iniciais.legacy_task_queue_service import (
     PrazosIniciaisLegacyTaskQueueService,
 )
@@ -518,8 +517,10 @@ class PrazosIniciaisSchedulingService:
                 f"Arquivo PDF vazio (intake {intake.id}, path={intake.pdf_path})."
             )
 
-        # A API ECM ficou preservada em branch propria, mas o caminho ativo
-        # agora sobe a habilitacao pela interface web do Legal One via RPA.
+        # Upload via API ECM oficial. typeId formato "type_N" descoberto
+        # empiricamente em 2026-05-04 — mapa completo no comentario de
+        # legal_one_client.upload_document_to_ged. Default em settings:
+        # "type_48" (Documento / Habilitação).
         archive_name = (
             f"Habilitação — {intake.cnj_number}.pdf" if intake.cnj_number
             else f"Habilitação intake #{intake.id}.pdf"
@@ -529,29 +530,20 @@ class PrazosIniciaisSchedulingService:
             f"CNJ {intake.cnj_number or '?'}"
         )
 
-        try:
-            result = GedRpaUploadService().upload_document(
-                intake_id=int(intake.id),
-                lawsuit_id=int(intake.lawsuit_id),
-                cnj_number=intake.cnj_number,
-                pdf_path=absolute,
-                archive_name=archive_name,
-                description=description,
-                type_id=settings.prazos_iniciais_ged_type_id,
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise LegalOneGedUploadError(
-                f"Falha no RPA de upload GED: {exc}"
-            ) from exc
-
-        document_id = int(result["document_id"])
+        document_id = LegalOneApiClient().upload_document_to_ged(
+            file_bytes=file_bytes,
+            file_name=absolute.name,
+            litigation_id=int(intake.lawsuit_id),
+            type_id=settings.prazos_iniciais_ged_type_id,
+            archive_name=archive_name,
+            description=description,
+        )
         logger.info(
-            "GED RPA upload OK: intake=%s lawsuit=%s document_id=%s size=%d run_dir=%s",
+            "GED API upload OK: intake=%s lawsuit=%s document_id=%s size=%d",
             intake.id,
             intake.lawsuit_id,
             document_id,
             len(file_bytes),
-            result.get("run_dir"),
         )
         return document_id
 

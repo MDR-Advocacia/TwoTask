@@ -353,7 +353,7 @@ prazos_iniciais_retention_days: int = 7
 prazos_iniciais_batch_window_seconds: int = 600
 prazos_iniciais_batch_min_size: int = 5
 prazos_iniciais_batch_max_size: int = 100
-prazos_iniciais_ged_type_id: str = "2-48"
+prazos_iniciais_ged_type_id: str = "type_48"  # Documento / Habilitação (formato literal "type_N")
 prazos_iniciais_classifier_model: str = "claude-sonnet-4-6"
 prazos_iniciais_classifier_max_tokens: int = 4096
 ```
