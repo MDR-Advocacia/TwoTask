@@ -2366,26 +2366,35 @@ def recompute_intake_globals(
     }
 
 
-# ─────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────
 # Export XLSX (Bloco F): relatório contábil com agregados + pedidos.
-# Protegido por permission('prazos_iniciais'). Formato: 3 abas
-# (Resumo, Sugestões, Pedidos) pra facilitar pivot no Excel.
-# ─────────────────────────────────────────────────────────────────────
+# Protegido por permission('prazos_iniciais'). Formato: 5 abas
+# (Resumo, Sugestões, Pedidos, Indeterminadas, Batches) pra facilitar
+# pivot no Excel + auditar o que a IA não conseguiu classificar.
+#
+# Path = /intakes-export.xlsx (NÃO /intakes/export.xlsx) — o segundo
+# colide com /intakes/{intake_id:int} e devolve 422 ("export.xlsx" vira
+# intake_id e falha o cast).
+# ──────────────────────────────────────────────────────────────────
 
 from fastapi.responses import StreamingResponse  # noqa: E402
 import io  # noqa: E402
 
 
 @router.get(
-    "/intakes/export.xlsx",
+    "/intakes-export.xlsx",
     summary=(
-        "Exporta intakes (com agregados, sugestões e pedidos) em XLSX. "
-        "3 abas: Resumo, Sugestões, Pedidos. Útil pra relatório contábil "
-        "de aprovisionamento (CPC 25)."
+        "Exporta intakes (com agregados, sugestões, pedidos e classificações "
+        "indeterminadas) em XLSX. 5 abas: Resumo, Sugestões, Pedidos, "
+        "Indeterminadas, Batches. Útil pra relatório contábil de "
+        "aprovisionamento (CPC 25) e auditoria do que a IA não classificou."
     ),
 )
 def export_intakes_xlsx(
-    status: Optional[str] = Query(default=None, description="Filtra por status (ex.: CONCLUIDO)"),
+    status: Optional[str] = Query(
+        default=None,
+        description="CSV de status (ex.: 'CLASSIFICADO,AGENDADO').",
+    ),
     office_id: Optional[int] = Query(default=None, description="Filtra por office_id"),
     date_from: Optional[str] = Query(default=None, description="ISO YYYY-MM-DD, filtra received_at >="),
     date_to: Optional[str] = Query(default=None, description="ISO YYYY-MM-DD, filtra received_at <"),
@@ -2395,15 +2404,27 @@ def export_intakes_xlsx(
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
-    from app.models.prazo_inicial import PrazoInicialIntake
-    from app.models.prazo_inicial_pedido import PrazoInicialPedido
+    from app.models.prazo_inicial import (
+        PrazoInicialIntake,
+        PrazoInicialBatch,
+    )
+    from app.services.classifier.prazos_iniciais_schema import (
+        TIPO_PRAZO_INDETERMINADO,
+        TIPO_PRAZO_SEM_PRAZO_EM_ABERTO,
+        TIPO_PRAZO_SEM_DETERMINACAO,
+    )
     from app.models.legal_one import LegalOneOffice
     from app.services.publication_search_service import uf_from_cnj
     from datetime import datetime
 
     q = db.query(PrazoInicialIntake)
-    if status:
-        q = q.filter(PrazoInicialIntake.status == status)
+    # status agora aceita CSV (mesmo formato da listagem) — antes era ==
+    # literal e o filtro padrão da UI (CSV de pendentes) caía em 0 linhas.
+    status_list = _parse_csv_strs(status)
+    if len(status_list) == 1:
+        q = q.filter(PrazoInicialIntake.status == status_list[0])
+    elif status_list:
+        q = q.filter(PrazoInicialIntake.status.in_(status_list))
     if office_id:
         q = q.filter(PrazoInicialIntake.office_id == office_id)
     if date_from:
@@ -2427,9 +2448,35 @@ def export_intakes_xlsx(
         )
         office_paths = {o.external_id: (o.path or o.name) for o in offices}
 
+    # Pré-carrega batches que tocaram esses intakes (Aba 5 + lookup do modelo
+    # na Aba Indeterminadas).
+    batch_ids = {
+        i.classification_batch_id
+        for i in intakes
+        if i.classification_batch_id is not None
+    }
+    batches_by_id: dict[int, PrazoInicialBatch] = {}
+    if batch_ids:
+        bs = (
+            db.query(PrazoInicialBatch)
+            .filter(PrazoInicialBatch.id.in_(batch_ids))
+            .all()
+        )
+        batches_by_id = {b.id: b for b in bs}
+
+    # Tipos considerados "estado terminal" (não geram tarefa no L1).
+    TERMINAL_TIPOS = {
+        TIPO_PRAZO_INDETERMINADO,
+        TIPO_PRAZO_SEM_PRAZO_EM_ABERTO,
+        TIPO_PRAZO_SEM_DETERMINACAO,
+    }
+
     wb = Workbook()
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color="1E40AF", end_color="1E40AF", fill_type="solid")
+    indeterm_fill = PatternFill(
+        start_color="FEF3C7", end_color="FEF3C7", fill_type="solid",
+    )
 
     def _write_header(ws, cols):
         for idx, title in enumerate(cols, start=1):
@@ -2444,17 +2491,34 @@ def export_intakes_xlsx(
         for idx in range(1, len(cols) + 1):
             ws.column_dimensions[get_column_letter(idx)].width = 18
 
+    def _payload_get(s, key):
+        # Lê chave do payload_proposto JSON (None quando não existir/vazio).
+        payload = s.payload_proposto or {}
+        if not isinstance(payload, dict):
+            return None
+        v = payload.get(key)
+        if v in ("", None):
+            return None
+        return v
+
     # ── Aba 1: Resumo (1 linha por intake) ──
     ws = wb.active
     ws.title = "Resumo"
     resumo_cols = [
-        "Intake ID", "CNJ", "UF", "Status", "Natureza", "Produto",
+        "Intake ID", "External ID", "CNJ", "UF", "Status", "Natureza", "Produto",
         "Escritório responsável", "Lawsuit ID",
         "Prob. Êxito Global",
         "Valor Total Pedido", "Valor Total Estimado",
         "Aprovisionamento Sugerido",
         "Análise Estratégica",
         "Agravo Origem CNJ",
+        "Tem Indeterminada?",
+        "Sugestões (total)", "Indeterminadas", "Sem Prazo Aberto",
+        "Pedidos (total)",
+        "Tratado por", "Tratado em",
+        "Disparo Pendente", "Erro disparo",
+        "Erro classificação",
+        "Batch Classificação ID",
         "Recebido em", "Atualizado em",
     ]
     _write_header(ws, resumo_cols)
@@ -2464,38 +2528,69 @@ def export_intakes_xlsx(
             if intake.office_id is not None
             else ""
         )
+        sugs = list(intake.sugestoes or [])
+        n_indeterm = sum(1 for s in sugs if s.tipo_prazo == TIPO_PRAZO_INDETERMINADO)
+        n_sem_prazo = sum(
+            1 for s in sugs
+            if s.tipo_prazo in (
+                TIPO_PRAZO_SEM_PRAZO_EM_ABERTO, TIPO_PRAZO_SEM_DETERMINACAO,
+            )
+        )
+        has_indeterm = n_indeterm > 0
         ws.cell(row=i, column=1, value=intake.id)
-        ws.cell(row=i, column=2, value=intake.cnj_number)
-        ws.cell(row=i, column=3, value=uf_from_cnj(intake.cnj_number) or "")
-        ws.cell(row=i, column=4, value=intake.status)
-        ws.cell(row=i, column=5, value=intake.natureza_processo)
-        ws.cell(row=i, column=6, value=intake.produto)
-        ws.cell(row=i, column=7, value=office_label)
-        ws.cell(row=i, column=8, value=intake.lawsuit_id)
-        ws.cell(row=i, column=9, value=intake.probabilidade_exito_global)
-        ws.cell(row=i, column=10, value=float(intake.valor_total_pedido) if intake.valor_total_pedido is not None else None)
-        ws.cell(row=i, column=11, value=float(intake.valor_total_estimado) if intake.valor_total_estimado is not None else None)
-        ws.cell(row=i, column=12, value=float(intake.aprovisionamento_sugerido) if intake.aprovisionamento_sugerido is not None else None)
-        ws.cell(row=i, column=13, value=intake.analise_estrategica)
-        ws.cell(row=i, column=14, value=intake.agravo_processo_origem_cnj)
-        ws.cell(row=i, column=15, value=intake.received_at.isoformat() if intake.received_at else None)
-        ws.cell(row=i, column=16, value=intake.updated_at.isoformat() if intake.updated_at else None)
+        ws.cell(row=i, column=2, value=intake.external_id)
+        ws.cell(row=i, column=3, value=intake.cnj_number)
+        ws.cell(row=i, column=4, value=uf_from_cnj(intake.cnj_number) or "")
+        ws.cell(row=i, column=5, value=intake.status)
+        ws.cell(row=i, column=6, value=intake.natureza_processo)
+        ws.cell(row=i, column=7, value=intake.produto)
+        ws.cell(row=i, column=8, value=office_label)
+        ws.cell(row=i, column=9, value=intake.lawsuit_id)
+        ws.cell(row=i, column=10, value=intake.probabilidade_exito_global)
+        ws.cell(row=i, column=11, value=float(intake.valor_total_pedido) if intake.valor_total_pedido is not None else None)
+        ws.cell(row=i, column=12, value=float(intake.valor_total_estimado) if intake.valor_total_estimado is not None else None)
+        ws.cell(row=i, column=13, value=float(intake.aprovisionamento_sugerido) if intake.aprovisionamento_sugerido is not None else None)
+        ws.cell(row=i, column=14, value=intake.analise_estrategica)
+        ws.cell(row=i, column=15, value=intake.agravo_processo_origem_cnj)
+        ws.cell(row=i, column=16, value="Sim" if has_indeterm else "Não")
+        ws.cell(row=i, column=17, value=len(sugs))
+        ws.cell(row=i, column=18, value=n_indeterm)
+        ws.cell(row=i, column=19, value=n_sem_prazo)
+        ws.cell(row=i, column=20, value=len(intake.pedidos or []))
+        ws.cell(row=i, column=21, value=intake.treated_by_name or intake.treated_by_email)
+        ws.cell(row=i, column=22, value=intake.treated_at.isoformat() if intake.treated_at else None)
+        ws.cell(row=i, column=23, value="Sim" if intake.dispatch_pending else "Não")
+        ws.cell(row=i, column=24, value=intake.dispatch_error_message)
+        ws.cell(row=i, column=25, value=intake.error_message)
+        ws.cell(row=i, column=26, value=intake.classification_batch_id)
+        ws.cell(row=i, column=27, value=intake.received_at.isoformat() if intake.received_at else None)
+        ws.cell(row=i, column=28, value=intake.updated_at.isoformat() if intake.updated_at else None)
+        # Realce em amarelo nas linhas com indeterminada — varredura visual
+        # rápida do que precisa de revisão manual.
+        if has_indeterm:
+            for col in range(1, len(resumo_cols) + 1):
+                ws.cell(row=i, column=col).fill = indeterm_fill
     _autofit(ws, resumo_cols)
-    # Larguras específicas: análise estratégica ocupa mais espaço.
-    ws.column_dimensions[get_column_letter(7)].width = 36   # escritório (path)
-    ws.column_dimensions[get_column_letter(13)].width = 60  # análise estratégica
+    ws.column_dimensions[get_column_letter(8)].width = 36
+    ws.column_dimensions[get_column_letter(14)].width = 60
+    ws.column_dimensions[get_column_letter(24)].width = 50
+    ws.column_dimensions[get_column_letter(25)].width = 50
 
     # ── Aba 2: Sugestões (1 linha por sugestão) ──
     ws2 = wb.create_sheet(title="Sugestões")
     sug_cols = [
         "Sugestão ID", "Intake ID", "CNJ", "UF", "Escritório responsável",
         "Tipo Prazo", "Subtipo",
+        "Estado Terminal?",
+        "Motivo Sem Prazo", "Motivo Descrição",
         "Data Base", "Prazo Dias", "Prazo Tipo",
         "Data Final Calculada",
         "Prazo Fatal Data", "Prazo Fatal Fundamentação",
         "Prazo Base Decisão",
         "Audiência Data", "Audiência Hora", "Audiência Link",
-        "Confiança", "Justificativa", "Review Status",
+        "Confiança", "Justificativa",
+        "Review Status", "Revisado por", "Revisado em",
+        "Task ID criada (L1)",
     ]
     _write_header(ws2, sug_cols)
     row = 2
@@ -2507,6 +2602,9 @@ def export_intakes_xlsx(
             else ""
         )
         for s in intake.sugestoes:
+            is_terminal = s.tipo_prazo in TERMINAL_TIPOS
+            motivo_sem = _payload_get(s, "motivo_sem_prazo")
+            motivo_desc = _payload_get(s, "motivo_descricao")
             ws2.cell(row=row, column=1, value=s.id)
             ws2.cell(row=row, column=2, value=intake.id)
             ws2.cell(row=row, column=3, value=intake.cnj_number)
@@ -2514,22 +2612,35 @@ def export_intakes_xlsx(
             ws2.cell(row=row, column=5, value=intake_office)
             ws2.cell(row=row, column=6, value=s.tipo_prazo)
             ws2.cell(row=row, column=7, value=s.subtipo)
-            ws2.cell(row=row, column=8, value=s.data_base.isoformat() if s.data_base else None)
-            ws2.cell(row=row, column=9, value=s.prazo_dias)
-            ws2.cell(row=row, column=10, value=s.prazo_tipo)
-            ws2.cell(row=row, column=11, value=s.data_final_calculada.isoformat() if s.data_final_calculada else None)
-            ws2.cell(row=row, column=12, value=s.prazo_fatal_data.isoformat() if s.prazo_fatal_data else None)
-            ws2.cell(row=row, column=13, value=s.prazo_fatal_fundamentacao)
-            ws2.cell(row=row, column=14, value=s.prazo_base_decisao)
-            ws2.cell(row=row, column=15, value=s.audiencia_data.isoformat() if s.audiencia_data else None)
-            ws2.cell(row=row, column=16, value=s.audiencia_hora.isoformat() if s.audiencia_hora else None)
-            ws2.cell(row=row, column=17, value=s.audiencia_link)
-            ws2.cell(row=row, column=18, value=s.confianca)
-            ws2.cell(row=row, column=19, value=s.justificativa)
-            ws2.cell(row=row, column=20, value=s.review_status)
+            ws2.cell(row=row, column=8, value="Sim" if is_terminal else "Não")
+            ws2.cell(row=row, column=9, value=motivo_sem)
+            ws2.cell(row=row, column=10, value=motivo_desc)
+            ws2.cell(row=row, column=11, value=s.data_base.isoformat() if s.data_base else None)
+            ws2.cell(row=row, column=12, value=s.prazo_dias)
+            ws2.cell(row=row, column=13, value=s.prazo_tipo)
+            ws2.cell(row=row, column=14, value=s.data_final_calculada.isoformat() if s.data_final_calculada else None)
+            ws2.cell(row=row, column=15, value=s.prazo_fatal_data.isoformat() if s.prazo_fatal_data else None)
+            ws2.cell(row=row, column=16, value=s.prazo_fatal_fundamentacao)
+            ws2.cell(row=row, column=17, value=s.prazo_base_decisao)
+            ws2.cell(row=row, column=18, value=s.audiencia_data.isoformat() if s.audiencia_data else None)
+            ws2.cell(row=row, column=19, value=s.audiencia_hora.isoformat() if s.audiencia_hora else None)
+            ws2.cell(row=row, column=20, value=s.audiencia_link)
+            ws2.cell(row=row, column=21, value=s.confianca)
+            ws2.cell(row=row, column=22, value=s.justificativa)
+            ws2.cell(row=row, column=23, value=s.review_status)
+            ws2.cell(row=row, column=24, value=s.reviewed_by_email)
+            ws2.cell(row=row, column=25, value=s.reviewed_at.isoformat() if s.reviewed_at else None)
+            ws2.cell(row=row, column=26, value=s.created_task_id)
+            if s.tipo_prazo == TIPO_PRAZO_INDETERMINADO:
+                for col in range(1, len(sug_cols) + 1):
+                    ws2.cell(row=row, column=col).fill = indeterm_fill
             row += 1
     _autofit(ws2, sug_cols)
-    ws2.column_dimensions[get_column_letter(5)].width = 36  # escritório
+    ws2.column_dimensions[get_column_letter(5)].width = 36
+    ws2.column_dimensions[get_column_letter(10)].width = 60
+    ws2.column_dimensions[get_column_letter(16)].width = 60
+    ws2.column_dimensions[get_column_letter(17)].width = 60
+    ws2.column_dimensions[get_column_letter(22)].width = 80
 
     # ── Aba 3: Pedidos (1 linha por pedido) ──
     ws3 = wb.create_sheet(title="Pedidos")
@@ -2537,6 +2648,7 @@ def export_intakes_xlsx(
         "Pedido ID", "Intake ID", "CNJ", "Tipo Pedido", "Natureza",
         "Valor Indicado", "Valor Estimado", "Fundamentação Valor",
         "Probabilidade Perda", "Aprovisionamento", "Fundamentação Risco",
+        "Criado em",
     ]
     _write_header(ws3, ped_cols)
     row = 2
@@ -2553,10 +2665,100 @@ def export_intakes_xlsx(
             ws3.cell(row=row, column=9, value=p.probabilidade_perda)
             ws3.cell(row=row, column=10, value=float(p.aprovisionamento) if p.aprovisionamento is not None else None)
             ws3.cell(row=row, column=11, value=p.fundamentacao_risco)
+            ws3.cell(row=row, column=12, value=p.created_at.isoformat() if p.created_at else None)
             row += 1
     _autofit(ws3, ped_cols)
     ws3.column_dimensions[get_column_letter(8)].width = 60
     ws3.column_dimensions[get_column_letter(11)].width = 60
+
+    # ── Aba 4: Indeterminadas (1 linha por sugestão INDETERMINADO) ──
+    # Foco em auditoria: o que a IA não classificou + a justificativa
+    # completa. Operador usa essa aba pra varrer o que precisa de revisão.
+    ws4 = wb.create_sheet(title="Indeterminadas")
+    ind_cols = [
+        "Sugestão ID", "Intake ID", "External ID", "CNJ", "UF",
+        "Escritório responsável",
+        "Status do Intake",
+        "Tipo Prazo", "Subtipo",
+        "Motivo Descrição (IA)", "Justificativa",
+        "Confiança",
+        "Review Status", "Revisado por", "Revisado em",
+        "Batch Classificação ID", "Modelo IA",
+        "Recebido em",
+    ]
+    _write_header(ws4, ind_cols)
+    row = 2
+    for intake in intakes:
+        intake_uf = uf_from_cnj(intake.cnj_number) or ""
+        intake_office = (
+            office_paths.get(intake.office_id, str(intake.office_id))
+            if intake.office_id is not None
+            else ""
+        )
+        for s in intake.sugestoes:
+            if s.tipo_prazo != TIPO_PRAZO_INDETERMINADO:
+                continue
+            motivo_desc = _payload_get(s, "motivo_descricao")
+            batch = (
+                batches_by_id.get(intake.classification_batch_id)
+                if intake.classification_batch_id else None
+            )
+            ws4.cell(row=row, column=1, value=s.id)
+            ws4.cell(row=row, column=2, value=intake.id)
+            ws4.cell(row=row, column=3, value=intake.external_id)
+            ws4.cell(row=row, column=4, value=intake.cnj_number)
+            ws4.cell(row=row, column=5, value=intake_uf)
+            ws4.cell(row=row, column=6, value=intake_office)
+            ws4.cell(row=row, column=7, value=intake.status)
+            ws4.cell(row=row, column=8, value=s.tipo_prazo)
+            ws4.cell(row=row, column=9, value=s.subtipo)
+            ws4.cell(row=row, column=10, value=motivo_desc)
+            ws4.cell(row=row, column=11, value=s.justificativa)
+            ws4.cell(row=row, column=12, value=s.confianca)
+            ws4.cell(row=row, column=13, value=s.review_status)
+            ws4.cell(row=row, column=14, value=s.reviewed_by_email)
+            ws4.cell(row=row, column=15, value=s.reviewed_at.isoformat() if s.reviewed_at else None)
+            ws4.cell(row=row, column=16, value=intake.classification_batch_id)
+            ws4.cell(row=row, column=17, value=batch.model_used if batch else None)
+            ws4.cell(row=row, column=18, value=intake.received_at.isoformat() if intake.received_at else None)
+            row += 1
+    _autofit(ws4, ind_cols)
+    ws4.column_dimensions[get_column_letter(6)].width = 36
+    ws4.column_dimensions[get_column_letter(10)].width = 80
+    ws4.column_dimensions[get_column_letter(11)].width = 80
+
+    # ── Aba 5: Batches (rastreabilidade dos lotes Anthropic) ──
+    ws5 = wb.create_sheet(title="Batches")
+    batch_cols = [
+        "Batch ID", "Anthropic Batch ID", "Status", "Status Anthropic",
+        "Modelo IA", "Solicitado por",
+        "Total Registros", "Sucesso", "Erros", "Expirados", "Cancelados",
+        "Criado em", "Submetido em", "Encerrado em", "Aplicado em",
+    ]
+    _write_header(ws5, batch_cols)
+    row = 2
+    for b in sorted(
+        batches_by_id.values(),
+        key=lambda x: x.created_at or datetime.min,
+        reverse=True,
+    ):
+        ws5.cell(row=row, column=1, value=b.id)
+        ws5.cell(row=row, column=2, value=b.anthropic_batch_id)
+        ws5.cell(row=row, column=3, value=b.status)
+        ws5.cell(row=row, column=4, value=b.anthropic_status)
+        ws5.cell(row=row, column=5, value=b.model_used)
+        ws5.cell(row=row, column=6, value=b.requested_by_email)
+        ws5.cell(row=row, column=7, value=b.total_records)
+        ws5.cell(row=row, column=8, value=b.succeeded_count)
+        ws5.cell(row=row, column=9, value=b.errored_count)
+        ws5.cell(row=row, column=10, value=b.expired_count)
+        ws5.cell(row=row, column=11, value=b.canceled_count)
+        ws5.cell(row=row, column=12, value=b.created_at.isoformat() if b.created_at else None)
+        ws5.cell(row=row, column=13, value=b.submitted_at.isoformat() if b.submitted_at else None)
+        ws5.cell(row=row, column=14, value=b.ended_at.isoformat() if b.ended_at else None)
+        ws5.cell(row=row, column=15, value=b.applied_at.isoformat() if b.applied_at else None)
+        row += 1
+    _autofit(ws5, batch_cols)
 
     # Serializa pra memória e devolve como download.
     buf = io.BytesIO()
