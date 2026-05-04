@@ -56,6 +56,36 @@ class ConfirmedSuggestionInput:
     suggestion_id: int
     created_task_id: Optional[int] = None
     review_status: Optional[str] = None
+    # Overrides opcionais — quando o operador edita campos da sugestao
+    # no modal de Agendar (Modal B), os valores novos vem aqui. Sao
+    # aplicados na sugestao no banco antes de _build_l1_task_payload
+    # (rastreabilidade: a sugestao reflete o que foi efetivamente
+    # agendado no L1). Espelha `payload_overrides` de publicacoes.
+    override_task_subtype_external_id: Optional[int] = None
+    override_responsible_user_external_id: Optional[int] = None
+    override_data_base: Optional[date] = None
+    override_data_final_calculada: Optional[date] = None
+    override_prazo_dias: Optional[int] = None
+    override_prazo_tipo: Optional[str] = None  # util | corrido
+    override_priority: Optional[str] = None
+    override_description: Optional[str] = None
+    override_notes: Optional[str] = None
+
+    def has_any_override(self) -> bool:
+        return any(
+            getattr(self, name) is not None
+            for name in (
+                "override_task_subtype_external_id",
+                "override_responsible_user_external_id",
+                "override_data_base",
+                "override_data_final_calculada",
+                "override_prazo_dias",
+                "override_prazo_tipo",
+                "override_priority",
+                "override_description",
+                "override_notes",
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -222,6 +252,55 @@ class PrazosIniciaisSchedulingService:
             payload["responsibleOfficeId"] = int(office_id)
             payload["originOfficeId"] = int(office_id)
         return payload
+
+    def _apply_overrides_to_sugestao(
+        self,
+        sugestao: PrazoInicialSugestao,
+        entry: ConfirmedSuggestionInput,
+    ) -> None:
+        """
+        Aplica overrides do operador (campos editaveis no Modal de
+        Agendar) na sugestao no banco. Chamado ANTES de
+        _build_l1_task_payload — garante que a task no L1 reflete o
+        que o operador editou. Marca review_status='editado' implicito
+        (o caller pode sobrescrever via entry.review_status).
+        """
+        if entry.override_task_subtype_external_id is not None:
+            sugestao.task_subtype_id = int(
+                entry.override_task_subtype_external_id,
+            )
+        if entry.override_responsible_user_external_id is not None:
+            sugestao.responsavel_sugerido_id = int(
+                entry.override_responsible_user_external_id,
+            )
+        if entry.override_data_base is not None:
+            sugestao.data_base = entry.override_data_base
+        if entry.override_data_final_calculada is not None:
+            sugestao.data_final_calculada = entry.override_data_final_calculada
+        if entry.override_prazo_dias is not None:
+            sugestao.prazo_dias = int(entry.override_prazo_dias)
+        if entry.override_prazo_tipo is not None:
+            sugestao.prazo_tipo = entry.override_prazo_tipo
+
+        # Campos que vivem dentro de payload_proposto (priority,
+        # description, notes). Preserva os outros campos do payload
+        # (template_id, template_name, observacoes_ia, etc.).
+        if (
+            entry.override_priority is not None
+            or entry.override_description is not None
+            or entry.override_notes is not None
+        ):
+            payload = dict(sugestao.payload_proposto or {})
+            if entry.override_priority is not None:
+                payload["priority"] = entry.override_priority
+            if entry.override_description is not None:
+                # description tem cap de 250 chars no L1 — backend
+                # _build_l1_task_payload trunca, mas tambem normalizamos
+                # aqui pra payload_proposto refletir o que vai pro L1.
+                payload["description"] = entry.override_description.strip()
+            if entry.override_notes is not None:
+                payload["notes"] = entry.override_notes.strip() or None
+            sugestao.payload_proposto = payload
 
     def _create_task_in_legal_one(
         self,
@@ -572,6 +651,11 @@ class PrazosIniciaisSchedulingService:
         if create_tasks_in_l1:
             try:
                 for sugestao, entry in selected:
+                    # Aplica overrides do operador (modal de Agendar)
+                    # ANTES de qualquer decisao — assim a sugestao
+                    # reflete o que foi efetivamente enviado pro L1.
+                    if entry.has_any_override():
+                        self._apply_overrides_to_sugestao(sugestao, entry)
                     # Prioridade: se o caller já passou created_task_id, usa
                     # (compat com quem criava via outro caminho); senão, se
                     # a sugestão já tem task persistido, também respeita.
@@ -666,9 +750,18 @@ class PrazosIniciaisSchedulingService:
         confirmed_ids: list[int] = []
         created_task_ids: list[int] = list(custom_created_ids)
         for sugestao, entry in selected:
-            target_status = entry.review_status or sugestao.review_status or SUGESTAO_REVIEW_PENDING
-            if target_status == SUGESTAO_REVIEW_PENDING:
-                target_status = SUGESTAO_REVIEW_APPROVED
+            # Se o operador editou QUALQUER campo no Modal de Agendar
+            # (overrides), forca review_status='editado' — sobrescreve
+            # default e qualquer "aprovado" implicito. Operador pode
+            # passar review_status explicito pra sobrescrever isso.
+            if entry.review_status:
+                target_status = entry.review_status
+            elif entry.has_any_override():
+                target_status = SUGESTAO_REVIEW_EDITED
+            else:
+                target_status = sugestao.review_status or SUGESTAO_REVIEW_PENDING
+                if target_status == SUGESTAO_REVIEW_PENDING:
+                    target_status = SUGESTAO_REVIEW_APPROVED
 
             sugestao.review_status = target_status
             sugestao.reviewed_by_email = confirmed_by_email

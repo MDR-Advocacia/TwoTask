@@ -92,6 +92,19 @@ class ConfirmSuggestionPayload(BaseModel):
     suggestion_id: int = Field(..., ge=1)
     created_task_id: Optional[int] = Field(default=None, ge=1)
     review_status: Optional[str] = None
+    # Overrides opcionais — quando o operador edita campos da sugestao
+    # no modal de Agendar (Modal B). Sao aplicados na sugestao no banco
+    # antes de criar a task no L1 (rastreabilidade). Espelha
+    # `payload_overrides` em publicacoes.
+    override_task_subtype_external_id: Optional[int] = Field(default=None, ge=1)
+    override_responsible_user_external_id: Optional[int] = Field(default=None, ge=1)
+    override_data_base: Optional[date] = None
+    override_data_final_calculada: Optional[date] = None
+    override_prazo_dias: Optional[int] = Field(default=None, ge=0, le=365)
+    override_prazo_tipo: Optional[str] = None  # util | corrido
+    override_priority: Optional[str] = None  # Low | Normal | High
+    override_description: Optional[str] = None
+    override_notes: Optional[str] = None
 
 
 class CustomTaskPayload(BaseModel):
@@ -176,6 +189,15 @@ def confirm_intake_scheduling(
                     suggestion_id=item.suggestion_id,
                     created_task_id=item.created_task_id,
                     review_status=item.review_status,
+                    override_task_subtype_external_id=item.override_task_subtype_external_id,
+                    override_responsible_user_external_id=item.override_responsible_user_external_id,
+                    override_data_base=item.override_data_base,
+                    override_data_final_calculada=item.override_data_final_calculada,
+                    override_prazo_dias=item.override_prazo_dias,
+                    override_prazo_tipo=item.override_prazo_tipo,
+                    override_priority=item.override_priority,
+                    override_description=item.override_description,
+                    override_notes=item.override_notes,
                 )
                 for item in payload.suggestions
             ]

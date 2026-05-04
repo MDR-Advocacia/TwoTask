@@ -416,6 +416,17 @@ export interface PrazoInicialConfirmSchedulingSuggestion {
   suggestion_id: number;
   created_task_id?: number | null;
   review_status?: string | null;
+  // Overrides opcionais — operador editou campos da sugestao no Modal
+  // de Agendar. Backend aplica antes de criar a task no L1.
+  override_task_subtype_external_id?: number | null;
+  override_responsible_user_external_id?: number | null;
+  override_data_base?: string | null; // ISO YYYY-MM-DD
+  override_data_final_calculada?: string | null;
+  override_prazo_dias?: number | null;
+  override_prazo_tipo?: string | null; // util | corrido
+  override_priority?: string | null; // Low | Normal | High
+  override_description?: string | null;
+  override_notes?: string | null;
 }
 
 /**

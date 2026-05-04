@@ -284,27 +284,41 @@ function isConfirmableStatus(status: string): boolean {
  * fica null — backend rejeita criar task no L1 sem data. Bloqueamos o
  * checkbox no frontend pra evitar o erro 500 generico no submit.
  */
-function isSuggestionSchedulable(suggestion: PrazoInicialSugestao): {
-  ok: boolean;
-  reason?: string;
-} {
+function isSuggestionSchedulable(
+  suggestion: PrazoInicialSugestao,
+  // Override: quando passado, considera os valores do form em vez dos
+  // campos originais. Usado no Modal de Agendar pra desbloquear o
+  // checkbox quando operador preenche dados que estavam null na IA.
+  formOverride?: {
+    task_subtype_external_id: number | null;
+    data_final_calculada: string;
+  },
+): { ok: boolean; reason?: string } {
   const isNoOp = Boolean(
     (suggestion.payload_proposto as Record<string, unknown> | null)
       ?.skip_task_creation,
   );
   if (isNoOp) return { ok: true };
-  if (suggestion.task_subtype_id == null) {
+
+  const effectiveSubtype = formOverride
+    ? formOverride.task_subtype_external_id
+    : suggestion.task_subtype_id;
+  const effectiveDataFinal = formOverride
+    ? formOverride.data_final_calculada || null
+    : suggestion.data_final_calculada;
+
+  if (effectiveSubtype == null) {
     return {
       ok: false,
       reason:
-        "Sugestão sem template casado (task_subtype_id = NULL). Cadastre um template ou Reclassifique.",
+        "Sugestão sem task do Legal One. Selecione uma task no formulário ou cadastre template.",
     };
   }
-  if (suggestion.data_final_calculada == null) {
+  if (!effectiveDataFinal) {
     return {
       ok: false,
       reason:
-        "Sem data_final_calculada — a IA não conseguiu derivar a data base (ex.: AR/intimação ainda não registrado). Reclassifique após corrigir os autos, ou edite a sugestão antes de agendar.",
+        "Sem data fatal — a IA não conseguiu derivar (ex.: AR/intimação ainda não registrado). Preencha a data fatal no formulário ou reclassifique.",
     };
   }
   return { ok: true };
@@ -448,6 +462,28 @@ export default function PrazosIniciaisPage() {
   // de exception/manual).
   const [scheduleCreatedTaskIds, setScheduleCreatedTaskIds] = useState<
     Record<number, string>
+  >({});
+  // Form editavel por sugestao no Modal de Agendar. Pre-populado a
+  // partir dos valores atuais da sugestao quando o modal abre. Cada
+  // alteracao do operador vai pra ca; no submit, todos os campos sao
+  // enviados como overrides — backend aplica na sugestao no banco
+  // ANTES de criar a task no L1 (rastreabilidade + permite editar
+  // inclusive coisas como `data_final_calculada` que estavam null).
+  const [scheduleSugestaoForms, setScheduleSugestaoForms] = useState<
+    Record<
+      number,
+      {
+        task_subtype_external_id: number | null;
+        responsible_user_external_id: number | null;
+        data_base: string; // YYYY-MM-DD ou ""
+        data_final_calculada: string;
+        prazo_dias: string; // "" ou stringified number
+        prazo_tipo: string; // "util" | "corrido" | ""
+        priority: string; // Low | Normal | High
+        description: string;
+        notes: string;
+      }
+    >
   >({});
   // Tarefas avulsas em edicao — vivem so dentro do Modal B. Reset
   // quando o modal fecha (sucesso ou cancel).
@@ -623,19 +659,35 @@ export default function PrazosIniciaisPage() {
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
-  // Pre-popula scheduleCreatedTaskIds quando scheduleDetail carrega —
-  // usa o created_task_id ja persistido na sugestao (caso operador
-  // tenha rodado uma confirmacao parcial antes).
+  // Pre-popula scheduleCreatedTaskIds e scheduleSugestaoForms quando
+  // scheduleDetail carrega. O form recebe os valores atuais da sugestao
+  // (ou "" pra nulls). Operador edita e ao submit, frontend envia tudo
+  // como override.
   useEffect(() => {
     if (!scheduleDetail) {
       setScheduleCreatedTaskIds({});
+      setScheduleSugestaoForms({});
       return;
     }
-    const next: Record<number, string> = {};
+    const nextIds: Record<number, string> = {};
+    const nextForms: Record<number, (typeof scheduleSugestaoForms)[number]> = {};
     for (const s of scheduleDetail.sugestoes) {
-      next[s.id] = s.created_task_id ? String(s.created_task_id) : "";
+      nextIds[s.id] = s.created_task_id ? String(s.created_task_id) : "";
+      const payload = (s.payload_proposto as Record<string, unknown> | null) || {};
+      nextForms[s.id] = {
+        task_subtype_external_id: s.task_subtype_id,
+        responsible_user_external_id: s.responsavel_sugerido_id,
+        data_base: s.data_base ?? "",
+        data_final_calculada: s.data_final_calculada ?? "",
+        prazo_dias: s.prazo_dias != null ? String(s.prazo_dias) : "",
+        prazo_tipo: s.prazo_tipo ?? "",
+        priority: typeof payload.priority === "string" ? payload.priority : "Normal",
+        description: typeof payload.description === "string" ? payload.description : "",
+        notes: typeof payload.notes === "string" ? payload.notes : "",
+      };
     }
-    setScheduleCreatedTaskIds(next);
+    setScheduleCreatedTaskIds(nextIds);
+    setScheduleSugestaoForms(nextForms);
   }, [scheduleDetail]);
 
   const pageInfo = useMemo(() => {
@@ -1040,6 +1092,15 @@ export default function PrazosIniciaisPage() {
       suggestion_id: number;
       created_task_id: number | null;
       review_status: string;
+      override_task_subtype_external_id?: number | null;
+      override_responsible_user_external_id?: number | null;
+      override_data_base?: string | null;
+      override_data_final_calculada?: string | null;
+      override_prazo_dias?: number | null;
+      override_prazo_tipo?: string | null;
+      override_priority?: string | null;
+      override_description?: string | null;
+      override_notes?: string | null;
     }> = [];
 
     for (const suggestion of targetDetail.sugestoes) {
@@ -1060,30 +1121,103 @@ export default function PrazosIniciaisPage() {
         parsedCreatedTaskId = Number.parseInt(rawCreatedTaskId, 10);
       }
 
+      // Calcula overrides (campos editados vs valores originais).
+      // Manda apenas o que mudou, pra payload limpo + audit trail
+      // claro no backend (review_status='editado' so quando algo
+      // realmente foi tocado).
+      const form = scheduleSugestaoForms[suggestion.id];
+      const overrides: Record<string, unknown> = {};
+      const isNoOp = Boolean(
+        (suggestion.payload_proposto as Record<string, unknown> | null)
+          ?.skip_task_creation,
+      );
+      if (form && !isNoOp) {
+        const origPayload =
+          (suggestion.payload_proposto as Record<string, unknown> | null) || {};
+
+        if (form.task_subtype_external_id !== suggestion.task_subtype_id) {
+          overrides.override_task_subtype_external_id =
+            form.task_subtype_external_id;
+        }
+        if (
+          form.responsible_user_external_id !== suggestion.responsavel_sugerido_id
+        ) {
+          overrides.override_responsible_user_external_id =
+            form.responsible_user_external_id;
+        }
+        if ((form.data_base || null) !== (suggestion.data_base ?? null)) {
+          overrides.override_data_base = form.data_base || null;
+        }
+        if (
+          (form.data_final_calculada || null) !==
+          (suggestion.data_final_calculada ?? null)
+        ) {
+          overrides.override_data_final_calculada =
+            form.data_final_calculada || null;
+        }
+        const formPrazoDias = form.prazo_dias ? Number(form.prazo_dias) : null;
+        if (formPrazoDias !== (suggestion.prazo_dias ?? null)) {
+          overrides.override_prazo_dias = formPrazoDias;
+        }
+        if ((form.prazo_tipo || null) !== (suggestion.prazo_tipo ?? null)) {
+          overrides.override_prazo_tipo = form.prazo_tipo || null;
+        }
+        if (form.priority !== (origPayload.priority ?? "Normal")) {
+          overrides.override_priority = form.priority;
+        }
+        if (form.description !== (origPayload.description ?? "")) {
+          overrides.override_description = form.description;
+        }
+        if (form.notes !== (origPayload.notes ?? "")) {
+          overrides.override_notes = form.notes;
+        }
+      }
+
+      const hasOverrides = Object.keys(overrides).length > 0;
       const reviewStatus =
-        parsedCreatedTaskId !== null && parsedCreatedTaskId !== suggestion.created_task_id
+        hasOverrides
           ? "editado"
-          : suggestion.review_status === "editado"
+          : parsedCreatedTaskId !== null && parsedCreatedTaskId !== suggestion.created_task_id
             ? "editado"
-            : "aprovado";
+            : suggestion.review_status === "editado"
+              ? "editado"
+              : "aprovado";
 
       selectedPayload.push({
         suggestion_id: suggestion.id,
         created_task_id: parsedCreatedTaskId,
         review_status: reviewStatus,
+        ...overrides,
       });
     }
 
     // Defesa em profundidade: bloqueia submit se alguma sugestao
-    // marcada nao eh agendavel (sem data_final_calculada e nao no-op).
-    // Os checkboxes ja sao disabled, mas operador pode ter marcado
-    // antes de carregar detalhe atualizado, ou via deep-link/URL.
-    const invalidSelected = targetDetail.sugestoes.find(
-      (s) =>
-        selectedScheduleSuggestions[s.id] && !isSuggestionSchedulable(s).ok,
-    );
+    // marcada nao eh agendavel (consideracao final dos forms editados).
+    const invalidSelected = targetDetail.sugestoes.find((s) => {
+      if (!selectedScheduleSuggestions[s.id]) return false;
+      const form = scheduleSugestaoForms[s.id];
+      const ok = isSuggestionSchedulable(
+        s,
+        form
+          ? {
+              task_subtype_external_id: form.task_subtype_external_id,
+              data_final_calculada: form.data_final_calculada,
+            }
+          : undefined,
+      ).ok;
+      return !ok;
+    });
     if (invalidSelected) {
-      const reason = isSuggestionSchedulable(invalidSelected).reason;
+      const form = scheduleSugestaoForms[invalidSelected.id];
+      const reason = isSuggestionSchedulable(
+        invalidSelected,
+        form
+          ? {
+              task_subtype_external_id: form.task_subtype_external_id,
+              data_final_calculada: form.data_final_calculada,
+            }
+          : undefined,
+      ).reason;
       toast({
         title: `Sugestão #${invalidSelected.id} não é agendável`,
         description: reason || "Sugestão sem dados suficientes pra criar tarefa no L1.",
@@ -1188,6 +1322,7 @@ export default function PrazosIniciaisPage() {
     scheduleDetail,
     selectedScheduleSuggestions,
     scheduleCreatedTaskIds,
+    scheduleSugestaoForms,
     customTaskDrafts,
     selectedId,
     loadDetail,
@@ -1211,8 +1346,20 @@ export default function PrazosIniciaisPage() {
       if (!scheduleDetail) return;
       const next: Record<number, boolean> = {};
       for (const s of scheduleDetail.sugestoes) {
-        // "Selecionar todas" pula sugestoes nao-agendaveis.
-        if (checked && !isSuggestionSchedulable(s).ok) {
+        // "Selecionar todas" considera o FORM (com edits) e nao
+        // valores originais — operador que preencheu data deve poder
+        // selecionar.
+        const form = scheduleSugestaoForms[s.id];
+        const ok = isSuggestionSchedulable(
+          s,
+          form
+            ? {
+                task_subtype_external_id: form.task_subtype_external_id,
+                data_final_calculada: form.data_final_calculada,
+              }
+            : undefined,
+        ).ok;
+        if (checked && !ok) {
           next[s.id] = false;
           continue;
         }
@@ -1220,7 +1367,7 @@ export default function PrazosIniciaisPage() {
       }
       setSelectedScheduleSuggestions(next);
     },
-    [scheduleDetail],
+    [scheduleDetail, scheduleSugestaoForms],
   );
 
   // ─── Classificação em batch (Sonnet) — controlada manualmente ─────────
@@ -1354,7 +1501,8 @@ export default function PrazosIniciaisPage() {
 
   // Pre-popula selectedScheduleSuggestions com TODAS as sugestoes
   // agendaveis quando o scheduleDetail carrega — operador desmarca o
-  // que nao quer (UX igual a "Selecionar todas" como default).
+  // que nao quer (UX igual a "Selecionar todas" como default). Usa
+  // valores originais aqui (o form ainda nao foi populado em paralelo).
   useEffect(() => {
     if (!scheduleDetail) return;
     const next: Record<number, boolean> = {};
@@ -3137,64 +3285,264 @@ export default function PrazosIniciaisPage() {
                     </div>
                   </div>
 
-                  <div className="overflow-x-auto rounded-md border">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="w-[64px]">Ok</TableHead>
-                          <TableHead>Tipo / subtipo</TableHead>
-                          <TableHead>Data base</TableHead>
-                          <TableHead>Prazo / audiência</TableHead>
-                          <TableHead>Confiança</TableHead>
-                          <TableHead className="w-[180px]">Task criada (manual)</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {scheduleDetail.sugestoes.map((suggestion) => {
-                          const schedulable = isSuggestionSchedulable(suggestion);
-                          return (
-                            <TableRow key={suggestion.id}>
-                              <TableCell>
-                                <Checkbox
-                                  checked={Boolean(selectedScheduleSuggestions[suggestion.id])}
-                                  onCheckedChange={(checked) =>
-                                    setSelectedScheduleSuggestions((current) => ({
-                                      ...current,
-                                      [suggestion.id]: checked === true,
-                                    }))
-                                  }
-                                  disabled={!schedulable.ok}
-                                  aria-label={`Selecionar sugestão ${suggestion.id}`}
-                                  title={schedulable.reason}
-                                />
-                              </TableCell>
-                              <TableCell>
-                                <div className="font-medium">{suggestion.tipo_prazo}</div>
-                                <div className="text-xs text-muted-foreground">
-                                  {suggestion.subtipo || "Sem subtipo"} · sugestão #{suggestion.id}
+                  {/* Cards editaveis (1 por sugestao). Operador edita
+                      campos inline; o submit envia overrides pro backend
+                      que atualiza a sugestao no banco antes de criar a
+                      task no L1. Mesmo padrao de Publicacoes
+                      ScheduleDialog. */}
+                  <div className="space-y-3">
+                    {scheduleDetail.sugestoes.map((suggestion) => {
+                      const form = scheduleSugestaoForms[suggestion.id];
+                      // Form pode ainda nao ter populado (corrida de
+                      // useEffects). Skipa render ate ter.
+                      if (!form) return null;
+                      const isNoOp = Boolean(
+                        (suggestion.payload_proposto as Record<string, unknown> | null)
+                          ?.skip_task_creation,
+                      );
+                      const schedulable = isSuggestionSchedulable(suggestion, {
+                        task_subtype_external_id: form.task_subtype_external_id,
+                        data_final_calculada: form.data_final_calculada,
+                      });
+                      const checked = Boolean(selectedScheduleSuggestions[suggestion.id]);
+                      const updateForm = (
+                        patch: Partial<typeof form>,
+                      ) =>
+                        setScheduleSugestaoForms((prev) => ({
+                          ...prev,
+                          [suggestion.id]: { ...prev[suggestion.id], ...patch },
+                        }));
+                      return (
+                        <div
+                          key={suggestion.id}
+                          className={`rounded-md border p-3 space-y-3 ${
+                            checked
+                              ? "border-blue-200 bg-blue-50/30"
+                              : "bg-muted/10"
+                          }`}
+                        >
+                          {/* Header do card */}
+                          <div className="flex items-start gap-3">
+                            <Checkbox
+                              className="mt-1"
+                              checked={checked}
+                              onCheckedChange={(c) =>
+                                setSelectedScheduleSuggestions((current) => ({
+                                  ...current,
+                                  [suggestion.id]: c === true,
+                                }))
+                              }
+                              disabled={!schedulable.ok}
+                              aria-label={`Selecionar sugestão ${suggestion.id}`}
+                              title={schedulable.reason}
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-semibold">
+                                  {suggestion.tipo_prazo}
+                                </span>
+                                {suggestion.subtipo ? (
+                                  <span className="text-xs text-muted-foreground">
+                                    {suggestion.subtipo}
+                                  </span>
+                                ) : null}
+                                <span className="text-xs text-muted-foreground">
+                                  sugestão #{suggestion.id}
+                                </span>
+                                {isNoOp ? (
+                                  <Badge variant="outline" className="text-[10px]">
+                                    Sem providência (template no-op)
+                                  </Badge>
+                                ) : null}
+                                {suggestion.confianca ? (
+                                  <Badge variant="outline" className="text-[10px]">
+                                    Confiança: {suggestion.confianca}
+                                  </Badge>
+                                ) : null}
+                              </div>
+                              {suggestion.justificativa ? (
+                                <div className="mt-1 text-xs text-muted-foreground">
+                                  {suggestion.justificativa}
                                 </div>
-                                {!schedulable.ok ? (
-                                  <div
-                                    className="mt-1 inline-flex items-center gap-1 rounded-sm bg-amber-50 border border-amber-200 px-1.5 py-0.5 text-[11px] text-amber-900 max-w-[360px]"
-                                    title={schedulable.reason}
+                              ) : null}
+                              {suggestion.prazo_fatal_data ? (
+                                <div
+                                  className="mt-1 rounded-sm bg-rose-50 px-1.5 py-0.5 text-[11px] text-rose-700 inline-block"
+                                  title={suggestion.prazo_fatal_fundamentacao || undefined}
+                                >
+                                  Prazo fatal (IA):{" "}
+                                  {formatDate(suggestion.prazo_fatal_data)}
+                                </div>
+                              ) : null}
+                              {!schedulable.ok ? (
+                                <div
+                                  className="mt-1 inline-flex items-center gap-1 rounded-sm bg-amber-50 border border-amber-200 px-1.5 py-0.5 text-[11px] text-amber-900"
+                                  title={schedulable.reason}
+                                >
+                                  <AlertCircle className="h-3 w-3 shrink-0" />
+                                  <span>Não agendável — {schedulable.reason}</span>
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+
+                          {/* Form editavel — escondido em sugestao no-op
+                              (template skip_task_creation), porque nao
+                              vai criar task no L1 mesmo. */}
+                          {!isNoOp ? (
+                            <div className="space-y-3 pl-7">
+                              <SubtypePicker
+                                value={form.task_subtype_external_id}
+                                taskTypes={l1TaskTypes.map((tt) => ({
+                                  external_id: tt.id,
+                                  name: tt.name,
+                                  subtypes: tt.sub_types,
+                                }))}
+                                onChange={(subId) =>
+                                  updateForm({ task_subtype_external_id: subId })
+                                }
+                                label="Task do Legal One *"
+                                required
+                                placeholder="Selecione a task"
+                                searchPlaceholder="Buscar..."
+                              />
+
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div className="space-y-1">
+                                  <Label className="text-xs">Responsável *</Label>
+                                  <Select
+                                    value={
+                                      form.responsible_user_external_id != null
+                                        ? String(form.responsible_user_external_id)
+                                        : ""
+                                    }
+                                    onValueChange={(v) =>
+                                      updateForm({
+                                        responsible_user_external_id: v
+                                          ? Number(v)
+                                          : null,
+                                      })
+                                    }
                                   >
-                                    <AlertCircle className="h-3 w-3 shrink-0" />
-                                    <span>Não agendável — {schedulable.reason}</span>
-                                  </div>
-                                ) : null}
-                                {suggestion.prazo_fatal_data ? (
-                                  <div
-                                    className="mt-1 rounded-sm bg-rose-50 px-1.5 py-0.5 text-[11px] text-rose-700 inline-block"
-                                    title={suggestion.prazo_fatal_fundamentacao || undefined}
+                                    <SelectTrigger>
+                                      <SelectValue placeholder="Selecione..." />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {l1Users.map((u) => (
+                                        <SelectItem
+                                          key={u.external_id}
+                                          value={String(u.external_id)}
+                                        >
+                                          {u.name}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                <div className="space-y-1">
+                                  <Label className="text-xs">Prioridade</Label>
+                                  <Select
+                                    value={form.priority}
+                                    onValueChange={(v) => updateForm({ priority: v })}
                                   >
-                                    Prazo fatal: {formatDate(suggestion.prazo_fatal_data)}
+                                    <SelectTrigger>
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="Low">Low</SelectItem>
+                                      <SelectItem value="Normal">Normal</SelectItem>
+                                      <SelectItem value="High">High</SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                <div className="space-y-1">
+                                  <Label className="text-xs">Data base</Label>
+                                  <Input
+                                    type="date"
+                                    value={form.data_base}
+                                    onChange={(e) =>
+                                      updateForm({ data_base: e.target.value })
+                                    }
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label className="text-xs">Data fatal *</Label>
+                                  <Input
+                                    type="date"
+                                    value={form.data_final_calculada}
+                                    onChange={(e) =>
+                                      updateForm({ data_final_calculada: e.target.value })
+                                    }
+                                    className={
+                                      !form.data_final_calculada
+                                        ? "border-amber-300"
+                                        : undefined
+                                    }
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label className="text-xs">Prazo (dias)</Label>
+                                  <div className="flex gap-2">
+                                    <Input
+                                      type="number"
+                                      min={0}
+                                      max={365}
+                                      value={form.prazo_dias}
+                                      onChange={(e) =>
+                                        updateForm({ prazo_dias: e.target.value })
+                                      }
+                                      className="flex-1"
+                                    />
+                                    <Select
+                                      value={form.prazo_tipo || "_"}
+                                      onValueChange={(v) =>
+                                        updateForm({ prazo_tipo: v === "_" ? "" : v })
+                                      }
+                                    >
+                                      <SelectTrigger className="w-[110px]">
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value="_">—</SelectItem>
+                                        <SelectItem value="util">útil</SelectItem>
+                                        <SelectItem value="corrido">corrido</SelectItem>
+                                      </SelectContent>
+                                    </Select>
                                   </div>
-                                ) : null}
-                              </TableCell>
-                              <TableCell>{formatDate(suggestion.data_base)}</TableCell>
-                              <TableCell>{formatSuggestionDeadline(suggestion)}</TableCell>
-                              <TableCell>{suggestion.confianca || "-"}</TableCell>
-                              <TableCell>
+                                </div>
+                              </div>
+
+                              <div className="space-y-1">
+                                <Label className="text-xs">Descrição</Label>
+                                <Input
+                                  value={form.description}
+                                  onChange={(e) =>
+                                    updateForm({ description: e.target.value })
+                                  }
+                                  placeholder="Vai pro campo description da tarefa no L1 (max 250 chars)."
+                                  maxLength={250}
+                                />
+                              </div>
+
+                              <div className="space-y-1">
+                                <Label className="text-xs">Anotações</Label>
+                                <Textarea
+                                  rows={2}
+                                  value={form.notes}
+                                  onChange={(e) =>
+                                    updateForm({ notes: e.target.value })
+                                  }
+                                  placeholder="Texto livre — vai no campo notes da tarefa no L1."
+                                />
+                              </div>
+
+                              <div className="space-y-1">
+                                <Label className="text-xs text-muted-foreground">
+                                  Task L1 ID criada (manual — preenche se já criou fora do sistema)
+                                </Label>
                                 <Input
                                   inputMode="numeric"
                                   placeholder="Ex.: 191842"
@@ -3205,13 +3553,14 @@ export default function PrazosIniciaisPage() {
                                       [suggestion.id]: event.target.value,
                                     }))
                                   }
+                                  className="max-w-[200px]"
                                 />
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })}
-                      </TableBody>
-                    </Table>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               ) : (
