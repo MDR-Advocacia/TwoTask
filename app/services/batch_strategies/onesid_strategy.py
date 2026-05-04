@@ -8,10 +8,10 @@ from .base_strategy import BaseStrategy
 from app.services.mail_service import send_failure_report
 
 # --- CONSTANTES PADRÃO DO ONESID ---
-# Ajuste estes IDs se necessário para bater com seu ambiente Legal One
-ONESID_DEFAULT_TYPE_ID = 15
-ONESID_DEFAULT_SUBTYPE_ID = 967 
-DEFAULT_TASK_STATUS_ID = 0 
+# Tipo "OneSid" / Subtipo "Retorno de Subsídios" no Legal One.
+ONESID_DEFAULT_TYPE_ID = 30
+ONESID_DEFAULT_SUBTYPE_ID = 1300
+DEFAULT_TASK_STATUS_ID = 0
 
 class OnesidStrategy(BaseStrategy):
     """
