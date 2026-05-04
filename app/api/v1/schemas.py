@@ -111,6 +111,7 @@ class SquadMember(BaseModel):
     """
     id: int
     is_leader: bool
+    is_assistant: bool = False
     user: LegalOneUser
     model_config = ConfigDict(from_attributes=True)
 
@@ -132,6 +133,32 @@ class SquadMemberSchema(BaseModel):
     """Schema para definir um membro ao criar/atualizar um squad."""
     user_id: int
     is_leader: bool = False
+    is_assistant: bool = False
+
+
+class SquadMemberRoleUpdate(BaseModel):
+    """Schema pra PATCH em squad_members (toggle leader/assistant).
+
+    Validacao no servico: max 1 leader e 1 assistant por squad. Quando
+    o frontend marca outro membro, o servico desmarca o anterior antes.
+    """
+    is_leader: Optional[bool] = None
+    is_assistant: Optional[bool] = None
+
+
+class SquadMemberAddRequest(BaseModel):
+    """Schema pra adicionar um user a uma squad."""
+    user_id: int
+    is_leader: bool = False
+    is_assistant: bool = False
+
+
+class AssistantResolution(BaseModel):
+    """Resposta do GET /squads/assistant-of/{user_external_id}."""
+    user_external_id: int
+    squad_id: Optional[int] = None
+    squad_name: Optional[str] = None
+    fallback_reason: Optional[str] = None
 
 class SquadCreateSchema(BaseModel):
     name: str

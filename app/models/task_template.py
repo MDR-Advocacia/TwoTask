@@ -67,6 +67,14 @@ class TaskTemplate(Base):
 
     priority = Column(String, nullable=False, default="Normal")  # Low, Normal, High
     due_business_days = Column(Integer, nullable=False, default=3)
+
+    # Decide pra quem vai a tarefa criada no L1: 'principal' usa o
+    # `responsible_user_external_id` direto; 'assistente' resolve via
+    # `Squad.is_assistant` da squad do responsavel (ver
+    # app/services/squad_assistant_resolver.py). Migration: sqd001.
+    target_role = Column(
+        String(16), nullable=False, default="principal", server_default="principal",
+    )
     due_date_reference = Column(
         String, nullable=False, default="publication",
         doc='Referência para cálculo do prazo: "publication" (data da publicação) ou "today" (data atual)',

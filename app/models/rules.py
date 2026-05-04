@@ -89,7 +89,11 @@ class SquadMember(Base):
     legal_one_user_id = Column(Integer, ForeignKey('legal_one_users.id'), nullable=False)
     
     is_leader = Column(Boolean, default=False)
-    
+    # Recebe tarefas marcadas como `target_role='assistente'` no template.
+    # Constraint logico (validado no admin, nao em SQL): max 1 assistente
+    # por squad. Ver app/services/squad_assistant_resolver.py.
+    is_assistant = Column(Boolean, default=False, nullable=False, server_default='false')
+
     # Relações para facilitar as consultas
     squad = relationship('Squad', back_populates='members')
     user = relationship('LegalOneUser')

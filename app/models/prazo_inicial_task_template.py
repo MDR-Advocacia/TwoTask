@@ -124,6 +124,14 @@ class PrazoInicialTaskTemplate(Base):
     )
 
     priority = Column(String, nullable=False, default="Normal")  # Low|Normal|High
+
+    # Decide pra quem vai a tarefa criada no L1: 'principal' usa o
+    # `responsible_user_external_id` direto; 'assistente' resolve via
+    # `Squad.is_assistant` da squad do responsavel (ver
+    # app/services/squad_assistant_resolver.py). Migration: sqd001.
+    target_role = Column(
+        String(16), nullable=False, default="principal", server_default="principal",
+    )
     # Offset em dias úteis somado à data de referência para o agendamento
     # no L1. Convenção de sinal (igual a `task_templates`/publicações, onde a
     # soma é `base + timedelta(days=due_business_days)`):

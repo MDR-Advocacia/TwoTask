@@ -19,7 +19,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import UserSelector from "@/components/ui/UserSelector";
 import { apiFetch } from "@/lib/api-client";
+import { Trash2, Crown, Star } from "lucide-react";
 
 // --- Tipos de Dados ---
 interface Sector { id: number; name: string; }
@@ -43,6 +45,296 @@ interface Office {
   id: number;
   name: string;
 }
+
+// --- Componente: Gerenciamento de Squads (membros + leader/assistente) ---
+//
+// Lista squads de um setor selecionado, expande membros com toggles de
+// papel (Líder / Assistente). Backend garante max 1 leader e 1 assistant
+// por squad. Adicionar membro usa UserSelector com busca.
+//
+interface SquadMemberDetail {
+  id: number;
+  is_leader: boolean;
+  is_assistant: boolean;
+  user: { id: number; external_id: number; name: string; is_active: boolean };
+}
+interface SquadDetail {
+  id: number;
+  name: string;
+  is_active: boolean;
+  sector: { id: number; name: string };
+  members: SquadMemberDetail[];
+}
+interface L1User { external_id: number; name: string; is_active: boolean }
+
+const SquadsManager = () => {
+  const { toast } = useToast();
+  const [sectors, setSectors] = useState<Sector[]>([]);
+  const [selectedSector, setSelectedSector] = useState<string | null>(null);
+  const [squads, setSquads] = useState<SquadDetail[]>([]);
+  const [allUsers, setAllUsers] = useState<L1User[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<number | null>(null); // squad_id sendo atualizado
+  const [addingTo, setAddingTo] = useState<number | null>(null); // squad_id com modal aberto
+  const [pickedUserId, setPickedUserId] = useState<string | null>(null);
+
+  const usersForPicker = allUsers
+    .filter((u) => u.is_active)
+    .map((u) => ({
+      id: u.external_id,
+      external_id: u.external_id,
+      name: u.name,
+      squads: [],
+    }));
+
+  const fetchInitial = async () => {
+    setLoading(true);
+    try {
+      const [sectorsRes, usersRes] = await Promise.all([
+        apiFetch("/api/v1/sectors"),
+        apiFetch("/api/v1/squads/legal-one-users"),
+      ]);
+      if (!sectorsRes.ok) throw new Error("Falha ao carregar setores.");
+      if (!usersRes.ok) throw new Error("Falha ao carregar usuarios.");
+      setSectors(await sectorsRes.json());
+      setAllUsers(await usersRes.json());
+    } catch (err: any) {
+      toast({ title: "Erro", description: err.message, variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchSquads = async (sectorId: string) => {
+    try {
+      const res = await apiFetch(`/api/v1/squads?sector_id=${sectorId}`);
+      if (!res.ok) throw new Error("Falha ao carregar squads.");
+      setSquads(await res.json());
+    } catch (err: any) {
+      toast({ title: "Erro", description: err.message, variant: "destructive" });
+    }
+  };
+
+  useEffect(() => { fetchInitial(); }, []);
+  useEffect(() => {
+    if (selectedSector) fetchSquads(selectedSector);
+    else setSquads([]);
+  }, [selectedSector]);
+
+  const toggleRole = async (
+    squadId: number,
+    memberId: number,
+    field: "is_leader" | "is_assistant",
+    nextValue: boolean,
+  ) => {
+    setSaving(squadId);
+    try {
+      const res = await apiFetch(`/api/v1/squads/${squadId}/members/${memberId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [field]: nextValue }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `HTTP ${res.status}`);
+      }
+      toast({ title: "Atualizado", description: nextValue ? "Papel definido." : "Papel removido." });
+      if (selectedSector) await fetchSquads(selectedSector);
+    } catch (err: any) {
+      toast({ title: "Erro ao salvar", description: err.message, variant: "destructive" });
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const removeMember = async (squadId: number, memberId: number) => {
+    if (!confirm("Remover este membro da squad?")) return;
+    setSaving(squadId);
+    try {
+      const res = await apiFetch(`/api/v1/squads/${squadId}/members/${memberId}`, {
+        method: "DELETE",
+      });
+      if (!res.ok && res.status !== 204) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      toast({ title: "Removido" });
+      if (selectedSector) await fetchSquads(selectedSector);
+    } catch (err: any) {
+      toast({ title: "Erro", description: err.message, variant: "destructive" });
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const addMember = async (squadId: number) => {
+    if (!pickedUserId) return;
+    setSaving(squadId);
+    try {
+      const res = await apiFetch(`/api/v1/squads/${squadId}/members`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: parseInt(pickedUserId, 10),
+          is_leader: false,
+          is_assistant: false,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `HTTP ${res.status}`);
+      }
+      toast({ title: "Membro adicionado" });
+      setAddingTo(null);
+      setPickedUserId(null);
+      if (selectedSector) await fetchSquads(selectedSector);
+    } catch (err: any) {
+      toast({ title: "Erro", description: err.message, variant: "destructive" });
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Squads — Membros e Papéis</CardTitle>
+        <CardDescription>
+          Filtre por setor e gerencie quem é líder e assistente de cada squad. O assistente
+          recebe automaticamente as tarefas marcadas como "tarefa do assistente" no template.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="max-w-xs">
+          <Label>Setor</Label>
+          <Select value={selectedSector || ""} onValueChange={(v) => setSelectedSector(v || null)}>
+            <SelectTrigger><SelectValue placeholder="Selecione um setor" /></SelectTrigger>
+            <SelectContent>
+              {sectors.map((s) => (
+                <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {loading && <p className="text-sm text-muted-foreground">Carregando…</p>}
+
+        {!loading && selectedSector && squads.length === 0 && (
+          <Alert><AlertDescription>Nenhuma squad ativa nesse setor.</AlertDescription></Alert>
+        )}
+
+        {!loading && squads.length > 0 && (
+          <Accordion type="multiple" className="space-y-2">
+            {squads.map((squad) => {
+              const leader = squad.members.find((m) => m.is_leader);
+              const assistant = squad.members.find((m) => m.is_assistant);
+              return (
+                <AccordionItem key={squad.id} value={String(squad.id)} className="border rounded-md px-3">
+                  <AccordionTrigger className="hover:no-underline">
+                    <div className="flex items-center gap-3 flex-1">
+                      <span className="font-medium">{squad.name}</span>
+                      <Badge variant="secondary">{squad.members.length} {squad.members.length === 1 ? "membro" : "membros"}</Badge>
+                      {leader && (
+                        <Badge variant="default" className="gap-1">
+                          <Crown className="h-3 w-3" /> {leader.user.name}
+                        </Badge>
+                      )}
+                      {assistant && (
+                        <Badge variant="outline" className="gap-1">
+                          <Star className="h-3 w-3" /> {assistant.user.name}
+                        </Badge>
+                      )}
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Membro</TableHead>
+                          <TableHead className="w-32 text-center">Líder</TableHead>
+                          <TableHead className="w-32 text-center">Assistente</TableHead>
+                          <TableHead className="w-20"></TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {squad.members.map((m) => (
+                          <TableRow key={m.id}>
+                            <TableCell>{m.user.name}</TableCell>
+                            <TableCell className="text-center">
+                              <Checkbox
+                                checked={m.is_leader}
+                                onCheckedChange={(v) => toggleRole(squad.id, m.id, "is_leader", !!v)}
+                                disabled={saving === squad.id}
+                              />
+                            </TableCell>
+                            <TableCell className="text-center">
+                              <Checkbox
+                                checked={m.is_assistant}
+                                onCheckedChange={(v) => toggleRole(squad.id, m.id, "is_assistant", !!v)}
+                                disabled={saving === squad.id}
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => removeMember(squad.id, m.id)}
+                                disabled={saving === squad.id}
+                                aria-label="Remover membro"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                        {squad.members.length === 0 && (
+                          <TableRow>
+                            <TableCell colSpan={4} className="text-center text-sm text-muted-foreground">
+                              Nenhum membro cadastrado.
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </TableBody>
+                    </Table>
+
+                    {addingTo === squad.id ? (
+                      <div className="mt-3 flex items-end gap-2">
+                        <div className="flex-1">
+                          <Label className="text-xs">Adicionar usuário</Label>
+                          <UserSelector
+                            users={usersForPicker}
+                            value={pickedUserId}
+                            onChange={setPickedUserId}
+                            placeholder="Selecione um usuário..."
+                          />
+                        </div>
+                        <Button onClick={() => addMember(squad.id)} disabled={!pickedUserId || saving === squad.id}>
+                          Adicionar
+                        </Button>
+                        <Button variant="outline" onClick={() => { setAddingTo(null); setPickedUserId(null); }}>
+                          Cancelar
+                        </Button>
+                      </div>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="mt-3"
+                        onClick={() => { setAddingTo(squad.id); setPickedUserId(null); }}
+                      >
+                        + Adicionar membro
+                      </Button>
+                    )}
+                  </AccordionContent>
+                </AccordionItem>
+              );
+            })}
+          </Accordion>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
 
 // --- Componente de Associação (Código completo restaurado) ---
 const AssociateTasks = () => {
@@ -874,6 +1166,7 @@ const AdminPage = () => {
                 <TabsList>
                     <TabsTrigger value="sync">Sincronização</TabsTrigger>
                     <TabsTrigger value="tasks">Tipos de Tarefa</TabsTrigger>
+                    <TabsTrigger value="squads">Squads</TabsTrigger>
                     <TabsTrigger value="users">Usuários & Permissões</TabsTrigger>
                 </TabsList>
                 <TabsContent value="sync" className="space-y-6">
@@ -881,6 +1174,9 @@ const AdminPage = () => {
                 </TabsContent>
                 <TabsContent value="tasks" className="space-y-6">
                     <AssociateTasks />
+                </TabsContent>
+                <TabsContent value="squads" className="space-y-6">
+                    <SquadsManager />
                 </TabsContent>
                 <TabsContent value="users" className="space-y-6">
                     <UsersAndPermissions />

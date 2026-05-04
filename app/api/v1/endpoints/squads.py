@@ -95,3 +95,102 @@ def get_legal_one_users(db: Session = Depends(get_db)):
     if not users:
         raise HTTPException(status_code=404, detail="Nenhum usuário do Legal One encontrado.")
     return users
+
+
+# ─── Membros da squad (CRUD granular pra UI Admin) ───────────────────
+
+@router.post(
+    "/{squad_id}/members",
+    response_model=schemas.SquadMember,
+    status_code=201,
+    summary="Adiciona um user a uma squad com papeis (is_leader/is_assistant).",
+)
+def add_squad_member(
+    squad_id: int,
+    body: schemas.SquadMemberAddRequest,
+    service: SquadService = Depends(get_squad_service),
+):
+    try:
+        member = service.add_member(
+            squad_id,
+            user_id=body.user_id,
+            is_leader=body.is_leader,
+            is_assistant=body.is_assistant,
+        )
+        return member
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete(
+    "/{squad_id}/members/{member_id}",
+    status_code=204,
+    summary="Remove um user de uma squad.",
+)
+def remove_squad_member(
+    squad_id: int,
+    member_id: int,
+    service: SquadService = Depends(get_squad_service),
+):
+    ok = service.remove_member(squad_id, member_id)
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Membro {member_id} nao encontrado na squad {squad_id}.",
+        )
+    return None
+
+
+@router.patch(
+    "/{squad_id}/members/{member_id}",
+    response_model=schemas.SquadMember,
+    summary="Alterna papeis (is_leader/is_assistant) de um membro. Garante max 1 por papel.",
+)
+def update_squad_member_roles(
+    squad_id: int,
+    member_id: int,
+    body: schemas.SquadMemberRoleUpdate,
+    service: SquadService = Depends(get_squad_service),
+):
+    member = service.update_member_roles(
+        squad_id,
+        member_id,
+        is_leader=body.is_leader,
+        is_assistant=body.is_assistant,
+    )
+    if member is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Membro {member_id} nao encontrado na squad {squad_id}.",
+        )
+    return member
+
+
+# ─── Resolucao do assistente (usado pelo frontend) ─────────────────
+
+@router.get(
+    "/assistant-of/{user_external_id}",
+    response_model=schemas.AssistantResolution,
+    summary="Resolve o assistente da squad de um responsavel (preview pra UI).",
+)
+def get_assistant_of_user(
+    user_external_id: int,
+    task_subtype_external_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    from app.services.squad_assistant_resolver import resolve_assistant
+    try:
+        result = resolve_assistant(
+            db,
+            responsible_user_external_id=user_external_id,
+            task_subtype_external_id=task_subtype_external_id,
+        )
+    except ValueError as exc:
+        # Squad sem assistente cadastrado, ou user fora do catalogo.
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return schemas.AssistantResolution(
+        user_external_id=result.user_external_id,
+        squad_id=result.squad_id,
+        squad_name=result.squad_name,
+        fallback_reason=result.fallback_reason,
+    )
