@@ -42,21 +42,13 @@ class TaskCreationRequest(BaseModel):
     priority: str
     custom_fields: Dict[str, str]
 
-# --- Schemas para Setores ---
+# --- Schemas para Office (rep simples; full e' em outro endpoint) ---
 
-class SectorBase(BaseModel):
+class OfficeRef(BaseModel):
+    """Referencia de escritorio responsavel exibida nas squads."""
+    external_id: int
     name: str
-
-class SectorCreateSchema(SectorBase):
-    pass
-
-class SectorUpdateSchema(BaseModel):
-    name: Optional[str] = None
-    is_active: Optional[bool] = None
-
-class Sector(SectorBase):
-    id: int
-    is_active: bool
+    path: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -117,12 +109,13 @@ class SquadMember(BaseModel):
 
 class Squad(BaseModel):
     """
-    Schema de resposta para um Squad, incluindo o setor e os membros.
+    Schema de resposta para um Squad, incluindo escritorio responsavel e membros.
     """
     id: int
     name: str
     is_active: bool
-    sector: Sector  # Aninha os detalhes do setor
+    office_external_id: Optional[int] = None
+    office: Optional[OfficeRef] = None
     members: List[SquadMember] = []
     model_config = ConfigDict(from_attributes=True)
 
@@ -162,12 +155,12 @@ class AssistantResolution(BaseModel):
 
 class SquadCreateSchema(BaseModel):
     name: str
-    sector_id: int
-    members: List[SquadMemberSchema]
+    office_external_id: int
+    members: List[SquadMemberSchema] = []
 
 class SquadUpdateSchema(BaseModel):
     name: Optional[str] = None
-    sector_id: Optional[int] = None
+    office_external_id: Optional[int] = None
     members: Optional[List[SquadMemberSchema]] = None
 
 # --- Schema para Task Templates ---

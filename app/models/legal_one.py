@@ -4,9 +4,6 @@ from sqlalchemy.sql import func
 
 from app.db.session import Base
 
-from .associations import squad_task_type_association
-
-
 class LegalOneTaskSubType(Base):
     __tablename__ = "legal_one_task_subtypes"
 
@@ -36,11 +33,6 @@ class LegalOneTaskType(Base):
         "LegalOneTaskSubType",
         back_populates="parent_type",
         cascade="all, delete-orphan",
-    )
-    squads = relationship(
-        "Squad",
-        secondary=squad_task_type_association,
-        back_populates="task_types",
     )
 
 

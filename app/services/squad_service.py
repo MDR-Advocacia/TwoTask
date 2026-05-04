@@ -13,37 +13,52 @@ class SquadService:
     def __init__(self, db: Session):
         self.db = db
 
-    def get_all_squads(self, sector_id: Optional[int] = None) -> List[models.Squad]:
+    def get_all_squads(self, office_external_id: Optional[int] = None) -> List[models.Squad]:
         """
-        Retorna todos os squads ativos com seus membros.
-        Pode ser filtrado por sector_id.
+        Retorna todos os squads ativos com seus membros e escritorio.
+        Pode ser filtrado por office_external_id.
         """
+        from app.models.legal_one import LegalOneOffice  # late import pra evitar ciclo
+
         query = (
             self.db.query(models.Squad)
-            .options(joinedload(models.Squad.members).joinedload(models.SquadMember.user))
+            .options(
+                joinedload(models.Squad.members).joinedload(models.SquadMember.user),
+                joinedload(models.Squad.office),
+            )
             .filter(models.Squad.is_active == True)
         )
 
-        if sector_id:
-            query = query.filter(models.Squad.sector_id == sector_id)
+        if office_external_id is not None:
+            query = query.filter(models.Squad.office_external_id == office_external_id)
 
+        # Ordena alfabeticamente — office_path nao usado aqui pq Office e'
+        # joinedload e a ordenacao na query exigiria join explicito.
+        del LegalOneOffice
         return query.order_by(models.Squad.name).all()
 
     def create_squad(self, squad_data: schemas.SquadCreateSchema) -> models.Squad:
         """
-        Cria um novo squad, associando-o a um setor e definindo seus membros e líderes.
+        Cria um novo squad vinculado a um escritorio responsavel.
         """
-        # Validações
+        from app.models.legal_one import LegalOneOffice
+
         if self.db.query(models.Squad).filter(models.Squad.name == squad_data.name).first():
             raise ValueError(f"Squad com o nome '{squad_data.name}' já existe.")
-        if not self.db.query(models.Sector).filter(models.Sector.id == squad_data.sector_id).first():
-            raise ValueError(f"Setor com ID '{squad_data.sector_id}' não encontrado.")
+        office = (
+            self.db.query(LegalOneOffice)
+            .filter(LegalOneOffice.external_id == squad_data.office_external_id)
+            .first()
+        )
+        if office is None:
+            raise ValueError(
+                f"Escritório com external_id={squad_data.office_external_id} não encontrado."
+            )
 
-        # Criação do Squad
         new_squad = models.Squad(
             name=squad_data.name,
-            sector_id=squad_data.sector_id,
-            is_active=True
+            office_external_id=squad_data.office_external_id,
+            is_active=True,
         )
         self.db.add(new_squad)
         self.db.flush()
@@ -64,8 +79,10 @@ class SquadService:
 
     def update_squad(self, squad_id: int, squad_data: schemas.SquadUpdateSchema) -> Optional[models.Squad]:
         """
-        Atualiza um squad existente: nome, setor, e/ou lista de membros/líderes.
+        Atualiza um squad existente: nome, escritorio, e/ou lista de membros/líderes.
         """
+        from app.models.legal_one import LegalOneOffice
+
         squad = self.db.query(models.Squad).filter(models.Squad.id == squad_id).first()
         if not squad:
             return None
@@ -76,11 +93,18 @@ class SquadService:
                 raise ValueError(f"Squad com o nome '{squad_data.name}' já existe.")
             squad.name = squad_data.name
 
-        # Atualiza o setor
-        if squad_data.sector_id:
-            if not self.db.query(models.Sector).filter(models.Sector.id == squad_data.sector_id).first():
-                raise ValueError(f"Setor com ID '{squad_data.sector_id}' não encontrado.")
-            squad.sector_id = squad_data.sector_id
+        # Atualiza o escritorio responsavel
+        if squad_data.office_external_id is not None:
+            office = (
+                self.db.query(LegalOneOffice)
+                .filter(LegalOneOffice.external_id == squad_data.office_external_id)
+                .first()
+            )
+            if office is None:
+                raise ValueError(
+                    f"Escritório com external_id={squad_data.office_external_id} não encontrado."
+                )
+            squad.office_external_id = squad_data.office_external_id
 
         # Atualiza os membros (se a lista for fornecida)
         if squad_data.members is not None:

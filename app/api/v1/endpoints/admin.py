@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session, joinedload
 from app.core import auth
 from app.core.dependencies import get_batch_task_creation_service, get_db
 from app.models.legal_one import LegalOneTaskType, LegalOneUser, SavedFilter
-from app.models.rules import Squad
 from app.models.task_group import TaskParentGroup
 from app.services.batch_task_creation_service import BatchTaskCreationService
 from app.services.metadata_sync_service import run_metadata_sync_job
@@ -28,11 +27,6 @@ class TaskTypeGroupSchema(BaseModel):
     parent_id: int
     parent_name: str
     sub_types: List[TaskSubTypeSchema]
-
-
-class TaskTypeAssociationPayload(BaseModel):
-    squad_ids: List[int]
-    task_type_ids: List[int]
 
 
 class TaskParentGroupUpdatePayload(BaseModel):
@@ -288,9 +282,11 @@ def get_cache_status(db: Session = Depends(get_db)):
     response_model=List[TaskTypeGroupSchema],
 )
 def get_task_types_grouped(db: Session = Depends(get_db)):
+    # M2M Squad↔TaskType removida em sqd002 (squads agora sao por
+    # escritorio). squad_ids fica sempre vazio — campo mantido na resposta
+    # apenas pra compat com clientes legados.
     task_types = db.query(LegalOneTaskType).options(
         joinedload(LegalOneTaskType.subtypes),
-        joinedload(LegalOneTaskType.squads),
     ).filter(
         LegalOneTaskType.is_active == True  # noqa: E712
     ).order_by(LegalOneTaskType.name).all()
@@ -298,12 +294,11 @@ def get_task_types_grouped(db: Session = Depends(get_db)):
 
     response_data = []
     for task_type in task_types:
-        squad_ids = [squad.id for squad in task_type.squads]
         sub_types_data = [
             TaskSubTypeSchema(
                 id=sub_type.id,
                 name=sub_type.name,
-                squad_ids=squad_ids,
+                squad_ids=[],
             )
             for sub_type in sorted(task_type.subtypes, key=lambda item: item.name)
             if sub_type.is_active
@@ -346,24 +341,11 @@ def update_task_parent_group(
     return {"id": group.id, "name": group.name}
 
 
-@router.post("/task-types/associate", summary="Associar tipos de tarefa a squads", tags=["Admin"])
-def associate_task_types(payload: TaskTypeAssociationPayload, db: Session = Depends(get_db)):
-    squads = db.query(Squad).filter(Squad.id.in_(payload.squad_ids)).all()
-    if len(squads) != len(set(payload.squad_ids)):
-        raise HTTPException(status_code=404, detail="Um ou mais squads nao foram encontrados.")
-
-    task_types = db.query(LegalOneTaskType).filter(
-        LegalOneTaskType.id.in_(payload.task_type_ids),
-        LegalOneTaskType.is_active == True,  # noqa: E712
-    ).all()
-    if len(task_types) != len(set(payload.task_type_ids)):
-        raise HTTPException(status_code=404, detail="Um ou mais tipos de tarefa nao foram encontrados.")
-
-    for task_type in task_types:
-        task_type.squads = squads
-
-    db.commit()
-    return {"message": "Associacao de tipos de tarefa atualizada com sucesso."}
+# Endpoint /task-types/associate removido em sqd002 (2026-05-04). A
+# associacao Squad↔TaskType (M2M) foi descartada — squads agora sao
+# por escritorio responsavel (Squad.office_external_id) e o tie-break
+# do resolver usa office em vez de tipos de tarefa. Renomeacao de
+# grupos pais continua disponivel em /task-parent-groups/{id}.
 
 
 class RetryBatchRequest(BaseModel):
