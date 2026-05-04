@@ -89,20 +89,38 @@ const SquadsManager = () => {
 
   const fetchInitial = async () => {
     setLoading(true);
+    // Fetches independentes — `legal-one-users` pode 404 quando vazio
+    // (tratamento ruim no backend), e isso nao deve impedir o dropdown
+    // de setores de carregar.
     try {
-      const [sectorsRes, usersRes] = await Promise.all([
-        apiFetch("/api/v1/sectors"),
-        apiFetch("/api/v1/squads/legal-one-users"),
-      ]);
-      if (!sectorsRes.ok) throw new Error("Falha ao carregar setores.");
-      if (!usersRes.ok) throw new Error("Falha ao carregar usuarios.");
-      setSectors(await sectorsRes.json());
-      setAllUsers(await usersRes.json());
+      const sectorsRes = await apiFetch("/api/v1/sectors");
+      if (sectorsRes.ok) {
+        setSectors(await sectorsRes.json());
+      } else {
+        console.warn("SquadsManager: /sectors falhou", sectorsRes.status);
+        toast({ title: "Falha ao carregar setores", description: `HTTP ${sectorsRes.status}`, variant: "destructive" });
+      }
     } catch (err: any) {
-      toast({ title: "Erro", description: err.message, variant: "destructive" });
-    } finally {
-      setLoading(false);
+      console.error("SquadsManager: erro em /sectors", err);
+      toast({ title: "Erro de rede (setores)", description: err.message, variant: "destructive" });
     }
+    try {
+      // Fallback pra /api/v1/users/with-squads quando legal-one-users
+      // levanta 404 sem usuarios (legacy do squads.py).
+      let usersRes = await apiFetch("/api/v1/squads/legal-one-users");
+      if (!usersRes.ok) {
+        console.warn("SquadsManager: /squads/legal-one-users falhou, tentando /users/with-squads", usersRes.status);
+        usersRes = await apiFetch("/api/v1/users/with-squads");
+      }
+      if (usersRes.ok) {
+        setAllUsers(await usersRes.json());
+      } else {
+        toast({ title: "Falha ao carregar usuarios", description: `HTTP ${usersRes.status}`, variant: "destructive" });
+      }
+    } catch (err: any) {
+      console.error("SquadsManager: erro em users", err);
+    }
+    setLoading(false);
   };
 
   const fetchSquads = async (sectorId: string) => {
