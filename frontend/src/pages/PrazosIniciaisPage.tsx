@@ -425,9 +425,32 @@ export default function PrazosIniciaisPage() {
   const [l1CatalogsLoading, setL1CatalogsLoading] = useState(false);
   const [l1CatalogsError, setL1CatalogsError] = useState<string | null>(null);
 
-  // Tarefas avulsas em edicao no modal — operador adiciona com botao
-  // "+ Adicionar tarefa avulsa". Vao no payload custom_tasks da
-  // confirmacao. Reset quando o modal fecha.
+  // ─── Modal B: Agendar ────────────────────────────────────────────
+  // Modal SEPARADO do detalhe (Modal A). Mesmo padrao de Publicacoes:
+  // detalhe = read-only de visualizacao; Agendar = form de criacao de
+  // tarefas no L1 (sugestoes com checkbox + tarefas avulsas + submit).
+  // Pode abrir do Modal A (botao "Agendar" no footer) OU direto da
+  // listagem (botao "Agendar" na coluna Acoes — caminho rapido).
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  // Intake target do agendamento. Quando setado, useEffect carrega
+  // scheduleDetail (mesmo endpoint do detalhe). NULL = modal fechado.
+  const [scheduleIntakeId, setScheduleIntakeId] = useState<number | null>(null);
+  const [scheduleDetail, setScheduleDetail] =
+    useState<PrazoInicialIntakeDetail | null>(null);
+  const [scheduleDetailLoading, setScheduleDetailLoading] = useState(false);
+  const [scheduleDetailError, setScheduleDetailError] = useState<string | null>(null);
+  // Sugestoes selecionadas pro agendamento (checkbox por sugestao_id).
+  // Estado SEPARADO do Modal A — la as sugestoes sao read-only.
+  const [selectedScheduleSuggestions, setSelectedScheduleSuggestions] =
+    useState<Record<number, boolean>>({});
+  // task_id criada no L1 manualmente (input) por sugestao_id. Operador
+  // pode preencher se ja criou a task no L1 fora do sistema (caminho
+  // de exception/manual).
+  const [scheduleCreatedTaskIds, setScheduleCreatedTaskIds] = useState<
+    Record<number, string>
+  >({});
+  // Tarefas avulsas em edicao — vivem so dentro do Modal B. Reset
+  // quando o modal fecha (sucesso ou cancel).
   const [customTaskDrafts, setCustomTaskDrafts] = useState<
     Array<{
       id: string; // uuid local pra react key
@@ -439,10 +462,8 @@ export default function PrazosIniciaisPage() {
       notes: string;
     }>
   >([]);
+  const [scheduleSubmitting, setScheduleSubmitting] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
-
-  const [selectedSuggestions, setSelectedSuggestions] = useState<Record<number, boolean>>({});
-  const [createdTaskIds, setCreatedTaskIds] = useState<Record<number, string>>({});
 
   // Enums (naturezas, produtos, etc.) pra popular os MultiSelects dos filtros.
   // Carregado 1x no mount — valores vêm do /api/v1/prazos-iniciais/enums.
@@ -602,24 +623,20 @@ export default function PrazosIniciaisPage() {
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
+  // Pre-popula scheduleCreatedTaskIds quando scheduleDetail carrega —
+  // usa o created_task_id ja persistido na sugestao (caso operador
+  // tenha rodado uma confirmacao parcial antes).
   useEffect(() => {
-    if (!detail) {
-      setSelectedSuggestions({});
-      setCreatedTaskIds({});
+    if (!scheduleDetail) {
+      setScheduleCreatedTaskIds({});
       return;
     }
-
-    const nextSelection: Record<number, boolean> = {};
-    const nextCreatedTaskIds: Record<number, string> = {};
-
-    detail.sugestoes.forEach((suggestion) => {
-      nextSelection[suggestion.id] = suggestion.review_status !== "rejeitado";
-      nextCreatedTaskIds[suggestion.id] = suggestion.created_task_id ? String(suggestion.created_task_id) : "";
-    });
-
-    setSelectedSuggestions(nextSelection);
-    setCreatedTaskIds(nextCreatedTaskIds);
-  }, [detail]);
+    const next: Record<number, string> = {};
+    for (const s of scheduleDetail.sugestoes) {
+      next[s.id] = s.created_task_id ? String(s.created_task_id) : "";
+    }
+    setScheduleCreatedTaskIds(next);
+  }, [scheduleDetail]);
 
   const pageInfo = useMemo(() => {
     const start = total === 0 ? 0 : offset + 1;
@@ -636,21 +653,20 @@ export default function PrazosIniciaisPage() {
     };
   }, [offset, total, pageSize]);
 
-  const selectedSuggestionCount = useMemo(() => {
-    if (!detail) return 0;
-    return detail.sugestoes.filter((suggestion) => selectedSuggestions[suggestion.id]).length;
-  }, [detail, selectedSuggestions]);
+  // Modal B: contadores e flag de submit. Sucessor do antigo
+  // selectedSuggestionCount/canConfirmScheduling do Modal A.
+  const selectedScheduleCount = useMemo(() => {
+    if (!scheduleDetail) return 0;
+    return scheduleDetail.sugestoes.filter(
+      (s) => selectedScheduleSuggestions[s.id],
+    ).length;
+  }, [scheduleDetail, selectedScheduleSuggestions]);
 
-  // Habilita o botao "Confirmar agendamentos" se ha pelo menos 1
-  // sugestao marcada OU 1 tarefa avulsa em edicao (validacao por
-  // campo acontece no submit). Antes exigia sugestoes existentes >0;
-  // com tarefa avulsa o operador pode confirmar mesmo sem sugestao
-  // (ex.: intake AGUARDANDO_CONFIG_TEMPLATE com tarefa manual).
-  const canConfirmScheduling = Boolean(
-    detail &&
-      isConfirmableStatus(detail.status) &&
-      (selectedSuggestionCount > 0 || customTaskDrafts.length > 0) &&
-      !actionLoading,
+  const canSubmitSchedule = Boolean(
+    scheduleDetail &&
+      isConfirmableStatus(scheduleDetail.status) &&
+      (selectedScheduleCount > 0 || customTaskDrafts.length > 0) &&
+      !scheduleSubmitting,
   );
 
   const onAplicarFiltros = () => {
@@ -1012,27 +1028,13 @@ export default function PrazosIniciaisPage() {
     }
   }, [loadDetail, loadIntakes, selectedId, toast]);
 
-  const setAllSuggestions = useCallback(
-    (checked: boolean) => {
-      if (!detail) return;
-      const next: Record<number, boolean> = {};
-      detail.sugestoes.forEach((suggestion) => {
-        // "Selecionar todas" pula sugestoes nao-agendaveis (sem
-        // data_final_calculada / sem template). Senao o submit falha
-        // no backend com erro generico.
-        if (checked && !isSuggestionSchedulable(suggestion).ok) {
-          next[suggestion.id] = false;
-          return;
-        }
-        next[suggestion.id] = checked;
-      });
-      setSelectedSuggestions(next);
-    },
-    [detail],
-  );
-
+  // Submit do Modal B (Agendar). Usa SOMENTE os states do Modal B
+  // (selectedScheduleSuggestions, scheduleCreatedTaskIds,
+  // customTaskDrafts) — Modal A continua read-only sem afetar nada.
   const onConfirmarAgendamentos = useCallback(async () => {
-    if (!selectedId || !detail) return;
+    const targetId = scheduleIntakeId;
+    const targetDetail = scheduleDetail;
+    if (!targetId || !targetDetail) return;
 
     const selectedPayload: Array<{
       suggestion_id: number;
@@ -1040,10 +1042,10 @@ export default function PrazosIniciaisPage() {
       review_status: string;
     }> = [];
 
-    for (const suggestion of detail.sugestoes) {
-      if (!selectedSuggestions[suggestion.id]) continue;
+    for (const suggestion of targetDetail.sugestoes) {
+      if (!selectedScheduleSuggestions[suggestion.id]) continue;
 
-      const rawCreatedTaskId = createdTaskIds[suggestion.id]?.trim();
+      const rawCreatedTaskId = scheduleCreatedTaskIds[suggestion.id]?.trim();
       let parsedCreatedTaskId: number | null = null;
 
       if (rawCreatedTaskId) {
@@ -1076,9 +1078,9 @@ export default function PrazosIniciaisPage() {
     // marcada nao eh agendavel (sem data_final_calculada e nao no-op).
     // Os checkboxes ja sao disabled, mas operador pode ter marcado
     // antes de carregar detalhe atualizado, ou via deep-link/URL.
-    const invalidSelected = detail.sugestoes.find(
+    const invalidSelected = targetDetail.sugestoes.find(
       (s) =>
-        selectedSuggestions[s.id] && !isSuggestionSchedulable(s).ok,
+        selectedScheduleSuggestions[s.id] && !isSuggestionSchedulable(s).ok,
     );
     if (invalidSelected) {
       const reason = isSuggestionSchedulable(invalidSelected).reason;
@@ -1144,9 +1146,9 @@ export default function PrazosIniciaisPage() {
       return;
     }
 
-    setActionLoading(true);
+    setScheduleSubmitting(true);
     try {
-      const response = await confirmarAgendamentoPrazoInicial(selectedId, {
+      const response = await confirmarAgendamentoPrazoInicial(targetId, {
         suggestions: selectedPayload,
         custom_tasks: customTasksPayload.length > 0 ? customTasksPayload : undefined,
         enqueue_legacy_task_cancellation: true,
@@ -1160,9 +1162,18 @@ export default function PrazosIniciaisPage() {
           ? `Intake em AGENDADO${tarefaAvulsaCount > 0 ? ` (+${tarefaAvulsaCount} tarefa(s) avulsa(s))` : ""} e item #${queueItem.id} entrou na fila tecnica para cancelar a task legada.`
           : `Intake atualizado para AGENDADO${tarefaAvulsaCount > 0 ? ` com ${tarefaAvulsaCount} tarefa(s) avulsa(s) criada(s).` : " com sucesso."}`,
       });
-      setCustomTaskDrafts([]);
 
-      await Promise.all([loadDetail(selectedId), loadIntakes()]);
+      // Fecha Modal B (sucesso) — useEffect cuida do reset dos states.
+      setScheduleOpen(false);
+      setScheduleIntakeId(null);
+
+      // Recarrega listagem; se Modal A esta aberto no mesmo intake,
+      // recarrega tambem pra refletir o novo status.
+      const reloads: Promise<unknown>[] = [loadIntakes()];
+      if (selectedId === targetId) {
+        reloads.push(loadDetail(targetId));
+      }
+      await Promise.all(reloads);
     } catch (error) {
       toast({
         title: "Falha ao confirmar agendamentos",
@@ -1170,9 +1181,47 @@ export default function PrazosIniciaisPage() {
         variant: "destructive",
       });
     } finally {
-      setActionLoading(false);
+      setScheduleSubmitting(false);
     }
-  }, [createdTaskIds, detail, loadDetail, loadIntakes, selectedId, selectedSuggestions, toast]);
+  }, [
+    scheduleIntakeId,
+    scheduleDetail,
+    selectedScheduleSuggestions,
+    scheduleCreatedTaskIds,
+    customTaskDrafts,
+    selectedId,
+    loadDetail,
+    loadIntakes,
+    toast,
+  ]);
+
+  // Helpers do Modal B: abrir/fechar + select all.
+  const openScheduleDialog = useCallback((intakeId: number) => {
+    setScheduleIntakeId(intakeId);
+    setScheduleOpen(true);
+  }, []);
+
+  const closeScheduleDialog = useCallback(() => {
+    setScheduleOpen(false);
+    setScheduleIntakeId(null);
+  }, []);
+
+  const setAllScheduleSuggestions = useCallback(
+    (checked: boolean) => {
+      if (!scheduleDetail) return;
+      const next: Record<number, boolean> = {};
+      for (const s of scheduleDetail.sugestoes) {
+        // "Selecionar todas" pula sugestoes nao-agendaveis.
+        if (checked && !isSuggestionSchedulable(s).ok) {
+          next[s.id] = false;
+          continue;
+        }
+        next[s.id] = checked;
+      }
+      setSelectedScheduleSuggestions(next);
+    },
+    [scheduleDetail],
+  );
 
   // ─── Classificação em batch (Sonnet) — controlada manualmente ─────────
 
@@ -1260,11 +1309,60 @@ export default function PrazosIniciaisPage() {
     loadL1Catalogs();
   }, [loadL1Catalogs]);
 
-  // Reset custom tasks quando o modal fecha (evita carry-over entre
-  // intakes diferentes).
+  // Modal B: carrega scheduleDetail quando scheduleIntakeId muda; reseta
+  // tudo quando fecha. Mesmo intake pode estar aberto no Modal A
+  // (selectedId == scheduleIntakeId) e a gente reusa o `detail` ja
+  // carregado pra evitar request duplicado — fallback pra request novo
+  // se for caminho rapido (botao "Agendar" direto da lista).
   useEffect(() => {
-    if (selectedId === null) setCustomTaskDrafts([]);
-  }, [selectedId]);
+    if (scheduleIntakeId === null) {
+      setScheduleDetail(null);
+      setScheduleDetailError(null);
+      setSelectedScheduleSuggestions({});
+      setScheduleCreatedTaskIds({});
+      setCustomTaskDrafts([]);
+      return;
+    }
+    // Reusa detail do Modal A se for o mesmo intake (carregado).
+    if (detail && detail.id === scheduleIntakeId) {
+      setScheduleDetail(detail);
+      setScheduleDetailError(null);
+      return;
+    }
+    // Caminho rapido: fetch do zero (operador clicou "Agendar" na lista).
+    let cancelled = false;
+    setScheduleDetailLoading(true);
+    setScheduleDetailError(null);
+    fetchPrazoInicialDetail(scheduleIntakeId)
+      .then((payload) => {
+        if (!cancelled) setScheduleDetail(payload);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setScheduleDetailError(
+            err instanceof Error ? err.message : "Erro ao carregar intake.",
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setScheduleDetailLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [scheduleIntakeId, detail]);
+
+  // Pre-popula selectedScheduleSuggestions com TODAS as sugestoes
+  // agendaveis quando o scheduleDetail carrega — operador desmarca o
+  // que nao quer (UX igual a "Selecionar todas" como default).
+  useEffect(() => {
+    if (!scheduleDetail) return;
+    const next: Record<number, boolean> = {};
+    for (const s of scheduleDetail.sugestoes) {
+      next[s.id] = isSuggestionSchedulable(s).ok;
+    }
+    setSelectedScheduleSuggestions(next);
+  }, [scheduleDetail]);
 
   const handleClassifyPending = useCallback(async () => {
     setClassifyingPending(true);
@@ -2046,6 +2144,21 @@ export default function PrazosIniciaisPage() {
                         <Button size="sm" variant="outline" onClick={() => setSelectedId(item.id)}>
                           Detalhes
                         </Button>
+                        {/* Caminho rapido: abre Modal B (Agendar) sem
+                            passar pelo detalhe. Mesmo padrao de
+                            Publicacoes. So mostra em status agendaveis
+                            pra evitar clique morto. */}
+                        {isConfirmableStatus(item.status) ? (
+                          <Button
+                            size="sm"
+                            variant="default"
+                            onClick={() => openScheduleDialog(item.id)}
+                            title="Abrir modal de agendamento (criar tarefas no Legal One)"
+                          >
+                            <CalendarClock className="mr-1 h-3.5 w-3.5" />
+                            Agendar
+                          </Button>
+                        ) : null}
                         {item.dispatch_pending ? (
                           <Button
                             size="sm"
@@ -2447,121 +2560,83 @@ export default function PrazosIniciaisPage() {
 
               <Separator />
 
+              {/* Sugestoes em modo READ-ONLY no Modal A. Pra agendar
+                  efetivamente, operador clica "Agendar" no footer (abre
+                  Modal B). Mesmo padrao de Publicacoes: detalhe = ver
+                  dados; modal de agendamento = criar tarefas. */}
               {detail.sugestoes.length > 0 ? (
                 <div className="space-y-3">
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
                     <div>
-                      <div className="text-sm font-semibold">Sugestoes de agendamento ({detail.sugestoes.length})</div>
+                      <div className="text-sm font-semibold">
+                        Sugestões da IA ({detail.sugestoes.length})
+                      </div>
                       <div className="text-xs text-muted-foreground">
-                        Marque apenas as tasks realmente criadas no Legal One. Ao confirmar, o intake vai para AGENDADO
-                        e entra na fila tecnica de cancelamento da task "Agendar Prazos".
+                        Visualização das sugestões classificadas. Pra criar
+                        tarefas no Legal One, clique em <strong>Agendar</strong>{" "}
+                        no rodapé.
                       </div>
                     </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button type="button" size="sm" variant="outline" onClick={() => setAllSuggestions(true)}>
-                        Selecionar todas
-                      </Button>
-                      <Button type="button" size="sm" variant="outline" onClick={() => setAllSuggestions(false)}>
-                        Limpar selecao
-                      </Button>
-                      <Badge variant="secondary">{selectedSuggestionCount} selecionada(s)</Badge>
-                    </div>
                   </div>
-
-                  {!isConfirmableStatus(detail.status) ? (
-                    <Alert>
-                      <AlertCircle className="h-4 w-4" />
-                      <AlertTitle>Confirmacao indisponivel neste status</AlertTitle>
-                      <AlertDescription>
-                        O backend permite confirmar apenas intakes em EM_REVISAO, CLASSIFICADO, AGENDADO ou
-                        ERRO_AGENDAMENTO.
-                      </AlertDescription>
-                    </Alert>
-                  ) : null}
 
                   <div className="overflow-x-auto rounded-md border">
                     <Table>
                       <TableHeader>
                         <TableRow>
-                          <TableHead className="w-[64px]">Ok</TableHead>
                           <TableHead>Tipo / subtipo</TableHead>
                           <TableHead>Data base</TableHead>
-                          <TableHead>Prazo / audiencia</TableHead>
-                          <TableHead>Confianca</TableHead>
-                          <TableHead>Revisao</TableHead>
-                          <TableHead className="w-[180px]">Task criada</TableHead>
+                          <TableHead>Prazo / audiência</TableHead>
+                          <TableHead>Confiança</TableHead>
+                          <TableHead>Revisão</TableHead>
+                          <TableHead className="w-[120px]">Task L1</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {detail.sugestoes.map((suggestion) => {
                           const schedulable = isSuggestionSchedulable(suggestion);
                           return (
-                          <TableRow key={suggestion.id}>
-                            <TableCell>
-                              <Checkbox
-                                checked={Boolean(selectedSuggestions[suggestion.id])}
-                                onCheckedChange={(checked) =>
-                                  setSelectedSuggestions((current) => ({
-                                    ...current,
-                                    [suggestion.id]: checked === true,
-                                  }))
-                                }
-                                disabled={!schedulable.ok}
-                                aria-label={`Selecionar sugestao ${suggestion.id}`}
-                                title={schedulable.reason}
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <div className="font-medium">{suggestion.tipo_prazo}</div>
-                              <div className="text-xs text-muted-foreground">
-                                {suggestion.subtipo || "Sem subtipo"} · sugestao #{suggestion.id}
-                              </div>
-                              {!schedulable.ok ? (
-                                <div
-                                  className="mt-1 inline-flex items-center gap-1 rounded-sm bg-amber-50 border border-amber-200 px-1.5 py-0.5 text-[11px] text-amber-900 max-w-[360px]"
-                                  title={schedulable.reason}
-                                >
-                                  <AlertCircle className="h-3 w-3 shrink-0" />
-                                  <span>Não agendável — {schedulable.reason}</span>
+                            <TableRow key={suggestion.id}>
+                              <TableCell>
+                                <div className="font-medium">{suggestion.tipo_prazo}</div>
+                                <div className="text-xs text-muted-foreground">
+                                  {suggestion.subtipo || "Sem subtipo"} · sugestão #{suggestion.id}
                                 </div>
-                              ) : null}
-                              {suggestion.justificativa ? (
-                                <div className="mt-1 max-w-[360px] text-xs text-muted-foreground">
-                                  {suggestion.justificativa}
-                                </div>
-                              ) : null}
-                              {suggestion.prazo_fatal_data ? (
-                                <div
-                                  className="mt-1 rounded-sm bg-rose-50 px-1.5 py-0.5 text-[11px] text-rose-700 inline-block"
-                                  title={suggestion.prazo_fatal_fundamentacao || undefined}
-                                >
-                                  Prazo fatal: {formatDate(suggestion.prazo_fatal_data)}
-                                </div>
-                              ) : null}
-                            </TableCell>
-                            <TableCell>{formatDate(suggestion.data_base)}</TableCell>
-                            <TableCell>{formatSuggestionDeadline(suggestion)}</TableCell>
-                            <TableCell>{suggestion.confianca || "-"}</TableCell>
-                            <TableCell>
-                              <Badge className={reviewBadgeClass(suggestion.review_status)}>
-                                {REVIEW_LABEL[suggestion.review_status] || suggestion.review_status}
-                              </Badge>
-                            </TableCell>
-                            <TableCell>
-                              <Input
-                                inputMode="numeric"
-                                placeholder="Ex.: 191842"
-                                value={createdTaskIds[suggestion.id] || ""}
-                                onChange={(event) =>
-                                  setCreatedTaskIds((current) => ({
-                                    ...current,
-                                    [suggestion.id]: event.target.value,
-                                  }))
-                                }
-                              />
-                            </TableCell>
-                          </TableRow>
-                        );
+                                {!schedulable.ok ? (
+                                  <div
+                                    className="mt-1 inline-flex items-center gap-1 rounded-sm bg-amber-50 border border-amber-200 px-1.5 py-0.5 text-[11px] text-amber-900 max-w-[360px]"
+                                    title={schedulable.reason}
+                                  >
+                                    <AlertCircle className="h-3 w-3 shrink-0" />
+                                    <span>Não agendável — {schedulable.reason}</span>
+                                  </div>
+                                ) : null}
+                                {suggestion.justificativa ? (
+                                  <div className="mt-1 max-w-[360px] text-xs text-muted-foreground">
+                                    {suggestion.justificativa}
+                                  </div>
+                                ) : null}
+                                {suggestion.prazo_fatal_data ? (
+                                  <div
+                                    className="mt-1 rounded-sm bg-rose-50 px-1.5 py-0.5 text-[11px] text-rose-700 inline-block"
+                                    title={suggestion.prazo_fatal_fundamentacao || undefined}
+                                  >
+                                    Prazo fatal: {formatDate(suggestion.prazo_fatal_data)}
+                                  </div>
+                                ) : null}
+                              </TableCell>
+                              <TableCell>{formatDate(suggestion.data_base)}</TableCell>
+                              <TableCell>{formatSuggestionDeadline(suggestion)}</TableCell>
+                              <TableCell>{suggestion.confianca || "-"}</TableCell>
+                              <TableCell>
+                                <Badge className={reviewBadgeClass(suggestion.review_status)}>
+                                  {REVIEW_LABEL[suggestion.review_status] || suggestion.review_status}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-xs text-muted-foreground">
+                                {suggestion.created_task_id ?? "—"}
+                              </TableCell>
+                            </TableRow>
+                          );
                         })}
                       </TableBody>
                     </Table>
@@ -2576,216 +2651,6 @@ export default function PrazosIniciaisPage() {
                   </AlertDescription>
                 </Alert>
               )}
-
-              {/* ─── Tarefas avulsas ─────────────────────────────────
-                  Operador adiciona tarefas que nao casam com sugestao
-                  da IA — mesmo padrao de "tarefa avulsa" de publicacoes.
-                  Vao no payload custom_tasks da confirmacao; backend
-                  cria no L1 e persiste sugestao sintetica. */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div>
-                    <div className="text-sm font-semibold">
-                      Tarefas avulsas{" "}
-                      <span className="font-normal text-muted-foreground">
-                        ({customTaskDrafts.length})
-                      </span>
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      Adicione tarefas que não casam com sugestões da IA
-                      (ex.: providência específica desse caso). Vão pro L1
-                      junto com as sugestões marcadas acima.
-                    </div>
-                  </div>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() =>
-                      setCustomTaskDrafts((prev) => [
-                        ...prev,
-                        {
-                          id: `ct-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-                          task_subtype_external_id: null,
-                          responsible_user_external_id: null,
-                          description: "",
-                          due_date: "",
-                          priority: "Normal",
-                          notes: "",
-                        },
-                      ])
-                    }
-                    title="Adicionar uma tarefa que não veio da classificação da IA"
-                  >
-                    + Adicionar tarefa avulsa
-                  </Button>
-                </div>
-
-                {/* Aviso quando os catalogos do L1 nao carregaram —
-                    sem eles os Selects do form ficam vazios e o
-                    operador nao consegue cadastrar tarefa avulsa. Antes
-                    o botao ficava disabled silenciosamente. */}
-                {l1CatalogsError ? (
-                  <Alert variant="destructive" className="py-2">
-                    <AlertCircle className="h-4 w-4" />
-                    <AlertTitle className="text-xs">
-                      Falha ao carregar catálogos do Legal One
-                    </AlertTitle>
-                    <AlertDescription className="text-xs flex items-center gap-2 flex-wrap">
-                      <span>
-                        Sem isso, os campos de Task e Responsável da tarefa
-                        avulsa ficam vazios. Erro: {l1CatalogsError}
-                      </span>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-6 px-2 text-xs"
-                        onClick={loadL1Catalogs}
-                        disabled={l1CatalogsLoading}
-                      >
-                        {l1CatalogsLoading ? (
-                          <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                        ) : null}
-                        Tentar de novo
-                      </Button>
-                    </AlertDescription>
-                  </Alert>
-                ) : null}
-                {!l1CatalogsError && l1CatalogsLoading && customTaskDrafts.length > 0 ? (
-                  <div className="text-xs text-muted-foreground">
-                    <Loader2 className="mr-1 inline-block h-3 w-3 animate-spin" />
-                    Carregando catálogos do Legal One...
-                  </div>
-                ) : null}
-
-                {customTaskDrafts.map((draft, idx) => {
-                  const updateDraft = (patch: Partial<typeof draft>) =>
-                    setCustomTaskDrafts((prev) =>
-                      prev.map((d) => (d.id === draft.id ? { ...d, ...patch } : d)),
-                    );
-                  return (
-                    <div
-                      key={draft.id}
-                      className="rounded-md border bg-muted/20 p-3 space-y-3"
-                    >
-                      <div className="flex items-center justify-between">
-                        <Badge variant="outline" className="text-[10px]">
-                          Tarefa avulsa {idx + 1}
-                        </Badge>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setCustomTaskDrafts((prev) =>
-                              prev.filter((d) => d.id !== draft.id),
-                            )
-                          }
-                          className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                          title="Remover tarefa avulsa"
-                        >
-                          <XCircle className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-
-                      <SubtypePicker
-                        value={draft.task_subtype_external_id}
-                        taskTypes={l1TaskTypes.map((tt) => ({
-                          external_id: tt.id,
-                          name: tt.name,
-                          subtypes: tt.sub_types,
-                        }))}
-                        onChange={(subId) =>
-                          updateDraft({ task_subtype_external_id: subId })
-                        }
-                        label="Task do Legal One"
-                        required
-                        placeholder="Selecione a task"
-                        searchPlaceholder="Buscar por categoria ou task..."
-                      />
-
-                      <div className="space-y-1">
-                        <Label className="text-xs">Responsável *</Label>
-                        <Select
-                          value={
-                            draft.responsible_user_external_id != null
-                              ? String(draft.responsible_user_external_id)
-                              : ""
-                          }
-                          onValueChange={(v) =>
-                            updateDraft({
-                              responsible_user_external_id: v ? Number(v) : null,
-                            })
-                          }
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Selecione..." />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {l1Users.map((u) => (
-                              <SelectItem
-                                key={u.external_id}
-                                value={String(u.external_id)}
-                              >
-                                {u.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div className="space-y-1">
-                          <Label className="text-xs">Data fatal *</Label>
-                          <Input
-                            type="date"
-                            value={draft.due_date}
-                            onChange={(e) =>
-                              updateDraft({ due_date: e.target.value })
-                            }
-                          />
-                        </div>
-                        <div className="space-y-1">
-                          <Label className="text-xs">Prioridade</Label>
-                          <Select
-                            value={draft.priority}
-                            onValueChange={(v) => updateDraft({ priority: v })}
-                          >
-                            <SelectTrigger>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="Low">Low</SelectItem>
-                              <SelectItem value="Normal">Normal</SelectItem>
-                              <SelectItem value="High">High</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      </div>
-
-                      <div className="space-y-1">
-                        <Label className="text-xs">Descrição *</Label>
-                        <Input
-                          value={draft.description}
-                          onChange={(e) =>
-                            updateDraft({ description: e.target.value })
-                          }
-                          placeholder={`Ex: Providência avulsa — CNJ ${detail.cnj_number || ""}`}
-                          maxLength={250}
-                        />
-                      </div>
-
-                      <div className="space-y-1">
-                        <Label className="text-xs">Anotações (opcional)</Label>
-                        <Textarea
-                          rows={2}
-                          value={draft.notes}
-                          onChange={(e) => updateDraft({ notes: e.target.value })}
-                          placeholder="Texto livre — vai no campo notes da tarefa no L1."
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
 
               {detail.pedidos && detail.pedidos.length > 0 ? (
                 <div>
@@ -2996,13 +2861,25 @@ export default function PrazosIniciaisPage() {
               Fechar
             </Button>
 
-            <Button onClick={onConfirmarAgendamentos} disabled={!canConfirmScheduling}>
-              {actionLoading ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <CheckCircle2 className="mr-2 h-4 w-4" />
-              )}
-              Confirmar agendamentos
+            {/* Botao primario do Modal A — abre o Modal B (Agendar)
+                e fecha o detalhe (mesmo padrao de Publicacoes). */}
+            <Button
+              onClick={() => {
+                if (!detail) return;
+                openScheduleDialog(detail.id);
+                setSelectedId(null);
+              }}
+              disabled={!detail || !isConfirmableStatus(detail.status) || actionLoading}
+              title={
+                !detail
+                  ? undefined
+                  : !isConfirmableStatus(detail.status)
+                    ? `Agendamento permitido apenas em EM_REVISAO, CLASSIFICADO, AGENDADO ou ERRO_AGENDAMENTO. Status atual: ${detail.status}.`
+                    : "Abrir modal de agendamento (criar tarefas no Legal One)"
+              }
+            >
+              <CalendarClock className="mr-2 h-4 w-4" />
+              Agendar
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -3163,6 +3040,413 @@ export default function PrazosIniciaisPage() {
                 <CheckCircle2 className="mr-2 h-4 w-4" />
               )}
               Confirmar reaplicação
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Modal B: Agendar (cria tarefas no Legal One) ──────────────
+          Modal SEPARADO do detalhe (Modal A). Mesmo padrao de
+          Publicacoes: sugestoes com checkbox + tarefas avulsas + form
+          rico + submit. Pode abrir do Modal A ou direto da listagem
+          (botao "Agendar" na coluna Acoes). */}
+      <Dialog
+        open={scheduleOpen}
+        onOpenChange={(open) => {
+          if (!open) closeScheduleDialog();
+        }}
+      >
+        <DialogContent className="!max-w-[min(95vw,72rem)] max-h-[92vh] w-[95vw] overflow-y-auto overflow-x-hidden p-5 sm:p-6">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CalendarClock className="h-5 w-5" />
+              Agendar — Intake #{scheduleIntakeId}
+            </DialogTitle>
+            <DialogDescription>
+              {scheduleDetail ? (
+                <span className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-xs">
+                    {formatCnj(scheduleDetail.cnj_number)}
+                  </span>
+                  {scheduleDetail.tipos_prazo && scheduleDetail.tipos_prazo.length > 0
+                    ? scheduleDetail.tipos_prazo.map((tp) => (
+                        <Badge key={tp} variant="outline" className="font-normal">
+                          {tipoPrazoLabel(tp)}
+                        </Badge>
+                      ))
+                    : null}
+                </span>
+              ) : (
+                "Carregando intake..."
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          {scheduleDetailLoading ? (
+            <div className="py-10 text-center">
+              <Loader2 className="mr-2 inline-block h-5 w-5 animate-spin" />
+              Carregando intake...
+            </div>
+          ) : null}
+
+          {scheduleDetailError ? (
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertTitle>Erro ao carregar intake</AlertTitle>
+              <AlertDescription>{scheduleDetailError}</AlertDescription>
+            </Alert>
+          ) : null}
+
+          {scheduleDetail && !scheduleDetailLoading ? (
+            <div className="space-y-5">
+              {!isConfirmableStatus(scheduleDetail.status) ? (
+                <Alert>
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertTitle>Agendamento indisponível neste status</AlertTitle>
+                  <AlertDescription>
+                    Permitido apenas em EM_REVISAO, CLASSIFICADO, AGENDADO ou
+                    ERRO_AGENDAMENTO. Status atual: {scheduleDetail.status}.
+                  </AlertDescription>
+                </Alert>
+              ) : null}
+
+              {/* ── Sugestões selecionáveis ── */}
+              {scheduleDetail.sugestoes.length > 0 ? (
+                <div className="space-y-3">
+                  <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
+                    <div>
+                      <div className="text-sm font-semibold">
+                        Sugestões da IA ({scheduleDetail.sugestoes.length})
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        Marque as sugestões que serão agendadas como tarefas no
+                        Legal One. Sugestões sem data calculada ficam
+                        bloqueadas.
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button type="button" size="sm" variant="outline" onClick={() => setAllScheduleSuggestions(true)}>
+                        Selecionar todas
+                      </Button>
+                      <Button type="button" size="sm" variant="outline" onClick={() => setAllScheduleSuggestions(false)}>
+                        Limpar seleção
+                      </Button>
+                      <Badge variant="secondary">
+                        {selectedScheduleCount} selecionada(s)
+                      </Badge>
+                    </div>
+                  </div>
+
+                  <div className="overflow-x-auto rounded-md border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-[64px]">Ok</TableHead>
+                          <TableHead>Tipo / subtipo</TableHead>
+                          <TableHead>Data base</TableHead>
+                          <TableHead>Prazo / audiência</TableHead>
+                          <TableHead>Confiança</TableHead>
+                          <TableHead className="w-[180px]">Task criada (manual)</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {scheduleDetail.sugestoes.map((suggestion) => {
+                          const schedulable = isSuggestionSchedulable(suggestion);
+                          return (
+                            <TableRow key={suggestion.id}>
+                              <TableCell>
+                                <Checkbox
+                                  checked={Boolean(selectedScheduleSuggestions[suggestion.id])}
+                                  onCheckedChange={(checked) =>
+                                    setSelectedScheduleSuggestions((current) => ({
+                                      ...current,
+                                      [suggestion.id]: checked === true,
+                                    }))
+                                  }
+                                  disabled={!schedulable.ok}
+                                  aria-label={`Selecionar sugestão ${suggestion.id}`}
+                                  title={schedulable.reason}
+                                />
+                              </TableCell>
+                              <TableCell>
+                                <div className="font-medium">{suggestion.tipo_prazo}</div>
+                                <div className="text-xs text-muted-foreground">
+                                  {suggestion.subtipo || "Sem subtipo"} · sugestão #{suggestion.id}
+                                </div>
+                                {!schedulable.ok ? (
+                                  <div
+                                    className="mt-1 inline-flex items-center gap-1 rounded-sm bg-amber-50 border border-amber-200 px-1.5 py-0.5 text-[11px] text-amber-900 max-w-[360px]"
+                                    title={schedulable.reason}
+                                  >
+                                    <AlertCircle className="h-3 w-3 shrink-0" />
+                                    <span>Não agendável — {schedulable.reason}</span>
+                                  </div>
+                                ) : null}
+                                {suggestion.prazo_fatal_data ? (
+                                  <div
+                                    className="mt-1 rounded-sm bg-rose-50 px-1.5 py-0.5 text-[11px] text-rose-700 inline-block"
+                                    title={suggestion.prazo_fatal_fundamentacao || undefined}
+                                  >
+                                    Prazo fatal: {formatDate(suggestion.prazo_fatal_data)}
+                                  </div>
+                                ) : null}
+                              </TableCell>
+                              <TableCell>{formatDate(suggestion.data_base)}</TableCell>
+                              <TableCell>{formatSuggestionDeadline(suggestion)}</TableCell>
+                              <TableCell>{suggestion.confianca || "-"}</TableCell>
+                              <TableCell>
+                                <Input
+                                  inputMode="numeric"
+                                  placeholder="Ex.: 191842"
+                                  value={scheduleCreatedTaskIds[suggestion.id] || ""}
+                                  onChange={(event) =>
+                                    setScheduleCreatedTaskIds((current) => ({
+                                      ...current,
+                                      [suggestion.id]: event.target.value,
+                                    }))
+                                  }
+                                />
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+              ) : (
+                <Alert>
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertTitle>Sem sugestões da IA</AlertTitle>
+                  <AlertDescription>
+                    Este intake não tem sugestões classificadas. Você ainda pode
+                    adicionar tarefas avulsas abaixo.
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              {/* ── Tarefas avulsas ── */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-semibold">
+                      Tarefas avulsas{" "}
+                      <span className="font-normal text-muted-foreground">
+                        ({customTaskDrafts.length})
+                      </span>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Tarefas que não casam com sugestões da IA (ex.: providência
+                      específica desse caso). Vão pro L1 junto com as sugestões
+                      marcadas acima.
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      setCustomTaskDrafts((prev) => [
+                        ...prev,
+                        {
+                          id: `ct-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                          task_subtype_external_id: null,
+                          responsible_user_external_id: null,
+                          description: "",
+                          due_date: "",
+                          priority: "Normal",
+                          notes: "",
+                        },
+                      ])
+                    }
+                    title="Adicionar uma tarefa que não veio da classificação da IA"
+                  >
+                    + Adicionar tarefa avulsa
+                  </Button>
+                </div>
+
+                {l1CatalogsError ? (
+                  <Alert variant="destructive" className="py-2">
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertTitle className="text-xs">
+                      Falha ao carregar catálogos do Legal One
+                    </AlertTitle>
+                    <AlertDescription className="text-xs flex items-center gap-2 flex-wrap">
+                      <span>
+                        Sem isso, os campos de Task e Responsável da tarefa
+                        avulsa ficam vazios. Erro: {l1CatalogsError}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-6 px-2 text-xs"
+                        onClick={loadL1Catalogs}
+                        disabled={l1CatalogsLoading}
+                      >
+                        {l1CatalogsLoading ? (
+                          <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                        ) : null}
+                        Tentar de novo
+                      </Button>
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
+                {!l1CatalogsError && l1CatalogsLoading && customTaskDrafts.length > 0 ? (
+                  <div className="text-xs text-muted-foreground">
+                    <Loader2 className="mr-1 inline-block h-3 w-3 animate-spin" />
+                    Carregando catálogos do Legal One...
+                  </div>
+                ) : null}
+
+                {customTaskDrafts.map((draft, idx) => {
+                  const updateDraft = (patch: Partial<typeof draft>) =>
+                    setCustomTaskDrafts((prev) =>
+                      prev.map((d) => (d.id === draft.id ? { ...d, ...patch } : d)),
+                    );
+                  return (
+                    <div
+                      key={draft.id}
+                      className="rounded-md border bg-muted/20 p-3 space-y-3"
+                    >
+                      <div className="flex items-center justify-between">
+                        <Badge variant="outline" className="text-[10px]">
+                          Tarefa avulsa {idx + 1}
+                        </Badge>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCustomTaskDrafts((prev) =>
+                              prev.filter((d) => d.id !== draft.id),
+                            )
+                          }
+                          className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                          title="Remover tarefa avulsa"
+                        >
+                          <XCircle className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+
+                      <SubtypePicker
+                        value={draft.task_subtype_external_id}
+                        taskTypes={l1TaskTypes.map((tt) => ({
+                          external_id: tt.id,
+                          name: tt.name,
+                          subtypes: tt.sub_types,
+                        }))}
+                        onChange={(subId) =>
+                          updateDraft({ task_subtype_external_id: subId })
+                        }
+                        label="Task do Legal One"
+                        required
+                        placeholder="Selecione a task"
+                        searchPlaceholder="Buscar por categoria ou task..."
+                      />
+
+                      <div className="space-y-1">
+                        <Label className="text-xs">Responsável *</Label>
+                        <Select
+                          value={
+                            draft.responsible_user_external_id != null
+                              ? String(draft.responsible_user_external_id)
+                              : ""
+                          }
+                          onValueChange={(v) =>
+                            updateDraft({
+                              responsible_user_external_id: v ? Number(v) : null,
+                            })
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Selecione..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {l1Users.map((u) => (
+                              <SelectItem
+                                key={u.external_id}
+                                value={String(u.external_id)}
+                              >
+                                {u.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Data fatal *</Label>
+                          <Input
+                            type="date"
+                            value={draft.due_date}
+                            onChange={(e) =>
+                              updateDraft({ due_date: e.target.value })
+                            }
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Prioridade</Label>
+                          <Select
+                            value={draft.priority}
+                            onValueChange={(v) => updateDraft({ priority: v })}
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="Low">Low</SelectItem>
+                              <SelectItem value="Normal">Normal</SelectItem>
+                              <SelectItem value="High">High</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <Label className="text-xs">Descrição *</Label>
+                        <Input
+                          value={draft.description}
+                          onChange={(e) =>
+                            updateDraft({ description: e.target.value })
+                          }
+                          placeholder={`Ex: Providência avulsa — CNJ ${scheduleDetail.cnj_number || ""}`}
+                          maxLength={250}
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <Label className="text-xs">Anotações (opcional)</Label>
+                        <Textarea
+                          rows={2}
+                          value={draft.notes}
+                          onChange={(e) => updateDraft({ notes: e.target.value })}
+                          placeholder="Texto livre — vai no campo notes da tarefa no L1."
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              variant="outline"
+              onClick={closeScheduleDialog}
+              disabled={scheduleSubmitting}
+            >
+              Cancelar
+            </Button>
+            <Button
+              onClick={onConfirmarAgendamentos}
+              disabled={!canSubmitSchedule}
+            >
+              {scheduleSubmitting ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <CheckCircle2 className="mr-2 h-4 w-4" />
+              )}
+              Confirmar agendamento
             </Button>
           </DialogFooter>
         </DialogContent>
