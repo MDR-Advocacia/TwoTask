@@ -257,6 +257,8 @@ export interface PrazoInicialIntakeSummary {
   extractor_used?: string | null;
   extraction_confidence?: "high" | "partial" | "low" | string | null;
   has_habilitacao_pdf?: boolean;
+  habilitacao_pdf_filename_original?: string | null;
+  habilitacao_pdf_bytes?: number | null;
 }
 
 export interface PrazoInicialParteProcessual {
