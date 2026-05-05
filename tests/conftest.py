@@ -20,17 +20,40 @@ engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": Fal
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
+def _safe_remove_test_db():
+    """Remove test_main.db tolerando lock do Windows.
+
+    Em alguns testes que abrem `create_engine` adicionais (com
+    sqlite:///:memory: ou outros engines), pode acontecer do file
+    handle do test_main.db ainda nao ter sido liberado quando o pytest
+    chega no teardown. Em vez de derrubar o teardown com PermissionError,
+    apenas loga e segue — proxima sessao vai descartar do mesmo jeito.
+    """
+    if not os.path.exists("test_main.db"):
+        return
+    try:
+        os.remove("test_main.db")
+    except PermissionError:
+        # Windows file lock — provavel handle SQLite ainda aberto.
+        # Forca dispose do engine e tenta de novo.
+        try:
+            engine.dispose()
+            os.remove("test_main.db")
+        except OSError:
+            # Desiste em silencio — file fica pra proxima sessao limpar.
+            pass
+
+
 @pytest.fixture(scope="session")
 def setup_test_database():
     """
     Create and drop the test database and tables once per test session.
     """
-    if os.path.exists("test_main.db"):
-        os.remove("test_main.db")
+    _safe_remove_test_db()
     Base.metadata.create_all(bind=engine)
     yield
-    if os.path.exists("test_main.db"):
-        os.remove("test_main.db")
+    engine.dispose()
+    _safe_remove_test_db()
 
 @pytest.fixture(scope="function")
 def db_session(setup_test_database) -> Generator[Session, None, None]:

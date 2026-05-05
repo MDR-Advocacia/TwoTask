@@ -17,6 +17,7 @@ import {
   RotateCcw,
   Search,
   Sparkles,
+  Trash2,
   Undo2,
   Workflow,
   XCircle,
@@ -67,6 +68,7 @@ import {
   dispatchPrazoInicialTreatmentWeb,
   fetchPrazoInicialDetail,
   deletePrazoInicialIntake,
+  bulkDeletePrazoInicialIntakes,
   fetchPrazosIniciaisBatches,
   fetchPrazosIniciaisEnums,
   fetchPrazosIniciaisIntakes,
@@ -423,6 +425,15 @@ export default function PrazosIniciaisPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
 
+  // ─── Multi-seleção pra bulk actions ──
+  // Set<number> dos ids marcados na lista. Limpa ao recarregar e ao
+  // executar uma bulk action (delete em lote, etc.). So aparece na UI
+  // pra admins (back-end exige role=admin no /bulk-delete).
+  const [selectedIntakeIds, setSelectedIntakeIds] = useState<Set<number>>(
+    new Set(),
+  );
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+
   // Tarefas recentes do processo no Legal One — carregadas quando o
   // detalhe abre com lawsuit_id resolvido. Reusa o endpoint de
   // publicacoes (`/publications/groups/{lawsuit_id}/recent-tasks`).
@@ -651,6 +662,17 @@ export default function PrazosIniciaisPage() {
         setItems(payload.items);
         setTotal(payload.total);
         if (resetPage) setOffset(0);
+        // Garante que ids selecionados que sumiram do load atual saiam
+        // do Set (filtros mudaram, intake foi deletado, etc.).
+        setSelectedIntakeIds((prev) => {
+          if (prev.size === 0) return prev;
+          const validIds = new Set(payload.items.map((i) => i.id));
+          const next = new Set<number>();
+          prev.forEach((id) => {
+            if (validIds.has(id)) next.add(id);
+          });
+          return next.size === prev.size ? prev : next;
+        });
       } catch (error) {
         setLoadError(error instanceof Error ? error.message : "Erro ao carregar intakes.");
       } finally {
@@ -968,6 +990,57 @@ export default function PrazosIniciaisPage() {
       toast({ title: "Erro ao deletar", description: msg, variant: "destructive" });
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  // ─── Bulk delete (admin only) ──
+  // Roda /intakes/bulk-delete com os ids marcados. Best-effort no backend
+  // — alguns podem falhar (FK trava, etc.) e os outros completam. Toast
+  // mostra o resumo e a lista recarrega no fim.
+  const onBulkDeleteIntakes = async () => {
+    const ids = Array.from(selectedIntakeIds);
+    if (ids.length === 0) return;
+    if (
+      !confirm(
+        `DELETAR ${ids.length} intake(s) marcado(s)?\n\n` +
+          "Esta ação é IRREVERSÍVEL — remove registros, sugestões, pedidos\n" +
+          "e PDFs do disco. Use apenas em ambiente de teste.",
+      )
+    ) {
+      return;
+    }
+    setBulkDeleting(true);
+    try {
+      const result = await bulkDeletePrazoInicialIntakes(ids);
+      const failedCount = result.failed_ids.length;
+      if (failedCount === 0) {
+        toast({
+          title: "Bulk delete concluído",
+          description: `${result.deleted_count} intake(s) removido(s).`,
+        });
+      } else {
+        const sampleErr =
+          Object.entries(result.errors)
+            .slice(0, 3)
+            .map(([id, msg]) => `#${id}: ${msg}`)
+            .join("\n") || "ver logs";
+        toast({
+          title: `Bulk delete parcial: ${result.deleted_count} ok, ${failedCount} falha(s)`,
+          description: sampleErr,
+          variant: "destructive",
+        });
+      }
+      setSelectedIntakeIds(new Set());
+      await loadIntakes();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Erro desconhecido";
+      toast({
+        title: "Erro no bulk delete",
+        description: msg,
+        variant: "destructive",
+      });
+    } finally {
+      setBulkDeleting(false);
     }
   };
 
@@ -2247,10 +2320,78 @@ export default function PrazosIniciaisPage() {
           ) : null}
         </CardHeader>
         <CardContent>
+          {/* Toolbar de bulk actions — aparece somente quando ha
+              ids marcados E o usuario eh admin. Bulk delete chama
+              /intakes/bulk-delete com ate 500 ids; backend faz
+              best-effort (commit por intake) e reporta falhas. */}
+          {isAdmin && selectedIntakeIds.size > 0 ? (
+            <div className="mb-3 flex items-center justify-between gap-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2">
+              <div className="text-sm text-blue-900">
+                <span className="font-semibold">{selectedIntakeIds.size}</span>{" "}
+                intake(s) marcado(s)
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setSelectedIntakeIds(new Set())}
+                  disabled={bulkDeleting}
+                >
+                  Limpar seleção
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  onClick={onBulkDeleteIntakes}
+                  disabled={bulkDeleting}
+                >
+                  {bulkDeleting ? (
+                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="mr-1 h-3.5 w-3.5" />
+                  )}
+                  Deletar marcados
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
           <ScrollArea className="w-full">
             <Table>
               <TableHeader>
                 <TableRow>
+                  {isAdmin ? (
+                    <TableHead className="w-[40px]">
+                      {/* Select-all: marca somente os ids do load atual.
+                          Indeterminate (alguns mas nao todos) renderiza como
+                          parcial via a CSS de Checkbox shadcn. */}
+                      <input
+                        type="checkbox"
+                        aria-label="Selecionar todos"
+                        ref={(el) => {
+                          if (!el) return;
+                          const allSelected =
+                            items.length > 0 &&
+                            items.every((i) => selectedIntakeIds.has(i.id));
+                          const someSelected =
+                            !allSelected &&
+                            items.some((i) => selectedIntakeIds.has(i.id));
+                          el.indeterminate = someSelected;
+                          el.checked = allSelected;
+                        }}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedIntakeIds(
+                              new Set(items.map((i) => i.id)),
+                            );
+                          } else {
+                            setSelectedIntakeIds(new Set());
+                          }
+                        }}
+                        className="h-4 w-4 cursor-pointer"
+                      />
+                    </TableHead>
+                  ) : null}
                   <TableHead className="w-[140px]">Recebido</TableHead>
                   <TableHead className="w-[180px]">CNJ</TableHead>
                   <TableHead className="min-w-[280px]">Arquivo / origem</TableHead>
@@ -2264,7 +2405,7 @@ export default function PrazosIniciaisPage() {
               <TableBody>
                 {isLoading && items.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="py-10 text-center">
+                    <TableCell colSpan={isAdmin ? 9 : 8} className="py-10 text-center">
                       <Loader2 className="mr-2 inline-block h-5 w-5 animate-spin" />
                       Carregando intakes...
                     </TableCell>
@@ -2273,7 +2414,7 @@ export default function PrazosIniciaisPage() {
 
                 {!isLoading && items.length === 0 && !loadError ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
+                    <TableCell colSpan={isAdmin ? 9 : 8} className="py-10 text-center text-muted-foreground">
                       Nenhum intake encontrado.
                     </TableCell>
                   </TableRow>
@@ -2281,6 +2422,23 @@ export default function PrazosIniciaisPage() {
 
                 {items.map((item) => (
                   <TableRow key={item.id}>
+                    {isAdmin ? (
+                      <TableCell className="w-[40px]">
+                        <input
+                          type="checkbox"
+                          aria-label={`Selecionar intake #${item.id}`}
+                          checked={selectedIntakeIds.has(item.id)}
+                          onChange={(e) => {
+                            const next = new Set(selectedIntakeIds);
+                            if (e.target.checked) next.add(item.id);
+                            else next.delete(item.id);
+                            setSelectedIntakeIds(next);
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          className="h-4 w-4 cursor-pointer"
+                        />
+                      </TableCell>
+                    ) : null}
                     <TableCell className="whitespace-nowrap">{formatDateTime(item.received_at)}</TableCell>
                     <TableCell className="font-mono text-xs">{formatCnj(item.cnj_number)}</TableCell>
                     <TableCell>

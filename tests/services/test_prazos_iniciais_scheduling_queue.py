@@ -130,10 +130,11 @@ def test_confirm_endpoint_marks_intake_as_scheduled_and_enqueues_queue_item(
     assert data["intake"]["status"] == INTAKE_STATUS_SCHEDULED
     assert data["confirmed_suggestion_ids"] == [sugestao.id]
     assert data["created_task_ids"] == [191842]
-    assert data["legacy_task_cancellation_item"]["queue_status"] == QUEUE_STATUS_PENDING
-    assert data["legacy_task_cancellation_item"]["lawsuit_id"] == 68506
-    assert data["legacy_task_cancellation_item"]["legacy_task_type_external_id"] == 33
-    assert data["legacy_task_cancellation_item"]["legacy_task_subtype_external_id"] == 1283
+    # Onda 3 #5: enqueue do cancel da legada foi diferido pra
+    # `dispatch_treatment_web` (executado depois do GED upload). Confirm
+    # apenas marca intake=AGENDADO e dispatch_pending=True; queue item
+    # ainda nao existe nesse momento.
+    assert data["legacy_task_cancellation_item"] is None
 
     db_session.expire_all()
     intake_db = db_session.get(PrazoInicialIntake, intake.id)
@@ -149,12 +150,24 @@ def test_confirm_endpoint_marks_intake_as_scheduled_and_enqueues_queue_item(
     assert sugestao_db.created_task_id == 191842
     assert sugestao_db.review_status == SUGESTAO_REVIEW_EDITED
     assert sugestao_db.reviewed_by_email == admin_user.email
-    assert queue_item is not None
-    assert queue_item.queue_status == QUEUE_STATUS_PENDING
+    # Queue item só é criado depois (dispatch_treatment_web).
+    assert queue_item is None
 
 
-def test_confirm_service_defaults_to_all_non_rejected_suggestions(db_session: Session):
+def test_confirm_service_defaults_to_all_non_rejected_suggestions(
+    db_session: Session, monkeypatch
+):
     intake = _persist_intake_with_suggestions(db_session)
+
+    # Monkeypatch criação L1: a fixture nao tem PrazoInicialTaskTemplate
+    # configurado, entao `_create_task_in_legal_one` reclamaria de
+    # task_subtype_id ausente. Aqui o foco do teste é o fluxo de default
+    # de confirmed_suggestions=None, nao a criacao real no L1.
+    monkeypatch.setattr(
+        PrazosIniciaisSchedulingService,
+        "_create_task_in_legal_one",
+        lambda self, sugestao, intake: 999_001,
+    )
 
     service = PrazosIniciaisSchedulingService(db_session)
     result = service.confirm_intake_scheduling(
@@ -164,15 +177,16 @@ def test_confirm_service_defaults_to_all_non_rejected_suggestions(db_session: Se
     )
 
     assert result["confirmed_suggestion_ids"] == [intake.sugestoes[0].id]
-    queue_item = result["legacy_task_cancellation_item"]
-    assert queue_item is not None
-    assert queue_item["queue_status"] == QUEUE_STATUS_PENDING
+    # Onda 3 #5: enqueue do cancel da legada migrou pra
+    # `dispatch_treatment_web`. Confirm so retorna intake/ids.
+    assert result["legacy_task_cancellation_item"] is None
 
     db_session.expire_all()
     approved = db_session.get(PrazoInicialSugestao, intake.sugestoes[0].id)
     rejected = db_session.get(PrazoInicialSugestao, intake.sugestoes[1].id)
     assert approved is not None
     assert approved.review_status != SUGESTAO_REVIEW_PENDING
+    assert approved.created_task_id == 999_001  # criado via monkeypatch
     assert rejected is not None
     assert rejected.review_status == SUGESTAO_REVIEW_REJECTED
 

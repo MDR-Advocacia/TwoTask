@@ -46,6 +46,7 @@ from app.services.classifier.prazos_iniciais_schema import (
     TIPO_PRAZO_LIMINAR,
     TIPO_PRAZO_MANIFESTACAO_AVULSA,
     TIPO_PRAZO_SEM_DETERMINACAO,
+    TIPO_PRAZO_SEM_PRAZO_EM_ABERTO,
     PrazoInicialClassificationResponse,
 )
 from app.services.prazos_iniciais.prazo_calculator import (
@@ -206,12 +207,19 @@ class TestSchema:
         assert tipos == {TIPO_PRAZO_CONTESTAR, TIPO_PRAZO_AUDIENCIA}
 
     def test_blocos_aplicaveis_emits_sem_determinacao_when_no_blocks(self):
+        # Legado: payload com `sem_determinacao=True` é migrado pelo
+        # validator `_normalize_legacy_sem_determinacao` pra
+        # `sem_prazo_em_aberto=True`. Teste reflete o split feito na
+        # Fase 4 (SEM_DETERMINACAO foi descontinuado em favor de
+        # SEM_PRAZO_EM_ABERTO + INDETERMINADO).
         payload = _empty_response_dict()
         payload["sem_determinacao"] = True
         resp = PrazoInicialClassificationResponse.model_validate(payload)
         pares = resp.blocos_aplicaveis()
         assert len(pares) == 1
-        assert pares[0][0] == TIPO_PRAZO_SEM_DETERMINACAO
+        assert pares[0][0] == TIPO_PRAZO_SEM_PRAZO_EM_ABERTO
+        assert resp.sem_prazo_em_aberto is True
+        assert resp.motivo_sem_prazo == "OUTRO"
 
     def test_confianca_normalized_with_accent(self):
         payload = _empty_response_dict()
@@ -465,6 +473,9 @@ class TestMaterializeSugestoes:
     def test_sem_determinacao_creates_single_marker_sugestao(
         self, db_session, classifier_factory
     ):
+        # Legado: payload com `sem_determinacao=True` é normalizado pra
+        # `sem_prazo_em_aberto=True` no validator (Fase 4 — split). A
+        # sugestão materializada tem tipo SEM_PRAZO_EM_ABERTO.
         intake = _persist_intake(db_session, external_id="ext-sem")
         classifier = classifier_factory(db_session)
 
@@ -481,8 +492,9 @@ class TestMaterializeSugestoes:
         )
         assert len(sugestoes) == 1
         s = sugestoes[0]
-        assert s.tipo_prazo == TIPO_PRAZO_SEM_DETERMINACAO
-        assert s.payload_proposto["sem_determinacao"] is True
+        assert s.tipo_prazo == TIPO_PRAZO_SEM_PRAZO_EM_ABERTO
+        # O payload_proposto carrega o estado normalizado (sem_prazo_em_aberto=True)
+        assert s.payload_proposto.get("sem_prazo_em_aberto") is True
 
 
 class TestApplyBatchResults:

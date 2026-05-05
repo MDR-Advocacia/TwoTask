@@ -65,7 +65,11 @@ def test_build_task_proposals_fetches_responsible_only_for_templates_without_use
     captured = {}
 
     class FakeLegalOneApiClient:
-        def get_cached_lawsuit_responsibles_batch(self, lawsuit_ids):
+        # `prefetch_lawsuit_responsibles_cache` é o método novo usado no
+        # service (substituiu `get_cached_lawsuit_responsibles_batch`).
+        # Mantemos o método antigo por compat com testes que ainda
+        # podem chamá-lo direto.
+        def prefetch_lawsuit_responsibles_cache(self, lawsuit_ids):
             captured["lawsuit_ids"] = list(lawsuit_ids)
             return {
                 501: {
@@ -74,6 +78,9 @@ def test_build_task_proposals_fetches_responsible_only_for_templates_without_use
                     "email": "folder@example.test",
                 }
             }
+
+        def get_cached_lawsuit_responsibles_batch(self, lawsuit_ids):
+            return self.prefetch_lawsuit_responsibles_cache(lawsuit_ids)
 
     monkeypatch.setattr(
         "app.services.legal_one_client.LegalOneApiClient",

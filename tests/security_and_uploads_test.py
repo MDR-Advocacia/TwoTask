@@ -3,7 +3,9 @@ from app.services.batch_task_creation_service import BatchTaskCreationService
 
 
 def test_protected_routes_require_authentication(client):
-    response = client.get("/api/v1/sectors")
+    # /sectors foi removido em sqd003 (squads agora ficam por escritorio,
+    # nao por setor). Trocamos pelo /squads que tambem e protegido.
+    response = client.get("/api/v1/squads")
 
     assert response.status_code == 401
 

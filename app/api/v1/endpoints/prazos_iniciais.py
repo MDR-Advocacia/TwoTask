@@ -1118,8 +1118,10 @@ def delete_intake_admin(
     current_user: LegalOneUser = Depends(auth_security.get_current_user),
 ):
     """
-    Apaga fisicamente o intake (e tudo em cascata via ondelete=CASCADE:
-    sugestoes, pedidos, legacy_task_queue). Tambem deleta o PDF fisico.
+    Apaga fisicamente o intake. As tabelas filho com FK ondelete=CASCADE
+    (sugestoes, pedidos, legacy_task_queue, ajus_andamento_queue) caem
+    automaticamente; ajus_classificacao_queue eh SET NULL. PDF fisico
+    eh deletado best-effort.
 
     Usado durante testes pra reinjetar o mesmo processo do zero. Vai
     virar arquivamento depois — esse endpoint sera removido / trocado
@@ -1144,13 +1146,134 @@ def delete_intake_admin(
         try:
             from app.services.prazos_iniciais import storage as pdf_storage
             pdf_storage.delete_pdf(pdf_path)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
             # Nao impede o delete do intake. Worker de cleanup pega depois.
-            pass
+            logger.warning(
+                "delete_intake_admin: falha apagando PDF fisico %s (intake_id=%s): %s",
+                pdf_path, intake_id, exc,
+            )
 
-    db.delete(intake)
-    db.commit()
+    # Estrategia: DELETE direto via SQL bulk em vez de db.delete(intake) +
+    # cascade ORM. Motivo: sugestoes tem cascade="all, delete-orphan" sem
+    # passive_deletes, entao o ORM faz N+1 (load + delete cada sugestao
+    # individualmente), o que pode estourar timeout em intakes com muitos
+    # pedidos/sugestoes. Bulk DELETE deixa as FK ondelete=CASCADE do DB
+    # cuidarem da cascata em um unico round-trip.
+    try:
+        from sqlalchemy import delete as sa_delete
+        # Expira intake do session pra nao tentar usar refs ja deletados
+        db.expire(intake)
+        db.execute(
+            sa_delete(PrazoInicialIntake).where(PrazoInicialIntake.id == intake_id)
+        )
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.exception(
+            "delete_intake_admin: falha apagando intake_id=%s: %s",
+            intake_id, exc,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Falha ao deletar intake: {exc}",
+        )
     return None
+
+
+class BulkDeleteIntakesRequest(BaseModel):
+    intake_ids: List[int] = Field(..., min_length=1, max_length=500)
+
+
+class BulkDeleteIntakesResponse(BaseModel):
+    deleted_count: int
+    deleted_ids: List[int]
+    failed_ids: List[int]
+    errors: dict[int, str] = Field(default_factory=dict)
+
+
+@router.post(
+    "/intakes/bulk-delete",
+    response_model=BulkDeleteIntakesResponse,
+    summary="HARD DELETE em lote de N intakes (admin only). Best-effort: continua mesmo se algum falhar.",
+)
+def bulk_delete_intakes_admin(
+    payload: BulkDeleteIntakesRequest,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth_security.get_current_user),
+):
+    """
+    Deleta multiplos intakes em uma chamada. Cada delete eh transacional
+    (commit por intake) pra que falha em um nao derrube o lote inteiro.
+
+    Retorna ids deletados, ids que falharam e o motivo de cada falha.
+    Limite de 500 itens por chamada pra evitar timeout — se precisar
+    deletar mais, faz chunks na UI.
+    """
+    if getattr(current_user, "role", "user") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Apenas administradores podem deletar intakes.",
+        )
+
+    from sqlalchemy import delete as sa_delete
+    from app.services.prazos_iniciais import storage as pdf_storage
+
+    deleted_ids: List[int] = []
+    failed_ids: List[int] = []
+    errors: dict[int, str] = {}
+
+    # Carrega todos os intakes em uma query pra reduzir round-trips
+    intakes_map = {
+        i.id: i
+        for i in db.query(PrazoInicialIntake)
+        .filter(PrazoInicialIntake.id.in_(payload.intake_ids))
+        .all()
+    }
+
+    for intake_id in payload.intake_ids:
+        intake = intakes_map.get(intake_id)
+        if intake is None:
+            failed_ids.append(intake_id)
+            errors[intake_id] = "Intake não encontrado"
+            continue
+
+        # Best-effort PDF cleanup
+        pdf_path = getattr(intake, "pdf_path", None)
+        if pdf_path:
+            try:
+                pdf_storage.delete_pdf(pdf_path)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "bulk_delete_intakes_admin: falha apagando PDF de intake_id=%s: %s",
+                    intake_id, exc,
+                )
+
+        try:
+            db.expire(intake)
+            db.execute(
+                sa_delete(PrazoInicialIntake).where(PrazoInicialIntake.id == intake_id)
+            )
+            db.commit()
+            deleted_ids.append(intake_id)
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            logger.exception(
+                "bulk_delete_intakes_admin: falha em intake_id=%s: %s",
+                intake_id, exc,
+            )
+            failed_ids.append(intake_id)
+            errors[intake_id] = str(exc)[:300]
+
+    logger.info(
+        "bulk_delete_intakes_admin: %d/%d deletados (admin=%s)",
+        len(deleted_ids), len(payload.intake_ids), current_user.email,
+    )
+    return BulkDeleteIntakesResponse(
+        deleted_count=len(deleted_ids),
+        deleted_ids=deleted_ids,
+        failed_ids=failed_ids,
+        errors=errors,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -2397,7 +2520,11 @@ import io  # noqa: E402
 
 
 @router.get(
-    "/intakes/export.xlsx",
+    # Path com hifen (NAO /intakes/export.xlsx) pra nao colidir com
+    # /intakes/{intake_id} — o segundo faria FastAPI tentar parsear
+    # "export.xlsx" como int do path param e devolver 422. Frontend
+    # (api.ts:exportPrazosIniciaisXlsx) ja usa esse path.
+    "/intakes-export.xlsx",
     summary=(
         "Exporta intakes (com agregados, sugestões e pedidos) em XLSX. "
         "3 abas: Resumo, Sugestões, Pedidos. Útil pra relatório contábil "
