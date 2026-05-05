@@ -1,7 +1,11 @@
 """
-Extractor pra PDFs exportados do PJe (TJBA — 1g e 2g compartilham
-template). Estrutura típica:
+Extractor pra PDFs exportados do PJe (Processo Judicial Eletrônico).
 
+Template é o mesmo em qualquer tribunal que use PJe (TJBA, TJRJ, TJES,
+TJDFT, TRTs, TRFs do PJe…). A detecção é feita pela string-marca
+`PJe - Processo Judicial Eletrônico` no template padrão.
+
+Estrutura típica:
     Página 1 (template fixo):
         DD/MM/AAAA
         Número: NNNNNNN-DD.AAAA.J.TR.OOOO
@@ -12,12 +16,10 @@ template). Estrutura típica:
         Assuntos: <multilinha>
         Segredo de justiça? NÃO
         Justiça gratuita? SIM
-        Pedido de liminar ou antecipação de tutela? SIM
         TJBA
         PJe - Processo Judicial Eletrônico
         Partes Advogados
         NOME (AUTOR)
-        ADVOGADO (ADVOGADO)
         ...
 
     Páginas seguintes:
@@ -36,6 +38,7 @@ from app.services.prazos_iniciais.pdf_extractor.cleaner import clean_document_te
 from app.services.prazos_iniciais.pdf_extractor.extractors.base import (
     BaseExtractor,
 )
+from app.services.prazos_iniciais.pdf_extractor.tribunais import tribunal_from_cnj
 
 logger = logging.getLogger(__name__)
 
@@ -48,31 +51,13 @@ _RE_DISTRIB = re.compile(r"Última\s+distribuição\s*:\s*(\d{2}/\d{2}/\d{4})", 
 _RE_VALOR = re.compile(r"Valor\s+da\s+causa:\s*R\$\s*([\d.,]+)", re.MULTILINE)
 _RE_SEGREDO = re.compile(r"Segredo\s+de\s+justiça\?\s*(SIM|NÃO)", re.IGNORECASE)
 _RE_GRATUITA = re.compile(r"Justiça\s+gratuita\?\s*(SIM|NÃO)", re.IGNORECASE)
-# Bloco multilinhas de assuntos: começa em "Assuntos:" e termina antes
-# de "Segredo de justiça?" (campo seguinte do template).
 _RE_ASSUNTOS_BLOCO = re.compile(
     r"Assuntos:\s*(.+?)(?=Segredo\s+de\s+justiça\?)",
     re.IGNORECASE | re.DOTALL,
 )
 
-# ─── Mapa J.TR → tribunal (Justiça Estadual — J=8) ──────────────────
-# CNJ sem máscara: NNNNNNNDDAAAAJTROOOO (20 dígitos). J em posição 13;
-# TR em 14-15. Ver Resolução CNJ 65/2008.
-
-_TRIBUNAIS_ESTADUAIS = {
-    "01": "TJAC", "02": "TJAL", "03": "TJAP", "04": "TJAM",
-    "05": "TJBA", "06": "TJCE", "07": "TJDFT", "08": "TJES",
-    "09": "TJGO", "10": "TJMA", "11": "TJMT", "12": "TJMS",
-    "13": "TJMG", "14": "TJPA", "15": "TJPB", "16": "TJPR",
-    "17": "TJPE", "18": "TJPI", "19": "TJRJ", "20": "TJRN",
-    "21": "TJRS", "22": "TJRO", "23": "TJRR", "24": "TJSC",
-    "25": "TJSE", "26": "TJSP", "27": "TJTO",
-}
-
 
 # ─── Regex de partes/advogados ─────────────────────────────────────
-# Papéis ativos / passivos / agente neutros. Usa lista pra UI ler.
-
 _PAPEIS_POLO_ATIVO = {
     "AUTOR", "AGRAVANTE", "REQUERENTE", "EXEQUENTE",
     "IMPETRANTE", "EMBARGANTE", "RECORRENTE", "APELANTE",
@@ -87,8 +72,6 @@ _PAPEIS_TODOS = (
     _PAPEIS_POLO_ATIVO | _PAPEIS_POLO_PASSIVO | _PAPEIS_AUX
 )
 
-# Match isolado de "(PAPEL)" dentro de uma linha. O nome é resolvido
-# pelo contexto (mesma linha antes do "(", ou linha anterior).
 _RE_PAPEL_INLINE = re.compile(
     r"\(\s*(" + "|".join(re.escape(p) for p in _PAPEIS_TODOS) + r")\s*\)",
     re.IGNORECASE,
@@ -96,9 +79,6 @@ _RE_PAPEL_INLINE = re.compile(
 
 
 # ─── Regex pra timeline (separadores) ──────────────────────────────
-# Cada documento começa com "Num. NNNN - Pág. 1". Os blocos seguintes
-# da mesma assinatura (Pág. 2, 3, ...) pertencem ao mesmo doc.
-
 _RE_DOC_INICIO = re.compile(
     r"Num\.\s*(\d+)\s*-\s*P[áa]g\.\s*1\b",
     re.IGNORECASE,
@@ -110,27 +90,22 @@ _RE_ASSINATURA_BLOCO = re.compile(
 )
 
 
-class PjeTjbaExtractor(BaseExtractor):
-    name = "pje_tjba_v1"
+class PjeExtractor(BaseExtractor):
+    name = "pje_v1"
 
     def extract(self, pages: List[str]):
         from app.services.prazos_iniciais.pdf_extractor import ExtractionResult
 
         full_text = "\n".join(pages)
 
-        # CNJ → tribunal
         cnj = _extract_cnj(full_text)
-        tribunal = _tribunal_from_cnj(cnj) if cnj else None
+        tribunal = tribunal_from_cnj(cnj) if cnj else None
 
-        # Capa (apenas página 1 — onde o template aparece intacto).
         capa_text = pages[0] if pages else ""
         capa = _extract_capa(capa_text, tribunal=tribunal)
 
-        # Timeline — segmenta sobre o texto completo (sem clean-up de
-        # marcadores ainda, porque _RE_DOC_INICIO depende deles).
         timeline = _extract_timeline(full_text)
 
-        # Heurística de confiança.
         capa_filled = sum(
             1
             for v in (
@@ -171,19 +146,6 @@ def _extract_cnj(text: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
-def _tribunal_from_cnj(cnj: str) -> Optional[str]:
-    digits = "".join(c for c in cnj if c.isdigit())
-    if len(digits) < 16:
-        return None
-    j = digits[13]
-    tr = digits[14:16]
-    if j == "8":
-        return _TRIBUNAIS_ESTADUAIS.get(tr)
-    # Outros segmentos (federal, trabalho, eleitoral, militar) ainda
-    # não mapeados. Volta None — capa fica null e motor decide.
-    return None
-
-
 def _parse_data_brasileira(s: str) -> Optional[date]:
     """DD/MM/AAAA → date."""
     try:
@@ -205,10 +167,6 @@ def _parse_valor_brasileiro(s: str) -> Optional[float]:
 
 
 def _extract_capa(capa_text: str, *, tribunal: Optional[str]) -> dict:
-    """
-    Lê os campos óbvios do template PJe da primeira página. Campos
-    que não baterem ficam null (motor de classificação preenche).
-    """
     capa: dict = {}
 
     if tribunal:
@@ -237,8 +195,6 @@ def _extract_capa(capa_text: str, *, tribunal: Optional[str]) -> dict:
     m = _RE_ASSUNTOS_BLOCO.search(capa_text)
     if m:
         bloco = m.group(1).strip()
-        # Coalesce quebras dentro do bloco (assuntos vêm separados por
-        # vírgula ou nova linha — ambos válidos).
         capa["assunto"] = "\n".join(
             ln.strip() for ln in bloco.splitlines() if ln.strip()
         )
@@ -260,25 +216,15 @@ def _extract_capa(capa_text: str, *, tribunal: Optional[str]) -> dict:
 
 
 def _normalize_inline(s: str) -> str:
-    """Colapsa whitespace de uma string mantida em uma linha."""
     return " ".join(s.split())
 
 
 def _extract_partes(capa_text: str) -> tuple[list[dict], list[dict]]:
-    """
-    Lê o bloco de partes/advogados linha a linha. Cada linha pode ter:
-      - Nome + papel na mesma linha:  "BANCO X (REU)"
-      - Apenas papel:                  "(AUTOR)"   → nome vem da linha
-                                                     anterior
-    ADVOGADO anexa à última parte registrada.
-    """
     polo_ativo: list[dict] = []
     polo_passivo: list[dict] = []
     last_parte: Optional[dict] = None
     seen_keys: set[tuple[str, str]] = set()
 
-    # Ignora ruído: linhas com palavras-chave de outras seções do
-    # template não devem ser candidatas a "nome".
     _NOISE = {
         "PARTES", "ADVOGADOS", "DOCUMENTOS", "TJBA",
         "PJE - PROCESSO JUDICIAL ELETRÔNICO",
@@ -297,9 +243,6 @@ def _extract_partes(capa_text: str) -> tuple[list[dict], list[dict]]:
         if before_paren:
             nome_raw = before_paren
         else:
-            # Pega o nome da última linha não-vazia anterior que não
-            # seja uma linha-papel também (caso (PAPEL) na linha de
-            # cima do nome — não deveria acontecer no PJe, mas seguro).
             nome_raw = ""
             for j in range(i - 1, max(-1, i - 5), -1):
                 candidato = lines[j].strip()
@@ -357,11 +300,6 @@ def _extract_partes(capa_text: str) -> tuple[list[dict], list[dict]]:
 
 
 def _extract_timeline(full_text: str) -> list[dict]:
-    """
-    Segmenta o texto pelo marcador `Num. NNNN - Pág. 1`. Para cada
-    documento, extrai metadados (id, data assinatura) e devolve o
-    texto limpo.
-    """
     matches = list(_RE_DOC_INICIO.finditer(full_text))
     if not matches:
         return []
@@ -374,9 +312,6 @@ def _extract_timeline(full_text: str) -> list[dict]:
         end = matches[i + 1].start() if i + 1 < len(matches) else len(full_text)
         bloco = full_text[start:end]
 
-        # Data de assinatura — prioriza a primeira ocorrência dentro do
-        # bloco (que é a do próprio documento; assinaturas posteriores
-        # podem aparecer em anexos colados no fim).
         sig_match = _RE_ASSINATURA_BLOCO.search(bloco)
         protocol_date_iso: Optional[str] = None
         if sig_match:
@@ -386,7 +321,6 @@ def _extract_timeline(full_text: str) -> list[dict]:
 
         cleaned = clean_document_text(bloco)
 
-        # Label: primeira linha não-vazia do texto limpo (até 120 chars).
         label = _derive_label(cleaned, document_id)
 
         timeline.append({
@@ -402,7 +336,6 @@ def _extract_timeline(full_text: str) -> list[dict]:
 
 
 def _derive_label(text: str, document_id: str) -> str:
-    """Pega a primeira linha 'limpa' do documento como rótulo."""
     if not text:
         return f"Documento {document_id}"
     for line in text.splitlines():
