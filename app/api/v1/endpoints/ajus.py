@@ -54,6 +54,10 @@ from app.services.ajus.classificacao_service import (
     AjusClassificacaoService,
     XlsxRow,
 )
+from app.services.ajus.legal_one_export import (
+    convert_legal_one_export_to_xlsx_rows,
+    is_legal_one_export,
+)
 from app.services.ajus.queue_service import (
     MAX_ITENS_POR_REQUEST,
     AjusQueueService,
@@ -712,46 +716,59 @@ async def upload_classif_xlsx(
     if ws is None:
         raise HTTPException(status_code=400, detail="Nenhuma aba de dados.")
 
-    header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
-    header_norm = [
-        (str(h).strip().lower() if h is not None else "")
-        for h in header_row
-    ]
-    expected = [h.lower() for h in XLSX_HEADERS]
-    if len(header_norm) < len(expected) or header_norm[: len(expected)] != expected:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "Cabeçalhos não batem com o template. Esperado: "
-                + " | ".join(XLSX_HEADERS)
-            ),
-        )
+    rows: list[XlsxRow]
+    if is_legal_one_export(ws):
+        # "Listagem de Acoes Judiciais" do Legal One: convertemos na
+        # hora aplicando os defaults do playbook do MDR:
+        #   - Materia = "Consumidor"
+        #   - Risco = "Remoto"
+        #   - Justica/Honorario derivado de "Tipo de Acao"
+        #     ("Juizado Especial Civel" se conter "Juizado", senao
+        #     "Justica Comum")
+        #   - UF vazia -> inferida do segmento TR do CNJ (Estadual)
+        #   - Comarca vazia / "Nao Informada" -> capital da UF
+        rows = convert_legal_one_export_to_xlsx_rows(ws)
+    else:
+        header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
+        header_norm = [
+            (str(h).strip().lower() if h is not None else "")
+            for h in header_row
+        ]
+        expected = [h.lower() for h in XLSX_HEADERS]
+        if len(header_norm) < len(expected) or header_norm[: len(expected)] != expected:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Cabeçalhos não batem com o template. Esperado: "
+                    + " | ".join(XLSX_HEADERS)
+                ),
+            )
 
-    rows: list[XlsxRow] = []
-    for raw in ws.iter_rows(min_row=2, values_only=True):
-        if raw is None:
-            continue
-        if all((v is None or str(v).strip() == "") for v in raw):
-            continue
-        padded = list(raw) + [None] * (len(expected) - len(raw))
-        rows.append(
-            XlsxRow(
-                cnj_number=str(padded[0] or "").strip(),
-                uf=(str(padded[1]).strip() if padded[1] is not None else None),
-                comarca=(
-                    str(padded[2]).strip() if padded[2] is not None else None
+        rows = []
+        for raw in ws.iter_rows(min_row=2, values_only=True):
+            if raw is None:
+                continue
+            if all((v is None or str(v).strip() == "") for v in raw):
+                continue
+            padded = list(raw) + [None] * (len(expected) - len(raw))
+            rows.append(
+                XlsxRow(
+                    cnj_number=str(padded[0] or "").strip(),
+                    uf=(str(padded[1]).strip() if padded[1] is not None else None),
+                    comarca=(
+                        str(padded[2]).strip() if padded[2] is not None else None
+                    ),
+                    matter=(
+                        str(padded[3]).strip() if padded[3] is not None else None
+                    ),
+                    justice_fee=(
+                        str(padded[4]).strip() if padded[4] is not None else None
+                    ),
+                    risk_loss_probability=(
+                        str(padded[5]).strip() if padded[5] is not None else None
+                    ),
                 ),
-                matter=(
-                    str(padded[3]).strip() if padded[3] is not None else None
-                ),
-                justice_fee=(
-                    str(padded[4]).strip() if padded[4] is not None else None
-                ),
-                risk_loss_probability=(
-                    str(padded[5]).strip() if padded[5] is not None else None
-                ),
-            ),
-        )
+            )
 
     if not rows:
         raise HTTPException(status_code=400, detail="Sem linhas de dados.")
