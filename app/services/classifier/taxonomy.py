@@ -1,16 +1,86 @@
 """
 Árvore de classificações de publicações judiciais.
 
-Estrutura: dict[str, list[str]]
-  - chave: categoria principal
-  - valor: lista de subcategorias (lista vazia = sem subcategorias)
+Migration tax001 (2026-05-04) moveu a árvore pra DB. Esta constante
+hardcoded vira **fallback** caso o DB esteja vazio (boot inicial pre-seed,
+ou erro de carregamento). Em produção normal a árvore vem do DB com cache
+TTL=60s — `_get_active_tree()` resolve.
 
-A categoria especial "Para análise" é usada como fallback quando o texto
-não fornece informação suficiente para uma classificação assertiva.
+Pra editar a taxonomia em prod: use a UI Admin (tab Taxonomia) que
+opera via classification_categories/classification_subcategories.
 """
 
+import logging
 import re
+import threading
+import time
 import unicodedata
+
+logger = logging.getLogger(__name__)
+
+_CACHE_TTL_SECONDS = 60.0
+_TREE_CACHE: dict[str, list[str]] | None = None
+_TREE_CACHE_AT: float = 0.0
+_TREE_CACHE_LOCK = threading.Lock()
+
+
+def invalidate_taxonomy_cache() -> None:
+    """Força o próximo `_get_active_tree` a recarregar do DB. Usado pelo
+    endpoint de mutação (criar/editar/inativar categoria) pra que a
+    mudança apareça imediatamente em vez de esperar o TTL."""
+    global _TREE_CACHE, _TREE_CACHE_AT
+    with _TREE_CACHE_LOCK:
+        _TREE_CACHE = None
+        _TREE_CACHE_AT = 0.0
+
+
+def _load_tree_from_db() -> dict[str, list[str]] | None:
+    """Lê classification_categories/subcategories e monta o dict legacy.
+    Retorna None se DB vazio ou erro (caller faz fallback)."""
+    try:
+        from app.db.session import SessionLocal
+        from app.models.classification_taxonomy import (
+            ClassificationCategory, ClassificationSubcategory,
+        )
+        with SessionLocal() as db:
+            cats = (
+                db.query(ClassificationCategory)
+                .filter(ClassificationCategory.is_active.is_(True))
+                .order_by(ClassificationCategory.display_order, ClassificationCategory.name)
+                .all()
+            )
+            if not cats:
+                return None
+            tree: dict[str, list[str]] = {}
+            for c in cats:
+                subs = [
+                    s.name for s in c.subcategories
+                    if s.is_active
+                ]
+                tree[c.name] = subs
+            return tree
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Taxonomy: falha lendo DB, caindo em fallback hardcoded: %s", exc)
+        return None
+
+
+def _get_active_tree() -> dict[str, list[str]]:
+    """Retorna a árvore vigente. Tenta cache → DB → fallback hardcoded."""
+    global _TREE_CACHE, _TREE_CACHE_AT
+    now = time.monotonic()
+    if _TREE_CACHE is not None and (now - _TREE_CACHE_AT) < _CACHE_TTL_SECONDS:
+        return _TREE_CACHE
+    with _TREE_CACHE_LOCK:
+        # Double-check após pegar lock
+        if _TREE_CACHE is not None and (now - _TREE_CACHE_AT) < _CACHE_TTL_SECONDS:
+            return _TREE_CACHE
+        from_db = _load_tree_from_db()
+        if from_db is not None:
+            _TREE_CACHE = from_db
+        else:
+            _TREE_CACHE = {k: list(v) for k, v in CLASSIFICATION_TREE.items()}
+        _TREE_CACHE_AT = now
+        return _TREE_CACHE
 
 
 CLASSIFICATION_TREE: dict[str, list[str]] = {
@@ -108,7 +178,7 @@ def _normalize_label(value: str | None) -> str:
 
 def _find_category_by_normalized(label: str) -> str | None:
     norm = _normalize_label(label)
-    for category in CLASSIFICATION_TREE:
+    for category in _get_active_tree():
         if _normalize_label(category) == norm:
             return category
     return None
@@ -116,7 +186,7 @@ def _find_category_by_normalized(label: str) -> str | None:
 
 def _find_subcategory_by_normalized(category: str, label: str) -> str | None:
     norm = _normalize_label(label)
-    for subcategory in CLASSIFICATION_TREE.get(category, []):
+    for subcategory in _get_active_tree().get(category, []):
         if _normalize_label(subcategory) == norm:
             return subcategory
     return None
@@ -150,8 +220,8 @@ def build_taxonomy_text(
         custom_additions: lista de dicts com "category" e opcionalmente "subcategory"
                           para adicionar à taxonomia.
     """
-    # Cópia da árvore base
-    tree = {k: list(v) for k, v in CLASSIFICATION_TREE.items()}
+    # Cópia da árvore base (do DB com cache, ou fallback hardcoded)
+    tree = {k: list(v) for k, v in _get_active_tree().items()}
 
     # Aplica exclusões
     if excluded:
@@ -190,11 +260,11 @@ def build_taxonomy_text(
 
 
 def get_all_valid_categories() -> set[str]:
-    return set(CLASSIFICATION_TREE.keys())
+    return set(_get_active_tree().keys())
 
 
 def get_valid_subcategories(category: str) -> set[str]:
-    subs = CLASSIFICATION_TREE.get(category, [])
+    subs = _get_active_tree().get(category, [])
     return set(subs) if subs else {"-"}
 
 
@@ -211,6 +281,7 @@ def repair_classification(category: str, subcategory: str) -> tuple[str, str]:
     """
     cat = (category or "").strip()
     sub = (subcategory or "").strip()
+    tree = _get_active_tree()
 
     pair_alias = _PAIR_ALIASES.get((_normalize_label(cat), _normalize_label(sub)))
     if pair_alias:
@@ -223,58 +294,45 @@ def repair_classification(category: str, subcategory: str) -> tuple[str, str]:
     else:
         cat = _find_category_by_normalized(cat) or cat
 
-    if cat in CLASSIFICATION_TREE:
-        if not CLASSIFICATION_TREE[cat]:
+    if cat in tree:
+        if not tree[cat]:
             return cat, "-"
         sub = _find_subcategory_by_normalized(cat, sub) or sub
 
-    # Já válido? retorna como está.
-    if cat in CLASSIFICATION_TREE:
-        subs = CLASSIFICATION_TREE[cat]
+    if cat in tree:
+        subs = tree[cat]
         if (not subs and sub in ("-", "")) or (subs and sub in subs):
             return cat, sub
 
-    # Caso 1: cat é na verdade uma subcategoria conhecida
-    # Procura qual categoria-pai tem essa subcategoria
-    for parent, subs in CLASSIFICATION_TREE.items():
+    for parent, subs in tree.items():
         if cat in subs:
-            # Se sub veio igual a cat ou vazio, usa cat como subcategoria do parent
             return parent, cat
 
-    # Caso 2: sub é uma categoria-pai válida (inversão total)
-    if sub in CLASSIFICATION_TREE and cat not in CLASSIFICATION_TREE:
-        # cat pode ser subcategoria de sub
-        if cat in CLASSIFICATION_TREE[sub]:
+    if sub in tree and cat not in tree:
+        if cat in tree[sub]:
             return sub, cat
 
-    # Caso 3: categoria existe mas subcategoria pertence a outra categoria
-    # Ex: cat="2° Grau - Cível", sub="Sentença Embargos de Declaração" → deveria ser Sentença
-    # Ex: cat="Sentença", sub="Sentença Execução | Obrigação Satisfeita" → deveria ser Execução
-    if cat in CLASSIFICATION_TREE and sub:
-        for parent, subs in CLASSIFICATION_TREE.items():
+    if cat in tree and sub:
+        for parent, subs in tree.items():
             if sub in subs:
                 return parent, sub
 
-    # Caso 4: categoria com subcategorias obrigatórias mas sub veio "-" ou genérica
-    # Ex: cat="1° Grau - Cível / Execução", sub="-" → usa fallback "Execução - Para Análise"
-    # Ex: cat="1° Grau - Cível / Execução", sub="Para Análise" → idem
-    if cat in CLASSIFICATION_TREE:
-        subs = CLASSIFICATION_TREE[cat]
+    if cat in tree:
+        subs = tree[cat]
         if subs and sub in ("-", "", "Para Análise", "Para análise"):
-            # Procura subcategoria fallback (contém "Para Análise" ou "Não definid")
             for s in subs:
                 if "Para Análise" in s or "Não definid" in s or "Não especificad" in s:
                     return cat, s
-            # Sem fallback: usa a última subcategoria (geralmente é a genérica)
             return cat, subs[-1]
 
     return cat, sub
 
 
 def validate_classification(category: str, subcategory: str) -> bool:
-    if category not in CLASSIFICATION_TREE:
+    tree = _get_active_tree()
+    if category not in tree:
         return False
-    subs = CLASSIFICATION_TREE[category]
+    subs = tree[category]
     if not subs:
         return subcategory in ("-", "")
     return subcategory in subs

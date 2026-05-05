@@ -22,6 +22,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import UserSelector from "@/components/ui/UserSelector";
 import { apiFetch } from "@/lib/api-client";
 import { Trash2, Crown, Star } from "lucide-react";
+import TaxonomiaAdminTab from "@/components/TaxonomiaAdminTab";
 
 // --- Tipos de Dados ---
 interface Sector { id: number; name: string; }
@@ -1169,6 +1170,7 @@ const AdminPage = () => {
                     <TabsTrigger value="sync">Sincronização</TabsTrigger>
                     <TabsTrigger value="tasks">Tipos de Tarefa</TabsTrigger>
                     <TabsTrigger value="squads">Squads</TabsTrigger>
+                    <TabsTrigger value="taxonomy">Taxonomia</TabsTrigger>
                     <TabsTrigger value="users">Usuários & Permissões</TabsTrigger>
                 </TabsList>
                 <TabsContent value="sync" className="space-y-6">
@@ -1179,6 +1181,9 @@ const AdminPage = () => {
                 </TabsContent>
                 <TabsContent value="squads" className="space-y-6">
                     <SquadsManager />
+                </TabsContent>
+                <TabsContent value="taxonomy" className="space-y-6">
+                    <TaxonomiaAdminTab />
                 </TabsContent>
                 <TabsContent value="users" className="space-y-6">
                     <UsersAndPermissions />
