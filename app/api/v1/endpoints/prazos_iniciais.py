@@ -2532,10 +2532,19 @@ import io  # noqa: E402
     ),
 )
 def export_intakes_xlsx(
-    status: Optional[str] = Query(default=None, description="Filtra por status (ex.: CONCLUIDO)"),
-    office_id: Optional[int] = Query(default=None, description="Filtra por office_id"),
+    status: Optional[str] = Query(
+        default=None,
+        description=(
+            "Filtra por status. Aceita CSV (ex.: 'RECEBIDO,EM_REVISAO') — "
+            "mesmo formato do filtro do GET /intakes."
+        ),
+    ),
+    office_id: Optional[str] = Query(
+        default=None,
+        description="Filtra por office_id. Aceita CSV (ex.: '61,62').",
+    ),
     date_from: Optional[str] = Query(default=None, description="ISO YYYY-MM-DD, filtra received_at >="),
-    date_to: Optional[str] = Query(default=None, description="ISO YYYY-MM-DD, filtra received_at <"),
+    date_to: Optional[str] = Query(default=None, description="ISO YYYY-MM-DD, filtra received_at <="),
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
@@ -2549,16 +2558,40 @@ def export_intakes_xlsx(
     from datetime import datetime
 
     q = db.query(PrazoInicialIntake)
-    if status:
-        q = q.filter(PrazoInicialIntake.status == status)
-    if office_id:
-        q = q.filter(PrazoInicialIntake.office_id == office_id)
+
+    # status: CSV → IN(...). Antes era `status == raw_csv` o que NUNCA
+    # casava quando o frontend mandava o filtro padrao multivalor (ex.:
+    # "RECEBIDO,EM_REVISAO,...") e a planilha saia vazia.
+    status_list = _parse_csv_strs(status)
+    if status_list:
+        if len(status_list) == 1:
+            q = q.filter(PrazoInicialIntake.status == status_list[0])
+        else:
+            q = q.filter(PrazoInicialIntake.status.in_(status_list))
+
+    # office_id: idem CSV. Pega ints de uma string "61,62" ou apenas "61".
+    office_ids = _parse_csv_ints(office_id)
+    if office_ids:
+        if len(office_ids) == 1:
+            q = q.filter(PrazoInicialIntake.office_id == office_ids[0])
+        else:
+            q = q.filter(PrazoInicialIntake.office_id.in_(office_ids))
+
     if date_from:
         q = q.filter(PrazoInicialIntake.received_at >= date_from)
     if date_to:
-        q = q.filter(PrazoInicialIntake.received_at < date_to + "T99")
+        # Inclusivo no dia final — bate com o GET /intakes (era hack
+        # `date_to + "T99"` que viraba string ISO invalida em alguns
+        # drivers).
+        q = q.filter(
+            PrazoInicialIntake.received_at <= f"{date_to}T23:59:59.999999+00:00"
+        )
 
     intakes = q.order_by(PrazoInicialIntake.received_at.desc()).all()
+    logger.info(
+        "export_intakes_xlsx: %d intakes (status=%s, office_id=%s, date_from=%s, date_to=%s)",
+        len(intakes), status_list or None, office_ids or None, date_from, date_to,
+    )
 
     # Pré-carrega path dos escritórios pra mostrar a hierarquia completa
     # (mesmo padrão das outras telas — o `name` é só a folha).

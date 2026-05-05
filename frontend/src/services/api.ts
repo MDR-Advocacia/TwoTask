@@ -821,9 +821,15 @@ export async function reanalyzePrazoInicial(intakeId: number): Promise<{
 }
 
 // ─── Export XLSX (Bloco F) ───────────────────────────────────────────
+//
+// `status` e `office_id` aceitam CSV (mesmo formato do GET /intakes)
+// pra que o operador possa exportar exatamente os filtros que ja estao
+// na tela — incluindo o filtro padrao multi-status (RECEBIDO,
+// PROCESSO_NAO_ENCONTRADO, EM_REVISAO, ...) que vinha vazio antes do
+// fix do backend (que tratava o CSV inteiro como um status literal).
 export async function exportPrazosIniciaisXlsx(filters: {
   status?: string;
-  office_id?: number;
+  office_id?: string | number;
   date_from?: string;
   date_to?: string;
 } = {}): Promise<Blob> {
