@@ -281,6 +281,15 @@ class PrazoInicialIntake(Base):
         back_populates="intakes",
         foreign_keys=[classification_batch_id],
     )
+    # Patrocínio (pin018) — 1:1 opcional. Só existe quando o polo passivo
+    # bate com vinculadas Master. Não interfere em sugestoes/tasks.
+    patrocinio = relationship(
+        "PrazoInicialPatrocinio",
+        back_populates="intake",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class PrazoInicialSugestao(Base):

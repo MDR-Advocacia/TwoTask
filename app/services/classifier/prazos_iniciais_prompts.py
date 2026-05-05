@@ -187,6 +187,64 @@ Extraia TODOS os pedidos da PI. Um pedido = uma pretensão.
 
 (1) Probabilidade GLOBAL de êxito do RÉU (regra do menos favorável: 1 pedido provável de condenação → intake inteiro é "remota" de êxito) + tese principal. (2) Aprovisionamento total + se há pedidos `possivel` exigindo nota explicativa.
 
+# BLOCO `patrocinio` (raiz, análise PARALELA — não interfere em prazos/tasks)
+
+Esta análise é **EXCLUSIVA** para processos onde o BANCO MASTER (ou empresa vinculada) figura no POLO PASSIVO. Determina QUEM patrocina o caso (MDR Advocacia, outro escritório, ou condução interna do cliente). Não interfere em sugestões de prazo nem em tasks — é registro paralelo pra fila de devolução.
+
+## Quando aplica
+
+A user message lista os **CNPJs das vinculadas Master**. Se NENHUM aparecer no `polo_passivo` (capa) NEM citado como réu/demandado na PI → `patrocinio.aplicavel=false` e demais campos null. Termine aqui.
+
+Se algum CNPJ vinculada aparecer:
+1. **Confirme contra a PI** que o sujeito passivo é mesmo aquela entidade. Capa do PJe pode ter cadastro errado. Se a PI deixar claro que o réu é OUTRO (ex: capa diz "Banco Master S/A" mas a PI ataca "Itaú S/A"), marque `polo_passivo_confirmado=false` + observação. Decisão: prossiga MAS reduza confiança.
+2. Se confirmado, prossiga pra `decisao` + `suspeita_devolucao` + `natureza_acao`.
+
+## `natureza_acao` — sempre preencher quando aplicavel=true
+
+Lê pela CLASSE + CAUSA DE PEDIR da PI:
+- `CONSUMERISTA` — relação de consumo (CDC), descontos consignado, cartão, dano moral por SPC, revisão contratual bancária. **É o escopo padrão MDR/Master.**
+- `CIVIL_PUBLICA` — Ação Civil Pública, MP autor, defesa de direitos coletivos.
+- `INQUERITO_ADMINISTRATIVO` — IP, processo administrativo (BACEN, CVM, autarquias), CIP.
+- `TRABALHISTA` — Justiça do Trabalho, vínculo CLT.
+- `OUTRO` — qualquer coisa fora de consumo (penal, eleitoral, falência, recuperação judicial sem viés consumerista).
+
+## `decisao` — regra principal
+
+Identifique TODOS os advogados habilitados pela vinculada Master no polo passivo (do bloco `Partes Advogados` da capa, e cite-se/contestações na PI). Pra cada um, anote nome + OAB + DATA DE HABILITAÇÃO (data da petição de habilitação ou da primeira manifestação).
+
+**Data de corte: 18/03/2026** (início do contrato MDR/Master — hardcoded).
+
+| Cenário | decisão | suspeita_devolucao | observação |
+|---|---|---|---|
+| Nenhum advogado habilitado pela Master | `MDR_ADVOCACIA` | false | caso típico nosso |
+| Advogado habilitado em data ≤ 18/03/2026 | `OUTRO_ESCRITORIO` | **true** | preencher nome/OAB/data; é deles, devolver |
+| Advogado habilitado > 18/03/2026 + JÁ contestou | `MDR_ADVOCACIA` | **true** | preencher dados do outro advogado, motivo: "outro advogado X contestou em DD/MM" |
+| Advogado habilitado > 18/03/2026, sem contestação | `MDR_ADVOCACIA` | false | caso normal, MDR pegando |
+
+**Sobreposição com natureza não-consumerista**: se `natureza_acao != CONSUMERISTA`, **decisao=CONDUCAO_INTERNA** + `suspeita_devolucao=true` + motivo citando a natureza. Independe da regra de advogados (cliente vai conduzir internamente).
+
+## Campos de identificação do outro advogado
+
+Quando `decisao=OUTRO_ESCRITORIO` ou `suspeita_devolucao=true` por contestação tardia:
+- `outro_advogado_nome` (texto, do bloco Partes/Advogados ou da assinatura da contestação)
+- `outro_advogado_oab` (formato típico OAB/UF NNNNN — ex: "OAB/SP 123.456")
+- `outro_advogado_data_habilitacao` (YYYY-MM-DD, da petição de habilitação OU da contestação se não houver petição prévia)
+- `outro_escritorio_nome` (texto livre — quando a assinatura traz "Pinheiro Neto Advogados", "Mattos Filho", etc.; null se não identificável)
+
+## `motivo_suspeita`
+
+Obrigatório quando `suspeita_devolucao=true`. Cite a evidência concreta em 1-2 frases: data da habilitação, nome do advogado, ou natureza fora de consumerista.
+
+## `fundamentacao`
+
+Sempre preencher quando `aplicavel=true`. Texto curto (3-5 frases) explicando o raciocínio: "CNPJ X.XXX.XXX/XXXX-XX casa com vinculada Banco Master Múltiplo. Polo passivo confirmado pela PI. Advogado Y habilitado em DD/MM/AAAA. Natureza CONSUMERISTA (CDC, descontos consignado). Decisão: ..."
+
+## `confianca`
+
+- `alta`: CNPJ casa, advogado e datas claros, natureza inequívoca
+- `media`: alguma ambiguidade (advogado sem data clara, natureza limítrofe)
+- `baixa`: cadastro divergente PI/capa, dados incompletos
+
 # RESPOSTA — schema
 
 ```json
@@ -206,6 +264,7 @@ Extraia TODOS os pedidos da PI. Um pedido = uma pretensão.
   "agravo": null,
   "pedidos": [],
   "analise_estrategica": null,
+  "patrocinio": {"aplicavel": false, "decisao": null, "outro_escritorio_nome": null, "outro_advogado_nome": null, "outro_advogado_oab": null, "outro_advogado_data_habilitacao": null, "suspeita_devolucao": false, "motivo_suspeita": null, "natureza_acao": null, "polo_passivo_confirmado": true, "polo_passivo_observacao": null, "confianca": null, "fundamentacao": null},
   "confianca_geral": "alta",
   "observacoes": null
 }
@@ -360,6 +419,7 @@ def build_user_message(
     capa_json: Any,
     integra_json: Any,
     tipos_pedido_disponiveis: Optional[list] = None,
+    master_vinculadas: Optional[list] = None,
 ) -> str:
     """
     Monta a mensagem do usuário enviada ao modelo.
@@ -421,6 +481,24 @@ def build_user_message(
             f"{tipos_txt}\n\n"
         )
 
+    vinculadas_section = ""
+    if master_vinculadas:
+        linhas_v = []
+        for v in master_vinculadas:
+            cnpj = v.get("cnpj", "") if isinstance(v, dict) else ""
+            nome = v.get("nome", "") if isinstance(v, dict) else ""
+            estado = v.get("estado") if isinstance(v, dict) else None
+            estado_txt = f" — {estado}" if estado else ""
+            linhas_v.append(f"- `{cnpj}` · {nome}{estado_txt}")
+        vinculadas_txt = "\n".join(linhas_v)
+        vinculadas_section = (
+            "\n## VINCULADAS BANCO MASTER (gatilho da análise de patrocínio)\n"
+            "Se ALGUM destes CNPJs aparecer no polo passivo, preencha o "
+            "bloco `patrocinio` conforme regras do system prompt. Caso "
+            "contrário, `patrocinio.aplicavel=false`.\n\n"
+            f"{vinculadas_txt}\n\n"
+        )
+
     return (
         f"Processo CNJ: {cnj_number}\n\n"
         "## CAPA DO PROCESSO\n"
@@ -429,6 +507,7 @@ def build_user_message(
         "Movimentações e documentos do processo, em ordem cronológica:\n"
         f"```json\n{integra_text}\n```\n"
         f"{tipos_section}"
+        f"{vinculadas_section}"
         "Responda EXCLUSIVAMENTE com o JSON conforme o schema descrito no "
         "system prompt — sem texto adicional, sem markdown."
     )
