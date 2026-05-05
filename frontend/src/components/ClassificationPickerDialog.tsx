@@ -154,8 +154,16 @@ export function ClassificationPickerDialog({
    *  - "all"   → todas as subs disponíveis (não-existentes) marcadas
    *  - "some"  → algumas marcadas (renderiza indeterminate)
    *  - "none"  → nenhuma marcada
+   *
+   * Caso especial: categoria SEM subcategorias (subcategories.length=0) —
+   * o estado representa o template "categoria-only" (subcategory=NULL).
    */
   const categoryState = (c: CategoryEntry): "all" | "some" | "none" => {
+    if (c.subcategories.length === 0) {
+      // Categoria sem subs: opera no template (cat, null).
+      if (isExisting(c.category, null)) return "all";
+      return isSelected(c.category, null) ? "all" : "none";
+    }
     const available = c.subcategories.filter((s) => !isExisting(c.category, s));
     if (available.length === 0) return "none";
     const checkedCount = available.filter((s) => isSelected(c.category, s)).length;
@@ -165,6 +173,18 @@ export function ClassificationPickerDialog({
   };
 
   const toggleCategory = (c: CategoryEntry) => {
+    // Categoria sem subs → toggle do template (cat, null)
+    if (c.subcategories.length === 0) {
+      if (isExisting(c.category, null)) return;
+      setSelected((prev) => {
+        const next = new Set(prev);
+        const k = keyOf(c.category, null);
+        if (next.has(k)) next.delete(k);
+        else next.add(k);
+        return next;
+      });
+      return;
+    }
     const state = categoryState(c);
     setSelected((prev) => {
       const next = new Set(prev);
@@ -264,11 +284,16 @@ export function ClassificationPickerDialog({
   // ─── Stats pro footer ─────────────────────────────────────────────
   const totalAvailable = useMemo(() => {
     let n = 0;
-    categories.forEach((c) =>
-      c.subcategories.forEach((s) => {
-        if (!isExisting(c.category, s)) n++;
-      }),
-    );
+    categories.forEach((c) => {
+      if (c.subcategories.length === 0) {
+        // Categoria-only conta como 1 disponivel se nao existe ainda
+        if (!isExisting(c.category, null)) n++;
+      } else {
+        c.subcategories.forEach((s) => {
+          if (!isExisting(c.category, s)) n++;
+        });
+      }
+    });
     return n;
   }, [categories, existingKeys]);
 
@@ -340,12 +365,20 @@ export function ClassificationPickerDialog({
               {filteredCategories.map((c) => {
                 const isExpanded = expanded.has(c.category);
                 const state = categoryState(c);
-                const availableCount = c.subcategories.filter(
-                  (s) => !isExisting(c.category, s),
-                ).length;
-                const selectedInCat = c.subcategories.filter((s) =>
-                  isSelected(c.category, s),
-                ).length;
+                // Categoria sem subs: o "disponivel" e' a propria categoria
+                // (cat, null) quando ainda nao existe.
+                const availableCount =
+                  c.subcategories.length === 0
+                    ? isExisting(c.category, null) ? 0 : 1
+                    : c.subcategories.filter(
+                        (s) => !isExisting(c.category, s),
+                      ).length;
+                const selectedInCat =
+                  c.subcategories.length === 0
+                    ? (isSelected(c.category, null) ? 1 : 0)
+                    : c.subcategories.filter((s) =>
+                        isSelected(c.category, s),
+                      ).length;
                 return (
                   <div
                     key={c.category}
