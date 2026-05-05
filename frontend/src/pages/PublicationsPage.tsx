@@ -750,6 +750,10 @@ const PublicationsPage = () => {
   const [scheduleGroup, setScheduleGroup] = useState<GroupedRecord | null>(null);
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [editedPayloads, setEditedPayloads] = useState<Partial<ProposedTask>[]>([]);
+  // Snapshot do responsavel original de cada task quando o modal abre.
+  // Indexado pelo idx no `editedPayloads`. Diferenca entre original e atual
+  // = override manual → regra do assistente nao se aplica.
+  const [originalResponsibleByIndex, setOriginalResponsibleByIndex] = useState<Map<number, number | null>>(new Map());
   const [scheduling, setScheduling] = useState(false);
   // Checagem de duplicatas (tarefa pendente no L1) — Onda 1.
   // Estrutura: { [subTypeId]: [{task_id, description, status_label, end_date_time, l1_url}] }
@@ -1553,6 +1557,17 @@ const PublicationsPage = () => {
     setScheduleGroup(group);
     const tasks = group.proposed_tasks?.length > 0 ? group.proposed_tasks : (group.proposed_task ? [group.proposed_task] : []);
     setEditedPayloads(tasks.map((t) => ({ ...t })));
+    // Snapshot do contact.id do responsavel ORIGINAL de cada task (vindo do
+    // template via _render_proposal). Usado no submit pra detectar override
+    // manual: se operador trocou, regra do assistente NAO se aplica.
+    const snap = new Map<number, number | null>();
+    tasks.forEach((t, idx) => {
+      const id = (t.participants || []).find(
+        (p: any) => p?.isResponsible && p?.contact?.id,
+      )?.contact?.id ?? null;
+      snap.set(idx, id);
+    });
+    setOriginalResponsibleByIndex(snap);
     // Reset do estado de duplicatas — a checagem roda via useEffect abaixo.
     setDuplicatesBySubtype({});
     setDuplicateCheckFailed(false);
@@ -1687,8 +1702,12 @@ const PublicationsPage = () => {
     // Backend de Publicações nao tem builder pra resolver, entao o frontend
     // chama /api/v1/squads/assistant-of/{user}?office_external_id=... e
     // troca o participant.contact.id antes de mandar o payload.
+    //
+    // Override manual: se o operador trocou o responsavel no modal (current
+    // != original), a escolha dele vence. Operador na ponta da operacao.
     const resolvedTasks: any[] = [];
-    for (const t of activeTasks) {
+    for (let i = 0; i < activeTasks.length; i++) {
+      const t = activeTasks[i];
       const targetRole = (t as any).target_role;
       if (targetRole !== "assistente") {
         resolvedTasks.push(t);
@@ -1701,13 +1720,23 @@ const PublicationsPage = () => {
         resolvedTasks.push(t);
         continue;
       }
+      // Encontra o indice REAL no editedPayloads (activeTasks pula removed).
+      const realIdx = editedPayloads.findIndex((p) => p === t);
+      const originalId = originalResponsibleByIndex.get(realIdx) ?? null;
+      if (originalId !== null && originalId !== responsibleId) {
+        // Operador overrideu — pula regra do assistente, mantém o que ele escolheu.
+        resolvedTasks.push(t);
+        continue;
+      }
       try {
         const params = new URLSearchParams();
         const officeId = (t as any).responsibleOfficeId || (t as any).originOfficeId;
         if (officeId) params.set("office_external_id", String(officeId));
         if (t.subTypeId) params.set("task_subtype_external_id", String(t.subTypeId));
-        const url = `/api/v1/squads/assistant-of/${responsibleId}${params.toString() ? `?${params.toString()}` : ""}`;
-        const res = await apiFetch(url);
+        // POST /claim avanca o round-robin entre assistentes da squad
+        // (o GET seria preview e nao incrementaria a fila).
+        const url = `/api/v1/squads/assistant-of/${responsibleId}/claim${params.toString() ? `?${params.toString()}` : ""}`;
+        const res = await apiFetch(url, { method: "POST" });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           toast({

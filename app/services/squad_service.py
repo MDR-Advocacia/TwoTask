@@ -181,8 +181,7 @@ class SquadService:
             )
         if is_leader:
             self._unset_other_role(squad_id, "is_leader")
-        if is_assistant:
-            self._unset_other_role(squad_id, "is_assistant")
+        # Multi-assistente permitido (sqd003) — nao desmarca outros.
         member = models.SquadMember(
             squad_id=squad_id,
             legal_one_user_id=legal_one_user_id,
@@ -217,8 +216,9 @@ class SquadService:
         is_leader: Optional[bool] = None,
         is_assistant: Optional[bool] = None,
     ) -> Optional[models.SquadMember]:
-        """Toggle dos papeis. Quando seta TRUE, desmarca o anterior na
-        mesma squad (max 1 leader e 1 assistant)."""
+        """Toggle dos papeis. Leader continua max 1 por squad (desmarca
+        anterior). Assistente: sqd003 permite multiplos por squad — fila
+        round-robin distribui as tarefas igualmente."""
         member = (
             self.db.query(models.SquadMember)
             .filter(
@@ -234,8 +234,7 @@ class SquadService:
                 self._unset_other_role(squad_id, "is_leader", except_member_id=member_id)
             member.is_leader = bool(is_leader)
         if is_assistant is not None:
-            if is_assistant:
-                self._unset_other_role(squad_id, "is_assistant", except_member_id=member_id)
+            # Multi-assistente permitido — apenas seta sem desmarcar outros.
             member.is_assistant = bool(is_assistant)
         self.db.commit()
         self.db.refresh(member)

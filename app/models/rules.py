@@ -2,6 +2,7 @@
 
 import enum
 import uuid
+import sqlalchemy as sa
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Enum
 from sqlalchemy.orm import relationship
 from app.db.session import Base
@@ -83,9 +84,15 @@ class SquadMember(Base):
     
     is_leader = Column(Boolean, default=False)
     # Recebe tarefas marcadas como `target_role='assistente'` no template.
-    # Constraint logico (validado no admin, nao em SQL): max 1 assistente
-    # por squad. Ver app/services/squad_assistant_resolver.py.
+    # Squads podem ter multiplos assistentes — `resolve_assistant` faz
+    # round-robin entre eles via `last_assigned_at` (ORDER BY NULLS FIRST,
+    # id). Ver app/services/squad_assistant_resolver.py.
     is_assistant = Column(Boolean, default=False, nullable=False, server_default='false')
+    # Atualizado pelo resolver quando este membro recebe uma tarefa como
+    # assistente. Base da distribuicao igual (round-robin). Migration sqd003.
+    last_assigned_at = Column(
+        sa.DateTime(timezone=True), nullable=True, index=True,
+    )
 
     # Relações para facilitar as consultas
     squad = relationship('Squad', back_populates='members')
