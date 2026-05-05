@@ -1553,13 +1553,16 @@ const PublicationsPage = () => {
     );
   };
 
-  const openScheduleDialog = (group: GroupedRecord) => {
+  const openScheduleDialog = async (group: GroupedRecord) => {
     setScheduleGroup(group);
     const tasks = group.proposed_tasks?.length > 0 ? group.proposed_tasks : (group.proposed_task ? [group.proposed_task] : []);
-    setEditedPayloads(tasks.map((t) => ({ ...t })));
-    // Snapshot do contact.id do responsavel ORIGINAL de cada task (vindo do
-    // template via _render_proposal). Usado no submit pra detectar override
-    // manual: se operador trocou, regra do assistente NAO se aplica.
+
+    // Snapshot do LIDER original do template (do _render_proposal). Mantido
+    // SEMPRE como o lider, mesmo apos a troca pro assistente abaixo. O
+    // submit usa essa snapshot pra detectar override manual: se o operador
+    // editar o user no UserSelector apos abrir o modal, current != original
+    // e a logica de /claim e' pulada. Tambem usado pelo backend (compara
+    // current vs original do template).
     const snap = new Map<number, number | null>();
     tasks.forEach((t, idx) => {
       const id = (t.participants || []).find(
@@ -1568,6 +1571,94 @@ const PublicationsPage = () => {
       snap.set(idx, id);
     });
     setOriginalResponsibleByIndex(snap);
+
+    // ── Pre-resolve assistente da squad ANTES de mostrar o modal ──
+    // Quando o template marca target_role='assistente' (ou aponta pra squad
+    // de suporte via target_squad_id), o UserSelector tem que mostrar pro
+    // operador o ASSISTENTE que vai receber a tarefa, nao o lider do
+    // template. Operador e' a ponta da operacao — ele tem que ver
+    // exatamente quem vai pegar.
+    //
+    // Chamamos /squads/resolve-target/claim (commit=true) pra avancar o
+    // round-robin uma unica vez no momento de abrir o modal. Substituimos
+    // participants[0].contact.id pelo assistente resolvido. Se o operador
+    // cancelar o modal, o round-robin fica avancado mesmo (Mel/Julia
+    // alternam mesmo se nada for criado no L1) — custo aceitavel pra
+    // garantir UX correta.
+    //
+    // Falha individual (squad sem assistente, rede off, etc.) mantem o
+    // lider original e exibe um toast — operador escolhe se troca manual
+    // ou se cancela e arruma a config da squad.
+    const resolvedTasks = await Promise.all(tasks.map(async (t) => {
+      const tr = (t as any).target_role || "principal";
+      const tsq = (t as any).target_squad_id || null;
+      if (tr !== "assistente" && !tsq) return t;
+
+      const responsibleId = (t.participants || []).find(
+        (p: any) => p?.isResponsible && p?.contact?.id,
+      )?.contact?.id;
+      if (!responsibleId) return t;
+
+      const officeId =
+        (t as any).responsibleOfficeId || (t as any).originOfficeId || null;
+      try {
+        const res = await apiFetch("/api/v1/squads/resolve-target/claim", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            target_role: tr,
+            target_squad_id: tsq,
+            responsible_user_external_id: responsibleId,
+            office_external_id: officeId,
+            task_subtype_external_id: t.subTypeId || null,
+          }),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          toast({
+            title: "Falha ao resolver assistente da squad",
+            description:
+              body.detail ||
+              `HTTP ${res.status} — exibindo o líder do template; troque manualmente se necessário.`,
+            variant: "destructive",
+          });
+          return t;
+        }
+        const data = (await res.json()) as {
+          user_external_id: number;
+          fallback_reason: string | null;
+        };
+        if (data.fallback_reason === "user_not_in_any_squad") {
+          toast({
+            title: "Líder fora de squad principal",
+            description:
+              "Tarefa fica com o líder mesmo. Cadastre a squad em /admin/squads ou troque o responsável manualmente.",
+            variant: "destructive",
+          });
+        }
+        return {
+          ...t,
+          participants: [
+            {
+              contact: { id: data.user_external_id },
+              isResponsible: true,
+              isExecuter: true,
+              isRequester: true,
+            },
+          ],
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        toast({
+          title: "Erro de rede ao resolver assistente",
+          description: msg + " — exibindo líder do template.",
+          variant: "destructive",
+        });
+        return t;
+      }
+    }));
+
+    setEditedPayloads(resolvedTasks.map((t) => ({ ...t })));
     // Reset do estado de duplicatas — a checagem roda via useEffect abaixo.
     setDuplicatesBySubtype({});
     setDuplicateCheckFailed(false);
@@ -4609,6 +4700,59 @@ const PublicationsPage = () => {
                                         Usar sugerido: {payload.suggested_responsible.name}
                                       </button>
                                     )}
+                                  {/* Aviso de roteamento de squad — o openScheduleDialog
+                                      ja' chamou /resolve-target/claim e substituiu
+                                      participants[0] pelo assistente. O UserSelector
+                                      acima mostra DIRETAMENTE o assistente que vai
+                                      receber a tarefa. Esse badge so' confirma o motivo
+                                      (template marcado como assistente / squad suporte)
+                                      e avisa que trocar manualmente desliga a regra.
+                                      Se operador trocou (current != original do
+                                      template = lider), badge some — operador na ponta
+                                      vence. */}
+                                  {(() => {
+                                    const tr = (payload as any).target_role || "principal";
+                                    const tsq = (payload as any).target_squad_id || null;
+                                    if (tr !== "assistente" && !tsq) return null;
+                                    const orig = originalResponsibleByIndex.get(idx) ?? null;
+                                    // Se current === original (lider do template), significa
+                                    // que o /claim no openScheduleDialog FALHOU (squad sem
+                                    // assistente, rede off, etc.) — operador esta vendo o
+                                    // lider, badge avisa por que.
+                                    // Se current !== original, foi auto-resolvido pra
+                                    // assistente OU operador trocou. Badge so' aparece se
+                                    // foi auto-resolvido (heurística: operador teria sido
+                                    // notificado por toast em qualquer outro caso).
+                                    const autoResolved =
+                                      currentRespId != null &&
+                                      orig != null &&
+                                      currentRespId !== orig;
+                                    const label = tr === "assistente" ? "assistente" : "líder";
+                                    const squadHint = tsq
+                                      ? " da squad de suporte configurada"
+                                      : " da squad principal";
+                                    if (autoResolved) {
+                                      return (
+                                        <div className="rounded border border-blue-200 bg-blue-50 px-2 py-1 text-[10px] text-blue-900 mt-1">
+                                          🤖 Atribuído automaticamente ao{" "}
+                                          <strong>{label}</strong>{squadHint} (template
+                                          marca rota assistente). Trocar manualmente
+                                          desliga a regra.
+                                        </div>
+                                      );
+                                    }
+                                    // current === original (não foi resolvido). Avisa que
+                                    // a regra do template não foi aplicada e como arrumar.
+                                    return (
+                                      <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-900 mt-1">
+                                        ⚠ Template marca rota <strong>{label}</strong>
+                                        {squadHint}, mas o assistente não pôde ser
+                                        resolvido (squad sem cadastro ou líder fora dela).
+                                        A tarefa vai pro líder. Cadastre a squad em
+                                        /admin/squads ou troque manualmente.
+                                      </div>
+                                    );
+                                  })()}
                                 </div>
 
                                 {/* Escritório responsável */}
