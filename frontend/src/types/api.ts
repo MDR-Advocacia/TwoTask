@@ -259,6 +259,71 @@ export interface PrazoInicialIntakeSummary {
   has_habilitacao_pdf?: boolean;
   habilitacao_pdf_filename_original?: string | null;
   habilitacao_pdf_bytes?: number | null;
+  // Patrocinio (pin018) — sumário pra badge na listagem.
+  patrocinio_decisao?:
+    | "MDR_ADVOCACIA"
+    | "OUTRO_ESCRITORIO"
+    | "CONDUCAO_INTERNA"
+    | string
+    | null;
+  patrocinio_suspeita_devolucao?: boolean;
+  patrocinio_review_status?:
+    | "pendente"
+    | "aprovado"
+    | "editado"
+    | "rejeitado"
+    | string
+    | null;
+}
+
+export interface PrazoInicialPatrocinio {
+  id: number;
+  intake_id: number;
+  decisao: "MDR_ADVOCACIA" | "OUTRO_ESCRITORIO" | "CONDUCAO_INTERNA" | string;
+  outro_escritorio_nome: string | null;
+  outro_advogado_nome: string | null;
+  outro_advogado_oab: string | null;
+  outro_advogado_data_habilitacao: string | null;
+  suspeita_devolucao: boolean;
+  motivo_suspeita: string | null;
+  natureza_acao:
+    | "CONSUMERISTA"
+    | "CIVIL_PUBLICA"
+    | "INQUERITO_ADMINISTRATIVO"
+    | "TRABALHISTA"
+    | "OUTRO"
+    | string
+    | null;
+  polo_passivo_confirmado: boolean;
+  polo_passivo_observacao: string | null;
+  confianca: "alta" | "media" | "baixa" | string | null;
+  fundamentacao: string | null;
+  review_status: "pendente" | "aprovado" | "editado" | "rejeitado" | string;
+  reviewed_by_user_id: number | null;
+  reviewed_by_email: string | null;
+  reviewed_by_name: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PrazoInicialPatrocinioPatch {
+  review_action: "aprovado" | "editado" | "rejeitado";
+  decisao?: "MDR_ADVOCACIA" | "OUTRO_ESCRITORIO" | "CONDUCAO_INTERNA";
+  outro_escritorio_nome?: string | null;
+  outro_advogado_nome?: string | null;
+  outro_advogado_oab?: string | null;
+  outro_advogado_data_habilitacao?: string | null;
+  suspeita_devolucao?: boolean;
+  motivo_suspeita?: string | null;
+  natureza_acao?:
+    | "CONSUMERISTA"
+    | "CIVIL_PUBLICA"
+    | "INQUERITO_ADMINISTRATIVO"
+    | "TRABALHISTA"
+    | "OUTRO";
+  polo_passivo_confirmado?: boolean;
+  polo_passivo_observacao?: string | null;
 }
 
 export interface PrazoInicialParteProcessual {
@@ -325,6 +390,7 @@ export interface PrazoInicialIntakeDetail extends PrazoInicialIntakeSummary {
   metadata_json: Record<string, unknown> | null;
   sugestoes: PrazoInicialSugestao[];
   pedidos: PrazoInicialPedido[];
+  patrocinio: PrazoInicialPatrocinio | null;
 }
 
 export interface PrazoInicialIntakeListResponse {
@@ -393,6 +459,10 @@ export interface PrazoInicialIntakeFilters {
   source?: string;                  // CSV: "EXTERNAL_API,USER_UPLOAD"
   submitted_by_user_id?: string;    // CSV — atalho "Minha fila"
   pdf_extraction_failed?: boolean;  // true = só uploads com extração falha
+  // Patrocinio (pin018)
+  patrocinio_decisao?: string;          // CSV: "MDR_ADVOCACIA,OUTRO_ESCRITORIO,..."
+  patrocinio_suspeita_devolucao?: boolean;
+  patrocinio_review_status?: string;    // CSV: "pendente,aprovado,..."
   limit?: number;
   offset?: number;
 }

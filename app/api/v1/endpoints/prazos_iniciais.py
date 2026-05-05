@@ -262,6 +262,39 @@ class IntakeSummary(BaseModel):
     has_habilitacao_pdf: bool = False
     habilitacao_pdf_filename_original: Optional[str] = None
     habilitacao_pdf_bytes: Optional[int] = None
+    # Patrocínio (pin018) — só presente quando o intake bateu com
+    # vinculada Master. Operador vê na listagem como badge sumário.
+    patrocinio_decisao: Optional[str] = None
+    patrocinio_suspeita_devolucao: bool = False
+    patrocinio_review_status: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class PatrocinioOut(BaseModel):
+    """Bloco completo de patrocínio do intake — vai no IntakeDetail."""
+    id: int
+    intake_id: int
+    decisao: str
+    outro_escritorio_nome: Optional[str] = None
+    outro_advogado_nome: Optional[str] = None
+    outro_advogado_oab: Optional[str] = None
+    outro_advogado_data_habilitacao: Optional[date] = None
+    suspeita_devolucao: bool = False
+    motivo_suspeita: Optional[str] = None
+    natureza_acao: Optional[str] = None
+    polo_passivo_confirmado: bool = True
+    polo_passivo_observacao: Optional[str] = None
+    confianca: Optional[str] = None
+    fundamentacao: Optional[str] = None
+    review_status: str
+    reviewed_by_user_id: Optional[int] = None
+    reviewed_by_email: Optional[str] = None
+    reviewed_by_name: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
 
     class Config:
         from_attributes = True
@@ -274,6 +307,9 @@ class IntakeDetail(IntakeSummary):
     # Pedidos extraídos da PI (Bloco D2). Lista vazia se intake não
     # classificado ou classificado em versão antiga (pré-D2).
     pedidos: list[dict] = []
+    # Patrocínio (pin018) — bloco opcional, presente apenas quando o
+    # intake bateu com vinculada Master.
+    patrocinio: Optional[PatrocinioOut] = None
 
 
 class IntakeListResponse(BaseModel):
@@ -514,6 +550,16 @@ def _intake_to_summary(intake: PrazoInicialIntake) -> IntakeSummary:
             intake, "habilitacao_pdf_filename_original", None
         ),
         habilitacao_pdf_bytes=getattr(intake, "habilitacao_pdf_bytes", None),
+        patrocinio_decisao=(
+            intake.patrocinio.decisao if getattr(intake, "patrocinio", None) else None
+        ),
+        patrocinio_suspeita_devolucao=bool(
+            intake.patrocinio.suspeita_devolucao
+            if getattr(intake, "patrocinio", None) else False
+        ),
+        patrocinio_review_status=(
+            intake.patrocinio.review_status if getattr(intake, "patrocinio", None) else None
+        ),
     )
 
 
@@ -674,6 +720,18 @@ def list_intakes(
         default=None,
         description="true = só uploads com extração falha (classificação manual). Omitido = ambos.",
     ),
+    patrocinio_decisao: Optional[str] = Query(
+        default=None,
+        description="CSV de decisões: 'MDR_ADVOCACIA,OUTRO_ESCRITORIO,CONDUCAO_INTERNA'.",
+    ),
+    patrocinio_suspeita_devolucao: Optional[bool] = Query(
+        default=None,
+        description="true = só intakes marcados pra devolução; false = só não-suspeitos.",
+    ),
+    patrocinio_review_status: Optional[str] = Query(
+        default=None,
+        description="CSV: 'pendente,aprovado,editado,rejeitado'.",
+    ),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -685,6 +743,7 @@ def list_intakes(
     # quando ha muitas sugestoes por intake.
     query = db.query(PrazoInicialIntake).options(
         selectinload(PrazoInicialIntake.sugestoes),
+        selectinload(PrazoInicialIntake.patrocinio),
     )
 
     # status — CSV, IN quando múltiplo
@@ -810,6 +869,43 @@ def list_intakes(
     elif pdf_extraction_failed is False:
         query = query.filter(PrazoInicialIntake.pdf_extraction_failed.is_(False))
 
+    # Patrocínio (pin018) — filtros via join lazy na tabela 1:1.
+    patrocinio_filtros_aplicados = (
+        bool(_parse_csv_strs(patrocinio_decisao))
+        or patrocinio_suspeita_devolucao is not None
+        or bool(_parse_csv_strs(patrocinio_review_status))
+    )
+    if patrocinio_filtros_aplicados:
+        from app.models.prazo_inicial_patrocinio import PrazoInicialPatrocinio
+        query = query.join(
+            PrazoInicialPatrocinio,
+            PrazoInicialPatrocinio.intake_id == PrazoInicialIntake.id,
+        )
+        decisao_list = _parse_csv_strs(patrocinio_decisao)
+        if decisao_list:
+            if len(decisao_list) == 1:
+                query = query.filter(PrazoInicialPatrocinio.decisao == decisao_list[0])
+            else:
+                query = query.filter(PrazoInicialPatrocinio.decisao.in_(decisao_list))
+        if patrocinio_suspeita_devolucao is True:
+            query = query.filter(
+                PrazoInicialPatrocinio.suspeita_devolucao.is_(True)
+            )
+        elif patrocinio_suspeita_devolucao is False:
+            query = query.filter(
+                PrazoInicialPatrocinio.suspeita_devolucao.is_(False)
+            )
+        review_list = _parse_csv_strs(patrocinio_review_status)
+        if review_list:
+            if len(review_list) == 1:
+                query = query.filter(
+                    PrazoInicialPatrocinio.review_status == review_list[0]
+                )
+            else:
+                query = query.filter(
+                    PrazoInicialPatrocinio.review_status.in_(review_list)
+                )
+
     total = query.count()
     items = (
         query.order_by(PrazoInicialIntake.received_at.desc())
@@ -892,12 +988,17 @@ def get_intake(
         }
         for p in (intake.pedidos or [])
     ]
+    patrocinio_out: Optional[PatrocinioOut] = None
+    if getattr(intake, "patrocinio", None) is not None:
+        patrocinio_out = PatrocinioOut.model_validate(intake.patrocinio)
+
     return IntakeDetail(
         **summary.model_dump(),
         capa_json=intake.capa_json,
         metadata_json=intake.metadata_json,
         sugestoes=[_sugestao_to_out(s) for s in sugestoes_sorted],
         pedidos=pedidos_serialized,
+        patrocinio=patrocinio_out,
     )
 
 
@@ -1219,6 +1320,122 @@ async def upload_intake_pdf(
         already_existed=False,
         user_message=user_message,
     )
+
+
+class PatrocinioPatchRequest(BaseModel):
+    """
+    Body do PATCH /intakes/{id}/patrocinio. Operador pode aprovar (sem
+    alteração), editar (mudar campos) ou rejeitar (`review_action='rejeitado'`).
+
+    Quando `review_action='aprovado'`, o backend ignora qualquer campo
+    de dados e só carimba o status. Edição obriga ao menos um campo
+    de dado preenchido.
+    """
+    review_action: str = Field(
+        ...,
+        description="aprovado | editado | rejeitado",
+    )
+    decisao: Optional[str] = None
+    outro_escritorio_nome: Optional[str] = None
+    outro_advogado_nome: Optional[str] = None
+    outro_advogado_oab: Optional[str] = None
+    outro_advogado_data_habilitacao: Optional[date] = None
+    suspeita_devolucao: Optional[bool] = None
+    motivo_suspeita: Optional[str] = None
+    natureza_acao: Optional[str] = None
+    polo_passivo_confirmado: Optional[bool] = None
+    polo_passivo_observacao: Optional[str] = None
+
+
+@router.patch(
+    "/intakes/{intake_id}/patrocinio",
+    response_model=PatrocinioOut,
+    summary="HITL — operador aprova/edita/rejeita decisão de patrocínio.",
+)
+def patch_intake_patrocinio(
+    payload: PatrocinioPatchRequest,
+    intake_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(
+        auth_security.require_permission("prazos_iniciais")
+    ),
+):
+    from app.models.prazo_inicial_patrocinio import (
+        PATROCINIO_DECISOES_VALIDAS,
+        PATROCINIO_NATUREZAS_VALIDAS,
+        PATROCINIO_REVIEW_APPROVED,
+        PATROCINIO_REVIEW_EDITED,
+        PATROCINIO_REVIEW_REJECTED,
+        PATROCINIO_REVIEW_STATUSES_VALIDOS,
+        PrazoInicialPatrocinio,
+    )
+
+    intake = db.get(PrazoInicialIntake, intake_id)
+    if intake is None:
+        raise HTTPException(status_code=404, detail="Intake não encontrado.")
+
+    patrocinio = (
+        db.query(PrazoInicialPatrocinio)
+        .filter(PrazoInicialPatrocinio.intake_id == intake_id)
+        .first()
+    )
+    if patrocinio is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Este intake não tem registro de patrocínio.",
+        )
+
+    review_action = payload.review_action.strip().lower()
+    if review_action not in PATROCINIO_REVIEW_STATUSES_VALIDOS or review_action == "pendente":
+        raise HTTPException(
+            status_code=422,
+            detail="review_action deve ser 'aprovado', 'editado' ou 'rejeitado'.",
+        )
+
+    if review_action == PATROCINIO_REVIEW_EDITED:
+        # Validações dos campos editados (só os que vieram).
+        if payload.decisao is not None:
+            if payload.decisao not in PATROCINIO_DECISOES_VALIDAS:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"decisao inválida: {payload.decisao}",
+                )
+            patrocinio.decisao = payload.decisao
+        if payload.natureza_acao is not None:
+            if payload.natureza_acao not in PATROCINIO_NATUREZAS_VALIDAS:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"natureza_acao inválida: {payload.natureza_acao}",
+                )
+            patrocinio.natureza_acao = payload.natureza_acao
+        if payload.outro_escritorio_nome is not None:
+            patrocinio.outro_escritorio_nome = payload.outro_escritorio_nome or None
+        if payload.outro_advogado_nome is not None:
+            patrocinio.outro_advogado_nome = payload.outro_advogado_nome or None
+        if payload.outro_advogado_oab is not None:
+            patrocinio.outro_advogado_oab = payload.outro_advogado_oab or None
+        if payload.outro_advogado_data_habilitacao is not None:
+            patrocinio.outro_advogado_data_habilitacao = (
+                payload.outro_advogado_data_habilitacao
+            )
+        if payload.suspeita_devolucao is not None:
+            patrocinio.suspeita_devolucao = bool(payload.suspeita_devolucao)
+        if payload.motivo_suspeita is not None:
+            patrocinio.motivo_suspeita = payload.motivo_suspeita or None
+        if payload.polo_passivo_confirmado is not None:
+            patrocinio.polo_passivo_confirmado = bool(payload.polo_passivo_confirmado)
+        if payload.polo_passivo_observacao is not None:
+            patrocinio.polo_passivo_observacao = payload.polo_passivo_observacao or None
+
+    patrocinio.review_status = review_action
+    patrocinio.reviewed_by_user_id = current_user.id
+    patrocinio.reviewed_by_email = current_user.email
+    patrocinio.reviewed_by_name = current_user.name
+    patrocinio.reviewed_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(patrocinio)
+    return PatrocinioOut.model_validate(patrocinio)
 
 
 @router.post(

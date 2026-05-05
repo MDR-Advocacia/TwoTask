@@ -473,6 +473,79 @@ class BlocoAgravoInfo(BaseModel):
     Útil pra triagem sem abrir o PDF."""
 
 
+# ─── Patrocínio (pin018) ─────────────────────────────────────────────
+# Análise paralela à classificação de prazos. Aplica-se SOMENTE quando o
+# polo passivo do intake bate com alguma vinculada Master (CNPJ na
+# tabela master_vinculadas). Não interfere em tasks — só registra a
+# decisão (MDR / outro escritório / condução interna) e a fila de
+# devolução. As constantes canônicas vivem no modelo
+# `prazo_inicial_patrocinio`; aqui só listamos pra schema do Sonnet.
+
+PATROCINIO_DECISAO_VALIDA = ("MDR_ADVOCACIA", "OUTRO_ESCRITORIO", "CONDUCAO_INTERNA")
+PATROCINIO_NATUREZA_VALIDA = (
+    "CONSUMERISTA",
+    "CIVIL_PUBLICA",
+    "INQUERITO_ADMINISTRATIVO",
+    "TRABALHISTA",
+    "OUTRO",
+)
+
+
+class BlocoPatrocinio(BaseModel):
+    """
+    Análise de patrocínio. Só vem preenchido quando o polo passivo
+    contém alguma vinculada Master. Caso contrário, a IA emite
+    `aplicavel=false` e os demais campos ficam null.
+    """
+
+    aplicavel: bool = False
+    """True quando o polo passivo (confirmado contra a PI) tem CNPJ de
+    vinculada Master. Quando False, demais campos viram null e o intake
+    não recebe registro de patrocínio."""
+
+    decisao: Optional[
+        Literal["MDR_ADVOCACIA", "OUTRO_ESCRITORIO", "CONDUCAO_INTERNA"]
+    ] = None
+
+    outro_escritorio_nome: Optional[str] = None
+    """Nome do escritório (texto livre). Preenchido quando
+    decisao=OUTRO_ESCRITORIO e a IA conseguiu identificar."""
+
+    outro_advogado_nome: Optional[str] = None
+    outro_advogado_oab: Optional[str] = None
+    outro_advogado_data_habilitacao: Optional[date] = None
+
+    suspeita_devolucao: bool = False
+    """True quando o caso deve voltar pro cliente (advogado anterior a
+    18/03/2026, contestação posterior por outro advogado, ou natureza
+    fora de consumerista)."""
+
+    motivo_suspeita: Optional[str] = None
+    """Justificativa em 1-2 frases citando evidência (data, advogado,
+    natureza). Obrigatório quando suspeita_devolucao=True."""
+
+    natureza_acao: Optional[
+        Literal[
+            "CONSUMERISTA",
+            "CIVIL_PUBLICA",
+            "INQUERITO_ADMINISTRATIVO",
+            "TRABALHISTA",
+            "OUTRO",
+        ]
+    ] = None
+
+    polo_passivo_confirmado: bool = True
+    """False quando a capa lista vinculada Master mas a PI deixa claro
+    que o sujeito passivo é OUTRA pessoa (cadastro errado no PJe)."""
+
+    polo_passivo_observacao: Optional[str] = None
+
+    confianca: Optional[Confianca] = None
+    fundamentacao: Optional[str] = None
+    """Texto explicando o raciocínio: CNPJ casado, advogado encontrado,
+    data de habilitação, natureza da ação extraída da PI."""
+
+
 # ─── Resposta completa da IA ─────────────────────────────────────────
 
 
@@ -588,6 +661,13 @@ class PrazoInicialClassificationResponse(BaseModel):
     # quando a PI não tem pedidos explícitos — raro mas possível em
     # petições declaratórias puras.
     pedidos: list[BlocoPedido] = Field(default_factory=list)
+
+    # Patrocínio (pin018) — análise paralela. Sempre presente; quando
+    # o polo passivo NÃO bate com vinculada Master, vem
+    # `aplicavel=false` e o classifier não persiste registro.
+    patrocinio: Optional[BlocoPatrocinio] = Field(
+        default_factory=lambda: BlocoPatrocinio(aplicavel=False)
+    )
 
     # Meta.
     confianca_geral: Confianca = "baixa"
