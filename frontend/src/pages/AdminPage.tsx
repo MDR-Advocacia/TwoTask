@@ -298,11 +298,10 @@ const SquadsManager = () => {
           <Accordion type="multiple" className="space-y-2">
             {squads.map((squad) => {
               const leader = squad.members.find((m) => m.is_leader);
-              const assistant = squad.members.find((m) => m.is_assistant);
               return (
                 <AccordionItem key={squad.id} value={String(squad.id)} className="border rounded-md px-3">
                   <AccordionTrigger className="hover:no-underline">
-                    <div className="flex items-center gap-3 flex-1">
+                    <div className="flex items-center gap-3 flex-1 flex-wrap">
                       <span className="font-medium">{squad.name}</span>
                       <Badge variant="secondary">{squad.members.length} {squad.members.length === 1 ? "membro" : "membros"}</Badge>
                       {leader && (
@@ -310,11 +309,11 @@ const SquadsManager = () => {
                           <Crown className="h-3 w-3" /> {leader.user.name}
                         </Badge>
                       )}
-                      {assistant && (
-                        <Badge variant="outline" className="gap-1">
-                          <Star className="h-3 w-3" /> {assistant.user.name}
+                      {squad.members.filter((m) => m.is_assistant).map((m) => (
+                        <Badge key={m.id} variant="outline" className="gap-1">
+                          <Star className="h-3 w-3" /> {m.user.name}
                         </Badge>
-                      )}
+                      ))}
                     </div>
                   </AccordionTrigger>
                   <AccordionContent>

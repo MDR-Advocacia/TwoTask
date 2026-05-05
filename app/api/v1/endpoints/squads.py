@@ -171,7 +171,7 @@ def update_squad_member_roles(
 @router.get(
     "/assistant-of/{user_external_id}",
     response_model=schemas.AssistantResolution,
-    summary="Resolve o assistente da squad de um responsavel (preview pra UI).",
+    summary="PREVIEW do assistente — nao avanca a fila do round-robin.",
 )
 def get_assistant_of_user(
     user_external_id: int,
@@ -179,6 +179,10 @@ def get_assistant_of_user(
     office_external_id: Optional[int] = None,
     db: Session = Depends(get_db),
 ):
+    """Lookup somente leitura. Quando uma squad tem multiplos assistentes,
+    este endpoint retorna o proximo da rotacao, mas NAO incrementa o
+    `last_assigned_at`. Use o POST /claim quando for criar a tarefa de
+    verdade — ai a fila avanca."""
     from app.services.squad_assistant_resolver import resolve_assistant
     try:
         result = resolve_assistant(
@@ -186,8 +190,44 @@ def get_assistant_of_user(
             responsible_user_external_id=user_external_id,
             task_subtype_external_id=task_subtype_external_id,
             office_external_id=office_external_id,
+            commit=False,
         )
     except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return schemas.AssistantResolution(
+        user_external_id=result.user_external_id,
+        squad_id=result.squad_id,
+        squad_name=result.squad_name,
+        fallback_reason=result.fallback_reason,
+    )
+
+
+@router.post(
+    "/assistant-of/{user_external_id}/claim",
+    response_model=schemas.AssistantResolution,
+    summary="Resolve E avanca a fila do round-robin (assistente recebe a tarefa).",
+)
+def claim_assistant_of_user(
+    user_external_id: int,
+    task_subtype_external_id: Optional[int] = None,
+    office_external_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """Use no momento de criar a tarefa de verdade no L1 — o backend
+    incrementa o `last_assigned_at` do assistente escolhido pra que o
+    proximo claim pegue outro membro da fila."""
+    from app.services.squad_assistant_resolver import resolve_assistant
+    try:
+        result = resolve_assistant(
+            db,
+            responsible_user_external_id=user_external_id,
+            task_subtype_external_id=task_subtype_external_id,
+            office_external_id=office_external_id,
+            commit=True,
+        )
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return schemas.AssistantResolution(
         user_external_id=result.user_external_id,

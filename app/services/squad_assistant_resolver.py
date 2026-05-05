@@ -43,6 +43,7 @@ def resolve_assistant(
     responsible_user_external_id: int,
     task_subtype_external_id: Optional[int] = None,
     office_external_id: Optional[int] = None,
+    commit: bool = False,
 ) -> AssistantResolutionResult:
     """
     Resolve o assistente do responsavel.
@@ -123,14 +124,24 @@ def resolve_assistant(
             chosen_squad = sorted(candidate_squads, key=lambda s: s.id)[0]
             fallback_reason = "multiple_squads_ambiguous"
 
-    # Procura assistente na squad escolhida
+    # Round-robin entre assistentes ativos da squad: pega o que ficou mais
+    # tempo sem receber (last_assigned_at NULLS FIRST). Quando `commit=True`,
+    # atualiza last_assigned_at = now() pra avancar a fila — operadores
+    # subsequentes pegam o proximo da rotacao. Em preview (commit=False), so'
+    # retorna sem mexer no estado.
+    from datetime import datetime, timezone
+
     assistant_member = (
         db.query(SquadMember)
         .filter(
             SquadMember.squad_id == chosen_squad.id,
             SquadMember.is_assistant.is_(True),
         )
-        .one_or_none()
+        .order_by(
+            SquadMember.last_assigned_at.asc().nullsfirst(),
+            SquadMember.id.asc(),
+        )
+        .first()
     )
 
     if assistant_member is None:
@@ -139,6 +150,10 @@ def resolve_assistant(
             "assistente cadastrado. Cadastre em /admin/squads ou troque "
             "o responsavel da tarefa."
         )
+
+    if commit:
+        assistant_member.last_assigned_at = datetime.now(timezone.utc)
+        db.flush()
 
     assistant_user = (
         db.query(LegalOneUser)

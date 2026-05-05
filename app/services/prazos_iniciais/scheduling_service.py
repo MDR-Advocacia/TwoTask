@@ -182,11 +182,8 @@ class PrazosIniciaisSchedulingService:
 
         - target_role='principal' (ou desconhecido): retorna o candidato
           direto, resolution=None.
-        - target_role='assistente': chama `resolve_assistant` com o
-          office do intake como tie-break (squad cujo office_external_id
-          casa). Se a squad nao tem assistente cadastrado, propaga
-          ValueError. Fallback silencioso pro proprio user quando ele
-          nao e' membro de nenhuma squad.
+        - target_role='assistente': chama `resolve_assistant` com `commit=True`
+          (avanca round-robin) e usa o office do intake como tie-break.
         """
         if target_role != "assistente":
             return int(candidate_user_external_id), None
@@ -195,6 +192,7 @@ class PrazosIniciaisSchedulingService:
             responsible_user_external_id=int(candidate_user_external_id),
             task_subtype_external_id=task_subtype_external_id,
             office_external_id=office_external_id,
+            commit=True,
         )
         return result.user_external_id, result
 
@@ -295,6 +293,10 @@ class PrazosIniciaisSchedulingService:
         # chamada — entao o resolver opera sobre o valor "atual" da
         # sugestao, que e' o que o operador realmente quer ver na squad.
         target_role = self._lookup_template_target_role(sugestao)
+        # Override manual: se o operador trocou o responsavel no modal,
+        # respeita a escolha dele e desliga a regra do assistente.
+        if target_role == "assistente" and (sugestao.payload_proposto or {}).get("responsible_overridden"):
+            target_role = "principal"
         try:
             final_responsible_id, _resolution = self._resolve_final_responsible(
                 candidate_user_external_id=int(sugestao.responsavel_sugerido_id),
@@ -349,9 +351,15 @@ class PrazosIniciaisSchedulingService:
                 entry.override_task_subtype_external_id,
             )
         if entry.override_responsible_user_external_id is not None:
-            sugestao.responsavel_sugerido_id = int(
-                entry.override_responsible_user_external_id,
-            )
+            new_id = int(entry.override_responsible_user_external_id)
+            # Se operador trocou pra ID diferente do que estava na sugestao,
+            # marca o flag pra `_build_l1_task_payload` desligar a regra do
+            # assistente. Operador na ponta da operacao tem ultima palavra.
+            if int(sugestao.responsavel_sugerido_id or 0) != new_id:
+                payload = dict(sugestao.payload_proposto or {})
+                payload["responsible_overridden"] = True
+                sugestao.payload_proposto = payload
+            sugestao.responsavel_sugerido_id = new_id
         if entry.override_data_base is not None:
             sugestao.data_base = entry.override_data_base
         if entry.override_data_final_calculada is not None:
