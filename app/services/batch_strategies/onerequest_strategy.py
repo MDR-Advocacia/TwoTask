@@ -8,6 +8,7 @@ from sqlalchemy.exc import NoResultFound, MultipleResultsFound
 
 from app.api.v1.schemas import BatchTaskCreationRequest
 from app.models.batch_execution import BatchExecution, BatchExecutionItem
+from app.models.legal_one import LegalOneUser
 from .base_strategy import BaseStrategy
 from app.services.mail_service import send_failure_report
 
@@ -87,6 +88,24 @@ class OnerequestStrategy(BaseStrategy):
             
         return task_notes
 
+    def _get_failure_notification_recipients(self) -> list[str]:
+        rows = (
+            self.db.query(LegalOneUser.email)
+            .filter(
+                LegalOneUser.is_active == True,  # noqa: E712
+                LegalOneUser.notify_onerequest_errors == True,  # noqa: E712
+                LegalOneUser.email.isnot(None),
+            )
+            .order_by(LegalOneUser.email)
+            .all()
+        )
+        recipients: list[str] = []
+        for (email,) in rows:
+            normalized = (email or "").strip()
+            if normalized and normalized not in recipients:
+                recipients.append(normalized)
+        return recipients
+
     async def process_batch(self, request: BatchTaskCreationRequest, execution_log: BatchExecution) -> dict: 
         """
         Orquestra o processamento do lote: Salva no BD -> Chama processador individual.
@@ -123,7 +142,12 @@ class OnerequestStrategy(BaseStrategy):
             if success:
                 success_count += 1
             else:
-                failed_items.append({"cnj": process_number, "motivo": log_item.error_message})
+                failed_items.append({
+                    "cnj": process_number,
+                    "motivo": log_item.error_message,
+                    "execution_id": execution_log.id,
+                    "item_id": log_item.id,
+                })
             
             await asyncio.sleep(0.05) # Yield para não bloquear
 
@@ -131,7 +155,19 @@ class OnerequestStrategy(BaseStrategy):
         if failed_items:
             logging.info(f"Detectadas {len(failed_items)} falhas. Enviando alerta...")
             try:
-                await asyncio.to_thread(send_failure_report, failed_items, "OneRequest")
+                recipients = self._get_failure_notification_recipients()
+                if not recipients:
+                    logging.warning(
+                        "Falhas OneRequest detectadas, mas nenhum usuario ativo "
+                        "esta com Notificacao OneRequest habilitada."
+                    )
+                else:
+                    await asyncio.to_thread(
+                        send_failure_report,
+                        failed_items,
+                        "OneRequest",
+                        recipients=recipients,
+                    )
             except Exception as e:
                 logging.error(f"Erro ao enviar e-mail de falha: {e}")
 

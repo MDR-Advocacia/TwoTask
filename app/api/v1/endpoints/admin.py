@@ -427,6 +427,7 @@ class UserUpdateRequest(BaseModel):
     can_schedule_batch: Optional[bool] = None
     can_use_publications: Optional[bool] = None
     can_use_prazos_iniciais: Optional[bool] = None
+    notify_onerequest_errors: Optional[bool] = None
     default_office_id: Optional[int] = None
 
 
@@ -438,6 +439,7 @@ class UserResponseSchema(BaseModel):
     can_schedule_batch: bool
     can_use_publications: bool
     can_use_prazos_iniciais: bool = False
+    notify_onerequest_errors: bool = False
     default_office_id: Optional[int] = None
 
     class Config:
@@ -465,6 +467,7 @@ def list_users(
             "can_schedule_batch": u.can_schedule_batch,
             "can_use_publications": u.can_use_publications,
             "can_use_prazos_iniciais": getattr(u, "can_use_prazos_iniciais", False),
+            "notify_onerequest_errors": getattr(u, "notify_onerequest_errors", False),
             "default_office_id": u.default_office_id,
             "has_password": u.hashed_password is not None,
             "must_change_password": u.must_change_password,
@@ -496,6 +499,8 @@ def update_user(
         user.can_use_publications = payload.can_use_publications
     if payload.can_use_prazos_iniciais is not None:
         user.can_use_prazos_iniciais = payload.can_use_prazos_iniciais
+    if payload.notify_onerequest_errors is not None:
+        user.notify_onerequest_errors = payload.notify_onerequest_errors
     if payload.default_office_id is not None:
         user.default_office_id = payload.default_office_id
 
@@ -509,6 +514,7 @@ def update_user(
         "can_schedule_batch": user.can_schedule_batch,
         "can_use_publications": user.can_use_publications,
         "can_use_prazos_iniciais": getattr(user, "can_use_prazos_iniciais", False),
+        "notify_onerequest_errors": getattr(user, "notify_onerequest_errors", False),
         "default_office_id": user.default_office_id,
     }
 

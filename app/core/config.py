@@ -39,6 +39,17 @@ class Settings(BaseSettings):
     smtp_password: str | None = None
     email_from: str | None = None
     email_to: str | None = None
+    mail_mailer: str | None = None
+    mail_host: str | None = None
+    mail_port: int | None = None
+    mail_username: str | None = None
+    mail_password: str | None = None
+    mail_encryption: str | None = None
+    mail_from_address: str | None = None
+    mail_from_name: str | None = None
+    mail_to: str | None = None
+    system_name: str | None = None
+    app_name: str | None = None
 
     datajud_base_url: str = "https://api-publica.datajud.cnj.jus.br"
     datajud_api_key: str | None = None
