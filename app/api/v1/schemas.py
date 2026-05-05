@@ -114,6 +114,7 @@ class Squad(BaseModel):
     id: int
     name: str
     is_active: bool
+    kind: str = "principal"  # 'principal' | 'support'
     office_external_id: Optional[int] = None
     office: Optional[OfficeRef] = None
     members: List[SquadMember] = []
@@ -156,11 +157,13 @@ class AssistantResolution(BaseModel):
 class SquadCreateSchema(BaseModel):
     name: str
     office_external_id: int
+    kind: str = Field(default="principal", pattern="^(principal|support)$")
     members: List[SquadMemberSchema] = []
 
 class SquadUpdateSchema(BaseModel):
     name: Optional[str] = None
     office_external_id: Optional[int] = None
+    kind: Optional[str] = Field(default=None, pattern="^(principal|support)$")
     members: Optional[List[SquadMemberSchema]] = None
 
 # --- Schema para Task Templates ---

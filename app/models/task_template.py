@@ -75,6 +75,12 @@ class TaskTemplate(Base):
     target_role = Column(
         String(16), nullable=False, default="principal", server_default="principal",
     )
+    # Quando setado, a tarefa vai pra essa squad de suporte (kind='support')
+    # em vez do responsavel/assistente da squad principal. Combinado com
+    # target_role. Migration: sqd004.
+    target_squad_id = Column(
+        Integer, ForeignKey("squads.id"), nullable=True, index=True,
+    )
     due_date_reference = Column(
         String, nullable=False, default="publication",
         doc='Referência para cálculo do prazo: "publication" (data da publicação) ou "today" (data atual)',

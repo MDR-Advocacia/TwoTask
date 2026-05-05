@@ -1,6 +1,7 @@
 # app/api/v1/endpoints/squads.py
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import List
 
@@ -36,13 +37,14 @@ from typing import Optional
 @router.get("", response_model=List[schemas.Squad])
 def get_squads(
     office_external_id: Optional[int] = None,
+    kind: Optional[str] = None,
     service: SquadService = Depends(get_squad_service)
 ):
     """
     Endpoint para buscar todos os squads e membros ATIVOS.
-    Pode ser filtrado por `office_external_id`.
+    Pode ser filtrado por `office_external_id` e/ou `kind` ('principal' | 'support').
     """
-    squads = service.get_all_squads(office_external_id=office_external_id)
+    squads = service.get_all_squads(office_external_id=office_external_id, kind=kind)
     
     # Filtra membros inativos (com base no status do usuário do Legal One) na resposta
     active_squads_data = []
@@ -193,6 +195,91 @@ def get_assistant_of_user(
             commit=False,
         )
     except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return schemas.AssistantResolution(
+        user_external_id=result.user_external_id,
+        squad_id=result.squad_id,
+        squad_name=result.squad_name,
+        fallback_reason=result.fallback_reason,
+    )
+
+
+# ─── Resolver unificado (cobre target_squad_id + target_role) ─────
+
+class ResolveTargetRequest(BaseModel):
+    target_role: str = "principal"  # 'principal' | 'assistente'
+    responsible_user_external_id: Optional[int] = None
+    target_squad_id: Optional[int] = None
+    office_external_id: Optional[int] = None
+    task_subtype_external_id: Optional[int] = None
+
+
+@router.post(
+    "/resolve-target/preview",
+    response_model=schemas.AssistantResolution,
+    summary="PREVIEW de quem recebe a tarefa (cobre 4 cenarios) — nao avanca fila.",
+)
+def resolve_target_preview(
+    body: ResolveTargetRequest,
+    db: Session = Depends(get_db),
+):
+    from app.services.squad_assistant_resolver import resolve_target
+    if body.target_role == "principal" and body.target_squad_id is None:
+        # Sem squad de suporte e papel=principal: precisa do responsible_user_external_id
+        if not body.responsible_user_external_id:
+            raise HTTPException(
+                status_code=422,
+                detail="responsible_user_external_id obrigatorio quando target_squad_id nao informado.",
+            )
+    try:
+        result = resolve_target(
+            db,
+            target_role=body.target_role,
+            responsible_user_external_id=body.responsible_user_external_id or 0,
+            target_squad_id=body.target_squad_id,
+            office_external_id=body.office_external_id,
+            task_subtype_external_id=body.task_subtype_external_id,
+            commit=False,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return schemas.AssistantResolution(
+        user_external_id=result.user_external_id,
+        squad_id=result.squad_id,
+        squad_name=result.squad_name,
+        fallback_reason=result.fallback_reason,
+    )
+
+
+@router.post(
+    "/resolve-target/claim",
+    response_model=schemas.AssistantResolution,
+    summary="Resolve E avanca a fila do round-robin (claim definitivo).",
+)
+def resolve_target_claim(
+    body: ResolveTargetRequest,
+    db: Session = Depends(get_db),
+):
+    from app.services.squad_assistant_resolver import resolve_target
+    if body.target_role == "principal" and body.target_squad_id is None:
+        if not body.responsible_user_external_id:
+            raise HTTPException(
+                status_code=422,
+                detail="responsible_user_external_id obrigatorio quando target_squad_id nao informado.",
+            )
+    try:
+        result = resolve_target(
+            db,
+            target_role=body.target_role,
+            responsible_user_external_id=body.responsible_user_external_id or 0,
+            target_squad_id=body.target_squad_id,
+            office_external_id=body.office_external_id,
+            task_subtype_external_id=body.task_subtype_external_id,
+            commit=True,
+        )
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return schemas.AssistantResolution(
         user_external_id=result.user_external_id,

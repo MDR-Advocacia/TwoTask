@@ -37,6 +37,132 @@ class AssistantResolutionResult:
         self.fallback_reason = fallback_reason
 
 
+def resolve_target(
+    db: Session,
+    *,
+    target_role: str,
+    responsible_user_external_id: int,
+    target_squad_id: Optional[int] = None,
+    task_subtype_external_id: Optional[int] = None,
+    office_external_id: Optional[int] = None,
+    commit: bool = False,
+) -> AssistantResolutionResult:
+    """
+    Resolve quem recebe a tarefa baseado no template (`target_role`,
+    `target_squad_id`). Cobre 4 cenarios:
+
+    - target_role='principal', target_squad_id=None: retorna o
+      `responsible_user_external_id` direto (responsavel padrao).
+    - target_role='assistente', target_squad_id=None: assistente da
+      squad PRINCIPAL do responsavel (`resolve_assistant` atual).
+    - target_role='principal', target_squad_id=X: leader da squad de
+      suporte X.
+    - target_role='assistente', target_squad_id=X: assistente da squad
+      de suporte X (round-robin).
+
+    `commit=True` avanca o `last_assigned_at` no membro escolhido.
+    """
+    # Cenario 1: principal sem squad de suporte → responsavel padrao
+    if target_role == "principal" and target_squad_id is None:
+        return AssistantResolutionResult(
+            user_external_id=int(responsible_user_external_id),
+        )
+
+    # Cenarios 3 e 4: squad de suporte explicita
+    if target_squad_id is not None:
+        return _resolve_in_squad(
+            db,
+            squad_id=int(target_squad_id),
+            target_role=target_role,
+            commit=commit,
+        )
+
+    # Cenario 2: assistente da squad principal (logica atual)
+    return resolve_assistant(
+        db,
+        responsible_user_external_id=responsible_user_external_id,
+        task_subtype_external_id=task_subtype_external_id,
+        office_external_id=office_external_id,
+        commit=commit,
+    )
+
+
+def _resolve_in_squad(
+    db: Session,
+    *,
+    squad_id: int,
+    target_role: str,
+    commit: bool,
+) -> AssistantResolutionResult:
+    """Pega leader (target_role='principal') ou proximo assistente em
+    round-robin (target_role='assistente') da squad informada. Usado pra
+    squads de suporte (kind='support')."""
+    squad = db.query(Squad).filter(Squad.id == squad_id).one_or_none()
+    if squad is None:
+        raise ValueError(f"Squad {squad_id} nao encontrada.")
+    if not squad.is_active:
+        raise ValueError(f"Squad '{squad.name}' (id={squad_id}) esta inativa.")
+
+    if target_role == "principal":
+        leader = (
+            db.query(SquadMember)
+            .filter(SquadMember.squad_id == squad_id, SquadMember.is_leader.is_(True))
+            .one_or_none()
+        )
+        if leader is None:
+            raise ValueError(
+                f"Squad '{squad.name}' (id={squad_id}) nao tem lider cadastrado."
+            )
+        user = (
+            db.query(LegalOneUser)
+            .filter(LegalOneUser.id == leader.legal_one_user_id)
+            .one_or_none()
+        )
+        if user is None:
+            raise ValueError(
+                f"Lider da squad '{squad.name}' nao existe mais no catalogo. "
+                "Re-sincronize ou ajuste a squad."
+            )
+        return AssistantResolutionResult(
+            user_external_id=int(user.external_id),
+            squad_id=squad.id,
+            squad_name=squad.name,
+        )
+
+    # target_role='assistente' → round-robin
+    from datetime import datetime, timezone
+    member = (
+        db.query(SquadMember)
+        .filter(SquadMember.squad_id == squad_id, SquadMember.is_assistant.is_(True))
+        .order_by(
+            SquadMember.last_assigned_at.asc().nullsfirst(),
+            SquadMember.id.asc(),
+        )
+        .first()
+    )
+    if member is None:
+        raise ValueError(
+            f"Squad '{squad.name}' (id={squad_id}) nao tem assistente cadastrado."
+        )
+    if commit:
+        member.last_assigned_at = datetime.now(timezone.utc)
+        db.flush()
+    user = (
+        db.query(LegalOneUser)
+        .filter(LegalOneUser.id == member.legal_one_user_id)
+        .one_or_none()
+    )
+    if user is None:
+        raise ValueError(
+            f"Assistente da squad '{squad.name}' nao existe mais no catalogo."
+        )
+    return AssistantResolutionResult(
+        user_external_id=int(user.external_id),
+        squad_id=squad.id,
+        squad_name=squad.name,
+    )
+
+
 def resolve_assistant(
     db: Session,
     *,
@@ -88,6 +214,10 @@ def resolve_assistant(
         .filter(
             SquadMember.legal_one_user_id == user.id,
             Squad.is_active.is_(True),
+            # Apenas squads PRINCIPAIS — pra resolver assistente do
+            # responsavel principal nao pode considerar squads de
+            # suporte que o mesmo user talvez participe.
+            Squad.kind == "principal",
         )
         .all()
     )

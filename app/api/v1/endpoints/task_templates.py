@@ -45,6 +45,10 @@ class TaskTemplateBase(BaseModel):
     # de Publicações resolve o assistente via /squads/assistant-of/... antes
     # de mandar o payload pra criação no L1.
     target_role: str = Field(default="principal", pattern="^(principal|assistente)$")
+    # Quando setado, aponta pra uma squad de suporte (kind='support').
+    # Combinado com target_role: 'principal'=lider, 'assistente'=assistente
+    # (round-robin) da squad de suporte.
+    target_squad_id: Optional[int] = Field(default=None, ge=1)
 
 
 class TaskTemplateCreate(TaskTemplateBase):
@@ -65,6 +69,7 @@ class TaskTemplateUpdate(BaseModel):
     notes_template: Optional[str] = None
     is_active: Optional[bool] = None
     target_role: Optional[str] = Field(default=None, pattern="^(principal|assistente)$")
+    target_squad_id: Optional[int] = Field(default=None, ge=1)
 
 
 class TaskTemplateResponse(TaskTemplateBase):
@@ -117,7 +122,23 @@ def _to_response(tmpl: TaskTemplate) -> dict:
         "notes_template": tmpl.notes_template,
         "is_active": tmpl.is_active,
         "target_role": getattr(tmpl, "target_role", None) or "principal",
+        "target_squad_id": getattr(tmpl, "target_squad_id", None),
+        "target_squad_name": _support_squad_name_lookup(tmpl),
     }
+
+
+def _support_squad_name_lookup(tmpl: TaskTemplate) -> Optional[str]:
+    sq_id = getattr(tmpl, "target_squad_id", None)
+    if not sq_id:
+        return None
+    try:
+        from app.db.session import SessionLocal
+        from app.models.rules import Squad
+        with SessionLocal() as s:
+            row = s.query(Squad.name).filter(Squad.id == sq_id).first()
+            return row[0] if row else None
+    except Exception:
+        return None
 
 
 def _validate_foreign_keys(

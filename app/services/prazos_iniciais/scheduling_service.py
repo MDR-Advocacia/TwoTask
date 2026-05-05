@@ -30,6 +30,7 @@ from app.services.legal_one_client import (
 from app.services.squad_assistant_resolver import (
     AssistantResolutionResult,
     resolve_assistant,
+    resolve_target,
 )
 from app.services.prazos_iniciais import storage as pdf_storage
 from app.services.prazos_iniciais.legacy_task_cancellation_service import (
@@ -176,32 +177,39 @@ class PrazosIniciaisSchedulingService:
         task_subtype_external_id: Optional[int],
         target_role: str,
         office_external_id: Optional[int] = None,
+        target_squad_id: Optional[int] = None,
     ) -> tuple[int, Optional[AssistantResolutionResult]]:
         """
         Resolve o user que vai virar `participants[0].contact.id` no L1.
+        Cobre os 4 cenarios via `resolve_target`:
 
-        - target_role='principal' (ou desconhecido): retorna o candidato
-          direto, resolution=None.
-        - target_role='assistente': chama `resolve_assistant` com `commit=True`
-          (avanca round-robin) e usa o office do intake como tie-break.
+        - principal sem target_squad: candidato direto
+        - assistente sem target_squad: assistente da squad principal
+        - principal com target_squad: leader da squad de suporte
+        - assistente com target_squad: assistente da support (round-robin)
+
+        `commit=True` avanca o round-robin (last_assigned_at).
         """
-        if target_role != "assistente":
-            return int(candidate_user_external_id), None
-        result = resolve_assistant(
+        result = resolve_target(
             self.db,
+            target_role=target_role,
             responsible_user_external_id=int(candidate_user_external_id),
+            target_squad_id=target_squad_id,
             task_subtype_external_id=task_subtype_external_id,
             office_external_id=office_external_id,
             commit=True,
         )
+        # resolution=None quando e' "principal sem squad" (passa direto)
+        if target_role == "principal" and target_squad_id is None:
+            return result.user_external_id, None
         return result.user_external_id, result
 
-    def _lookup_template_target_role(
+    def _lookup_template_target(
         self, sugestao: PrazoInicialSugestao,
-    ) -> str:
-        """Lookup de `target_role` via `payload_proposto.template_id`. Default
-        'principal' se a sugestao nao casou com template ou template foi
-        removido — preserva comportamento das sugestoes pre-feature."""
+    ) -> tuple[str, Optional[int]]:
+        """Lookup de `target_role` + `target_squad_id` via
+        `payload_proposto.template_id`. Default ('principal', None) se
+        a sugestao nao casou com template ou template foi removido."""
         from app.models.prazo_inicial_task_template import (
             PrazoInicialTaskTemplate,
         )
@@ -209,15 +217,22 @@ class PrazosIniciaisSchedulingService:
         payload = sugestao.payload_proposto or {}
         template_id = payload.get("template_id")
         if not template_id:
-            return "principal"
+            return "principal", None
         template = (
             self.db.query(PrazoInicialTaskTemplate)
             .filter(PrazoInicialTaskTemplate.id == int(template_id))
             .one_or_none()
         )
         if template is None:
-            return "principal"
-        return template.target_role or "principal"
+            return "principal", None
+        return (
+            template.target_role or "principal",
+            getattr(template, "target_squad_id", None),
+        )
+
+    # Backwards-compat shim — alguns lugares ainda chamam o nome antigo.
+    def _lookup_template_target_role(self, sugestao: PrazoInicialSugestao) -> str:
+        return self._lookup_template_target(sugestao)[0]
 
     def _build_l1_task_payload(
         self,
@@ -292,17 +307,20 @@ class PrazosIniciaisSchedulingService:
         # aplicado em `sugestao.responsavel_sugerido_id` antes desta
         # chamada — entao o resolver opera sobre o valor "atual" da
         # sugestao, que e' o que o operador realmente quer ver na squad.
-        target_role = self._lookup_template_target_role(sugestao)
+        target_role, target_squad_id = self._lookup_template_target(sugestao)
         # Override manual: se o operador trocou o responsavel no modal,
-        # respeita a escolha dele e desliga a regra do assistente.
-        if target_role == "assistente" and (sugestao.payload_proposto or {}).get("responsible_overridden"):
+        # respeita a escolha dele — desliga regra do assistente E desliga
+        # roteamento pra squad de suporte (operador na ponta vence).
+        if (sugestao.payload_proposto or {}).get("responsible_overridden"):
             target_role = "principal"
+            target_squad_id = None
         try:
             final_responsible_id, _resolution = self._resolve_final_responsible(
                 candidate_user_external_id=int(sugestao.responsavel_sugerido_id),
                 task_subtype_external_id=int(sugestao.task_subtype_id),
                 target_role=target_role,
                 office_external_id=intake.office_id,
+                target_squad_id=target_squad_id,
             )
         except ValueError as exc:
             raise ValueError(
