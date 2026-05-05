@@ -27,6 +27,8 @@ import {
   PrazoInicialIntakeFilters,
   PrazoInicialIntakeListResponse,
   PrazoInicialIntakeSummary,
+  PrazoInicialPatrocinio,
+  PrazoInicialPatrocinioPatch,
   PrazoInicialUploadResponse,
   PrazoInicialLegacyTaskCancelQueueListResponse,
   PrazoInicialLegacyTaskCircuitBreakerResetResponse,
@@ -228,6 +230,18 @@ export async function fetchPrazosIniciaisIntakes(
   if (typeof filters.pdf_extraction_failed === "boolean") {
     params.set("pdf_extraction_failed", String(filters.pdf_extraction_failed));
   }
+  if (filters.patrocinio_decisao) {
+    params.set("patrocinio_decisao", filters.patrocinio_decisao);
+  }
+  if (typeof filters.patrocinio_suspeita_devolucao === "boolean") {
+    params.set(
+      "patrocinio_suspeita_devolucao",
+      String(filters.patrocinio_suspeita_devolucao),
+    );
+  }
+  if (filters.patrocinio_review_status) {
+    params.set("patrocinio_review_status", filters.patrocinio_review_status);
+  }
   if (typeof filters.limit === "number") params.set("limit", String(filters.limit));
   if (typeof filters.offset === "number") params.set("offset", String(filters.offset));
 
@@ -244,6 +258,33 @@ export async function fetchPrazoInicialDetail(
 ): Promise<PrazoInicialIntakeDetail> {
   const response = await apiFetch(`/api/v1/prazos-iniciais/intakes/${intakeId}`);
   return expectJson<PrazoInicialIntakeDetail>(response);
+}
+
+
+/**
+ * HITL — operador aprova/edita/rejeita decisão de patrocínio da IA.
+ *
+ * - `aprovado`: aceita a decisão da IA sem alterações; só carimba
+ *   reviewed_by/at.
+ * - `editado`: operador alterou ao menos um campo (`decisao`,
+ *   `outro_advogado_*`, `suspeita_devolucao`, etc.). Só os campos
+ *   enviados são atualizados.
+ * - `rejeitado`: operador discordou da IA — registra mas NÃO altera os
+ *   campos. Operador pode reanalisar manualmente.
+ */
+export async function patchPrazoInicialPatrocinio(
+  intakeId: number,
+  payload: PrazoInicialPatrocinioPatch,
+): Promise<PrazoInicialPatrocinio> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/intakes/${intakeId}/patrocinio`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+  return expectJson<PrazoInicialPatrocinio>(response);
 }
 
 

@@ -89,6 +89,7 @@ import {
   type ReapplyTemplatesResult,
 } from "@/services/api";
 import { UploadProcessoDialog } from "@/components/prazos-iniciais/UploadProcessoDialog";
+import { PatrocinioPanel } from "@/components/prazos-iniciais/PatrocinioPanel";
 import { useAuth } from "@/hooks/useAuth";
 import type {
   PrazoInicialBatchSummary,
@@ -2632,6 +2633,31 @@ export default function PrazosIniciaisPage() {
                               Classificar manual
                             </Badge>
                           ) : null}
+                          {item.patrocinio_suspeita_devolucao ? (
+                            <Badge
+                              variant="outline"
+                              className="bg-amber-50 text-amber-900 border-amber-400 text-xs"
+                              title="Patrocínio: caso marcado para devolução"
+                            >
+                              Devolução
+                            </Badge>
+                          ) : item.patrocinio_decisao === "OUTRO_ESCRITORIO" ? (
+                            <Badge
+                              variant="outline"
+                              className="bg-orange-50 text-orange-800 border-orange-300 text-xs"
+                              title="Patrocínio: outro escritório"
+                            >
+                              Outro escritório
+                            </Badge>
+                          ) : item.patrocinio_decisao === "CONDUCAO_INTERNA" ? (
+                            <Badge
+                              variant="outline"
+                              className="bg-blue-50 text-blue-800 border-blue-300 text-xs"
+                              title="Patrocínio: condução interna do cliente"
+                            >
+                              Condução interna
+                            </Badge>
+                          ) : null}
                         </div>
                         <div className="text-xs text-muted-foreground">
                           {naturezaLabel(item.natureza_processo) || "Natureza pendente"}
@@ -3209,6 +3235,24 @@ export default function PrazosIniciaisPage() {
               })()}
 
               <Separator />
+
+              {/* Pin018 — Patrocínio: análise paralela (não cria task).
+                  Aparece SOMENTE quando o intake bateu com vinculada
+                  Master no polo passivo. Operador aprova/edita/rejeita
+                  decisão da IA. */}
+              {detail.patrocinio ? (
+                <>
+                  <PatrocinioPanel
+                    patrocinio={detail.patrocinio}
+                    onUpdated={(next) =>
+                      setDetail((prev) =>
+                        prev ? { ...prev, patrocinio: next } : prev,
+                      )
+                    }
+                  />
+                  <Separator />
+                </>
+              ) : null}
 
               {/* Sugestoes em modo READ-ONLY no Modal A. Pra agendar
                   efetivamente, operador clica "Agendar" no footer (abre

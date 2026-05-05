@@ -140,6 +140,7 @@ class PrazosIniciaisBatchClassifier:
                 capa_json=intake.capa_json,
                 integra_json=intake.integra_json,
                 tipos_pedido_disponiveis=self._fetch_tipos_pedido_ativos(),
+                master_vinculadas=self._fetch_master_vinculadas(),
             )
             custom_id = f"intake-{intake.id}"
             batch_requests.append(
@@ -356,6 +357,17 @@ class PrazosIniciaisBatchClassifier:
             # Analise estratégica global (Bloco E) — texto livre da IA.
             intake.analise_estrategica = response_obj.analise_estrategica
 
+            # Patrocínio (pin018) — análise paralela. Persiste só quando
+            # a IA marcou aplicavel=true (polo passivo bate com vinculada
+            # Master). Falhas aqui NÃO interrompem o intake — só logam.
+            try:
+                self._materialize_patrocinio(intake, response_obj)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "Erro materializando patrocínio do intake %s: %s",
+                    intake.id, exc,
+                )
+
             # Precisamos commitar pedidos antes de agregar (senão o
             # flush ainda não gravou). O classifier já usa flush
             # implicito via session; força aqui pra garantir que
@@ -488,6 +500,102 @@ class PrazosIniciaisBatchClassifier:
                 f"Resposta não casa com o schema esperado: {exc.errors()[:3]}"
             ) from exc
 
+
+
+    def _materialize_patrocinio(
+        self, intake, response_obj
+    ) -> None:
+        """
+        Cria/atualiza o registro `prazo_inicial_patrocinio` 1:1 com o
+        intake quando a IA marcou `patrocinio.aplicavel=true`. Quando
+        false, REMOVE o registro existente (caso seja reprocessamento
+        e a vinculada saiu do polo passivo) — mantém o estado coerente
+        com a última classificação.
+        """
+        from app.models.prazo_inicial_patrocinio import (
+            PATROCINIO_DECISOES_VALIDAS,
+            PATROCINIO_NATUREZAS_VALIDAS,
+            PATROCINIO_REVIEW_PENDING,
+            PrazoInicialPatrocinio,
+        )
+
+        patrocinio_resp = getattr(response_obj, "patrocinio", None)
+        existing = (
+            self.db.query(PrazoInicialPatrocinio)
+            .filter(PrazoInicialPatrocinio.intake_id == intake.id)
+            .first()
+        )
+
+        if patrocinio_resp is None or not patrocinio_resp.aplicavel:
+            # Reprocessamento que não bate mais com vinculada — limpa
+            # o registro pra não ficar dado obsoleto.
+            if existing is not None:
+                self.db.delete(existing)
+            return
+
+        decisao = patrocinio_resp.decisao
+        if decisao not in PATROCINIO_DECISOES_VALIDAS:
+            logger.warning(
+                "patrocinio: decisão inválida %r no intake %s — pulando.",
+                decisao, intake.id,
+            )
+            return
+
+        natureza = patrocinio_resp.natureza_acao
+        if natureza is not None and natureza not in PATROCINIO_NATUREZAS_VALIDAS:
+            natureza = None  # IA emitiu valor fora do enum — ignora
+
+        if existing is None:
+            existing = PrazoInicialPatrocinio(
+                intake_id=intake.id,
+                review_status=PATROCINIO_REVIEW_PENDING,
+            )
+            self.db.add(existing)
+        else:
+            # Reprocessamento — reseta status pra pendente porque os
+            # campos da IA foram regenerados.
+            existing.review_status = PATROCINIO_REVIEW_PENDING
+            existing.reviewed_by_user_id = None
+            existing.reviewed_by_email = None
+            existing.reviewed_by_name = None
+            existing.reviewed_at = None
+
+        existing.decisao = decisao
+        existing.outro_escritorio_nome = patrocinio_resp.outro_escritorio_nome
+        existing.outro_advogado_nome = patrocinio_resp.outro_advogado_nome
+        existing.outro_advogado_oab = patrocinio_resp.outro_advogado_oab
+        existing.outro_advogado_data_habilitacao = (
+            patrocinio_resp.outro_advogado_data_habilitacao
+        )
+        existing.suspeita_devolucao = bool(patrocinio_resp.suspeita_devolucao)
+        existing.motivo_suspeita = patrocinio_resp.motivo_suspeita
+        existing.natureza_acao = natureza
+        existing.polo_passivo_confirmado = bool(
+            patrocinio_resp.polo_passivo_confirmado
+        )
+        existing.polo_passivo_observacao = patrocinio_resp.polo_passivo_observacao
+        existing.confianca = patrocinio_resp.confianca
+        existing.fundamentacao = patrocinio_resp.fundamentacao
+
+
+    def _fetch_master_vinculadas(self) -> list[dict]:
+        """
+        Lista das empresas vinculadas Master ATIVAS — entregue ao Sonnet
+        como gatilho da análise de patrocínio. Quando algum CNPJ desta
+        lista aparece no polo passivo, a IA preenche `patrocinio.aplicavel
+        = true` + decisão.
+        """
+        from app.models.master_vinculada import MasterVinculada
+        rows = (
+            self.db.query(MasterVinculada)
+            .filter(MasterVinculada.ativo.is_(True))
+            .order_by(MasterVinculada.cnpj.asc())
+            .all()
+        )
+        return [
+            {"cnpj": r.cnpj, "nome": r.nome, "estado": r.estado}
+            for r in rows
+        ]
 
 
     def _fetch_tipos_pedido_ativos(self) -> list[dict]:
