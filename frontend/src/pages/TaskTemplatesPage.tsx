@@ -166,6 +166,7 @@ interface TaskTemplate {
   description_template: string | null;
   notes_template: string | null;
   is_active: boolean;
+  target_role?: string; // 'principal' | 'assistente'
 }
 
 // ─── Blank form ────────────────────────────────────────────────────────────
@@ -231,6 +232,7 @@ const BLANK_TASK_BLOCK = {
     "Publicação judicial referente ao processo {cnj} em {publication_date}.",
   notes_template: "",
   is_active: true,
+  target_role_assistant: false,
 };
 
 type TaskBlock = typeof BLANK_TASK_BLOCK;
@@ -734,6 +736,7 @@ const TaskTemplatesPage = () => {
       description_template: tmpl.description_template ?? "",
       notes_template: tmpl.notes_template ?? "",
       is_active: tmpl.is_active,
+      target_role_assistant: tmpl.target_role === "assistente",
     };
   };
 
@@ -833,6 +836,7 @@ const TaskTemplatesPage = () => {
       description_template: block.description_template || null,
       notes_template: block.notes_template || null,
       is_active: block.is_active,
+      target_role: block.target_role_assistant ? "assistente" : "principal",
     });
 
     try {
@@ -2709,6 +2713,25 @@ const TaskTemplatesPage = () => {
                           ))}
                         </SelectContent>
                       </Select>
+                      <div className="flex items-start gap-2 pt-1">
+                        <Checkbox
+                          id={`pub-target-assistant-${idx}`}
+                          checked={!!block.target_role_assistant}
+                          onCheckedChange={(v) =>
+                            setBlockField(idx, "target_role_assistant", !!v)
+                          }
+                        />
+                        <Label
+                          htmlFor={`pub-target-assistant-${idx}`}
+                          className="text-xs font-normal leading-tight cursor-pointer"
+                        >
+                          Atribuir ao <strong>assistente</strong> da squad do responsável
+                          <span className="block text-muted-foreground">
+                            Quando marcado, ao criar a tarefa o sistema redireciona pro
+                            assistente da squad do responsável escolhido acima.
+                          </span>
+                        </Label>
+                      </div>
                     </div>
 
                     {/* Prazo, Referência e Prioridade */}
