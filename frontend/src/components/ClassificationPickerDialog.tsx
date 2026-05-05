@@ -10,7 +10,15 @@
  * permanente, com label "já adicionada".
  */
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, Search, X } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  Search,
+  X,
+} from "lucide-react";
 
 import {
   Dialog,
@@ -24,8 +32,18 @@ import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api-client";
+
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100] as const;
+const DEFAULT_PAGE_SIZE: (typeof PAGE_SIZE_OPTIONS)[number] = 10;
 
 export interface CategoryEntry {
   category: string;
@@ -79,6 +97,11 @@ export function ClassificationPickerDialog({
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // Paginação por categoria — a taxonomia tem 30+ cats e estoura o
+  // modal sem ela. Page é zero-indexed.
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] =
+    useState<(typeof PAGE_SIZE_OPTIONS)[number]>(DEFAULT_PAGE_SIZE);
 
   // ─── Reset ao reabrir ─────────────────────────────────────────────
   useEffect(() => {
@@ -88,6 +111,7 @@ export function ClassificationPickerDialog({
       // Por padrão deixa tudo recolhido — taxonomia pode ter 30+ cats e
       // o operador geralmente quer scrollar primeiro.
       setExpanded(new Set());
+      setPage(0);
     }
   }, [open]);
 
@@ -133,6 +157,32 @@ export function ClassificationPickerDialog({
       setExpanded(new Set(filteredCategories.map((c) => c.category)));
     }
   }, [normalizedQuery, filteredCategories]);
+
+  // ─── Paginação ──────────────────────────────────────────────────
+  // Recalcula sempre que filteredCategories mudar (busca filtra) ou
+  // pageSize mudar. Volta pra primeira página em qualquer mudança que
+  // possa invalidar a página atual.
+  const totalPages = Math.max(1, Math.ceil(filteredCategories.length / pageSize));
+
+  // Reset de página quando busca muda ou pageSize muda — evita
+  // "página vazia" porque a página atual ficou fora do range.
+  useEffect(() => {
+    setPage(0);
+  }, [normalizedQuery, pageSize]);
+
+  // Defensivo: se a página ficou fora do range (ex: filteredCategories
+  // encolheu), volta pra última página válida.
+  useEffect(() => {
+    if (page >= totalPages) setPage(Math.max(0, totalPages - 1));
+  }, [page, totalPages]);
+
+  const paginatedCategories = useMemo(() => {
+    const start = page * pageSize;
+    return filteredCategories.slice(start, start + pageSize);
+  }, [filteredCategories, page, pageSize]);
+
+  const pageStart = filteredCategories.length === 0 ? 0 : page * pageSize + 1;
+  const pageEnd = Math.min(filteredCategories.length, (page + 1) * pageSize);
 
   // ─── Helpers de seleção ───────────────────────────────────────────
   const toggleOne = (cat: string, sub: string | null) => {
@@ -212,7 +262,10 @@ export function ClassificationPickerDialog({
   };
 
   const expandAll = () => {
-    setExpanded(new Set(filteredCategories.map((c) => c.category)));
+    // Expande só o que está visível na página atual — evita
+    // explodir o modal quando o operador clica "Expandir tudo" com 30+
+    // categorias.
+    setExpanded(new Set(paginatedCategories.map((c) => c.category)));
   };
 
   const collapseAll = () => setExpanded(new Set());
@@ -362,7 +415,7 @@ export function ClassificationPickerDialog({
             </div>
           ) : (
             <div className="space-y-1">
-              {filteredCategories.map((c) => {
+              {paginatedCategories.map((c) => {
                 const isExpanded = expanded.has(c.category);
                 const state = categoryState(c);
                 // Categoria sem subs: o "disponivel" e' a propria categoria
@@ -469,6 +522,90 @@ export function ClassificationPickerDialog({
             </div>
           )}
         </ScrollArea>
+
+        {/* Barra de paginação */}
+        {filteredCategories.length > pageSize && (
+          <div className="border-t px-6 py-2 flex items-center justify-between gap-3 bg-muted/10 text-xs text-muted-foreground">
+            <div className="flex items-center gap-2">
+              <span>
+                Categorias <span className="font-medium text-foreground">{pageStart}–{pageEnd}</span> de{" "}
+                <span className="font-medium text-foreground">{filteredCategories.length}</span>
+              </span>
+              <span className="text-muted-foreground/50">·</span>
+              <span>por página</span>
+              <Select
+                value={String(pageSize)}
+                onValueChange={(v) =>
+                  setPageSize(
+                    Number(v) as (typeof PAGE_SIZE_OPTIONS)[number],
+                  )
+                }
+              >
+                <SelectTrigger className="h-7 w-[72px] text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PAGE_SIZE_OPTIONS.map((opt) => (
+                    <SelectItem key={opt} value={String(opt)} className="text-xs">
+                      {opt}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-center gap-1">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => setPage(0)}
+                disabled={page === 0}
+                aria-label="Primeira página"
+              >
+                <ChevronsLeft className="h-4 w-4" />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={page === 0}
+                aria-label="Página anterior"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <span className="px-2 tabular-nums">
+                <span className="font-medium text-foreground">{page + 1}</span>
+                {" / "}
+                {totalPages}
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                disabled={page >= totalPages - 1}
+                aria-label="Próxima página"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => setPage(totalPages - 1)}
+                disabled={page >= totalPages - 1}
+                aria-label="Última página"
+              >
+                <ChevronsRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* Footer */}
         <div className="border-t px-6 py-3 flex items-center justify-between gap-3 bg-muted/30">
