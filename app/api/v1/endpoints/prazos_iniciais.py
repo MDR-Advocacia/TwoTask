@@ -195,6 +195,26 @@ class SugestaoOut(BaseModel):
     reviewed_at: Optional[datetime]
     created_task_id: Optional[int]
     created_at: datetime
+    # Roteamento de squad (lookup feito do template via
+    # `payload_proposto.template_id` no momento da serializacao). A UI usa
+    # esses campos pra mostrar "Sera atribuido a [Assistente Nome]" no
+    # modal de Confirmar Agendamento, antes do operador clicar Confirmar.
+    # NULL = template nao tem squad routing OU sugestao nao casou template.
+    target_role: Optional[str] = None  # 'principal' | 'assistente'
+    target_squad_id: Optional[int] = None
+    target_squad_name: Optional[str] = None
+    # Resolucao "preview" do responsavel final (apos aplicar squad routing).
+    # Mesmo numero que o `_build_l1_task_payload` usaria, mas calculado em
+    # commit=False (nao avanca round-robin). NULL quando target_role e'
+    # 'principal' sem target_squad — nesse caso a UI mostra so o
+    # `responsavel_sugerido_id` direto.
+    resolved_responsible_user_external_id: Optional[int] = None
+    resolved_responsible_user_name: Optional[str] = None
+    # Mensagem humana quando a resolucao caiu em fallback (ex.: "user X
+    # nao esta em nenhuma squad — usado ele mesmo") OU quando o resolver
+    # levantou erro (ex.: "Squad sem assistente cadastrado"). UI mostra
+    # como warning amarelo abaixo do nome resolvido.
+    resolution_warning: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -487,7 +507,139 @@ def _intake_to_summary(intake: PrazoInicialIntake) -> IntakeSummary:
     )
 
 
-def _sugestao_to_out(sugestao: PrazoInicialSugestao) -> SugestaoOut:
+def _resolve_squad_routing_preview(
+    db: Session,
+    sugestao: PrazoInicialSugestao,
+    *,
+    intake_office_id: Optional[int],
+) -> dict:
+    """
+    Olha o template casado pela sugestao (via `payload_proposto.template_id`)
+    e devolve o dict com target_role/target_squad_id + preview do
+    responsavel resolvido. Usado pra montar `SugestaoOut` no detalhe do
+    intake — a UI mostra esse preview no modal de Confirmar Agendamento.
+
+    Espelha exatamente a logica de `_lookup_template_target` +
+    `_resolve_final_responsible` do scheduling_service, mas em commit=False
+    (NAO avanca o round-robin do assistente).
+
+    Retorna sempre todas as chaves; valores None quando nao se aplica
+    (ex.: sugestao no-op, sem template, ou principal sem squad).
+    """
+    out: dict = {
+        "target_role": None,
+        "target_squad_id": None,
+        "target_squad_name": None,
+        "resolved_responsible_user_external_id": None,
+        "resolved_responsible_user_name": None,
+        "resolution_warning": None,
+    }
+
+    payload = sugestao.payload_proposto or {}
+    if payload.get("skip_task_creation") or payload.get("is_custom_task"):
+        # Sugestao no-op (template skip) ou tarefa avulsa sintetica — UI
+        # ja sabe lidar; nao tenta resolver squad routing.
+        return out
+
+    template_id = payload.get("template_id")
+    if not template_id:
+        return out
+
+    template = (
+        db.query(PrazoInicialTaskTemplate)
+        .filter(PrazoInicialTaskTemplate.id == int(template_id))
+        .one_or_none()
+    )
+    if template is None:
+        return out
+
+    target_role = (getattr(template, "target_role", None) or "principal")
+    target_squad_id = getattr(template, "target_squad_id", None)
+    out["target_role"] = target_role
+    out["target_squad_id"] = target_squad_id
+
+    # Override manual do operador no modal anterior (responsible_overridden=True)
+    # desliga o roteamento — preview espelha o que o scheduler faria.
+    if payload.get("responsible_overridden"):
+        target_role = "principal"
+        target_squad_id = None
+
+    # Cenario 1 (principal sem support squad) → o proprio
+    # responsavel_sugerido_id ja' e' o final. UI pode usar a coluna
+    # responsavel_sugerido_id direto, mas devolvemos `resolved_*`
+    # vazio pra indicar "nada a redirecionar".
+    if target_role == "principal" and target_squad_id is None:
+        return out
+
+    # Cenarios 2/3/4 → chama o resolver em modo preview (commit=False).
+    from app.services.squad_assistant_resolver import resolve_target
+
+    candidate_id = sugestao.responsavel_sugerido_id
+    try:
+        result = resolve_target(
+            db,
+            target_role=target_role,
+            responsible_user_external_id=int(candidate_id or 0),
+            target_squad_id=target_squad_id,
+            office_external_id=intake_office_id,
+            task_subtype_external_id=sugestao.task_subtype_id,
+            commit=False,
+        )
+    except ValueError as exc:
+        # Resolver levantou erro humano (ex.: "Squad sem assistente").
+        # NAO levanta a exception — UI precisa renderizar o intake mesmo
+        # com squad mal configurada. Operador ve o aviso e troca o
+        # responsavel manualmente.
+        out["resolution_warning"] = str(exc)
+        return out
+
+    out["resolved_responsible_user_external_id"] = result.user_external_id
+    if result.squad_name:
+        out["target_squad_name"] = result.squad_name
+
+    # Lookup do nome do user resolvido (1 query a mais — irrelevante na
+    # tela de detalhe, que carrega ja' uma sugestao por vez agrupada).
+    user_row = (
+        db.query(LegalOneUser)
+        .filter(LegalOneUser.external_id == result.user_external_id)
+        .one_or_none()
+    )
+    if user_row is not None:
+        out["resolved_responsible_user_name"] = user_row.name
+
+    if result.fallback_reason == "user_not_in_any_squad":
+        out["resolution_warning"] = (
+            "Responsável fora de squads — tarefa fica com ele mesmo. "
+            "Configure a squad principal do escritório em /admin/squads."
+        )
+    elif result.fallback_reason == "multiple_squads_ambiguous":
+        squad_label = result.squad_name or "?"
+        out["resolution_warning"] = (
+            f"Múltiplas squads do responsável — usando \"{squad_label}\"."
+        )
+    return out
+
+
+def _sugestao_to_out(
+    sugestao: PrazoInicialSugestao,
+    *,
+    db: Optional[Session] = None,
+    intake_office_id: Optional[int] = None,
+) -> SugestaoOut:
+    extra: dict = {}
+    if db is not None:
+        try:
+            extra = _resolve_squad_routing_preview(
+                db, sugestao, intake_office_id=intake_office_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Defesa em profundidade — nunca falha o GET /intakes/{id} por
+            # causa de squad routing. Loga e segue sem preview.
+            logger.warning(
+                "squad_routing_preview falhou (sugestao_id=%s): %s",
+                sugestao.id, exc,
+            )
+            extra = {}
     return SugestaoOut(
         id=sugestao.id,
         tipo_prazo=sugestao.tipo_prazo,
@@ -517,6 +669,16 @@ def _sugestao_to_out(sugestao: PrazoInicialSugestao) -> SugestaoOut:
         reviewed_at=sugestao.reviewed_at,
         created_task_id=sugestao.created_task_id,
         created_at=sugestao.created_at,
+        target_role=extra.get("target_role"),
+        target_squad_id=extra.get("target_squad_id"),
+        target_squad_name=extra.get("target_squad_name"),
+        resolved_responsible_user_external_id=extra.get(
+            "resolved_responsible_user_external_id"
+        ),
+        resolved_responsible_user_name=extra.get(
+            "resolved_responsible_user_name"
+        ),
+        resolution_warning=extra.get("resolution_warning"),
     )
 
 
@@ -828,7 +990,10 @@ def get_intake(
         **summary.model_dump(),
         capa_json=intake.capa_json,
         metadata_json=intake.metadata_json,
-        sugestoes=[_sugestao_to_out(s) for s in sugestoes_sorted],
+        sugestoes=[
+            _sugestao_to_out(s, db=db, intake_office_id=intake.office_id)
+            for s in sugestoes_sorted
+        ],
         pedidos=pedidos_serialized,
     )
 

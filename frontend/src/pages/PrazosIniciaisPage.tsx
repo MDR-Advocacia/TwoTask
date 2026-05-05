@@ -3675,6 +3675,67 @@ export default function PrazosIniciaisPage() {
                                     }
                                     placeholder="Selecione um responsável..."
                                   />
+                                  {/* Preview do roteamento de squad — vem do template via
+                                      backend (`target_role`/`target_squad_id` +
+                                      `resolved_responsible_user_*`). Mostra pra quem a
+                                      tarefa REALMENTE vai no L1. Operador override
+                                      manual ja' desliga isso (responsavel != original
+                                      → backend marca responsible_overridden=True). */}
+                                  {(() => {
+                                    const overridden =
+                                      form.responsible_user_external_id !==
+                                      suggestion.responsavel_sugerido_id;
+                                    const tr = suggestion.target_role;
+                                    const tsq = suggestion.target_squad_id;
+                                    const hasRouting =
+                                      !overridden && (tr === "assistente" || tsq != null);
+                                    if (!hasRouting) {
+                                      // Aviso isolado quando o resolver levantou erro
+                                      // (ex.: squad sem assistente cadastrado) mesmo
+                                      // sem overridden. UI tem que mostrar pra operador.
+                                      if (suggestion.resolution_warning && !overridden) {
+                                        return (
+                                          <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-900 mt-1">
+                                            ⚠ {suggestion.resolution_warning}
+                                          </div>
+                                        );
+                                      }
+                                      return null;
+                                    }
+                                    const resolvedName =
+                                      suggestion.resolved_responsible_user_name;
+                                    const squadName = suggestion.target_squad_name;
+                                    const roleLabel =
+                                      tr === "assistente" ? "assistente" : "líder";
+                                    if (!resolvedName) {
+                                      // target_role/squad setado mas resolver nao
+                                      // achou → warning destacado.
+                                      return (
+                                        <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-900 mt-1">
+                                          ⚠{" "}
+                                          {suggestion.resolution_warning ||
+                                            `Não foi possível resolver ${roleLabel} da squad. Configure em /admin/squads.`}
+                                        </div>
+                                      );
+                                    }
+                                    return (
+                                      <div className="rounded border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] text-blue-900 mt-1">
+                                        🤖 Será atribuído ao {roleLabel}{" "}
+                                        <strong>{resolvedName}</strong>
+                                        {squadName ? (
+                                          <span className="text-blue-700">
+                                            {" "}
+                                            (squad "{squadName}")
+                                          </span>
+                                        ) : null}
+                                        {suggestion.resolution_warning ? (
+                                          <span className="ml-1 text-amber-700">
+                                            · {suggestion.resolution_warning}
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                    );
+                                  })()}
                                 </div>
                                 <div className="space-y-1">
                                   <Label className="text-xs">Prioridade</Label>
