@@ -2704,6 +2704,132 @@ class PublicationSearchService:
     # Agendamento (criação de tarefa no LegalOne)
     # ──────────────────────────────────────────────
 
+    def _apply_squad_routing_server_side(
+        self,
+        *,
+        payloads: list[dict],
+        proposals: list,
+        lawsuit_id: int,
+    ) -> None:
+        """
+        Aplica `target_role` / `target_squad_id` do template (gravado em
+        `_proposed_task` no momento da classificacao/rebuild) substituindo
+        `participants[0].contact.id` pelo assistente/lider de support
+        squad resolvido server-side via `resolve_target`.
+
+        Pareamento payload ↔ proposal: por `subTypeId`. Tarefa avulsa
+        (sem proposal) e' pulada (sem template = sem regra).
+
+        Override: se `payload.participants[0].contact.id` (o que o
+        frontend mandou) e' diferente do `proposal.payload.participants
+        [0].contact.id` (o que o template gravou), respeita — o operador
+        trocou OU o frontend ja' resolveu via /claim.
+
+        Em erro do resolver (ex.: squad sem assistente cadastrado),
+        levanta ValueError pra que o caller aborte com mensagem humana
+        antes de qualquer task ir pro L1.
+        """
+        if not proposals:
+            return
+
+        # Indexa proposals por subTypeId pra parear com cada payload.
+        proposals_by_subtype: dict[int, dict] = {}
+        original_responsible_by_subtype: dict[int, int] = {}
+        for prop in proposals:
+            if not isinstance(prop, dict):
+                continue
+            payload_of_prop = prop.get("payload") or {}
+            sub = payload_of_prop.get("subTypeId")
+            if sub is None:
+                continue
+            proposals_by_subtype[int(sub)] = prop
+            parts = payload_of_prop.get("participants") or []
+            if parts and isinstance(parts[0], dict):
+                contact = parts[0].get("contact") or {}
+                if contact.get("id") is not None:
+                    original_responsible_by_subtype[int(sub)] = int(contact["id"])
+
+        from app.services.squad_assistant_resolver import resolve_target
+
+        for payload in payloads:
+            if not isinstance(payload, dict):
+                continue
+            sub = payload.get("subTypeId")
+            if sub is None:
+                continue
+            prop = proposals_by_subtype.get(int(sub))
+            if not prop:
+                # Tarefa avulsa OU subtipo trocado pelo operador — sem
+                # template casado, regra do assistente nao se aplica.
+                continue
+
+            target_role = (prop.get("target_role") or "principal")
+            target_squad_id = prop.get("target_squad_id")
+
+            # Cenario 1 (principal sem support squad) → nada a fazer.
+            if target_role == "principal" and not target_squad_id:
+                continue
+
+            parts = payload.get("participants") or []
+            if not parts or not isinstance(parts[0], dict):
+                continue
+            contact = parts[0].get("contact") or {}
+            current_id = contact.get("id")
+            original_id = original_responsible_by_subtype.get(int(sub))
+
+            # Override manual — operador trocou no modal OU frontend ja'
+            # resolveu via /claim. Nao queremos substituir nem rodar o
+            # round-robin de novo (cliente que avancou ja avancou).
+            if (
+                current_id is not None
+                and original_id is not None
+                and int(current_id) != int(original_id)
+            ):
+                logger.info(
+                    "publications.routing lawsuit=%s subType=%s SKIP override "
+                    "current=%s original=%s",
+                    lawsuit_id, sub, current_id, original_id,
+                )
+                continue
+
+            office_external_id = (
+                payload.get("responsibleOfficeId")
+                or payload.get("originOfficeId")
+            )
+            try:
+                result = resolve_target(
+                    self.db,
+                    target_role=target_role,
+                    responsible_user_external_id=int(original_id) if original_id else 0,
+                    target_squad_id=int(target_squad_id) if target_squad_id else None,
+                    office_external_id=int(office_external_id) if office_external_id else None,
+                    task_subtype_external_id=int(sub),
+                    commit=True,
+                )
+            except ValueError as exc:
+                # Squad sem assistente / squad invalida — relevanta pra
+                # caller (schedule_group) abortar com mensagem humana
+                # antes de criar qualquer task no L1.
+                raise ValueError(
+                    f"Squad routing falhou (subType={sub}, "
+                    f"target_role={target_role!r}): {exc}"
+                ) from exc
+
+            payload["participants"] = [{
+                "contact": {"id": int(result.user_external_id)},
+                "isResponsible": True,
+                "isExecuter": True,
+                "isRequester": True,
+            }]
+            logger.info(
+                "publications.routing lawsuit=%s subType=%s "
+                "template_target_role=%s target_squad_id=%s "
+                "original=%s final=%s squad=%s fallback=%s",
+                lawsuit_id, sub, target_role, target_squad_id,
+                original_id, result.user_external_id,
+                result.squad_name, result.fallback_reason,
+            )
+
     def schedule_group(
         self,
         lawsuit_id: int,
@@ -2751,6 +2877,26 @@ class PublicationSearchService:
             raise ValueError("Proposta de tarefa inexistente. Configure um template.")
 
         self._apply_lawsuit_responsible_to_missing_payloads(payloads, lawsuit_id)
+
+        # ── Squad routing (target_role/target_squad_id) — server-side ──
+        # Espelha o pipeline de prazos_iniciais._build_l1_task_payload.
+        # Antes essa resolucao era feita SOMENTE no frontend (chamada
+        # /squads/resolve-target/claim antes do submit). Era fragil: se
+        # `target_role` nao chegasse no JSON do GET groups, ou se a
+        # chamada /claim falhasse silenciosa, ou se o template fosse
+        # marcado APOS a publicacao classificada (e rebuild-proposals nao
+        # rodasse), a tarefa caia no lider sem aviso. Mover pro backend
+        # garante que a fonte da verdade (template no banco) sempre
+        # vence — independente do que o frontend mandou.
+        #
+        # Override manual: comparamos `participants[0].contact.id` do
+        # payload atual com o `participants[0].contact.id` do proposal
+        # original (do template). Se diferente, respeita — significa que
+        # (a) operador trocou no modal OU (b) o frontend ja' resolveu
+        # via /claim. Em ambos, queremos manter quem o frontend mandou.
+        self._apply_squad_routing_server_side(
+            payloads=payloads, proposals=proposals, lawsuit_id=lawsuit_id,
+        )
 
         # Defesa em profundidade: mesmo que o frontend não tenha feito o
         # check-duplicates (ou alguém tenha chamado o endpoint direto via
