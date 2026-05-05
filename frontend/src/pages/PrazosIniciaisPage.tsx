@@ -77,6 +77,7 @@ import {
   reanalyzePrazoInicial,
   exportPrazosIniciaisXlsx,
   fetchPrazoInicialPdfBlob,
+  fetchPrazoInicialHabilitacaoPdfBlob,
   fetchRecentTasksForLawsuit,
   reapplyPrazosIniciaisTemplates,
   recomputePrazoInicialGlobals,
@@ -1151,6 +1152,26 @@ export default function PrazosIniciaisPage() {
       const msg = err instanceof Error ? err.message : "Erro desconhecido";
       toast({
         title: "Falha ao abrir PDF",
+        description: msg,
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Análogo pro PDF de habilitação MDR (USER_UPLOAD anexo opcional).
+  // Endpoint separado /habilitacao-pdf serve o arquivo de
+  // `habilitacao_pdf_path`, distinto do "PDF principal" do intake.
+  const onOpenHabilitacaoPdfInNewTab = async () => {
+    if (!detail) return;
+    try {
+      const blob = await fetchPrazoInicialHabilitacaoPdfBlob(detail.id);
+      const objectUrl = URL.createObjectURL(blob);
+      window.open(objectUrl, "_blank", "noopener,noreferrer");
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Erro desconhecido";
+      toast({
+        title: "Falha ao abrir PDF de habilitação",
         description: msg,
         variant: "destructive",
       });
@@ -3096,30 +3117,96 @@ export default function PrazosIniciaisPage() {
 
               <Separator />
 
-              <div>
-                <div className="mb-2 text-sm font-semibold">Habilitacao (PDF)</div>
-                <div className="flex flex-wrap items-center gap-3 text-sm">
-                  <FileText className="h-4 w-4" />
-                  <span>
-                    {detail.pdf_filename_original || "habilitacao.pdf"}
-                    <span className="ml-2 text-muted-foreground">({formatBytes(detail.pdf_bytes)})</span>
-                  </span>
-                  {detail.pdf_bytes ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="ml-auto"
-                      onClick={onOpenPdfInNewTab}
-                      title="Baixa o PDF autenticado e abre numa nova aba"
-                    >
-                      <ExternalLink className="mr-1 h-4 w-4" />
-                      Abrir em nova aba
-                    </Button>
-                  ) : (
-                    <span className="ml-auto text-xs text-muted-foreground">Retencao expirada</span>
-                  )}
-                </div>
-              </div>
+              {/* PDF principal do intake. Pin016 introduziu USER_UPLOAD,
+                  então o `pdf_path` pode ser:
+                  - EXTERNAL_API: PDF de habilitação enviado pelo provedor.
+                  - USER_UPLOAD com extração ok: descartado (pdf_bytes>0,
+                    mas arquivo já não existe — UI mostra resumo só).
+                  - USER_UPLOAD com extração falha: PDF do PROCESSO
+                    preservado pra operador classificar manualmente.
+                  Já o PDF de habilitação MDR enviado JUNTO no upload
+                  manual fica num campo separado (`habilitacao_pdf_*`).
+              */}
+              {(() => {
+                const isUserUpload = detail.source === "USER_UPLOAD";
+                const principalLabel = isUserUpload
+                  ? "Processo na íntegra (PDF)"
+                  : "Habilitação (PDF)";
+                const principalDefaultName = isUserUpload
+                  ? "processo.pdf"
+                  : "habilitacao.pdf";
+                const principalAvailable =
+                  Boolean(detail.pdf_bytes) &&
+                  !(isUserUpload && !detail.pdf_extraction_failed);
+                return (
+                  <div className="space-y-3">
+                    <div>
+                      <div className="mb-2 text-sm font-semibold">{principalLabel}</div>
+                      <div className="flex flex-wrap items-center gap-3 text-sm">
+                        <FileText className="h-4 w-4" />
+                        <span>
+                          {detail.pdf_filename_original || principalDefaultName}
+                          {detail.pdf_bytes ? (
+                            <span className="ml-2 text-muted-foreground">
+                              ({formatBytes(detail.pdf_bytes)})
+                            </span>
+                          ) : null}
+                        </span>
+                        {principalAvailable ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="ml-auto"
+                            onClick={onOpenPdfInNewTab}
+                            title="Baixa o PDF autenticado e abre numa nova aba"
+                          >
+                            <ExternalLink className="mr-1 h-4 w-4" />
+                            Abrir em nova aba
+                          </Button>
+                        ) : isUserUpload && !detail.pdf_extraction_failed ? (
+                          <span className="ml-auto text-xs text-muted-foreground">
+                            Arquivo descartado após extração bem-sucedida
+                          </span>
+                        ) : (
+                          <span className="ml-auto text-xs text-muted-foreground">
+                            Retenção expirada
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {detail.has_habilitacao_pdf ? (
+                      <div>
+                        <div className="mb-2 text-sm font-semibold">
+                          Habilitação MDR (PDF)
+                        </div>
+                        <div className="flex flex-wrap items-center gap-3 text-sm">
+                          <FileText className="h-4 w-4" />
+                          <span>
+                            {detail.habilitacao_pdf_filename_original ||
+                              "habilitacao.pdf"}
+                            {detail.habilitacao_pdf_bytes ? (
+                              <span className="ml-2 text-muted-foreground">
+                                ({formatBytes(detail.habilitacao_pdf_bytes)})
+                              </span>
+                            ) : null}
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="ml-auto"
+                            onClick={onOpenHabilitacaoPdfInNewTab}
+                            title="Baixa o PDF da habilitação MDR (autenticado) e abre numa nova aba"
+                          >
+                            <ExternalLink className="mr-1 h-4 w-4" />
+                            Abrir em nova aba
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })()}
 
               <Separator />
 
