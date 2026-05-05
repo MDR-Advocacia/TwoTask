@@ -3485,3 +3485,277 @@ def export_intakes_xlsx(
         ),
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Diagnostico de roteamento de squad/assistente
+# ─────────────────────────────────────────────────────────────────────
+# Por que um endpoint dedicado: o operador marca templates como
+# `target_role='assistente'` mas a tarefa no L1 sai com o lider. O
+# resolver pode estar caindo em fallback silencioso (lider fora de
+# squad principal, squad sem assistente cadastrado, override antigo
+# preso no payload, template removido, etc.). Em vez de adivinhar,
+# este endpoint mostra TUDO que o resolver enxerga pra cada sugestao.
+#
+# Acesso: `GET /prazos-iniciais/intakes/{id}/diagnose-routing`. Retorna
+# JSON estruturado pra ler com olho humano OU pegar e jogar num grep.
+
+@router.get(
+    "/intakes/{intake_id}/diagnose-routing",
+    summary=(
+        "Diagnostico do roteamento de squad/assistente das sugestoes de "
+        "um intake — mostra template lookup, squads do lider, fallback."
+    ),
+)
+def diagnose_intake_routing(
+    intake_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    """
+    Pra cada sugestao do intake, mostra a cadeia completa que o
+    `_build_l1_task_payload` percorreria:
+
+      1. payload_proposto.template_id existe? Template ainda existe?
+      2. template.target_role / template.target_squad_id efetivos
+      3. responsible_overridden no payload? (desliga roteamento)
+      4. Se target_role='assistente' OU target_squad_id != null:
+         - chama resolve_target em commit=False
+         - lista as squads principais do lider (kind='principal',
+           is_active=True) com membros e flags is_leader/is_assistant
+         - resultado final + fallback_reason
+
+    O retorno indica EXATAMENTE em qual etapa a regra do assistente
+    foi pulada (e por que). Ler de cima pra baixo.
+    """
+    from app.models.rules import Squad, SquadMember
+    from app.services.squad_assistant_resolver import resolve_target
+
+    intake = (
+        db.query(PrazoInicialIntake)
+        .options(selectinload(PrazoInicialIntake.sugestoes))
+        .filter(PrazoInicialIntake.id == intake_id)
+        .one_or_none()
+    )
+    if intake is None:
+        raise HTTPException(status_code=404, detail="Intake nao encontrado.")
+
+    diagnoses: list[dict] = []
+    for sugestao in intake.sugestoes or []:
+        diag: dict[str, Any] = {
+            "sugestao_id": sugestao.id,
+            "tipo_prazo": sugestao.tipo_prazo,
+            "subtipo": sugestao.subtipo,
+            "responsavel_sugerido_id": sugestao.responsavel_sugerido_id,
+            "responsavel_sugerido_nome": None,
+            "task_subtype_id": sugestao.task_subtype_id,
+            "skip_task_creation": bool(
+                (sugestao.payload_proposto or {}).get("skip_task_creation")
+            ),
+            "responsible_overridden": bool(
+                (sugestao.payload_proposto or {}).get("responsible_overridden")
+            ),
+            "template_id": (sugestao.payload_proposto or {}).get("template_id"),
+            "template_name": None,
+            "template_target_role": None,
+            "template_target_squad_id": None,
+            "leader_principal_squads": [],
+            "resolution": None,
+            "verdict": None,
+        }
+
+        # Nome do responsavel (lider do template)
+        if sugestao.responsavel_sugerido_id:
+            user_row = (
+                db.query(LegalOneUser)
+                .filter(
+                    LegalOneUser.external_id == sugestao.responsavel_sugerido_id
+                )
+                .one_or_none()
+            )
+            if user_row is not None:
+                diag["responsavel_sugerido_nome"] = user_row.name
+
+                # Lista as squads principais ativas em que ele e' membro,
+                # com TODOS os membros e flags. Pra ver a olho se tem
+                # assistente cadastrado.
+                squads = (
+                    db.query(Squad)
+                    .join(SquadMember, SquadMember.squad_id == Squad.id)
+                    .filter(
+                        SquadMember.legal_one_user_id == user_row.id,
+                        Squad.is_active.is_(True),
+                        Squad.kind == "principal",
+                    )
+                    .all()
+                )
+                for sq in squads:
+                    members_dump = []
+                    for m in sq.members:
+                        m_user = (
+                            db.query(LegalOneUser)
+                            .filter(LegalOneUser.id == m.legal_one_user_id)
+                            .one_or_none()
+                        )
+                        members_dump.append({
+                            "user_external_id": (
+                                m_user.external_id if m_user else None
+                            ),
+                            "user_name": m_user.name if m_user else None,
+                            "is_leader": bool(m.is_leader),
+                            "is_assistant": bool(m.is_assistant),
+                        })
+                    diag["leader_principal_squads"].append({
+                        "squad_id": sq.id,
+                        "squad_name": sq.name,
+                        "office_external_id": sq.office_external_id,
+                        "kind": sq.kind,
+                        "is_active": sq.is_active,
+                        "members": members_dump,
+                    })
+
+        # Lookup do template
+        template_id = diag["template_id"]
+        template = None
+        if template_id:
+            template = (
+                db.query(PrazoInicialTaskTemplate)
+                .filter(PrazoInicialTaskTemplate.id == int(template_id))
+                .one_or_none()
+            )
+            if template is not None:
+                diag["template_name"] = template.name
+                diag["template_target_role"] = (
+                    getattr(template, "target_role", None) or "principal"
+                )
+                diag["template_target_squad_id"] = getattr(
+                    template, "target_squad_id", None,
+                )
+
+        # Verdict — explica em PT-BR o que vai acontecer
+        if diag["skip_task_creation"]:
+            diag["verdict"] = (
+                "Sugestao no-op (template skip_task_creation): nao cria "
+                "task no L1. Roteamento NAO se aplica."
+            )
+            diagnoses.append(diag)
+            continue
+
+        if not diag["template_id"]:
+            diag["verdict"] = (
+                "Sugestao SEM template_id em payload_proposto — fluxo "
+                "default 'principal'. A tarefa vai pro responsavel direto. "
+                "Reaplique templates no intake (botao 'Reaplicar')."
+            )
+            diagnoses.append(diag)
+            continue
+
+        if template is None:
+            diag["verdict"] = (
+                f"Template id={template_id} foi deletado/inativado — "
+                "fluxo default 'principal'. Cadastre/reative o template "
+                "e use 'Reaplicar' no intake."
+            )
+            diagnoses.append(diag)
+            continue
+
+        if diag["responsible_overridden"]:
+            diag["verdict"] = (
+                "Sugestao com `responsible_overridden=True` no payload — "
+                "operador trocou o responsavel em tentativa anterior, "
+                "regra do assistente FOI DESLIGADA. Pra reativar: "
+                "reaplique templates no intake ou edite o payload."
+            )
+            diagnoses.append(diag)
+            continue
+
+        target_role = diag["template_target_role"]
+        target_squad_id = diag["template_target_squad_id"]
+
+        if target_role == "principal" and target_squad_id is None:
+            diag["verdict"] = (
+                "Template marca target_role='principal' SEM squad de "
+                "suporte — tarefa vai pro responsavel_sugerido_id direto "
+                "(comportamento esperado). Pra rotear pro assistente, "
+                "marque target_role='assistente' no template."
+            )
+            diagnoses.append(diag)
+            continue
+
+        # Cenarios 2/3/4 — chama resolver em preview
+        try:
+            result = resolve_target(
+                db,
+                target_role=target_role,
+                responsible_user_external_id=int(
+                    sugestao.responsavel_sugerido_id or 0
+                ),
+                target_squad_id=target_squad_id,
+                office_external_id=intake.office_id,
+                task_subtype_external_id=sugestao.task_subtype_id,
+                commit=False,
+            )
+            resolved_user_row = (
+                db.query(LegalOneUser)
+                .filter(LegalOneUser.external_id == result.user_external_id)
+                .one_or_none()
+            )
+            diag["resolution"] = {
+                "resolved_user_external_id": result.user_external_id,
+                "resolved_user_name": (
+                    resolved_user_row.name if resolved_user_row else None
+                ),
+                "squad_id": result.squad_id,
+                "squad_name": result.squad_name,
+                "fallback_reason": result.fallback_reason,
+            }
+            if result.fallback_reason == "user_not_in_any_squad":
+                diag["verdict"] = (
+                    f"Lider (id={sugestao.responsavel_sugerido_id}) NAO eh "
+                    "membro de nenhuma squad ATIVA com kind='principal'. "
+                    "Resolver caiu em fallback silencioso → tarefa fica "
+                    "com o lider, NAO vai pro assistente. Acao: cadastre "
+                    "o lider em uma squad principal (kind='principal') "
+                    "ativa em /admin/squads."
+                )
+            elif result.fallback_reason == "multiple_squads_ambiguous":
+                diag["verdict"] = (
+                    "Lider em multiplas squads ambiguas — escolheu a de "
+                    "menor id. Pode estar nao-ideal; revise squads "
+                    "principais do lider em /admin/squads."
+                )
+            elif (
+                result.user_external_id
+                == sugestao.responsavel_sugerido_id
+            ):
+                diag["verdict"] = (
+                    "Resolver retornou o PROPRIO lider — cenario raro: "
+                    "ele e' simultaneamente lider e assistente da squad "
+                    "(auto-atribuicao). Isso eh valido."
+                )
+            else:
+                diag["verdict"] = (
+                    "OK — resolver achou o assistente. Tarefa vai pra "
+                    f"{diag['resolution']['resolved_user_name']} (squad "
+                    f"\"{result.squad_name}\")."
+                )
+        except ValueError as exc:
+            diag["resolution"] = {"error": str(exc)}
+            diag["verdict"] = (
+                f"Resolver levantou erro: {exc}. A criacao da tarefa no "
+                "L1 vai falhar com essa mensagem (intake fica em "
+                "ERRO_AGENDAMENTO). Acao: configure a squad em "
+                "/admin/squads conforme indicado."
+            )
+        except Exception as exc:  # noqa: BLE001
+            diag["resolution"] = {"error": str(exc)}
+            diag["verdict"] = f"Erro inesperado: {exc}"
+
+        diagnoses.append(diag)
+
+    return {
+        "intake_id": intake.id,
+        "intake_office_id": intake.office_id,
+        "intake_status": intake.status,
+        "sugestoes": diagnoses,
+    }
