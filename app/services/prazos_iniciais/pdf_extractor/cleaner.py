@@ -1,18 +1,22 @@
 """
-Limpeza mecânica de boilerplate em texto extraído de PDFs do PJe.
+Limpeza mecânica de boilerplate em texto extraído de PDFs.
 
-Alvos identificados nos exemplos do TJBA:
-- Marcador de página `Num. NNNNN - Pág. N` (também usado como
-  separador de documentos pelo extractor PJe).
-- Carimbo de assinatura digital (multi-linha):
-    "Assinado eletronicamente por: NOME - DD/MM/AAAA HH:MM:SS"
-    "https://pje.tjba.jus.br/pje/Processo/ConsultaDocumento/listView.seam?x=..."
-    "Número do documento: ..."
-    "Este documento foi gerado pelo usuário ... em ..."
-- Cabeçalho de capa repetido em CADA documento (template padrão do PJe
-  com `Número:`, `Classe:`, `Órgão julgador:`, etc. seguido de
-  `TJBA / PJe - Processo Judicial Eletrônico / Partes Advogados / ...`).
-- Linhas isoladas de "Página X de Y" / "fls. NN".
+Alvos compartilhados entre os sistemas suportados (PJe, eproc, PROJUDI,
+eSAJ):
+- Carimbos de assinatura digital (multi-linha) — todos os sistemas:
+    "Assinado (eletronicamente|digitalmente) por: ..."
+    "Documento assinado..."
+    URLs de validação (https://pje*.jus.br/..., https://esaj.*.jus.br/...,
+    https://eproc*.jus.br/..., https://projudi.*.jus.br/...)
+    "Número do documento: ...", "Código de validação..."
+    "Este documento foi gerado pelo usuário ..."
+- Marcadores de página: `Num. N - Pág. N` (PJe), `Id. N - Pág. N` (PROJUDI),
+  `Página X de Y`, `fls. NN`.
+- Cabeçalho do template repetido por documento (PJe): `Número:`, `Classe:`,
+  `Órgão julgador:`, `TJBA`, `PJe - Processo Judicial Eletrônico`, etc.
+- eproc: `PÁGINA DE SEPARAÇÃO`, `(Gerada automaticamente pelo sistema.)`
+- PROJUDI: `Código de validação do documento: ...`,
+  `TRIBUNAL DE JUSTIÇA DO ESTADO ...` no header repetido.
 
 Tudo via regex. Quando não bater, deixa passar.
 """
@@ -32,6 +36,15 @@ _RE_ASSINADO = re.compile(
 )
 _RE_URL_PJE = re.compile(
     r"^\s*https?://pje\d?g?\.[^\s]+$",
+    re.MULTILINE | re.IGNORECASE,
+)
+# eproc/PROJUDI/eSAJ — URLs de validação de assinatura
+_RE_URL_VALIDACAO = re.compile(
+    r"^\s*https?://(eproc|projudi|esaj)[^\s]+$",
+    re.MULTILINE | re.IGNORECASE,
+)
+_RE_CODIGO_VALIDACAO = re.compile(
+    r"^\s*Código\s+de\s+validação\s+do\s+documento:.*$",
     re.MULTILINE | re.IGNORECASE,
 )
 _RE_NUM_DOCUMENTO = re.compile(
@@ -62,6 +75,27 @@ _RE_PAGINA_X_DE_Y = re.compile(
 )
 _RE_FLS = re.compile(
     r"^\s*fls?\.?\s*\d+\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+# PROJUDI — `Id. NNNNN - Pág. N` (anchor da segmentação no extractor;
+# remover apenas DENTRO de docs já segmentados)
+_RE_ID_PAG_PROJUDI = re.compile(
+    r"^\s*Id\.\s*\d+\s*-\s*P[áa]g\.\s*\d+\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+# eproc — separador de documento (já consumido como anchor; remover
+# resíduos)
+_RE_PAGINA_SEPARACAO = re.compile(
+    r"^\s*PÁGINA\s+DE\s+SEPARAÇÃO\s*$|"
+    r"^\s*\(Gerada\s+automaticamente\s+pelo\s+sistema\.?\)\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+# Header repetido do PROJUDI / outros tribunais
+_RE_TRIBUNAL_HEADER_LINHA = re.compile(
+    r"^\s*TRIBUNAL\s+DE\s+JUSTIÇA\s+DO\s+ESTADO.*$|"
+    r"^\s*PODER\s+JUDICIÁRIO\s*$|"
+    r"^\s*PROJUDI\s*-\s*Processo\s+Judicial\s+Digital\s*$|"
+    r"^\s*Baixado\s+do\s+PROJUDI\s+em:.*$",
     re.MULTILINE | re.IGNORECASE,
 )
 
@@ -132,17 +166,22 @@ def clean_document_text(text: str) -> str:
     if not text:
         return text
 
-    # Carimbos de assinatura
+    # Carimbos de assinatura (PJe, eproc, PROJUDI, eSAJ)
     text = _RE_ASSINADO.sub("", text)
     text = _RE_URL_PJE.sub("", text)
+    text = _RE_URL_VALIDACAO.sub("", text)
     text = _RE_NUM_DOCUMENTO.sub("", text)
+    text = _RE_CODIGO_VALIDACAO.sub("", text)
     text = _RE_GERADO_USUARIO.sub("", text)
     text = _RE_DOC_ASSINADO_PREFIX.sub("", text)
 
     # Marcadores de página
     text = _RE_NUM_PAG.sub("", text)
+    text = _RE_ID_PAG_PROJUDI.sub("", text)
     text = _RE_PAGINA_X_DE_Y.sub("", text)
     text = _RE_FLS.sub("", text)
+    text = _RE_PAGINA_SEPARACAO.sub("", text)
+    text = _RE_TRIBUNAL_HEADER_LINHA.sub("", text)
 
     # Cabeçalho de capa repetido (linhas isoladas)
     text = _RE_DATA_CABECALHO.sub("", text)
