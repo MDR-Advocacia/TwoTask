@@ -38,6 +38,7 @@ interface AdminUser {
   can_schedule_batch: boolean;
   can_use_publications: boolean;
   can_use_prazos_iniciais: boolean;
+  notify_onerequest_errors: boolean;
   default_office_id: number | null;
   has_password: boolean;
   must_change_password: boolean;
@@ -961,6 +962,7 @@ const UsersAndPermissions = () => {
                                 <TableHead>Agendar</TableHead>
                                 <TableHead>Publicações</TableHead>
                                 <TableHead>Prazos Iniciais</TableHead>
+                                <TableHead>Notificação OneRequest</TableHead>
                                 <TableHead>Escritório</TableHead>
                                 <TableHead>Ações</TableHead>
                             </TableRow>
@@ -1021,6 +1023,16 @@ const UsersAndPermissions = () => {
                                             />
                                         ) : (
                                             <Checkbox checked={user.can_use_prazos_iniciais} disabled />
+                                        )}
+                                    </TableCell>
+                                    <TableCell>
+                                        {editingUserId === user.id ? (
+                                            <Checkbox
+                                                checked={editingData.notify_onerequest_errors ?? false}
+                                                onCheckedChange={(c) => setEditingData({ ...editingData, notify_onerequest_errors: !!c })}
+                                            />
+                                        ) : (
+                                            <Checkbox checked={user.notify_onerequest_errors} disabled />
                                         )}
                                     </TableCell>
                                     <TableCell>
