@@ -27,6 +27,7 @@ import {
   PrazoInicialIntakeFilters,
   PrazoInicialIntakeListResponse,
   PrazoInicialIntakeSummary,
+  PrazoInicialUploadResponse,
   PrazoInicialLegacyTaskCancelQueueListResponse,
   PrazoInicialLegacyTaskCircuitBreakerResetResponse,
   PrazoInicialLegacyTaskQueueFilters,
@@ -218,6 +219,15 @@ export async function fetchPrazosIniciaisIntakes(
   if (typeof filters.dispatch_pending === "boolean") {
     params.set("dispatch_pending", String(filters.dispatch_pending));
   }
+  if (filters.source) {
+    params.set("source", filters.source);
+  }
+  if (filters.submitted_by_user_id) {
+    params.set("submitted_by_user_id", filters.submitted_by_user_id);
+  }
+  if (typeof filters.pdf_extraction_failed === "boolean") {
+    params.set("pdf_extraction_failed", String(filters.pdf_extraction_failed));
+  }
   if (typeof filters.limit === "number") params.set("limit", String(filters.limit));
   if (typeof filters.offset === "number") params.set("offset", String(filters.offset));
 
@@ -234,6 +244,29 @@ export async function fetchPrazoInicialDetail(
 ): Promise<PrazoInicialIntakeDetail> {
   const response = await apiFetch(`/api/v1/prazos-iniciais/intakes/${intakeId}`);
   return expectJson<PrazoInicialIntakeDetail>(response);
+}
+
+
+/**
+ * Sobe um PDF do processo na íntegra (USER_UPLOAD). Aceita também,
+ * opcionalmente, o PDF de habilitação MDR — esse é preservado pra
+ * GED L1 + AJUS. Backend roda extração mecânica (pdfplumber + extractor
+ * PJe TJBA); resposta inclui mensagem traduzida pra UI exibir como toast.
+ */
+export async function uploadPrazoInicialPdf(
+  processoPdf: File,
+  habilitacaoPdf?: File | null,
+): Promise<PrazoInicialUploadResponse> {
+  const formData = new FormData();
+  formData.append("processo_pdf", processoPdf);
+  if (habilitacaoPdf) {
+    formData.append("habilitacao_pdf", habilitacaoPdf);
+  }
+  const response = await apiFetch("/api/v1/prazos-iniciais/intake/upload", {
+    method: "POST",
+    body: formData,
+  });
+  return expectJson<PrazoInicialUploadResponse>(response);
 }
 
 

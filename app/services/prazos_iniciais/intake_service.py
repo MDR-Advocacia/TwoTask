@@ -19,9 +19,12 @@ from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
+from datetime import datetime, timezone
+
 from app.db.session import SessionLocal
 from app.models.legal_one import LegalOneOffice
 from app.models.prazo_inicial import (
+    INTAKE_SOURCE_EXTERNAL_API,
     INTAKE_STATUS_LAWSUIT_NOT_FOUND,
     INTAKE_STATUS_READY_TO_CLASSIFY,
     INTAKE_STATUS_RECEIVED,
@@ -84,8 +87,19 @@ class IntakeService:
         capa_json: dict,
         integra_json: dict,
         metadata_json: Optional[dict],
-        pdf_bytes: bytes,
-        pdf_filename_original: Optional[str],
+        pdf_bytes: Optional[bytes] = None,
+        pdf_filename_original: Optional[str] = None,
+        source: str = INTAKE_SOURCE_EXTERNAL_API,
+        source_provider_name: Optional[str] = None,
+        submitted_by_user_id: Optional[int] = None,
+        submitted_by_email: Optional[str] = None,
+        submitted_by_name: Optional[str] = None,
+        pdf_extraction_failed: bool = False,
+        extractor_used: Optional[str] = None,
+        extraction_confidence: Optional[str] = None,
+        habilitacao_pdf_bytes: Optional[bytes] = None,
+        habilitacao_pdf_filename_original: Optional[str] = None,
+        skip_pdf_storage: bool = False,
     ) -> IntakeCreationResult:
         """
         Cria um novo intake de forma idempotente. Se `external_id` já
@@ -94,6 +108,13 @@ class IntakeService:
 
         O CNJ é normalizado aqui. A resolução do `lawsuit_id` no L1 é
         disparada separadamente (em background) pelo endpoint.
+
+        `pdf_bytes` é o "PDF principal" do intake — habilitação no fluxo
+        EXTERNAL_API, processo na íntegra no fluxo USER_UPLOAD. Quando
+        `skip_pdf_storage=True` (USER_UPLOAD com extração ok), o PDF
+        do processo NÃO é gravado pra economizar disco — só os metadados
+        de hash/tamanho ficam pra auditoria. `habilitacao_pdf_bytes` é
+        sempre preservado em campo separado quando enviado.
         """
         existing = self.get_by_external_id(external_id)
         if existing is not None:
@@ -105,7 +126,42 @@ class IntakeService:
 
         normalized_cnj = normalize_cnj(cnj_number)
 
-        stored: StoredPdf = save_pdf(pdf_bytes)
+        # PDF principal: grava (e mantém) ou só calcula hash + descarta.
+        pdf_path: Optional[str] = None
+        pdf_sha256: Optional[str] = None
+        pdf_size: Optional[int] = None
+        if pdf_bytes is not None:
+            if skip_pdf_storage:
+                # USER_UPLOAD com extração bem-sucedida — guardamos só
+                # hash/tamanho pra auditoria; o conteúdo já não é útil
+                # depois da extração.
+                from app.services.prazos_iniciais.storage import (
+                    validate_pdf_bytes,
+                )
+                import hashlib as _hashlib
+
+                validate_pdf_bytes(pdf_bytes)
+                pdf_sha256 = _hashlib.sha256(pdf_bytes).hexdigest()
+                pdf_size = len(pdf_bytes)
+            else:
+                stored: StoredPdf = save_pdf(pdf_bytes)
+                pdf_path = stored.relative_path
+                pdf_sha256 = stored.sha256
+                pdf_size = stored.size_bytes
+
+        # Habilitação separada (sempre preservada — vai pro GED + AJUS).
+        habilitacao_path: Optional[str] = None
+        habilitacao_sha256: Optional[str] = None
+        habilitacao_size: Optional[int] = None
+        if habilitacao_pdf_bytes is not None:
+            stored_hab: StoredPdf = save_pdf(habilitacao_pdf_bytes)
+            habilitacao_path = stored_hab.relative_path
+            habilitacao_sha256 = stored_hab.sha256
+            habilitacao_size = stored_hab.size_bytes
+
+        submitted_at = (
+            datetime.now(timezone.utc) if submitted_by_user_id is not None else None
+        )
 
         intake = PrazoInicialIntake(
             external_id=external_id,
@@ -113,11 +169,24 @@ class IntakeService:
             capa_json=capa_json,
             integra_json=integra_json,
             metadata_json=metadata_json,
-            pdf_path=stored.relative_path,
-            pdf_sha256=stored.sha256,
-            pdf_bytes=stored.size_bytes,
+            pdf_path=pdf_path,
+            pdf_sha256=pdf_sha256,
+            pdf_bytes=pdf_size,
             pdf_filename_original=pdf_filename_original,
             status=INTAKE_STATUS_RECEIVED,
+            source=source,
+            source_provider_name=source_provider_name,
+            submitted_by_user_id=submitted_by_user_id,
+            submitted_by_email=submitted_by_email,
+            submitted_by_name=submitted_by_name,
+            submitted_at=submitted_at,
+            pdf_extraction_failed=pdf_extraction_failed,
+            extractor_used=extractor_used,
+            extraction_confidence=extraction_confidence,
+            habilitacao_pdf_path=habilitacao_path,
+            habilitacao_pdf_sha256=habilitacao_sha256,
+            habilitacao_pdf_bytes=habilitacao_size,
+            habilitacao_pdf_filename_original=habilitacao_pdf_filename_original,
         )
         self.db.add(intake)
         self.db.commit()

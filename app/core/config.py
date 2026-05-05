@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     # são guardados até o upload no GED do L1.
     prazos_iniciais_storage_path: str = "/app/data/prazos_iniciais"
     prazos_iniciais_max_pdf_mb: int = 20
+    # Upload manual via UI (USER_UPLOAD) — processos na íntegra costumam
+    # ser bem maiores que o PDF de habilitação, então temos um limite
+    # próprio. PDF do processo é descartado após extração ok pra não
+    # encher disco.
+    prazos_iniciais_max_upload_pdf_mb: int = 100
     # Quantos dias manter o PDF local após confirmação de upload no GED.
     prazos_iniciais_retention_days: int = 7
     # Parâmetros do agregador (janela antes de submeter batch pra Anthropic).
@@ -209,6 +214,10 @@ class Settings(BaseSettings):
     @property
     def prazos_iniciais_max_pdf_bytes(self) -> int:
         return self.prazos_iniciais_max_pdf_mb * 1024 * 1024
+
+    @property
+    def prazos_iniciais_max_upload_pdf_bytes(self) -> int:
+        return self.prazos_iniciais_max_upload_pdf_mb * 1024 * 1024
 
     @property
     def batch_tasks_api_keys(self) -> set[str]:
