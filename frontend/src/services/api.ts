@@ -704,6 +704,23 @@ export async function fetchPrazoInicialPdfBlob(intakeId: number): Promise<Blob> 
 }
 
 
+export function prazoInicialHabilitacaoPdfUrl(intakeId: number): string {
+  return `/api/v1/prazos-iniciais/intakes/${intakeId}/habilitacao-pdf`;
+}
+
+
+export async function fetchPrazoInicialHabilitacaoPdfBlob(
+  intakeId: number,
+): Promise<Blob> {
+  const response = await apiFetch(prazoInicialHabilitacaoPdfUrl(intakeId));
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+  }
+  return response.blob();
+}
+
+
 // ─── Templates de Prazos Iniciais ─────────────────────────────────────
 
 /**

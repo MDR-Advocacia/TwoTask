@@ -260,6 +260,8 @@ class IntakeSummary(BaseModel):
     extractor_used: Optional[str] = None
     extraction_confidence: Optional[str] = None
     has_habilitacao_pdf: bool = False
+    habilitacao_pdf_filename_original: Optional[str] = None
+    habilitacao_pdf_bytes: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -508,6 +510,10 @@ def _intake_to_summary(intake: PrazoInicialIntake) -> IntakeSummary:
         extractor_used=getattr(intake, "extractor_used", None),
         extraction_confidence=getattr(intake, "extraction_confidence", None),
         has_habilitacao_pdf=bool(getattr(intake, "habilitacao_pdf_path", None)),
+        habilitacao_pdf_filename_original=getattr(
+            intake, "habilitacao_pdf_filename_original", None
+        ),
+        habilitacao_pdf_bytes=getattr(intake, "habilitacao_pdf_bytes", None),
     )
 
 
@@ -925,6 +931,55 @@ def get_intake_pdf(
         raise HTTPException(status_code=404, detail="Arquivo PDF não encontrado.")
 
     filename = intake.pdf_filename_original or f"habilitacao-{intake_id}.pdf"
+    return FileResponse(
+        path=absolute,
+        media_type="application/pdf",
+        filename=filename,
+    )
+
+
+@router.get(
+    "/intakes/{intake_id}/habilitacao-pdf",
+    summary="Stream do PDF da habilitação MDR (separado do processo).",
+)
+def get_intake_habilitacao_pdf(
+    intake_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    """
+    Serve o PDF de habilitação MDR (procuração + carta de preposição)
+    quando enviado junto com USER_UPLOAD. Distinto de
+    GET /intakes/{id}/pdf — esse último é o "PDF principal" do intake
+    (habilitação no fluxo EXTERNAL_API legado, ou processo na íntegra
+    quando a extração USER_UPLOAD falhou e o arquivo foi preservado).
+    """
+    intake = db.get(PrazoInicialIntake, intake_id)
+    if intake is None:
+        raise HTTPException(status_code=404, detail="Intake não encontrado.")
+    habilitacao_path = getattr(intake, "habilitacao_pdf_path", None)
+    if not habilitacao_path:
+        raise HTTPException(
+            status_code=404,
+            detail="Este intake não tem PDF de habilitação anexado.",
+        )
+
+    try:
+        absolute = resolve_pdf_path(habilitacao_path)
+    except ValueError:
+        logger.error(
+            "habilitacao_pdf_path inválido no intake %d: %r",
+            intake_id, habilitacao_path,
+        )
+        raise HTTPException(status_code=500, detail="Caminho do PDF inválido.")
+
+    if not absolute.exists():
+        raise HTTPException(status_code=404, detail="Arquivo PDF não encontrado.")
+
+    filename = (
+        getattr(intake, "habilitacao_pdf_filename_original", None)
+        or f"habilitacao-{intake_id}.pdf"
+    )
     return FileResponse(
         path=absolute,
         media_type="application/pdf",
