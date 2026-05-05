@@ -290,6 +290,17 @@ export interface PrazoInicialSugestao {
   reviewed_at: string | null;
   created_task_id: number | null;
   created_at: string;
+  // Roteamento de squad (vem do template casado via payload_proposto.template_id)
+  // + preview do responsavel resolvido (assistente / lider de support squad).
+  // Campos populados pelo backend em GET /intakes/{id}; null quando a sugestao
+  // nao tem squad routing OU quando target_role='principal' sem support squad
+  // (nesse caso UI usa responsavel_sugerido_id direto).
+  target_role: "principal" | "assistente" | null;
+  target_squad_id: number | null;
+  target_squad_name: string | null;
+  resolved_responsible_user_external_id: number | null;
+  resolved_responsible_user_name: string | null;
+  resolution_warning: string | null;
 }
 
 export interface PrazoInicialPedido {

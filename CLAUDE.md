@@ -155,3 +155,28 @@ sem exceção. Mesma lógica do guard do bloco PowerShell de commit
   comentários de código no domínio jurídico.
 - Migrations Prazos Iniciais usam prefixo `pin*`, Publications usa
   `pub*`, etc. — manter padrão.
+
+## ⚠️ Paginação obrigatória em qualquer listagem/menu/modal
+
+**Toda listagem, menu ou modal que exibe N itens de catálogo PRECISA
+ter paginação configurada desde o primeiro commit.** Já estourou
+modal de classificações de template porque não tinha paginação e o
+operador abriu uma combinação com várias dezenas de subcategorias.
+
+Padrão da casa:
+
+- **API**: endpoints de listagem aceitam `limit` (default 50, max
+  500) + `offset` e devolvem `{ total, items }`.
+- **UI de página**: controles "Anterior / Próxima · Página X de Y ·
+  N–M de T resultados" + seletor de page size (25/50/100). Reusar o
+  padrão de `PublicationsPage` / `PrazosIniciaisPage`.
+- **Modais que listam catálogos** (subtipos, classificações,
+  responsáveis, escritórios, etc.): paginação interna OU
+  virtualização (cmdk/Combobox quando >50 itens). Nunca `<Select>`
+  cru sem paginação em catálogo grande (ver memory
+  `feedback_dropdowns_searchable.md`).
+- Listas curtas e estáveis (≤20 itens, ex.: enums) podem ficar sem
+  paginação — mas decidir conscientemente, não por descuido.
+
+Antes de marcar uma feature como pronta: abrir a listagem com dados
+reais (não 3 mocks) e confirmar que rola/pagina sem travar.
