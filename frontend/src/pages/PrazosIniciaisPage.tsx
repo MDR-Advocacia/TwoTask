@@ -1142,8 +1142,16 @@ export default function PrazosIniciaisPage() {
 
   const onExportXlsx = async () => {
     try {
+      // Espelha os filtros aplicados na lista — operador esperaria que
+      // a planilha refletisse exatamente o que ele esta vendo. Antes
+      // mandavamos so `status`, ignorando office/data → planilha
+      // sempre traz tudo que o status filtra (e ainda assim vazia
+      // antes do fix de CSV no backend).
       const blob = await exportPrazosIniciaisXlsx({
-        status: appliedStatus !== "__all__" ? appliedStatus : undefined,
+        status: appliedStatus && appliedStatus !== "__all__" ? appliedStatus : undefined,
+        office_id: appliedOffice || undefined,
+        date_from: appliedDateFrom || undefined,
+        date_to: appliedDateTo || undefined,
       });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
