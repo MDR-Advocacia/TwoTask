@@ -1862,6 +1862,7 @@ class PublicationSearchService:
         result = {
             "template_id": tmpl.id,
             "template_name": tmpl.name,
+            "target_role": getattr(tmpl, "target_role", None) or "principal",
             "payload": payload,
             "built_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -2075,6 +2076,10 @@ class PublicationSearchService:
                         payload["template_name"] = raw_proposal["template_name"]
                     if raw_proposal.get("suggested_responsible"):
                         payload["suggested_responsible"] = raw_proposal["suggested_responsible"]
+                    if raw_proposal.get("target_role"):
+                        payload["target_role"] = raw_proposal["target_role"]
+                    if raw_proposal.get("template_id"):
+                        payload["template_id"] = raw_proposal["template_id"]
                 proposed_task = payload
             raw_proposals = first.raw_relationships.get("_proposed_tasks")
             if raw_proposals and isinstance(raw_proposals, list):
@@ -2085,6 +2090,10 @@ class PublicationSearchService:
                             p["template_name"] = rp["template_name"]
                         if rp.get("suggested_responsible"):
                             p["suggested_responsible"] = rp["suggested_responsible"]
+                        if rp.get("target_role"):
+                            p["target_role"] = rp["target_role"]
+                        if rp.get("template_id"):
+                            p["template_id"] = rp["template_id"]
                     if p:
                         proposed_tasks.append(p)
             elif proposed_task:

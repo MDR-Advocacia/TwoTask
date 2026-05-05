@@ -41,6 +41,10 @@ class TaskTemplateBase(BaseModel):
     description_template: Optional[str] = None
     notes_template: Optional[str] = None
     is_active: bool = True
+    # 'principal' (default) ou 'assistente'. Quando 'assistente', o frontend
+    # de Publicações resolve o assistente via /squads/assistant-of/... antes
+    # de mandar o payload pra criação no L1.
+    target_role: str = Field(default="principal", pattern="^(principal|assistente)$")
 
 
 class TaskTemplateCreate(TaskTemplateBase):
@@ -60,6 +64,7 @@ class TaskTemplateUpdate(BaseModel):
     description_template: Optional[str] = None
     notes_template: Optional[str] = None
     is_active: Optional[bool] = None
+    target_role: Optional[str] = Field(default=None, pattern="^(principal|assistente)$")
 
 
 class TaskTemplateResponse(TaskTemplateBase):
@@ -111,6 +116,7 @@ def _to_response(tmpl: TaskTemplate) -> dict:
         "description_template": tmpl.description_template,
         "notes_template": tmpl.notes_template,
         "is_active": tmpl.is_active,
+        "target_role": getattr(tmpl, "target_role", None) or "principal",
     }
 
 

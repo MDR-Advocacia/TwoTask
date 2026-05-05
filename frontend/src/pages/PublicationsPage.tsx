@@ -1683,9 +1683,66 @@ const PublicationsPage = () => {
       }
     }
 
+    // Resolve assistente da squad pra cada task com target_role='assistente'.
+    // Backend de Publicações nao tem builder pra resolver, entao o frontend
+    // chama /api/v1/squads/assistant-of/{user}?office_external_id=... e
+    // troca o participant.contact.id antes de mandar o payload.
+    const resolvedTasks: any[] = [];
+    for (const t of activeTasks) {
+      const targetRole = (t as any).target_role;
+      if (targetRole !== "assistente") {
+        resolvedTasks.push(t);
+        continue;
+      }
+      const responsibleId = (t.participants || []).find(
+        (p: any) => p?.isResponsible && p?.contact?.id,
+      )?.contact?.id;
+      if (!responsibleId) {
+        resolvedTasks.push(t);
+        continue;
+      }
+      try {
+        const params = new URLSearchParams();
+        const officeId = (t as any).responsibleOfficeId || (t as any).originOfficeId;
+        if (officeId) params.set("office_external_id", String(officeId));
+        if (t.subTypeId) params.set("task_subtype_external_id", String(t.subTypeId));
+        const url = `/api/v1/squads/assistant-of/${responsibleId}${params.toString() ? `?${params.toString()}` : ""}`;
+        const res = await apiFetch(url);
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          toast({
+            title: "Falha ao resolver assistente",
+            description: body.detail || `HTTP ${res.status} — usando responsável original`,
+            variant: "destructive",
+          });
+          resolvedTasks.push(t);
+          continue;
+        }
+        const data = await res.json() as { user_external_id: number; squad_name: string | null; fallback_reason: string | null };
+        // Substitui participant pelo assistente resolvido.
+        const newTask = {
+          ...t,
+          participants: [{
+            contact: { id: data.user_external_id },
+            isResponsible: true,
+            isExecuter: true,
+            isRequester: true,
+          }],
+        };
+        resolvedTasks.push(newTask);
+      } catch (err) {
+        toast({
+          title: "Erro de rede ao resolver assistente",
+          description: err instanceof Error ? err.message : "Usando responsável original",
+          variant: "destructive",
+        });
+        resolvedTasks.push(t);
+      }
+    }
+
     // Remove campos de metadata (frontend-only) antes de enviar ao backend
-    const sanitizedTasks = activeTasks.map((t) => {
-      const { is_custom: _ic, template_name: _tn, suggested_responsible: _sr, ...rest } = t as any;
+    const sanitizedTasks = resolvedTasks.map((t) => {
+      const { is_custom: _ic, template_name: _tn, suggested_responsible: _sr, target_role: _tr, template_id: _tid, ...rest } = t as any;
       return rest;
     });
 
