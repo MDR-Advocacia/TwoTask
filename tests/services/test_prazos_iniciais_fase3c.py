@@ -234,13 +234,16 @@ class TestSchemaNaturezaRouter:
         assert tipos == [TIPO_PRAZO_CONTRARRAZOES]
 
     def test_agravo_sem_determinacao_emits_marker_only(self):
+        # Fase 4 split: `sem_determinacao=True` legado é normalizado pra
+        # `sem_prazo_em_aberto=True` no validator. Marker emitido vira
+        # SEM_PRAZO_EM_ABERTO.
         payload = _empty_response_dict(natureza=NATUREZA_AGRAVO_INSTRUMENTO)
         payload["sem_determinacao"] = True
         resp = PrazoInicialClassificationResponse.model_validate(payload)
         pares = resp.blocos_aplicaveis()
         assert len(pares) == 1
         tipo, _bloco = pares[0]
-        assert tipo == "SEM_DETERMINACAO"
+        assert tipo == "SEM_PRAZO_EM_ABERTO"
 
 
 # ═════════════════════════════════════════════════════════════════════

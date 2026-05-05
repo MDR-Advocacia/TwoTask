@@ -386,6 +386,42 @@ export async function deletePrazoInicialIntake(intakeId: number): Promise<void> 
 
 
 /**
+ * Bulk delete (admin only). Best-effort — continua mesmo se algum item
+ * falhar. Retorna ids deletados, ids que falharam e erros por id.
+ */
+export interface BulkDeleteIntakesResult {
+  deleted_count: number;
+  deleted_ids: number[];
+  failed_ids: number[];
+  errors: Record<string, string>;
+}
+
+export async function bulkDeletePrazoInicialIntakes(
+  intakeIds: number[],
+): Promise<BulkDeleteIntakesResult> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/intakes/bulk-delete`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ intake_ids: intakeIds }),
+    },
+  );
+  if (!response.ok) {
+    let detail = "Falha no bulk delete.";
+    try {
+      const data = await response.json();
+      detail = data?.detail || detail;
+    } catch (_) {
+      // sem body
+    }
+    throw new Error(detail);
+  }
+  return (await response.json()) as BulkDeleteIntakesResult;
+}
+
+
+/**
  * Onda 3 #5 — dispara o tratamento web (GED + enqueue cancel da legacy)
  * de um intake AGENDADO/CONCLUIDO_SEM_PROVIDENCIA. Idempotente — se
  * `dispatch_pending` já estiver false, retorna `skipped:true`.

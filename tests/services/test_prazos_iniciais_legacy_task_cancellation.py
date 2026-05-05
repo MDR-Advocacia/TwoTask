@@ -135,7 +135,12 @@ def test_cancel_task_selects_newest_pending_candidate_and_runs_runner(monkeypatc
     assert captured["runner_items"][0]["taskId"] == 279829
     assert captured["runner_items"][0]["targetStatusId"] == DEFAULT_CANCELLED_STATUS_ID
     assert captured["runner_items"][0]["targetStatusText"] == DEFAULT_CANCELLED_STATUS_TEXT
-    assert "EditCompromissoTarefa/279829" in captured["runner_items"][0]["editUrl"]
+    # URL muda conforme a presença de lawsuit_id: com lawsuit_id usa
+    # /processos/tarefas/edittarefa/<id>, sem lawsuit_id usa
+    # /agenda/Tarefas/EditCompromissoTarefa/<id>. Aqui o teste usa
+    # lawsuit_id=68506 → padrão "edittarefa".
+    assert "edittarefa/279829" in captured["runner_items"][0]["editUrl"]
+    assert "parentId=68506" in captured["runner_items"][0]["editUrl"]
 
 
 def test_cancel_task_returns_task_not_found_when_no_candidate_exists():
