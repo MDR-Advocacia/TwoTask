@@ -75,7 +75,12 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 45s
+      # Worst case: DB recém-criado roda 60+ migrations do zero + 4
+      # workers do uvicorn fazem cold import paralelo de pdfplumber +
+      # pdfminer.six + Pillow + pypdfium2. Em medições reais isso
+      # estoura 3min, então damos folga até 5min antes do compose
+      # marcar unhealthy.
+      start_period: 300s
 
   ajus-runner:
     build:
