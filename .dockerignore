@@ -8,6 +8,9 @@
 .gitignore
 .github
 
+# Worktrees do Claude (symlinks de node_modules quebram o build context)
+.claude/
+
 # Python
 __pycache__
 *.py[cod]
