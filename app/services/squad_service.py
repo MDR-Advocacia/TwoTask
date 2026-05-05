@@ -13,13 +13,15 @@ class SquadService:
     def __init__(self, db: Session):
         self.db = db
 
-    def get_all_squads(self, office_external_id: Optional[int] = None) -> List[models.Squad]:
+    def get_all_squads(
+        self,
+        office_external_id: Optional[int] = None,
+        kind: Optional[str] = None,
+    ) -> List[models.Squad]:
         """
         Retorna todos os squads ativos com seus membros e escritorio.
-        Pode ser filtrado por office_external_id.
+        Pode ser filtrado por office_external_id e/ou kind.
         """
-        from app.models.legal_one import LegalOneOffice  # late import pra evitar ciclo
-
         query = (
             self.db.query(models.Squad)
             .options(
@@ -31,11 +33,10 @@ class SquadService:
 
         if office_external_id is not None:
             query = query.filter(models.Squad.office_external_id == office_external_id)
+        if kind is not None:
+            query = query.filter(models.Squad.kind == kind)
 
-        # Ordena alfabeticamente — office_path nao usado aqui pq Office e'
-        # joinedload e a ordenacao na query exigiria join explicito.
-        del LegalOneOffice
-        return query.order_by(models.Squad.name).all()
+        return query.order_by(models.Squad.kind, models.Squad.name).all()
 
     def create_squad(self, squad_data: schemas.SquadCreateSchema) -> models.Squad:
         """
@@ -58,6 +59,7 @@ class SquadService:
         new_squad = models.Squad(
             name=squad_data.name,
             office_external_id=squad_data.office_external_id,
+            kind=getattr(squad_data, "kind", None) or "principal",
             is_active=True,
         )
         self.db.add(new_squad)
@@ -105,6 +107,10 @@ class SquadService:
                     f"Escritório com external_id={squad_data.office_external_id} não encontrado."
                 )
             squad.office_external_id = squad_data.office_external_id
+
+        # Atualiza o kind (principal | support)
+        if getattr(squad_data, "kind", None):
+            squad.kind = squad_data.kind
 
         # Atualiza os membros (se a lista for fornecida)
         if squad_data.members is not None:

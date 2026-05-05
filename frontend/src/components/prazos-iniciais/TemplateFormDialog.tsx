@@ -77,6 +77,9 @@ interface Props {
     id: number,
     payload: Partial<PrazoInicialTaskTemplateCreatePayload>,
   ) => Promise<void>;
+  /** Squads de suporte (kind='support') pra dropdown do bloco. Carregado
+   *  pelo parent via /api/v1/squads?kind=support. */
+  supportSquads?: SupportSquadOption[];
 }
 
 // ─── Estado ────────────────────────────────────────────────────────────
@@ -103,6 +106,13 @@ interface TaskBlock {
   // assistente da squad do `responsible_user_external_id`. Persiste em
   // `prazo_inicial_task_templates.target_role` ('principal' | 'assistente').
   target_role_assistant: boolean;
+  target_squad_id: string;  // "" = nenhum; "<id>" = aponta pra squad de suporte
+}
+
+interface SupportSquadOption {
+  id: number;
+  name: string;
+  office_external_id: number | null;
 }
 
 interface FormState {
@@ -128,6 +138,7 @@ const BLANK_TASK_BLOCK: TaskBlock = {
   notes_template: "",
   is_active: true,
   target_role_assistant: false,
+  target_squad_id: "",
 };
 
 function templateToTaskBlock(
@@ -167,6 +178,7 @@ function templateToTaskBlock(
     notes_template: t.notes_template || "",
     is_active: t.is_active ?? true,
     target_role_assistant: (t as any).target_role === "assistente",
+    target_squad_id: (t as any).target_squad_id ? String((t as any).target_squad_id) : "",
   };
 }
 
@@ -195,6 +207,7 @@ export function TemplateFormDialog({
   template,
   onCreate,
   onUpdate,
+  supportSquads = [],
 }: Props) {
   const { toast } = useToast();
   const [form, setForm] = useState<FormState>(() =>
@@ -444,6 +457,7 @@ export function TemplateFormDialog({
       notes_template: block.notes_template.trim() || null,
       is_active: block.is_active,
       target_role: block.target_role_assistant ? "assistente" : "principal",
+      target_squad_id: block.target_squad_id ? parseInt(block.target_squad_id) : null,
     };
   };
 
@@ -851,12 +865,42 @@ export function TemplateFormDialog({
                           htmlFor={`target-assistant-${idx}`}
                           className="text-xs font-normal leading-tight cursor-pointer"
                         >
-                          Atribuir ao <strong>assistente</strong> da squad do responsável
+                          Atribuir ao <strong>assistente</strong>
+                          {block.target_squad_id ? " da squad escolhida abaixo" : " da squad do responsável"}
                           <span className="block text-muted-foreground">
-                            Quando marcado, o responsável acima é o "líder de referência"
-                            e a tarefa cai pro assistente da squad dele.
+                            {block.target_squad_id
+                              ? "Marcado = vai pro assistente da squad de suporte (round-robin). Desmarcado = vai pro líder dessa squad."
+                              : "Marcado = responsável vira 'líder de referência' e a tarefa cai pro assistente da squad principal dele."}
                           </span>
                         </Label>
+                      </div>
+                      <div className="space-y-1 pt-1">
+                        <Label className="text-xs">
+                          Squad de suporte (opcional)
+                          <span className="ml-1 text-muted-foreground font-normal">
+                            — sobrepõe o responsável padrão
+                          </span>
+                        </Label>
+                        <Select
+                          value={block.target_squad_id || "_none"}
+                          onValueChange={(v) =>
+                            setBlockField(idx, "target_squad_id", v === "_none" ? "" : v)
+                          }
+                        >
+                          <SelectTrigger><SelectValue placeholder="Sem squad de suporte" /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="_none">Sem squad de suporte (responsável padrão)</SelectItem>
+                            {supportSquads
+                              .filter((s) => {
+                                const tmplOff = form.office_external_id;
+                                if (!tmplOff) return true;  // template global
+                                return s.office_external_id != null && s.office_external_id === parseInt(tmplOff);
+                              })
+                              .map((s) => (
+                                <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>
+                              ))}
+                          </SelectContent>
+                        </Select>
                       </div>
                     </div>
 

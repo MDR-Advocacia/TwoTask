@@ -91,6 +91,7 @@ export default function PrazosIniciaisTemplatesAdminPage() {
   const [offices, setOffices] = useState<OfficeOption[]>([]);
   const [taskTypes, setTaskTypes] = useState<TaskTypeOption[]>([]);
   const [users, setUsers] = useState<UserOption[]>([]);
+  const [supportSquads, setSupportSquads] = useState<Array<{ id: number; name: string; office_external_id: number | null }>>([]);
 
   // Estado da listagem
   const [templates, setTemplates] = useState<PrazoInicialTaskTemplate[]>([]);
@@ -115,11 +116,12 @@ export default function PrazosIniciaisTemplatesAdminPage() {
 
   const loadAuxData = async () => {
     try {
-      const [enumsData, officesRes, taskRes, usersRes] = await Promise.all([
+      const [enumsData, officesRes, taskRes, usersRes, sqRes] = await Promise.all([
         fetchPrazosIniciaisEnums(),
         apiFetch("/api/v1/offices"),
         apiFetch("/api/v1/tasks/task-creation-data"),
         apiFetch("/api/v1/users/with-squads"),
+        apiFetch("/api/v1/squads?kind=support"),
       ]);
       if (!officesRes.ok || !taskRes.ok || !usersRes.ok) {
         throw new Error("Falha carregando dados auxiliares.");
@@ -132,6 +134,14 @@ export default function PrazosIniciaisTemplatesAdminPage() {
       setOffices(officesJson);
       setTaskTypes(taskJson.task_types as TaskTypeOption[]);
       setUsers(usersJson);
+      if (sqRes.ok) {
+        const sqJson = await sqRes.json();
+        setSupportSquads(sqJson.map((s: any) => ({
+          id: s.id,
+          name: s.name,
+          office_external_id: s.office_external_id,
+        })));
+      }
     } catch (err: unknown) {
       toast({
         title: "Erro ao carregar dados",
@@ -509,6 +519,7 @@ export default function PrazosIniciaisTemplatesAdminPage() {
           offices={officeOptions}
           taskTypes={taskTypes}
           users={users}
+          supportSquads={supportSquads}
           template={editingTemplate}
           onCreate={handleCreate}
           onUpdate={handleUpdate}

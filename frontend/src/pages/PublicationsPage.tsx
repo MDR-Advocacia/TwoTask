@@ -1698,45 +1698,54 @@ const PublicationsPage = () => {
       }
     }
 
-    // Resolve assistente da squad pra cada task com target_role='assistente'.
-    // Backend de Publicações nao tem builder pra resolver, entao o frontend
-    // chama /api/v1/squads/assistant-of/{user}?office_external_id=... e
-    // troca o participant.contact.id antes de mandar o payload.
+    // Resolve quem recebe a tarefa pra cada task com target_role/target_squad
+    // configurados no template. Backend de Publicações nao tem builder pra
+    // resolver — frontend chama /api/v1/squads/resolve-target/claim e troca
+    // o participant.contact.id antes de mandar o payload.
+    //
+    // 4 cenarios cobertos pelo endpoint:
+    //   1. target_role=principal, target_squad=null → respo padrao (skip)
+    //   2. target_role=assistente, target_squad=null → assist da squad principal
+    //   3. target_role=principal, target_squad=X → leader da squad de suporte
+    //   4. target_role=assistente, target_squad=X → assist da support (round-robin)
     //
     // Override manual: se o operador trocou o responsavel no modal (current
     // != original), a escolha dele vence. Operador na ponta da operacao.
     const resolvedTasks: any[] = [];
     for (let i = 0; i < activeTasks.length; i++) {
       const t = activeTasks[i];
-      const targetRole = (t as any).target_role;
-      if (targetRole !== "assistente") {
+      const targetRole = (t as any).target_role || "principal";
+      const targetSquadId = (t as any).target_squad_id || null;
+      // Cenario 1: nao precisa resolver
+      if (targetRole === "principal" && !targetSquadId) {
         resolvedTasks.push(t);
         continue;
       }
       const responsibleId = (t.participants || []).find(
         (p: any) => p?.isResponsible && p?.contact?.id,
       )?.contact?.id;
-      if (!responsibleId) {
-        resolvedTasks.push(t);
-        continue;
-      }
       // Encontra o indice REAL no editedPayloads (activeTasks pula removed).
       const realIdx = editedPayloads.findIndex((p) => p === t);
       const originalId = originalResponsibleByIndex.get(realIdx) ?? null;
-      if (originalId !== null && originalId !== responsibleId) {
-        // Operador overrideu — pula regra do assistente, mantém o que ele escolheu.
+      if (responsibleId && originalId !== null && originalId !== responsibleId) {
+        // Operador overrideu — pula regra. Operador na ponta vence.
         resolvedTasks.push(t);
         continue;
       }
       try {
-        const params = new URLSearchParams();
         const officeId = (t as any).responsibleOfficeId || (t as any).originOfficeId;
-        if (officeId) params.set("office_external_id", String(officeId));
-        if (t.subTypeId) params.set("task_subtype_external_id", String(t.subTypeId));
-        // POST /claim avanca o round-robin entre assistentes da squad
-        // (o GET seria preview e nao incrementaria a fila).
-        const url = `/api/v1/squads/assistant-of/${responsibleId}/claim${params.toString() ? `?${params.toString()}` : ""}`;
-        const res = await apiFetch(url, { method: "POST" });
+        const body: any = {
+          target_role: targetRole,
+          target_squad_id: targetSquadId,
+          responsible_user_external_id: responsibleId || null,
+          office_external_id: officeId || null,
+          task_subtype_external_id: t.subTypeId || null,
+        };
+        const res = await apiFetch("/api/v1/squads/resolve-target/claim", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           toast({

@@ -168,6 +168,14 @@ interface TaskTemplate {
   notes_template: string | null;
   is_active: boolean;
   target_role?: string; // 'principal' | 'assistente'
+  target_squad_id?: number | null;
+  target_squad_name?: string | null;
+}
+
+interface SupportSquadOption {
+  id: number;
+  name: string;
+  office_external_id: number | null;
 }
 
 // ─── Blank form ────────────────────────────────────────────────────────────
@@ -234,6 +242,7 @@ const BLANK_TASK_BLOCK = {
   notes_template: "",
   is_active: true,
   target_role_assistant: false,
+  target_squad_id: "" as string,  // "" = sem squad de suporte; "<id>" = aponta pra support
 };
 
 type TaskBlock = typeof BLANK_TASK_BLOCK;
@@ -259,6 +268,7 @@ const TaskTemplatesPage = () => {
   const [offices, setOffices] = useState<Office[]>([]);
   const [taskTypes, setTaskTypes] = useState<TaskType[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
+  const [supportSquads, setSupportSquads] = useState<SupportSquadOption[]>([]);
   const [categories, setCategories] = useState<CategoryEntry[]>([]);
 
   const [loading, setLoading] = useState(true);
@@ -328,12 +338,13 @@ const TaskTemplatesPage = () => {
     setLoading(true);
     setError(null);
     try {
-      const [tplRes, offRes, ttRes, usrRes, catRes] = await Promise.all([
+      const [tplRes, offRes, ttRes, usrRes, catRes, sqRes] = await Promise.all([
         apiFetch(`${API}/`),
         apiFetch("/api/v1/offices"),
         apiFetch(`${API}/meta/task-types`),
         apiFetch(`${API}/meta/users`),
         apiFetch(`${API}/meta/categories`),
+        apiFetch("/api/v1/squads?kind=support"),
       ]);
 
       if (!tplRes.ok || !offRes.ok || !ttRes.ok || !usrRes.ok || !catRes.ok) {
@@ -346,6 +357,16 @@ const TaskTemplatesPage = () => {
       setUsers(await usrRes.json());
       const catData = await catRes.json();
       setCategories(catData.categories || []);
+      // Squads de suporte (kind='support') — opcional no template pra rotear
+      // tarefa pra equipe especifica em vez do responsavel/assistente padrao.
+      if (sqRes.ok) {
+        const sqData = await sqRes.json();
+        setSupportSquads(sqData.map((s: any) => ({
+          id: s.id,
+          name: s.name,
+          office_external_id: s.office_external_id,
+        })));
+      }
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -738,6 +759,7 @@ const TaskTemplatesPage = () => {
       notes_template: tmpl.notes_template ?? "",
       is_active: tmpl.is_active,
       target_role_assistant: tmpl.target_role === "assistente",
+      target_squad_id: tmpl.target_squad_id ? String(tmpl.target_squad_id) : "",
     };
   };
 
@@ -838,6 +860,7 @@ const TaskTemplatesPage = () => {
       notes_template: block.notes_template || null,
       is_active: block.is_active,
       target_role: block.target_role_assistant ? "assistente" : "principal",
+      target_squad_id: block.target_squad_id ? parseInt(block.target_squad_id) : null,
     });
 
     try {
@@ -2726,12 +2749,49 @@ const TaskTemplatesPage = () => {
                           htmlFor={`pub-target-assistant-${idx}`}
                           className="text-xs font-normal leading-tight cursor-pointer"
                         >
-                          Atribuir ao <strong>assistente</strong> da squad do responsável
+                          Atribuir ao <strong>assistente</strong>
+                          {block.target_squad_id ? " da squad escolhida abaixo" : " do responsável"}
                           <span className="block text-muted-foreground">
-                            Quando marcado, ao criar a tarefa o sistema redireciona pro
-                            assistente da squad do responsável escolhido acima.
+                            {block.target_squad_id
+                              ? "Quando marcado, vai pro assistente da squad de suporte (round-robin). Desmarcado = vai pro líder dessa squad."
+                              : "Quando marcado, vai pro assistente da squad principal do responsável."}
                           </span>
                         </Label>
+                      </div>
+                      {/* Squad de suporte opcional — quando setado, redireciona */}
+                      <div className="grid gap-1.5 pt-1">
+                        <Label className="text-xs">
+                          Squad de suporte (opcional)
+                          <span className="ml-1 text-muted-foreground font-normal">
+                            — sobrepõe o responsável padrão
+                          </span>
+                        </Label>
+                        <Select
+                          value={block.target_squad_id || "_none"}
+                          onValueChange={(v) =>
+                            setBlockField(idx, "target_squad_id", v === "_none" ? "" : v)
+                          }
+                        >
+                          <SelectTrigger className="h-8 text-sm">
+                            <SelectValue placeholder="Sem squad de suporte" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="_none">Sem squad de suporte (responsável padrão)</SelectItem>
+                            {supportSquads
+                              .filter((s) => {
+                                // Se template tem office, mostra so' squads desse office
+                                const tmplOffices = form.office_external_ids || [];
+                                if (!tmplOffices.length || tmplOffices.includes("_global")) return true;
+                                const tmplOfficeIds = tmplOffices.filter((o) => o !== "_global").map(Number);
+                                return s.office_external_id != null && tmplOfficeIds.includes(s.office_external_id);
+                              })
+                              .map((s) => (
+                                <SelectItem key={s.id} value={String(s.id)}>
+                                  {s.name}
+                                </SelectItem>
+                              ))}
+                          </SelectContent>
+                        </Select>
                       </div>
                     </div>
 

@@ -1863,6 +1863,7 @@ class PublicationSearchService:
             "template_id": tmpl.id,
             "template_name": tmpl.name,
             "target_role": getattr(tmpl, "target_role", None) or "principal",
+            "target_squad_id": getattr(tmpl, "target_squad_id", None),
             "payload": payload,
             "built_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -2078,6 +2079,8 @@ class PublicationSearchService:
                         payload["suggested_responsible"] = raw_proposal["suggested_responsible"]
                     if raw_proposal.get("target_role"):
                         payload["target_role"] = raw_proposal["target_role"]
+                    if raw_proposal.get("target_squad_id"):
+                        payload["target_squad_id"] = raw_proposal["target_squad_id"]
                     if raw_proposal.get("template_id"):
                         payload["template_id"] = raw_proposal["template_id"]
                 proposed_task = payload
@@ -2092,6 +2095,8 @@ class PublicationSearchService:
                             p["suggested_responsible"] = rp["suggested_responsible"]
                         if rp.get("target_role"):
                             p["target_role"] = rp["target_role"]
+                        if rp.get("target_squad_id"):
+                            p["target_squad_id"] = rp["target_squad_id"]
                         if rp.get("template_id"):
                             p["template_id"] = rp["template_id"]
                     if p:

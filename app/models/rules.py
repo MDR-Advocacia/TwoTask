@@ -52,16 +52,25 @@ class RuleAction(Base):
 # (templates, intakes, publications).
 
 class Squad(Base):
-    """Equipe vinculada a um escritorio responsavel (LegalOneOffice)."""
+    """Equipe vinculada a um escritorio responsavel (LegalOneOffice).
+
+    `kind` discrimina:
+    - 'principal' (default): 1 por escritorio. Recebe tarefas via lider
+      (= responsavel da pasta) e assistentes (round-robin).
+    - 'support': N por escritorio. Squads transversais com nome livre
+      ("Analise Recursal", "Custas", etc.) que recebem tarefas marcadas
+      no template via `target_squad_id`. Configurada em sqd004.
+    """
     __tablename__ = 'squads'
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False, unique=True)
     is_active = Column(Boolean, default=True, nullable=False)
+    # Discriminador da squad. 'principal' (default) ou 'support'.
+    kind = Column(
+        String(16), nullable=False, default='principal', server_default='principal',
+    )
 
-    # FK pro escritorio responsavel pela squad. Nullable=False na
-    # logica do admin (validado no SquadService); coluna no SQL ficou
-    # nullable=True na migration sqd002 pra suportar dados legados.
     office_external_id = Column(
         Integer,
         ForeignKey('legal_one_offices.external_id'),

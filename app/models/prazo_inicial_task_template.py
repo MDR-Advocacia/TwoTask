@@ -132,6 +132,13 @@ class PrazoInicialTaskTemplate(Base):
     target_role = Column(
         String(16), nullable=False, default="principal", server_default="principal",
     )
+    # Quando setado, a tarefa vai pra essa squad de suporte (kind='support')
+    # em vez do responsavel/assistente da squad principal. Combinado com
+    # target_role: 'principal'=lider da support, 'assistente'=assistente da
+    # support (round-robin). Migration: sqd004.
+    target_squad_id = Column(
+        Integer, ForeignKey("squads.id"), nullable=True, index=True,
+    )
     # Offset em dias úteis somado à data de referência para o agendamento
     # no L1. Convenção de sinal (igual a `task_templates`/publicações, onde a
     # soma é `base + timedelta(days=due_business_days)`):

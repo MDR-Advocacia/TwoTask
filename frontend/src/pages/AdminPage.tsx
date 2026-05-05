@@ -67,6 +67,7 @@ interface SquadDetail {
   id: number;
   name: string;
   is_active: boolean;
+  kind?: string; // 'principal' | 'support'
   office_external_id: number | null;
   office: OfficeRef | null;
   members: SquadMemberDetail[];
@@ -86,6 +87,7 @@ const SquadsManager = () => {
   const [pickedUserId, setPickedUserId] = useState<string | null>(null);
   const [creatingSquad, setCreatingSquad] = useState(false);
   const [newSquadName, setNewSquadName] = useState("");
+  const [newSquadKind, setNewSquadKind] = useState<"principal" | "support">("principal");
 
   const usersForPicker = allUsers
     .filter((u) => u.is_active)
@@ -149,6 +151,7 @@ const SquadsManager = () => {
         body: JSON.stringify({
           name: newSquadName.trim(),
           office_external_id: parseInt(selectedOffice, 10),
+          kind: newSquadKind,
           members: [],
         }),
       });
@@ -159,6 +162,7 @@ const SquadsManager = () => {
       toast({ title: "Squad criada" });
       setCreatingSquad(false);
       setNewSquadName("");
+      setNewSquadKind("principal");
       await fetchSquads(selectedOffice);
     } catch (err: any) {
       toast({ title: "Erro ao criar squad", description: err.message, variant: "destructive" });
@@ -266,7 +270,7 @@ const SquadsManager = () => {
         {loading && <p className="text-sm text-muted-foreground">Carregando…</p>}
 
         {!loading && selectedOffice && (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             {creatingSquad ? (
               <>
                 <Input
@@ -275,6 +279,13 @@ const SquadsManager = () => {
                   onChange={(e) => setNewSquadName(e.target.value)}
                   className="max-w-sm"
                 />
+                <Select value={newSquadKind} onValueChange={(v) => setNewSquadKind(v as "principal" | "support")}>
+                  <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="principal">Principal</SelectItem>
+                    <SelectItem value="support">Suporte</SelectItem>
+                  </SelectContent>
+                </Select>
                 <Button size="sm" onClick={createSquad} disabled={!newSquadName.trim()}>
                   Criar
                 </Button>
@@ -303,6 +314,9 @@ const SquadsManager = () => {
                   <AccordionTrigger className="hover:no-underline">
                     <div className="flex items-center gap-3 flex-1 flex-wrap">
                       <span className="font-medium">{squad.name}</span>
+                      {squad.kind === "support" && (
+                        <Badge variant="secondary" className="bg-purple-100 text-purple-700 border-purple-200">Suporte</Badge>
+                      )}
                       <Badge variant="secondary">{squad.members.length} {squad.members.length === 1 ? "membro" : "membros"}</Badge>
                       {leader && (
                         <Badge variant="default" className="gap-1">
