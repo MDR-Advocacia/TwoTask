@@ -62,6 +62,7 @@ class LegalOneUser(Base):
     can_schedule_batch = Column(Boolean, default=False, nullable=False)
     can_use_publications = Column(Boolean, default=True, nullable=False)
     can_use_prazos_iniciais = Column(Boolean, default=False, nullable=False)
+    notify_onerequest_errors = Column(Boolean, default=False, nullable=False)
     default_office_id = Column(Integer, ForeignKey("legal_one_offices.external_id"), nullable=True)
 
     # Relationships
