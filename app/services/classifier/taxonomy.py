@@ -51,6 +51,7 @@ CLASSIFICATION_TREE: dict[str, list[str]] = {
     "Audiência Agendada": [
         "Conciliação",
         "Instrução",
+        "Audiência Una",
         "Não especificada",
     ],
     "Cita\u00e7\u00e3o": [
