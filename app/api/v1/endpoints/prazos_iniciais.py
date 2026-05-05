@@ -42,6 +42,8 @@ from app.core.config import settings
 from app.core.dependencies import get_db
 from app.models.legal_one import LegalOneOffice, LegalOneTaskSubType, LegalOneUser
 from app.models.prazo_inicial import (
+    INTAKE_SOURCE_EXTERNAL_API,
+    INTAKE_SOURCE_USER_UPLOAD,
     INTAKE_STATUS_AWAITING_TEMPLATE_CONFIG,
     INTAKE_STATUS_CANCELLED,
     INTAKE_STATUS_CLASSIFICATION_ERROR,
@@ -247,6 +249,17 @@ class IntakeSummary(BaseModel):
     dispatch_pending: bool = False
     dispatched_at: Optional[datetime] = None
     dispatch_error_message: Optional[str] = None
+    # Origem do intake (pin016).
+    source: str = INTAKE_SOURCE_EXTERNAL_API
+    source_provider_name: Optional[str] = None
+    submitted_by_user_id: Optional[int] = None
+    submitted_by_email: Optional[str] = None
+    submitted_by_name: Optional[str] = None
+    submitted_at: Optional[datetime] = None
+    pdf_extraction_failed: bool = False
+    extractor_used: Optional[str] = None
+    extraction_confidence: Optional[str] = None
+    has_habilitacao_pdf: bool = False
 
     class Config:
         from_attributes = True
@@ -400,6 +413,7 @@ async def ingest_intake(
             metadata_json=intake_payload.metadata,
             pdf_bytes=pdf_bytes,
             pdf_filename_original=habilitacao.filename,
+            source=INTAKE_SOURCE_EXTERNAL_API,
         )
     except PdfValidationError as exc:
         raise HTTPException(
@@ -484,6 +498,16 @@ def _intake_to_summary(intake: PrazoInicialIntake) -> IntakeSummary:
         dispatch_pending=bool(getattr(intake, "dispatch_pending", False)),
         dispatched_at=getattr(intake, "dispatched_at", None),
         dispatch_error_message=getattr(intake, "dispatch_error_message", None),
+        source=getattr(intake, "source", INTAKE_SOURCE_EXTERNAL_API) or INTAKE_SOURCE_EXTERNAL_API,
+        source_provider_name=getattr(intake, "source_provider_name", None),
+        submitted_by_user_id=getattr(intake, "submitted_by_user_id", None),
+        submitted_by_email=getattr(intake, "submitted_by_email", None),
+        submitted_by_name=getattr(intake, "submitted_by_name", None),
+        submitted_at=getattr(intake, "submitted_at", None),
+        pdf_extraction_failed=bool(getattr(intake, "pdf_extraction_failed", False)),
+        extractor_used=getattr(intake, "extractor_used", None),
+        extraction_confidence=getattr(intake, "extraction_confidence", None),
+        has_habilitacao_pdf=bool(getattr(intake, "habilitacao_pdf_path", None)),
     )
 
 
@@ -632,6 +656,18 @@ def list_intakes(
         default=None,
         description="true = só pendentes de disparo (Tratamento Web); false = já disparados; omitido = ambos.",
     ),
+    source: Optional[str] = Query(
+        default=None,
+        description="CSV de origens: 'EXTERNAL_API,USER_UPLOAD'.",
+    ),
+    submitted_by_user_id: Optional[str] = Query(
+        default=None,
+        description="CSV de user_ids: '5,8'. Filtra por quem submeteu (USER_UPLOAD). Atalho 'Minha fila'.",
+    ),
+    pdf_extraction_failed: Optional[bool] = Query(
+        default=None,
+        description="true = só uploads com extração falha (classificação manual). Omitido = ambos.",
+    ),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -741,6 +777,32 @@ def list_intakes(
         query = query.filter(PrazoInicialIntake.dispatch_pending.is_(True))
     elif dispatch_pending is False:
         query = query.filter(PrazoInicialIntake.dispatch_pending.is_(False))
+
+    # Origem do intake (pin016)
+    source_list = _parse_csv_strs(source)
+    if source_list:
+        if len(source_list) == 1:
+            query = query.filter(PrazoInicialIntake.source == source_list[0])
+        else:
+            query = query.filter(PrazoInicialIntake.source.in_(source_list))
+
+    # Quem submeteu (USER_UPLOAD) — atalho "Minha fila"
+    submitted_by_ids = _parse_csv_ints(submitted_by_user_id)
+    if submitted_by_ids:
+        if len(submitted_by_ids) == 1:
+            query = query.filter(
+                PrazoInicialIntake.submitted_by_user_id == submitted_by_ids[0]
+            )
+        else:
+            query = query.filter(
+                PrazoInicialIntake.submitted_by_user_id.in_(submitted_by_ids)
+            )
+
+    # Extração mecânica falhou (operador classifica manualmente)
+    if pdf_extraction_failed is True:
+        query = query.filter(PrazoInicialIntake.pdf_extraction_failed.is_(True))
+    elif pdf_extraction_failed is False:
+        query = query.filter(PrazoInicialIntake.pdf_extraction_failed.is_(False))
 
     total = query.count()
     items = (
@@ -867,6 +929,240 @@ def get_intake_pdf(
         path=absolute,
         media_type="application/pdf",
         filename=filename,
+    )
+
+
+# ─── USER_UPLOAD: operador sobe processo na íntegra (pin016) ───────
+
+class UserUploadResponse(BaseModel):
+    intake_id: int
+    external_id: str
+    status: str
+    extractor_used: Optional[str] = None
+    extraction_confidence: Optional[str] = None
+    pdf_extraction_failed: bool = False
+    has_habilitacao_pdf: bool = False
+    already_existed: bool = False
+    # Mensagem traduzida pra UI exibir como "info" ou "warning". Vazia
+    # quando a extração foi 100% mecânica e sem alertas.
+    user_message: Optional[str] = None
+
+
+@router.post(
+    "/intake/upload",
+    response_model=UserUploadResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary=(
+        "Operador sobe PDF do processo na íntegra (extração mecânica)."
+    ),
+)
+async def upload_intake_pdf(
+    background_tasks: BackgroundTasks,
+    processo_pdf: UploadFile = File(
+        ...,
+        description="PDF do processo na íntegra (≤ PRAZOS_INICIAIS_MAX_UPLOAD_PDF_MB).",
+    ),
+    habilitacao_pdf: Optional[UploadFile] = File(
+        default=None,
+        description="(Opcional) PDF de habilitação MDR — preservado pro GED+AJUS.",
+    ),
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(
+        auth_security.require_permission("prazos_iniciais")
+    ),
+):
+    """
+    Cria um intake a partir de um PDF subido pelo operador.
+
+    Fluxo:
+    1. Lê o PDF do processo, valida tamanho.
+    2. Roda o motor de extração (pdfplumber + extractor PJe TJBA ou
+       fallback texto cru).
+    3. Se extração OK: cria intake com `source=USER_UPLOAD`,
+       `submitted_by_*` do JWT; PDF do processo NÃO é gravado em disco
+       (só os bytes/SHA pra auditoria) — economiza armazenamento.
+    4. Se extração falha (PDF escaneado/sem texto): cria intake com
+       `pdf_extraction_failed=True`, MANTÉM o PDF salvo, capa/integra
+       vazias. Operador classifica manualmente no HITL.
+    5. Se `habilitacao_pdf` foi enviado: SEMPRE preservado em
+       `habilitacao_pdf_path` (vai pro GED L1 + AJUS).
+    6. Idempotência: SHA256 do PDF do processo é a base do
+       `external_id` (`upload-{sha8}`). Re-subir o mesmo PDF retorna
+       o intake existente.
+    """
+    from app.services.prazos_iniciais.pdf_extractor import extract as pdf_extract
+    from app.services.prazos_iniciais.storage import (
+        validate_pdf_bytes,
+    )
+    import hashlib as _hashlib
+
+    # 1. Lê PDF do processo (limite específico do upload manual).
+    max_bytes = settings.prazos_iniciais_max_upload_pdf_bytes
+    processo_bytes = await processo_pdf.read()
+    if not processo_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="O arquivo do processo está vazio.",
+        )
+    if len(processo_bytes) > max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                f"O PDF do processo excede {settings.prazos_iniciais_max_upload_pdf_mb} MB "
+                f"(recebido: {len(processo_bytes) / 1024 / 1024:.1f} MB)."
+            ),
+        )
+
+    # Magic bytes — falha cedo se não for PDF.
+    try:
+        validate_pdf_bytes(processo_bytes)
+    except PdfValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Arquivo do processo inválido: {exc}",
+        )
+
+    # 2. Habilitação (opcional).
+    habilitacao_bytes: Optional[bytes] = None
+    habilitacao_filename: Optional[str] = None
+    if habilitacao_pdf is not None:
+        habilitacao_bytes = await habilitacao_pdf.read()
+        if habilitacao_bytes:
+            if len(habilitacao_bytes) > settings.prazos_iniciais_max_pdf_bytes:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=(
+                        f"PDF de habilitação excede {settings.prazos_iniciais_max_pdf_mb} MB."
+                    ),
+                )
+            try:
+                validate_pdf_bytes(habilitacao_bytes)
+            except PdfValidationError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Arquivo de habilitação inválido: {exc}",
+                )
+            habilitacao_filename = habilitacao_pdf.filename
+        else:
+            habilitacao_bytes = None  # arquivo vazio = ignora silenciosamente
+
+    # 3. Idempotência por SHA256 do PDF do processo.
+    sha = _hashlib.sha256(processo_bytes).hexdigest()
+    external_id = f"upload-{sha[:16]}"
+
+    service = IntakeService(db=db)
+    existing = service.get_by_external_id(external_id)
+    if existing is not None:
+        return UserUploadResponse(
+            intake_id=existing.id,
+            external_id=existing.external_id,
+            status=existing.status,
+            extractor_used=existing.extractor_used,
+            extraction_confidence=existing.extraction_confidence,
+            pdf_extraction_failed=bool(existing.pdf_extraction_failed),
+            has_habilitacao_pdf=bool(existing.habilitacao_pdf_path),
+            already_existed=True,
+            user_message="Este PDF já tinha sido cadastrado antes.",
+        )
+
+    # 4. Roda o motor de extração.
+    extraction = pdf_extract(processo_bytes)
+
+    # 5. Resolve CNJ — preferir o do extractor; sem ele, criar intake
+    #    sem CNJ válido é problemático porque cnj_number é NOT NULL.
+    cnj_number = extraction.cnj_number
+    if not cnj_number:
+        # Sem CNJ não dá pra criar intake (campo NOT NULL e o L1 não
+        # vai resolver nada). Devolvemos erro traduzido pro operador.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Não foi possível identificar o número do processo (CNJ) "
+                "neste PDF. Verifique se o arquivo está completo e que a "
+                "primeira página contém a capa do processo."
+            ),
+        )
+
+    # 6. Cria intake.
+    pdf_extraction_failed = not extraction.success
+
+    try:
+        result = service.create_intake(
+            external_id=external_id,
+            cnj_number=cnj_number,
+            capa_json=extraction.capa_json or {},
+            integra_json=extraction.integra_json or {},
+            metadata_json={
+                "user_upload": True,
+                "extractor_used": extraction.extractor_used,
+                "extraction_confidence": extraction.confidence,
+                "pdf_sha256": sha,
+                "pdf_size_bytes": len(processo_bytes),
+                "submitted_via": "upload_endpoint_v1",
+            },
+            pdf_bytes=processo_bytes,
+            pdf_filename_original=processo_pdf.filename,
+            source=INTAKE_SOURCE_USER_UPLOAD,
+            submitted_by_user_id=current_user.id,
+            submitted_by_email=current_user.email,
+            submitted_by_name=current_user.name,
+            pdf_extraction_failed=pdf_extraction_failed,
+            extractor_used=extraction.extractor_used,
+            extraction_confidence=extraction.confidence,
+            habilitacao_pdf_bytes=habilitacao_bytes,
+            habilitacao_pdf_filename_original=habilitacao_filename,
+            # Quando a extração foi bem-sucedida, descarta o PDF do
+            # processo (capa+integra já estão no JSON, não precisamos
+            # do arquivo bruto). Falha de extração mantém o PDF pra
+            # operador conseguir baixar e classificar manualmente.
+            skip_pdf_storage=not pdf_extraction_failed,
+        )
+    except PdfValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
+
+    # 7. Resolve lawsuit em background (não bloqueia a resposta).
+    background_tasks.add_task(
+        service.resolve_lawsuit_for_intake, result.intake.id
+    )
+
+    # 8. Mensagem pro operador (sem JSON cru — apenas info acionável).
+    if pdf_extraction_failed:
+        user_message = (
+            "Processo cadastrado, mas o texto não pôde ser extraído "
+            "automaticamente (PDF escaneado ou sem texto). "
+            "Você precisa classificar manualmente na tela de tratamento."
+        )
+    elif extraction.confidence == "low":
+        user_message = (
+            "Processo cadastrado. A extração capturou pouca informação — "
+            "o motor de classificação vai tentar completar."
+        )
+    elif extraction.confidence == "partial":
+        user_message = (
+            "Processo cadastrado. Alguns campos da capa não foram capturados "
+            "automaticamente — o motor de classificação vai completar."
+        )
+    else:
+        user_message = "Processo cadastrado. Classificação em andamento."
+
+    return UserUploadResponse(
+        intake_id=result.intake.id,
+        external_id=result.intake.external_id,
+        status=result.intake.status,
+        extractor_used=result.intake.extractor_used,
+        extraction_confidence=result.intake.extraction_confidence,
+        pdf_extraction_failed=bool(result.intake.pdf_extraction_failed),
+        has_habilitacao_pdf=bool(result.intake.habilitacao_pdf_path),
+        already_existed=False,
+        user_message=user_message,
     )
 
 

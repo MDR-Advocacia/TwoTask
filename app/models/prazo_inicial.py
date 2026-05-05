@@ -80,6 +80,24 @@ SUGESTAO_REVIEW_APPROVED = "aprovado"
 SUGESTAO_REVIEW_REJECTED = "rejeitado"
 SUGESTAO_REVIEW_EDITED = "editado"
 
+# ─── Origem do intake (pin016) ────────────────────────────────────────
+# EXTERNAL_API: provedor externo via X-Intake-Api-Key (modo histórico).
+# USER_UPLOAD:  operador subiu PDF do processo na íntegra pela UI;
+#               capa/integra montadas mecanicamente pelo motor de
+#               extração (pdfplumber + extractor PJe TJBA).
+
+INTAKE_SOURCE_EXTERNAL_API = "EXTERNAL_API"
+INTAKE_SOURCE_USER_UPLOAD = "USER_UPLOAD"
+
+# ─── Confiança da extração mecânica (pin016) ──────────────────────────
+# high:    template detectado, capa+timeline extraídas (PJe TJBA OK).
+# partial: capa parcialmente preenchida ou timeline não-segmentada.
+# low:     fallback texto cru — capa vazia, integra como blob.
+
+EXTRACTION_CONFIDENCE_HIGH = "high"
+EXTRACTION_CONFIDENCE_PARTIAL = "partial"
+EXTRACTION_CONFIDENCE_LOW = "low"
+
 
 class PrazoInicialIntake(Base):
     """
@@ -191,6 +209,48 @@ class PrazoInicialIntake(Base):
     )
     dispatched_at = Column(DateTime(timezone=True), nullable=True)
     dispatch_error_message = Column(Text, nullable=True)
+
+    # Origem do intake (pin016) — EXTERNAL_API ou USER_UPLOAD. NOT NULL
+    # com default no servidor; backfill da migration coloca todos os
+    # registros antigos como EXTERNAL_API.
+    source = Column(
+        String(32),
+        nullable=False,
+        server_default=INTAKE_SOURCE_EXTERNAL_API,
+        index=True,
+    )
+    # Nome livre do provedor externo (quando aplicável). Útil quando
+    # tivermos múltiplos provedores de API com chaves distintas.
+    source_provider_name = Column(String(255), nullable=True)
+
+    # Quem submeteu (USER_UPLOAD only — NULL pra EXTERNAL_API). Filtro
+    # "Minha fila" usa submitted_by_user_id. NÃO confundir com
+    # treated_by_* (PIN011) — quem TRATOU é quem confirmou no HITL.
+    submitted_by_user_id = Column(Integer, nullable=True, index=True)
+    submitted_by_email = Column(String(255), nullable=True)
+    submitted_by_name = Column(String(255), nullable=True)
+    submitted_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Status da extração mecânica do PDF (USER_UPLOAD only). Quando
+    # pdf_extraction_failed=True a UI exibe badge "Sem texto extraível —
+    # classificar manualmente"; o operador preenche capa/sugestões à mão
+    # no HITL. Pra USER_UPLOAD bem-sucedido: extractor_used identifica
+    # qual extractor rodou (ex.: "pje_tjba_v1"), extraction_confidence
+    # é "high"/"partial"/"low".
+    pdf_extraction_failed = Column(
+        Boolean, nullable=False, server_default=text("false"),
+    )
+    extractor_used = Column(String(64), nullable=True)
+    extraction_confidence = Column(String(16), nullable=True)
+
+    # Habilitação MDR (procuração + carta de preposição) — preservada
+    # mesmo após extração do processo bem-sucedida porque vai pro GED L1
+    # e AJUS (memory project_pin_habilitacao_ajus.md). Distinta do
+    # pdf_path (processo na íntegra), que é descartado após extração ok.
+    habilitacao_pdf_path = Column(String(512), nullable=True)
+    habilitacao_pdf_sha256 = Column(String(64), nullable=True)
+    habilitacao_pdf_bytes = Column(BigInteger, nullable=True)
+    habilitacao_pdf_filename_original = Column(String(255), nullable=True)
 
     received_at = Column(
         DateTime(timezone=True),

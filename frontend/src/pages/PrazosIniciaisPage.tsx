@@ -10,6 +10,7 @@ import {
   ExternalLink,
   FileDown,
   FileText,
+  FileUp,
   Filter,
   Loader2,
   Play,
@@ -84,6 +85,7 @@ import {
   type L1TaskRecent,
   type ReapplyTemplatesResult,
 } from "@/services/api";
+import { UploadProcessoDialog } from "@/components/prazos-iniciais/UploadProcessoDialog";
 import { useAuth } from "@/hooks/useAuth";
 import type {
   PrazoInicialBatchSummary,
@@ -93,6 +95,7 @@ import type {
   PrazoInicialIntakeStatus,
   PrazoInicialIntakeSummary,
   PrazoInicialSugestao,
+  PrazoInicialUploadResponse,
 } from "@/types/api";
 
 // PAGE_SIZE_DEFAULT = primeiro carregamento; operador pode trocar via
@@ -383,7 +386,7 @@ function RecentTaskRow({
 
 export default function PrazosIniciaisPage() {
   const { toast } = useToast();
-  const { isAdmin } = useAuth();
+  const { isAdmin, user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
   // Filtros - os "appliedXxx" são os que efetivamente vão pro GET, os
@@ -410,6 +413,23 @@ export default function PrazosIniciaisPage() {
   const [appliedDateFrom, setAppliedDateFrom] = useState("");
   const [appliedDateTo, setAppliedDateTo] = useState("");
   const [appliedHasError, setAppliedHasError] = useState<"__all__" | "com" | "sem">("__all__");
+  // Origem do intake (pin016).
+  const [sourceFilter, setSourceFilter] = useState<"__all__" | "EXTERNAL_API" | "USER_UPLOAD">(
+    "__all__",
+  );
+  const [appliedSource, setAppliedSource] = useState<
+    "__all__" | "EXTERNAL_API" | "USER_UPLOAD"
+  >("__all__");
+  const [submittedByFilter, setSubmittedByFilter] = useState<string | null>(null);
+  const [appliedSubmittedBy, setAppliedSubmittedBy] = useState<string | null>(null);
+  const [mineOnly, setMineOnly] = useState(false);
+  const [pdfFailedFilter, setPdfFailedFilter] = useState<"__all__" | "true" | "false">(
+    "__all__",
+  );
+  const [appliedPdfFailed, setAppliedPdfFailed] = useState<"__all__" | "true" | "false">(
+    "__all__",
+  );
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [offset, setOffset] = useState(0);
   const [pageSize, setPageSize] = useState<25 | 50 | 100>(PAGE_SIZE_DEFAULT);
 
@@ -635,6 +655,14 @@ export default function PrazosIniciaisPage() {
           appliedHasError === "com" ? true
           : appliedHasError === "sem" ? false
           : undefined;
+        const pdf_extraction_failed =
+          appliedPdfFailed === "true" ? true
+          : appliedPdfFailed === "false" ? false
+          : undefined;
+        // "Minha fila" sobrepõe o filtro manual de submitted_by.
+        const submittedIdsCsv: string | undefined = mineOnly && user?.id
+          ? String(user.id)
+          : appliedSubmittedBy ?? undefined;
         const payload = await fetchPrazosIniciaisIntakes({
           status: appliedStatus || undefined,
           cnj_number: appliedCnj || undefined,
@@ -645,6 +673,9 @@ export default function PrazosIniciaisPage() {
           date_from: appliedDateFrom || undefined,
           date_to: appliedDateTo || undefined,
           has_error,
+          source: appliedSource !== "__all__" ? appliedSource : undefined,
+          submitted_by_user_id: submittedIdsCsv,
+          pdf_extraction_failed,
           limit: pageSize,
           offset: nextOffset,
         });
@@ -660,7 +691,8 @@ export default function PrazosIniciaisPage() {
     [
       appliedCnj, appliedStatus, appliedOffice, appliedNatureza,
       appliedProduto, appliedProbExito, appliedDateFrom, appliedDateTo,
-      appliedHasError, offset,
+      appliedHasError, appliedSource, appliedSubmittedBy, appliedPdfFailed,
+      mineOnly, user?.id, offset, pageSize,
     ],
   );
 
@@ -813,6 +845,9 @@ export default function PrazosIniciaisPage() {
     setAppliedDateFrom(dateFromFilter);
     setAppliedDateTo(dateToFilter);
     setAppliedHasError(hasErrorFilter);
+    setAppliedSource(sourceFilter);
+    setAppliedSubmittedBy(submittedByFilter);
+    setAppliedPdfFailed(pdfFailedFilter);
     setOffset(0);
   };
 
@@ -829,6 +864,10 @@ export default function PrazosIniciaisPage() {
     setDateFromFilter("");
     setDateToFilter("");
     setHasErrorFilter("__all__");
+    setSourceFilter("__all__");
+    setSubmittedByFilter(null);
+    setPdfFailedFilter("__all__");
+    setMineOnly(false);
     setAppliedStatus(DEFAULT_PENDING_STATUSES_CSV);
     setAppliedCnj("");
     setAppliedOffice("");
@@ -838,6 +877,9 @@ export default function PrazosIniciaisPage() {
     setAppliedDateFrom("");
     setAppliedDateTo("");
     setAppliedHasError("__all__");
+    setAppliedSource("__all__");
+    setAppliedSubmittedBy(null);
+    setAppliedPdfFailed("__all__");
     setOffset(0);
   };
 
@@ -1817,6 +1859,15 @@ export default function PrazosIniciaisPage() {
 
         <div className="flex flex-col gap-2 sm:flex-row">
           <Button
+            variant="default"
+            className="w-full sm:w-auto"
+            onClick={() => setUploadDialogOpen(true)}
+            title="Sobe um PDF de processo na íntegra (extração mecânica)."
+          >
+            <FileUp className="mr-2 h-4 w-4" />
+            Subir processo
+          </Button>
+          <Button
             className="w-full sm:w-auto"
             onClick={handleClassifyPending}
             disabled={classifyingPending}
@@ -2172,6 +2223,79 @@ export default function PrazosIniciaisPage() {
               />
             </div>
 
+            {/* Origem do intake (pin016) */}
+            <div className="space-y-1">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Origem
+              </Label>
+              <Select
+                value={sourceFilter}
+                onValueChange={(v) =>
+                  setSourceFilter(v as "__all__" | "EXTERNAL_API" | "USER_UPLOAD")
+                }
+              >
+                <SelectTrigger className="h-9 text-sm">
+                  <SelectValue placeholder="Todas" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__">Todas</SelectItem>
+                  <SelectItem value="EXTERNAL_API">API (provedor externo)</SelectItem>
+                  <SelectItem value="USER_UPLOAD">Upload manual</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Submetido por
+              </Label>
+              <UserSelector
+                users={l1UsersForPicker}
+                value={submittedByFilter}
+                onChange={setSubmittedByFilter}
+                placeholder="Qualquer usuário"
+                disabled={mineOnly}
+              />
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Atalho
+              </Label>
+              <Button
+                type="button"
+                variant={mineOnly ? "default" : "outline"}
+                size="sm"
+                onClick={() => setMineOnly((v) => !v)}
+                className="h-9 w-full"
+                disabled={!user?.id}
+                title="Filtra intakes que VOCÊ submeteu (USER_UPLOAD)."
+              >
+                {mineOnly ? "Minha fila ✓" : "Minha fila"}
+              </Button>
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Extração do PDF
+              </Label>
+              <Select
+                value={pdfFailedFilter}
+                onValueChange={(v) =>
+                  setPdfFailedFilter(v as "__all__" | "true" | "false")
+                }
+              >
+                <SelectTrigger className="h-9 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__">Todos</SelectItem>
+                  <SelectItem value="true">Falha (classificar manual)</SelectItem>
+                  <SelectItem value="false">OK</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
             <div className="flex items-end">
               <Button type="button" onClick={onAplicarFiltros} disabled={isLoading} className="h-9">
                 <Search className="mr-2 h-4 w-4" />
@@ -2285,11 +2409,53 @@ export default function PrazosIniciaisPage() {
                     <TableCell className="font-mono text-xs">{formatCnj(item.cnj_number)}</TableCell>
                     <TableCell>
                       <div className="space-y-1">
-                        <div className="text-sm">{item.pdf_filename_original || item.external_id}</div>
+                        <div className="flex items-center gap-2">
+                          <div className="text-sm">{item.pdf_filename_original || item.external_id}</div>
+                          {/* Origem (pin016): API ou Upload manual */}
+                          {item.source === "USER_UPLOAD" ? (
+                            <Badge
+                              variant="outline"
+                              className="bg-violet-50 text-violet-800 border-violet-300 text-xs"
+                              title={
+                                item.submitted_by_name
+                                  ? `Submetido por ${item.submitted_by_name}${
+                                      item.submitted_at
+                                        ? " em " + formatDateTime(item.submitted_at)
+                                        : ""
+                                    }`
+                                  : "Upload manual"
+                              }
+                            >
+                              Upload
+                            </Badge>
+                          ) : (
+                            <Badge
+                              variant="outline"
+                              className="bg-slate-50 text-slate-700 border-slate-300 text-xs"
+                            >
+                              API
+                            </Badge>
+                          )}
+                          {item.pdf_extraction_failed ? (
+                            <Badge
+                              variant="outline"
+                              className="bg-amber-50 text-amber-800 border-amber-300 text-xs"
+                              title="Texto não pôde ser extraído mecanicamente. Operador classifica manualmente."
+                            >
+                              Classificar manual
+                            </Badge>
+                          ) : null}
+                        </div>
                         <div className="text-xs text-muted-foreground">
                           {naturezaLabel(item.natureza_processo) || "Natureza pendente"}
                           {item.produto ? ` · ${produtoLabel(item.produto)}` : ""}
                         </div>
+                        {item.source === "USER_UPLOAD" && item.submitted_by_name ? (
+                          <div className="text-xs text-muted-foreground">
+                            Subido por <span className="font-medium text-foreground/80">{item.submitted_by_name}</span>
+                            {item.submitted_at ? ` em ${formatDateTime(item.submitted_at)}` : ""}
+                          </div>
+                        ) : null}
                         {item.treated_by_name ? (
                           <div className="text-xs text-muted-foreground">
                             Tratado por <span className="font-medium text-foreground/80">{item.treated_by_name}</span>
@@ -3115,6 +3281,16 @@ export default function PrazosIniciaisPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* ── Modal: Subir processo (USER_UPLOAD) ────────────────────── */}
+      <UploadProcessoDialog
+        open={uploadDialogOpen}
+        onOpenChange={setUploadDialogOpen}
+        onSuccess={(_resp: PrazoInicialUploadResponse) => {
+          // Recarrega listagem pra mostrar o novo intake.
+          loadIntakes(true);
+        }}
+      />
 
       {/* ── Modal: Reaplicar templates em lote ─────────────────────── */}
       <Dialog open={reapplyDialogOpen} onOpenChange={setReapplyDialogOpen}>

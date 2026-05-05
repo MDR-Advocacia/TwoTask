@@ -32,3 +32,6 @@ openpyxl==3.1.5
 
 # ─── Classificador ────────────────────────────────
 anthropic==0.40.0
+
+# ─── Extração de PDF (intake USER_UPLOAD) ─────────
+pdfplumber==0.11.4
