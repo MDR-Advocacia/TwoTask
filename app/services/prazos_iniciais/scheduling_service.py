@@ -308,10 +308,14 @@ class PrazosIniciaisSchedulingService:
         # chamada — entao o resolver opera sobre o valor "atual" da
         # sugestao, que e' o que o operador realmente quer ver na squad.
         target_role, target_squad_id = self._lookup_template_target(sugestao)
+        original_target_role = target_role
         # Override manual: se o operador trocou o responsavel no modal,
         # respeita a escolha dele — desliga regra do assistente E desliga
         # roteamento pra squad de suporte (operador na ponta vence).
-        if (sugestao.payload_proposto or {}).get("responsible_overridden"):
+        overridden = bool(
+            (sugestao.payload_proposto or {}).get("responsible_overridden")
+        )
+        if overridden:
             target_role = "principal"
             target_squad_id = None
         try:
@@ -326,6 +330,28 @@ class PrazosIniciaisSchedulingService:
             raise ValueError(
                 f"Sugestão {sugestao.id} (target_role={target_role!r}): {exc}"
             ) from exc
+
+        # Log estruturado da resolucao do responsavel — chave pra
+        # diagnosticar "tarefa caiu no lider em vez do assistente". Logado
+        # como INFO em cada criacao real (intake confirmado). Procurar
+        # nos logs por `prazos_iniciais.routing` quando algo parecer fora.
+        if (
+            original_target_role != "principal"
+            or _resolution is not None
+            or overridden
+        ):
+            logger.info(
+                "prazos_iniciais.routing intake=%s sugestao=%s "
+                "template_target_role=%s template_target_squad_id=%s "
+                "overridden=%s candidate=%s final=%s "
+                "fallback_reason=%s squad=%s",
+                intake.id, sugestao.id,
+                original_target_role, target_squad_id,
+                overridden,
+                sugestao.responsavel_sugerido_id, final_responsible_id,
+                getattr(_resolution, "fallback_reason", None) if _resolution else None,
+                getattr(_resolution, "squad_name", None) if _resolution else None,
+            )
 
         payload: dict[str, Any] = {
             "description": description,

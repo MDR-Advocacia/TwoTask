@@ -860,6 +860,14 @@ export interface PrazoInicialTaskTemplate {
   description_template: string | null;
   notes_template: string | null;
   is_active: boolean;
+  // Roteamento de squad (sqd001 + sqd004). 'principal' (default) =
+  // tarefa vai pro responsible_user_external_id direto; 'assistente' =
+  // backend redireciona pro assistente da squad principal do
+  // responsavel via resolve_target. target_squad_id != null = squad de
+  // suporte explicita (kind='support'); combinado com target_role.
+  target_role: "principal" | "assistente";
+  target_squad_id: number | null;
+  target_squad_name: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -886,6 +894,11 @@ export interface PrazoInicialTaskTemplateCreatePayload {
   description_template?: string | null;
   notes_template?: string | null;
   is_active?: boolean;
+  // Roteamento de squad — sem isso o frontend mandava esses campos via
+  // (t as any) e o tipo nao sinalizava se eles estavam realmente sendo
+  // enviados. Tipar explicito reduz risco de regressao silenciosa.
+  target_role?: "principal" | "assistente";
+  target_squad_id?: number | null;
 }
 
 // Update aceita qualquer subconjunto dos campos do Create.
