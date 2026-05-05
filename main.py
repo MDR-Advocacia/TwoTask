@@ -22,6 +22,7 @@ from app.api.v1.endpoints import (
     squads,
     task_templates,
     tasks,
+    taxonomy_admin,
     users,
 )
 from app.core import auth as auth_security
@@ -237,6 +238,7 @@ protected_dependencies = [Depends(auth_security.get_current_user)]
 
 app.include_router(admin.router, prefix="/api/v1/admin", tags=["Admin"], dependencies=protected_dependencies)
 app.include_router(capture_health.router, prefix="/api/v1/admin", tags=["Admin"], dependencies=protected_dependencies)
+app.include_router(taxonomy_admin.router, prefix="/api/v1/admin", tags=["Admin: Taxonomia"], dependencies=protected_dependencies)
 app.include_router(admin.me_router, prefix="/api/v1", tags=["User"], dependencies=protected_dependencies)
 app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["Dashboard"], dependencies=protected_dependencies)
 app.include_router(squads.router, prefix="/api/v1/squads", tags=["Squads"], dependencies=protected_dependencies)
