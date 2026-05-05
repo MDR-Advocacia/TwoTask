@@ -27,6 +27,8 @@ from .prazo_inicial_legacy_task_queue import PrazoInicialLegacyTaskCancellationI
 from .prazo_inicial_task_template import PrazoInicialTaskTemplate
 from .prazo_inicial_tipo_pedido import PrazoInicialTipoPedido
 from .prazo_inicial_pedido import PrazoInicialPedido
+from .prazo_inicial_patrocinio import PrazoInicialPatrocinio
+from .master_vinculada import MasterVinculada
 from .classification_taxonomy import (
     ClassificationCategory,
     ClassificationSubcategory,
