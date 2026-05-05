@@ -244,6 +244,19 @@ export interface PrazoInicialIntakeSummary {
   dispatch_pending?: boolean;
   dispatched_at?: string | null;
   dispatch_error_message?: string | null;
+  // Origem do intake (pin016).
+  source?: "EXTERNAL_API" | "USER_UPLOAD" | string;
+  source_provider_name?: string | null;
+  submitted_by_user_id?: number | null;
+  submitted_by_email?: string | null;
+  submitted_by_name?: string | null;
+  submitted_at?: string | null;
+  // True = USER_UPLOAD em que o PDF não tinha texto extraível
+  // (escaneado). UI exibe badge "Classificar manualmente".
+  pdf_extraction_failed?: boolean;
+  extractor_used?: string | null;
+  extraction_confidence?: "high" | "partial" | "low" | string | null;
+  has_habilitacao_pdf?: boolean;
 }
 
 export interface PrazoInicialParteProcessual {
@@ -385,8 +398,24 @@ export interface PrazoInicialIntakeFilters {
   batch_id?: number;
   treated_by_user_id?: string;  // CSV de user_ids: "5,8"
   dispatch_pending?: boolean;   // true = só pendentes; false = só já disparados
+  // Origem do intake (pin016).
+  source?: string;                  // CSV: "EXTERNAL_API,USER_UPLOAD"
+  submitted_by_user_id?: string;    // CSV — atalho "Minha fila"
+  pdf_extraction_failed?: boolean;  // true = só uploads com extração falha
   limit?: number;
   offset?: number;
+}
+
+export interface PrazoInicialUploadResponse {
+  intake_id: number;
+  external_id: string;
+  status: string;
+  extractor_used: string | null;
+  extraction_confidence: string | null;
+  pdf_extraction_failed: boolean;
+  has_habilitacao_pdf: boolean;
+  already_existed: boolean;
+  user_message: string | null;
 }
 
 export type PrazoInicialLegacyTaskCancelQueueStatus =
