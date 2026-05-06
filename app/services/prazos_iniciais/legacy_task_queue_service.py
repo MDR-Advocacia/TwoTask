@@ -410,10 +410,18 @@ class PrazosIniciaisLegacyTaskQueueService:
         if intake_id is not None:
             query = query.filter(PrazoInicialLegacyTaskCancellationItem.intake_id == intake_id)
         else:
+            # Worker periódico: pega PENDING e FAILED, mas pula items que
+            # já estouraram max_attempts (evita loop eterno em layout_drift
+            # / runner_error permanente). Operador pode reprocessar manual
+            # pela UI ("Reprocessar" reseta attempt_count). Chamada com
+            # intake_id (background task pós-confirmação) ignora o cap —
+            # é uma execução pontual, faz sentido tentar mesmo no limite.
+            max_attempts = max(1, int(settings.prazos_iniciais_legacy_task_max_attempts or 5))
             query = query.filter(
                 PrazoInicialLegacyTaskCancellationItem.queue_status.in_(
                     [QUEUE_STATUS_PENDING, QUEUE_STATUS_FAILED]
-                )
+                ),
+                PrazoInicialLegacyTaskCancellationItem.attempt_count < max_attempts,
             )
 
         items = query.limit(limit).all()
@@ -527,12 +535,19 @@ class PrazosIniciaisLegacyTaskQueueService:
         Reset manual: zera status pra PENDENTE e limpa erro pro próximo tick
         agarrar. Não executa o runner aqui — mantém idempotência e mantém a
         execução no worker/endpoint de processamento.
+
+        Zera tambem attempt_count: depois de 2026-05-06 o worker periodico
+        skipa items com attempt_count >= max_attempts pra nao loopar; o
+        reprocess manual eh justamente o caminho do operador pra dizer
+        "tenta de novo do zero" depois de uma intervencao no L1 (ex.:
+        login OnePass renovado).
         """
         item = self.get_item(item_id)
         if item is None:
             return None
         now = self._utcnow()
         item.queue_status = QUEUE_STATUS_PENDING
+        item.attempt_count = 0
         item.last_error = None
         item.last_reason = None
         item.last_result = None

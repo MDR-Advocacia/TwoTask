@@ -113,19 +113,31 @@ class Settings(BaseSettings):
     prazos_iniciais_auto_classification_enabled: bool = False
     # Intervalo entre execuções do worker (segundos).
     prazos_iniciais_auto_classification_interval_seconds: int = 300
-    # Fila de cancelamento da task legada "Agendar Prazos". A partir do
-    # auto-enfileiramento na chegada (intake_service.resolve_lawsuit_for_intake),
-    # itens entram na fila assim que o CNJ e resolvido - antes mesmo da
-    # classificacao. Pra evitar cancelar tasks legadas de processos que
-    # ainda nem foram revisados pelo HITL, o worker periodico fica DESLIGADO
-    # por default. Operador dispara manualmente pelo botao "Processar"
-    # no Tratamento Web.
-    prazos_iniciais_legacy_task_cancellation_enabled: bool = False
+    # Fila de cancelamento da task legada "Agendar Prazos".
+    # 2026-05-06: ligado por default. Antes era manual (operador clicava
+    # "Processar" no Tratamento Web), o que exigia babá no painel. Agora
+    # roda sozinho: fluxo "agendar e esquecer". Items que nao tem task L1
+    # (USER_UPLOAD ou backlog) caem em task_not_found e viram COMPLETED
+    # silencioso via QUEUE_NOOP_REASONS — nao empacam mais a fila.
+    prazos_iniciais_legacy_task_cancellation_enabled: bool = True
     prazos_iniciais_legacy_task_cancellation_interval_seconds: int = 60
-    prazos_iniciais_legacy_task_cancellation_batch_size: int = 10
-    # Rate limit entre items consecutivos na fila (evita martelar o Legal One
-    # quando há muitos itens pendentes). Aceita fracionário.
-    prazos_iniciais_legacy_task_cancel_rate_limit_seconds: float = 2.0
+    # Batch=25 dobra a vazao sem estourar o L1 (rate limit por item
+    # ja existe). Cada Playwright dura ~30-130s — em 60s de tick o
+    # APScheduler nao reentra (max_instances=1), entao ticks ficam
+    # back-to-back; batch maior amortiza o login OnePass entre items.
+    prazos_iniciais_legacy_task_cancellation_batch_size: int = 25
+    # Rate limit entre items consecutivos na fila. Reduzido de 2.0s pra
+    # 0.5s — o Playwright ja serializa naturalmente (sem paralelismo no
+    # runner atual), e o L1 nao reclama de cancels consecutivos pela UI
+    # web (o limite deles eh na API REST).
+    prazos_iniciais_legacy_task_cancel_rate_limit_seconds: float = 0.5
+    # Cap de tentativas por item: depois disso, o worker periodico SKIPA
+    # o item — ele ainda fica visivel em FAILED na UI pra reprocesso
+    # manual ("Reprocessar" reseta attempt_count e devolve pra PENDING),
+    # mas nao gasta mais slots de tick. Sem isso, items que falham
+    # consistentemente (ex.: layout_drift permanente) ficam no loop
+    # eterno e travam a fila pros novos.
+    prazos_iniciais_legacy_task_max_attempts: int = 5
     # Circuit breaker: após N falhas de infraestrutura (auth/timeout/exception)
     # consecutivas, o worker pula ticks por cooldown_minutes minutos. Sucesso
     # zera o contador; falhas de negócio (task_not_found, layout_drift) não
