@@ -135,6 +135,83 @@ def _read_ajus_pdf(relative_path: str) -> Optional[bytes]:
         return None
 
 
+def _resolve_pdf_bytes_with_fallback(
+    db: Session,
+    item: "AjusAndamentoQueue",
+) -> Optional[bytes]:
+    """
+    Le os bytes do PDF do item da fila, com fallback retroativo:
+
+    1. Tenta `item.pdf_path` (cópia AJUS feita no enqueue) — caso normal.
+    2. Se nao existir, busca no intake associado e usa
+       `habilitacao_pdf_path` ou `pdf_path` — caso retroativo pra itens
+       enfileirados antes do bug do PDF errado ser corrigido (2026-05-06)
+       OU casos onde a copia AJUS foi feita mas o arquivo sumiu do volume.
+    3. Se achar via fallback, copia JIT pra storage AJUS pra proximas
+       tentativas terem `item.pdf_path` valido.
+    4. None se nada bate — caller decide se segue sem anexo ou erra.
+    """
+    # Caso normal: cópia AJUS existe.
+    if item.pdf_path:
+        bytes_ = _read_ajus_pdf(item.pdf_path)
+        if bytes_:
+            return bytes_
+
+    # Fallback: tenta pelo intake.
+    intake = db.query(PrazoInicialIntake).filter(
+        PrazoInicialIntake.id == item.intake_id,
+    ).one_or_none()
+    if intake is None:
+        logger.warning(
+            "AJUS dispatch: item %d sem intake associado — sem fallback de PDF.",
+            item.id,
+        )
+        return None
+
+    source_path = (
+        getattr(intake, "habilitacao_pdf_path", None) or intake.pdf_path
+    )
+    if not source_path:
+        logger.warning(
+            "AJUS dispatch: item %d e intake %d sem PDF disponivel "
+            "(item.pdf_path=%r, habilitacao_pdf_path=%r, pdf_path=%r).",
+            item.id, intake.id, item.pdf_path,
+            getattr(intake, "habilitacao_pdf_path", None), intake.pdf_path,
+        )
+        return None
+
+    source_root = Path(settings.prazos_iniciais_storage_path)
+    source_abs = source_root / source_path
+    if not source_abs.exists():
+        logger.warning(
+            "AJUS dispatch: PDF de origem do intake %d sumiu do volume: %s",
+            intake.id, source_abs,
+        )
+        return None
+
+    pdf_bytes = source_abs.read_bytes()
+    if not pdf_bytes:
+        return None
+
+    # Re-cria a cópia AJUS pra que tentativas futuras tenham item.pdf_path
+    # valido. NAO commit aqui — o caller comita junto com o resto.
+    try:
+        new_rel = _copy_pdf_to_ajus_storage(source_path)
+        if new_rel:
+            item.pdf_path = new_rel
+            logger.info(
+                "AJUS dispatch: item %d ganhou cópia AJUS retroativa em %s",
+                item.id, new_rel,
+            )
+    except OSError as exc:  # noqa: BLE001
+        logger.warning(
+            "AJUS dispatch: fallback nao conseguiu re-copiar pra "
+            "storage AJUS (segue com bytes em memoria mesmo): %s", exc,
+        )
+
+    return pdf_bytes
+
+
 # ─── Lógica de fila ──────────────────────────────────────────────────
 
 
@@ -202,18 +279,34 @@ class AjusQueueService:
             )
             return None
 
-        # Cópia do PDF (se houver)
+        # Resolucao do PDF da habilitacao a anexar. Cascade:
+        #   1) intake.habilitacao_pdf_path (USER_UPLOAD: campo dedicado).
+        #   2) intake.pdf_path (EXTERNAL_API: PDF principal eh ja a
+        #      habilitacao — vide intake_service:113-118).
+        # Sem isso, AJUS rejeita com "Para concluir o andamento
+        # HABILITAÇÃO DE ADVOGADO eh necessario anexar o documento".
         pdf_rel: Optional[str] = None
-        if intake.pdf_path:
+        source_path = (
+            getattr(intake, "habilitacao_pdf_path", None)
+            or intake.pdf_path
+        )
+        if source_path:
             try:
-                pdf_rel = _copy_pdf_to_ajus_storage(intake.pdf_path)
+                pdf_rel = _copy_pdf_to_ajus_storage(source_path)
             except OSError as exc:  # noqa: BLE001
                 logger.warning(
-                    "AJUS enqueue: falha copiando PDF do intake %d: %s — "
-                    "item será enfileirado sem anexo (operador pode subir "
-                    "depois ou disparar mesmo assim).",
+                    "AJUS enqueue: falha copiando habilitacao PDF do "
+                    "intake %d: %s — item será enfileirado sem anexo.",
                     intake.id, exc,
                 )
+        else:
+            logger.warning(
+                "AJUS enqueue: intake %d sem PDF de habilitacao "
+                "(pdf_path E habilitacao_pdf_path NULL) — item vai "
+                "entrar na fila sem anexo. AJUS provavelmente vai "
+                "rejeitar.",
+                intake.id,
+            )
 
         # Datas: data_evento = hoje (data do recebimento). Agendamento e
         # fatal somam offsets em dias úteis (CPC) a partir do evento.
@@ -325,21 +418,24 @@ class AjusQueueService:
             }
             if item.hora_agendamento:
                 entry["horaAgendamento"] = item.hora_agendamento.strftime("%H:%M")
-            if item.pdf_path:
-                pdf_bytes = _read_ajus_pdf(item.pdf_path)
-                if pdf_bytes:
-                    try:
-                        validate_arquivo_size(len(pdf_bytes))
-                        entry["arquivos"] = [{
-                            "nome": "habilitacao.pdf",
-                            "base64": encode_pdf_base64(pdf_bytes),
-                        }]
-                    except ValueError as exc:
-                        logger.warning(
-                            "AJUS dispatch: PDF do item %d ultrapassa "
-                            "limite — segue sem anexo: %s",
-                            item.id, exc,
-                        )
+            # Fallback robusto: se item.pdf_path eh None ou arquivo
+            # sumiu, busca pelo intake.habilitacao_pdf_path | pdf_path
+            # e re-copia JIT. Cobre itens enfileirados antes do fix de
+            # 2026-05-06 (que copiavam pdf da integra ou nada).
+            pdf_bytes = _resolve_pdf_bytes_with_fallback(self.db, item)
+            if pdf_bytes:
+                try:
+                    validate_arquivo_size(len(pdf_bytes))
+                    entry["arquivos"] = [{
+                        "nome": "habilitacao.pdf",
+                        "base64": encode_pdf_base64(pdf_bytes),
+                    }]
+                except ValueError as exc:
+                    logger.warning(
+                        "AJUS dispatch: PDF do item %d ultrapassa "
+                        "limite — segue sem anexo: %s",
+                        item.id, exc,
+                    )
             payload_itens.append(entry)
             index_to_item[idx] = item
 
@@ -480,21 +576,22 @@ class AjusQueueService:
         }
         if item.hora_agendamento:
             entry["horaAgendamento"] = item.hora_agendamento.strftime("%H:%M")
-        if item.pdf_path:
-            pdf_bytes = _read_ajus_pdf(item.pdf_path)
-            if pdf_bytes:
-                try:
-                    validate_arquivo_size(len(pdf_bytes))
-                    entry["arquivos"] = [{
-                        "nome": "habilitacao.pdf",
-                        "base64": encode_pdf_base64(pdf_bytes),
-                    }]
-                except ValueError as exc:
-                    logger.warning(
-                        "AJUS dispatch_one: PDF do item %d ultrapassa "
-                        "limite — segue sem anexo: %s",
-                        item.id, exc,
-                    )
+        # Mesma logica de fallback do batch — itens com pdf_path None
+        # ou arquivo sumido tentam ler do intake associado.
+        pdf_bytes = _resolve_pdf_bytes_with_fallback(self.db, item)
+        if pdf_bytes:
+            try:
+                validate_arquivo_size(len(pdf_bytes))
+                entry["arquivos"] = [{
+                    "nome": "habilitacao.pdf",
+                    "base64": encode_pdf_base64(pdf_bytes),
+                }]
+            except ValueError as exc:
+                logger.warning(
+                    "AJUS dispatch_one: PDF do item %d ultrapassa "
+                    "limite — segue sem anexo: %s",
+                    item.id, exc,
+                )
 
         try:
             client = AjusClient()

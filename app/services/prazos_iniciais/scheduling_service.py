@@ -649,17 +649,30 @@ class PrazosIniciaisSchedulingService:
             raise LegalOneGedUploadError(
                 f"Intake {intake.id} não tem lawsuit_id — GED requer vínculo a processo."
             )
-        if not intake.pdf_path:
+
+        # Cascade pro PDF da habilitacao:
+        #   - habilitacao_pdf_path (USER_UPLOAD: campo dedicado).
+        #   - pdf_path (EXTERNAL_API: pdf principal ja eh a habilitacao).
+        # Antes desse fix (2026-05-06) o codigo so olhava pdf_path,
+        # entao em USER_UPLOAD o GED upload pegava a integra do processo
+        # ou falhava — ambos errados.
+        source_path = (
+            getattr(intake, "habilitacao_pdf_path", None)
+            or intake.pdf_path
+        )
+        if not source_path:
             raise LegalOneGedUploadError(
-                f"Intake {intake.id} sem pdf_path (retido: {intake.pdf_bytes} bytes). "
+                f"Intake {intake.id} sem PDF de habilitacao "
+                f"(pdf_path={intake.pdf_path!r}, habilitacao_pdf_path="
+                f"{getattr(intake, 'habilitacao_pdf_path', None)!r}). "
                 "Arquivo já foi limpo ou nunca chegou."
             )
 
         try:
-            absolute = pdf_storage.resolve_pdf_path(intake.pdf_path)
+            absolute = pdf_storage.resolve_pdf_path(source_path)
         except ValueError as exc:
             raise LegalOneGedUploadError(
-                f"pdf_path inválido do intake {intake.id}: {exc}"
+                f"path do PDF inválido no intake {intake.id}: {exc}"
             ) from exc
 
         if not absolute.exists():
@@ -670,7 +683,7 @@ class PrazosIniciaisSchedulingService:
         file_bytes = absolute.read_bytes()
         if not file_bytes:
             raise LegalOneGedUploadError(
-                f"Arquivo PDF vazio (intake {intake.id}, path={intake.pdf_path})."
+                f"Arquivo PDF vazio (intake {intake.id}, path={source_path})."
             )
 
         # Upload via API ECM oficial. typeId formato "type_N" descoberto
