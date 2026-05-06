@@ -304,6 +304,9 @@ const TaskTemplatesPage = () => {
   // classificacao"). Quando `pickerOfficeId !== null`, abre o modal pra esse
   // escritorio.
   const [pickerOfficeId, setPickerOfficeId] = useState<number | null>(null);
+  // Mesmo picker, mode="exclude": operador marca classificacoes ATIVAS
+  // do escritorio que devem virar overrides exclude.
+  const [pickerExcludeOfficeId, setPickerExcludeOfficeId] = useState<number | null>(null);
   const [overrideForm, setOverrideForm] = useState({
     // "all" = aplicar em todos os escritórios (bulk);
     // string numérica = escritório específico.
@@ -1008,6 +1011,15 @@ const TaskTemplatesPage = () => {
    */
   const openAddClassificationForOffice = (officeId: number) => {
     setPickerOfficeId(officeId);
+  };
+
+  /**
+   * Abre o picker em modo exclude pra um escritorio especifico. Lista a
+   * taxonomia EFETIVA (ja sem as previamente excluidas) e cada item
+   * marcado vira override exclude desse escritorio.
+   */
+  const openExcludeClassificationForOffice = (officeId: number) => {
+    setPickerExcludeOfficeId(officeId);
   };
 
   /**
@@ -1890,25 +1902,36 @@ const TaskTemplatesPage = () => {
                             Adicionar classificação
                           </Button>
                         ) : (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="text-xs text-muted-foreground"
-                            onClick={() => {
-                              if (
-                                confirm(
-                                  `Converter "${entry.office.path || entry.office.name}" pro regime manual?\n\n` +
-                                  "A taxonomia base deixa de aparecer automaticamente. " +
-                                  "Você precisará adicionar classificações sob demanda. " +
-                                  "Templates existentes ficam preservados."
-                                )
-                              ) {
-                                enableManualModeForOffice(entry.office.external_id);
-                              }
-                            }}
-                          >
-                            Migrar para regime manual…
-                          </Button>
+                          <>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => openExcludeClassificationForOffice(entry.office.external_id)}
+                              title="Marcar classificacoes que devem deixar de aparecer pra esse escritorio (cria overrides exclude em batch)."
+                            >
+                              <ShieldAlert className="mr-1 h-3 w-3 text-amber-600" />
+                              Excluir classificação
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-xs text-muted-foreground"
+                              onClick={() => {
+                                if (
+                                  confirm(
+                                    `Converter "${entry.office.path || entry.office.name}" pro regime manual?\n\n` +
+                                    "A taxonomia base deixa de aparecer automaticamente. " +
+                                    "Você precisará adicionar classificações sob demanda. " +
+                                    "Templates existentes ficam preservados."
+                                  )
+                                ) {
+                                  enableManualModeForOffice(entry.office.external_id);
+                                }
+                              }}
+                            >
+                              Migrar para regime manual…
+                            </Button>
+                          </>
                         )}
                       </div>
                     </div>
@@ -2926,6 +2949,29 @@ const TaskTemplatesPage = () => {
           }
           categories={categories}
           existing={getExistingClassificationsForOffice(pickerOfficeId)}
+          onAdded={() => {
+            void loadOverrides(overrideFilterOffice);
+          }}
+        />
+      )}
+
+      {/* Picker batch em modo exclude (regime legado: remove da taxonomia
+          efetiva via overrides exclude pra um escritorio especifico). */}
+      {pickerExcludeOfficeId !== null && (
+        <ClassificationPickerDialog
+          open={pickerExcludeOfficeId !== null}
+          onOpenChange={(open) => {
+            if (!open) setPickerExcludeOfficeId(null);
+          }}
+          officeId={pickerExcludeOfficeId}
+          officeName={
+            offices.find((o) => o.external_id === pickerExcludeOfficeId)?.path ||
+            offices.find((o) => o.external_id === pickerExcludeOfficeId)?.name ||
+            `Escritório #${pickerExcludeOfficeId}`
+          }
+          categories={getEffectiveCategoriesForOffice(pickerExcludeOfficeId)}
+          existing={[]}
+          mode="exclude"
           onAdded={() => {
             void loadOverrides(overrideFilterOffice);
           }}

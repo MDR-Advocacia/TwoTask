@@ -62,15 +62,24 @@ export interface ClassificationPickerDialogProps {
   officeId: number;
   /** Nome (path) exibido no header. */
   officeName: string;
-  /** Taxonomia base (vem de /meta/categories). */
+  /**
+   * Lista de categorias mostradas no modal:
+   *  - mode="include": taxonomia base (operador adiciona via include_custom)
+   *  - mode="exclude": taxonomia efetiva ATUAL do escritório (operador
+   *    marca o que quer remover via override exclude)
+   */
   categories: CategoryEntry[];
   /**
-   * Combinações já existentes nesse escritório — incluem-se aqui:
-   *  - overrides include_custom ativos
-   *  - templates ativos do escritório
-   * (a página chamadora calcula isso a partir do estado dela).
+   * Combinações que devem aparecer DESABILITADAS (já presentes):
+   *  - mode="include": já existe no escritório (include_custom + templates)
+   *  - mode="exclude": passar [] — taxonomia efetiva já filtra excluídas
    */
   existing: ExistingClassification[];
+  /**
+   * "include" (default) cria overrides include_custom; "exclude" cria
+   * overrides exclude — ambos via /classification-overrides/bulk-for-office.
+   */
+  mode?: "include" | "exclude";
   /** Chamado depois que o batch sobe com sucesso. */
   onAdded?: (created: number, skipped: number) => void;
 }
@@ -89,9 +98,11 @@ export function ClassificationPickerDialog({
   officeName,
   categories,
   existing,
+  mode = "include",
   onAdded,
 }: ClassificationPickerDialogProps) {
   const { toast } = useToast();
+  const isExcludeMode = mode === "exclude";
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -277,7 +288,9 @@ export function ClassificationPickerDialog({
     if (selected.size === 0) {
       toast({
         title: "Nenhuma classificação selecionada",
-        description: "Marque pelo menos uma combinação antes de adicionar.",
+        description: isExcludeMode
+          ? "Marque pelo menos uma combinação antes de excluir."
+          : "Marque pelo menos uma combinação antes de adicionar.",
       });
       return;
     }
@@ -301,7 +314,7 @@ export function ClassificationPickerDialog({
           body: JSON.stringify({
             office_external_id: officeId,
             items,
-            action: "include_custom",
+            action: isExcludeMode ? "exclude" : "include_custom",
           }),
         },
       );
@@ -309,14 +322,18 @@ export function ClassificationPickerDialog({
         const data = await res.json().catch(() => ({}));
         throw new Error(
           (typeof data?.detail === "string" && data.detail) ||
-            "Falha ao adicionar classificações.",
+            (isExcludeMode
+              ? "Falha ao excluir classificações."
+              : "Falha ao adicionar classificações."),
         );
       }
       const data = await res.json();
       const created = data.created ?? 0;
       const skipped = data.skipped_existing ?? 0;
       toast({
-        title: `${created} classificação${created === 1 ? "" : "ões"} adicionada${created === 1 ? "" : "s"}`,
+        title: isExcludeMode
+          ? `${created} classificação${created === 1 ? "" : "ões"} excluída${created === 1 ? "" : "s"}`
+          : `${created} classificação${created === 1 ? "" : "ões"} adicionada${created === 1 ? "" : "s"}`,
         description: skipped
           ? `${skipped} já existiam e foram ignoradas.`
           : undefined,
@@ -325,7 +342,7 @@ export function ClassificationPickerDialog({
       onOpenChange(false);
     } catch (err: any) {
       toast({
-        title: "Erro ao adicionar",
+        title: isExcludeMode ? "Erro ao excluir" : "Erro ao adicionar",
         description: err?.message || String(err),
         variant: "destructive",
       });
@@ -355,14 +372,15 @@ export function ClassificationPickerDialog({
       <DialogContent className="max-w-3xl p-0 gap-0 max-h-[90vh] flex flex-col">
         <DialogHeader className="px-6 pt-6 pb-4 border-b">
           <DialogTitle className="text-lg">
-            Adicionar classificações
+            {isExcludeMode ? "Excluir classificações" : "Adicionar classificações"}
           </DialogTitle>
           <DialogDescription className="text-sm">
             Escritório:{" "}
             <span className="font-medium text-foreground">{officeName}</span>
             {" • "}
-            Marque tudo que quiser adicionar e clique em "Adicionar" no
-            final. Combinações já presentes aparecem desabilitadas.
+            {isExcludeMode
+              ? "Marque tudo que NÃO deve mais aparecer pra esse escritório e clique em \"Excluir\". Pra desfazer, vá em \"Ajustes de Classificação\" e remova o override correspondente."
+              : "Marque tudo que quiser adicionar e clique em \"Adicionar\" no final. Combinações já presentes aparecem desabilitadas."}
           </DialogDescription>
 
           {/* Busca + ações de expansão */}
@@ -649,12 +667,19 @@ export function ClassificationPickerDialog({
               type="button"
               onClick={handleSubmit}
               disabled={submitting || selected.size === 0}
+              variant={isExcludeMode ? "destructive" : "default"}
             >
               {submitting
-                ? "Adicionando…"
+                ? isExcludeMode
+                  ? "Excluindo…"
+                  : "Adicionando…"
                 : selected.size === 0
-                  ? "Adicionar"
-                  : `Adicionar ${selected.size} classificaç${selected.size === 1 ? "ão" : "ões"}`}
+                  ? isExcludeMode
+                    ? "Excluir"
+                    : "Adicionar"
+                  : isExcludeMode
+                    ? `Excluir ${selected.size} classificaç${selected.size === 1 ? "ão" : "ões"}`
+                    : `Adicionar ${selected.size} classificaç${selected.size === 1 ? "ão" : "ões"}`}
             </Button>
           </div>
         </div>

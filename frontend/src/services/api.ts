@@ -227,6 +227,9 @@ export async function fetchPrazosIniciaisIntakes(
   if (filters.submitted_by_user_id) {
     params.set("submitted_by_user_id", filters.submitted_by_user_id);
   }
+  if (filters.tipo_prazo) {
+    params.set("tipo_prazo", filters.tipo_prazo);
+  }
   if (typeof filters.pdf_extraction_failed === "boolean") {
     params.set("pdf_extraction_failed", String(filters.pdf_extraction_failed));
   }

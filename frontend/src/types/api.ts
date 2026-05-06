@@ -469,6 +469,7 @@ export interface PrazoInicialIntakeFilters {
   // Origem do intake (pin016).
   source?: string;                  // CSV: "EXTERNAL_API,USER_UPLOAD"
   submitted_by_user_id?: string;    // CSV — atalho "Minha fila"
+  tipo_prazo?: string;              // CSV de tipos_prazo: "CONTESTAR,AUDIENCIA"
   pdf_extraction_failed?: boolean;  // true = só uploads com extração falha
   // Patrocinio (pin018)
   patrocinio_decisao?: string;          // CSV: "MDR_ADVOCACIA,OUTRO_ESCRITORIO,..."

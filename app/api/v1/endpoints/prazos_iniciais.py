@@ -979,6 +979,10 @@ def list_intakes(
         default=None,
         description="CSV de user_ids: '5,8'. Filtra por quem submeteu (USER_UPLOAD). Atalho 'Minha fila'.",
     ),
+    tipo_prazo: Optional[str] = Query(
+        default=None,
+        description="CSV de tipos_prazo das sugestões: 'CONTESTAR,AUDIENCIA'. Filtra intakes que tenham AO MENOS uma sugestão com algum desses tipos.",
+    ),
     pdf_extraction_failed: Optional[bool] = Query(
         default=None,
         description="true = só uploads com extração falha (classificação manual). Omitido = ambos.",
@@ -1131,6 +1135,20 @@ def list_intakes(
         query = query.filter(PrazoInicialIntake.pdf_extraction_failed.is_(True))
     elif pdf_extraction_failed is False:
         query = query.filter(PrazoInicialIntake.pdf_extraction_failed.is_(False))
+
+    # Classificação (tipo_prazo das sugestões) — CSV. Usamos EXISTS pra
+    # não duplicar linhas no resultado quando o intake tem N sugestões.
+    tipo_prazo_list = _parse_csv_strs(tipo_prazo)
+    if tipo_prazo_list:
+        sub_q = (
+            db.query(PrazoInicialSugestao.id)
+            .filter(PrazoInicialSugestao.intake_id == PrazoInicialIntake.id)
+        )
+        if len(tipo_prazo_list) == 1:
+            sub_q = sub_q.filter(PrazoInicialSugestao.tipo_prazo == tipo_prazo_list[0])
+        else:
+            sub_q = sub_q.filter(PrazoInicialSugestao.tipo_prazo.in_(tipo_prazo_list))
+        query = query.filter(sub_q.exists())
 
     # Patrocínio (pin018) — filtros via join lazy na tabela 1:1.
     patrocinio_filtros_aplicados = (
