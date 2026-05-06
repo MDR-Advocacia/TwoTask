@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.models.legal_one import LegalOneTaskSubType
 from app.models.prazo_inicial import (
+    INTAKE_SOURCE_EXTERNAL_API,
     INTAKE_STATUS_AWAITING_TEMPLATE_CONFIG,
     INTAKE_STATUS_CLASSIFIED,
     INTAKE_STATUS_COMPLETED_WITHOUT_PROVIDENCE,
@@ -718,12 +719,56 @@ class PrazosIniciaisSchedulingService:
 
     def _cleanup_local_pdf(self, intake: PrazoInicialIntake) -> None:
         """
-        Deleta o PDF local e zera `pdf_path` + `pdf_bytes`. Chamado logo
-        após upload GED bem-sucedido. Best-effort — se a deleção falhar,
-        loga mas não quebra o fluxo (cron de cleanup pega depois).
+        Limpa o PDF local apos o upload GED. Comportamento depende da
+        origem do intake:
+
+        - **EXTERNAL_API**: o `pdf_path` JA EH a habilitacao (vide
+          intake_service:113-118 — automacao externa manda 1 PDF que ja
+          eh a habilitacao). Em vez de apagar, **promove o path** pra
+          `habilitacao_pdf_path` quando esse campo ainda esta vazio.
+          O arquivo fica no disco — AJUS dispatch posterior consegue
+          encontrar via `_resolve_pdf_bytes_with_fallback`. Sem essa
+          preservacao, AJUS rejeitava com "Para concluir o andamento
+          HABILITAÇÃO eh necessario anexar o documento" (bug em prod
+          ate 2026-05-06).
+
+        - **USER_UPLOAD**: `pdf_path` eh a integra do processo
+          (descartavel apos extracao); `habilitacao_pdf_path` eh
+          campo separado e ja tem o PDF de habilitacao. Comportamento
+          original — apaga o pdf_path e zera os campos.
+
+        Best-effort em ambos: falha de IO loga warning mas nao quebra.
         """
         if not intake.pdf_path:
             return
+
+        # EXTERNAL_API: promove pdf_path -> habilitacao_pdf_path em vez
+        # de apagar. So aplica quando habilitacao_pdf_path ainda esta
+        # NULL — caso contrario o cleanup ja' rodou antes ou veio
+        # USER_UPLOAD com habilitacao separada.
+        if (
+            intake.source == INTAKE_SOURCE_EXTERNAL_API
+            and not getattr(intake, "habilitacao_pdf_path", None)
+        ):
+            intake.habilitacao_pdf_path = intake.pdf_path
+            intake.habilitacao_pdf_sha256 = intake.pdf_sha256
+            intake.habilitacao_pdf_bytes = intake.pdf_bytes
+            intake.habilitacao_pdf_filename_original = (
+                intake.pdf_filename_original
+            )
+            intake.pdf_path = None
+            intake.pdf_bytes = None
+            intake.pdf_sha256 = None
+            intake.pdf_filename_original = None
+            logger.info(
+                "intake %s: pdf_path promovido pra habilitacao_pdf_path "
+                "(arquivo preservado pra AJUS).",
+                intake.id,
+            )
+            return
+
+        # Caso normal (USER_UPLOAD com integra descartavel ou intake
+        # sem habilitacao): apaga o arquivo e zera campos.
         try:
             pdf_storage.delete_pdf(intake.pdf_path)
         except Exception as exc:  # noqa: BLE001
