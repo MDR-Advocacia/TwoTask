@@ -632,6 +632,9 @@ export interface AjusCodAndamento {
   dias_fatal_offset_uteis: number;
   informacao_template: string;
   is_default: boolean;
+  // Pin019 — código usado pelo fluxo de devolução automática
+  // (POST /prazos-iniciais/intake/devolucao). Só 1 ativo por vez.
+  is_devolucao: boolean;
   is_active: boolean;
 }
 
@@ -644,6 +647,7 @@ export interface AjusCodAndamentoCreatePayload {
   dias_fatal_offset_uteis: number;
   informacao_template: string;
   is_default: boolean;
+  is_devolucao: boolean;
   is_active: boolean;
 }
 
