@@ -270,7 +270,9 @@ export function CodAndamentoFormDialog({
                 <Info className="h-3 w-3 mt-0.5 shrink-0" />
                 <span>
                   Placeholders: <code>{"{cnj}"}</code>,{" "}
-                  <code>{"{data_recebimento}"}</code>.
+                  <code>{"{data_recebimento}"}</code>,{" "}
+                  <code>{"{motivo}"}</code> (preenchido só no fluxo de
+                  devolução automática — fluxo principal vira string vazia).
                 </span>
               </p>
             </div>
