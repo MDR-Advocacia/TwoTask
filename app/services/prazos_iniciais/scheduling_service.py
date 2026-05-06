@@ -719,56 +719,12 @@ class PrazosIniciaisSchedulingService:
 
     def _cleanup_local_pdf(self, intake: PrazoInicialIntake) -> None:
         """
-        Limpa o PDF local apos o upload GED. Comportamento depende da
-        origem do intake:
-
-        - **EXTERNAL_API**: o `pdf_path` JA EH a habilitacao (vide
-          intake_service:113-118 — automacao externa manda 1 PDF que ja
-          eh a habilitacao). Em vez de apagar, **promove o path** pra
-          `habilitacao_pdf_path` quando esse campo ainda esta vazio.
-          O arquivo fica no disco — AJUS dispatch posterior consegue
-          encontrar via `_resolve_pdf_bytes_with_fallback`. Sem essa
-          preservacao, AJUS rejeitava com "Para concluir o andamento
-          HABILITAÇÃO eh necessario anexar o documento" (bug em prod
-          ate 2026-05-06).
-
-        - **USER_UPLOAD**: `pdf_path` eh a integra do processo
-          (descartavel apos extracao); `habilitacao_pdf_path` eh
-          campo separado e ja tem o PDF de habilitacao. Comportamento
-          original — apaga o pdf_path e zera os campos.
-
-        Best-effort em ambos: falha de IO loga warning mas nao quebra.
+        Deleta o PDF local e zera `pdf_path` + `pdf_bytes`. Chamado logo
+        após upload GED bem-sucedido. Best-effort — se a deleção falhar,
+        loga mas não quebra o fluxo (cron de cleanup pega depois).
         """
         if not intake.pdf_path:
             return
-
-        # EXTERNAL_API: promove pdf_path -> habilitacao_pdf_path em vez
-        # de apagar. So aplica quando habilitacao_pdf_path ainda esta
-        # NULL — caso contrario o cleanup ja' rodou antes ou veio
-        # USER_UPLOAD com habilitacao separada.
-        if (
-            intake.source == INTAKE_SOURCE_EXTERNAL_API
-            and not getattr(intake, "habilitacao_pdf_path", None)
-        ):
-            intake.habilitacao_pdf_path = intake.pdf_path
-            intake.habilitacao_pdf_sha256 = intake.pdf_sha256
-            intake.habilitacao_pdf_bytes = intake.pdf_bytes
-            intake.habilitacao_pdf_filename_original = (
-                intake.pdf_filename_original
-            )
-            intake.pdf_path = None
-            intake.pdf_bytes = None
-            intake.pdf_sha256 = None
-            intake.pdf_filename_original = None
-            logger.info(
-                "intake %s: pdf_path promovido pra habilitacao_pdf_path "
-                "(arquivo preservado pra AJUS).",
-                intake.id,
-            )
-            return
-
-        # Caso normal (USER_UPLOAD com integra descartavel ou intake
-        # sem habilitacao): apaga o arquivo e zera campos.
         try:
             pdf_storage.delete_pdf(intake.pdf_path)
         except Exception as exc:  # noqa: BLE001
@@ -1396,29 +1352,42 @@ class PrazosIniciaisSchedulingService:
             ) from exc
 
         # ── Fase 2 — Enqueue cancel da legada (idempotente) ──
-        try:
-            queue_item = self.queue_service.sync_item_from_intake(
-                intake,
-                commit=False,
-                legacy_task_type_external_id=legacy_task_type_external_id,
-                legacy_task_subtype_external_id=legacy_task_subtype_external_id,
-                force_queue=True,
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.db.rollback()
-            intake = self._load_intake(intake_id)
-            if intake is not None:
-                intake.dispatch_error_message = (
-                    f"Enqueue cancel falhou: {str(exc)[:500]}"
+        # USER_UPLOAD pula essa fase: o operador subiu o PDF do processo
+        # manualmente, então NÃO existe task legada "Agendar Prazos" no
+        # L1 pra cancelar — fazer GED já é suficiente. Antes desse guard
+        # (2026-05-06) o dispatch enfileirava mesmo assim, batia
+        # task_not_found no L1, e o item ficava acumulando na fila.
+        queue_item = None
+        if intake.source == INTAKE_SOURCE_EXTERNAL_API:
+            try:
+                queue_item = self.queue_service.sync_item_from_intake(
+                    intake,
+                    commit=False,
+                    legacy_task_type_external_id=legacy_task_type_external_id,
+                    legacy_task_subtype_external_id=legacy_task_subtype_external_id,
+                    force_queue=True,
                 )
-                self.db.commit()
-            logger.exception(
-                "dispatch_treatment_web: enqueue cancel falhou (intake_id=%s): %s",
-                intake_id, exc,
+            except Exception as exc:  # noqa: BLE001
+                self.db.rollback()
+                intake = self._load_intake(intake_id)
+                if intake is not None:
+                    intake.dispatch_error_message = (
+                        f"Enqueue cancel falhou: {str(exc)[:500]}"
+                    )
+                    self.db.commit()
+                logger.exception(
+                    "dispatch_treatment_web: enqueue cancel falhou (intake_id=%s): %s",
+                    intake_id, exc,
+                )
+                raise RuntimeError(
+                    f"Falha ao enfileirar cancelamento da legada: {exc}"
+                ) from exc
+        else:
+            logger.info(
+                "dispatch_treatment_web: USER_UPLOAD intake_id=%s — pulando "
+                "enqueue cancel (não há task legada no L1).",
+                intake_id,
             )
-            raise RuntimeError(
-                f"Falha ao enfileirar cancelamento da legada: {exc}"
-            ) from exc
 
         # ── Fase 3 — Marca como disparado ──
         intake.dispatch_pending = False

@@ -29,11 +29,8 @@ from app.models.prazo_inicial import (
     INTAKE_STATUS_LAWSUIT_NOT_FOUND,
     INTAKE_STATUS_READY_TO_CLASSIFY,
     INTAKE_STATUS_RECEIVED,
-    INTAKE_STATUSES_REINGEST_ALLOWED,
     PrazoInicialIntake,
-    PrazoInicialSugestao,
 )
-from app.models.prazo_inicial_pedido import PrazoInicialPedido
 from app.services.legal_one_client import LegalOneApiClient
 from app.services.prazos_iniciais.storage import StoredPdf, save_pdf
 
@@ -49,10 +46,6 @@ class IntakeCreationResult:
 
     intake: PrazoInicialIntake
     already_existed: bool
-    # True quando o reenvio caiu no caminho de reingest (atualizou PDF,
-    # capa e integra do registro existente). False em criacao 1a vez OU
-    # em reenvio idempotente puro (status pos-classificacao).
-    reingested: bool = False
 
 
 def normalize_cnj(raw: str) -> str:
@@ -241,186 +234,6 @@ class IntakeService:
             )
 
         return IntakeCreationResult(intake=intake, already_existed=False)
-
-    # ─── Reingest (atualizacao incremental do mesmo external_id) ──────
-
-    def reingest_intake(
-        self,
-        *,
-        intake: PrazoInicialIntake,
-        cnj_number: str,
-        capa_json: dict,
-        integra_json: dict,
-        metadata_json: Optional[dict],
-        pdf_bytes: Optional[bytes] = None,
-        pdf_filename_original: Optional[str] = None,
-    ) -> IntakeCreationResult:
-        """
-        Atualiza intake EXISTENTE com novo PDF + capa + integra. Usado
-        pelo POST /intake quando a automacao externa reenvia o mesmo
-        external_id de um intake que ainda nao foi classificado/agendado.
-
-        Pre-condicao: intake.status DEVE estar em
-        INTAKE_STATUSES_REINGEST_ALLOWED (caller do endpoint valida).
-
-        Fluxo:
-        - Salva PDF novo no storage (gera novo path/uuid).
-        - **NAO apaga o PDF antigo do disco** — operador 2026-05-06:
-          "nao apague nenhuma habilitacao, vamo salvar tudo". O path
-          antigo fica como arquivo orfao; operador faz cleanup manual
-          do estoque depois.
-        - Atualiza pdf_path, capa_json, integra_json, metadata_json,
-          cnj_number (caso venha normalizado diferente).
-        - Apaga sugestoes/pedidos/patrocinio antigos (cascade — caso
-          de ERRO_CLASSIFICACAO com sugestoes parciais persistidas).
-          Eh seguro porque os status atualizaveis nao geram trabalho
-          HITL persistido.
-        - Reseta lawsuit_id, error_message, classification_batch_id —
-          re-resolve do zero como se fosse intake novo.
-        - Status volta pra RECEBIDO pra o fluxo de
-          resolucao+classificacao re-acontecer.
-        - Mantem id, external_id, received_at — preserva rastreabilidade.
-
-        Returns:
-            IntakeCreationResult com `already_existed=True` e
-            `reingested=True`.
-        """
-        from datetime import datetime as _dt, timezone as _tz
-
-        normalized_cnj = normalize_cnj(cnj_number)
-
-        # PDF novo: salva sem mexer no antigo (a regra "nao apagar
-        # habilitacao" se aplica aqui — preservacao total).
-        new_pdf_path: Optional[str] = None
-        new_pdf_sha256: Optional[str] = None
-        new_pdf_size: Optional[int] = None
-        if pdf_bytes is not None:
-            stored: StoredPdf = save_pdf(pdf_bytes)
-            new_pdf_path = stored.relative_path
-            new_pdf_sha256 = stored.sha256
-            new_pdf_size = stored.size_bytes
-            logger.info(
-                "Reingest intake %d: PDF novo salvo em %s (anterior em "
-                "pdf_path=%r e habilitacao_pdf_path=%r preservados).",
-                intake.id, new_pdf_path,
-                intake.pdf_path,
-                getattr(intake, "habilitacao_pdf_path", None),
-            )
-
-        # Apaga sugestoes/pedidos/patrocinio antigos (cascade no banco
-        # via FK ondelete=CASCADE).
-        deleted_sugestoes = (
-            self.db.query(PrazoInicialSugestao)
-            .filter(PrazoInicialSugestao.intake_id == intake.id)
-            .delete(synchronize_session=False)
-        )
-        deleted_pedidos = (
-            self.db.query(PrazoInicialPedido)
-            .filter(PrazoInicialPedido.intake_id == intake.id)
-            .delete(synchronize_session=False)
-        )
-        # Patrocinio (pin018): unique por intake_id, apaga via cascade
-        # quando atualizar capa (pode ter dados velhos invalidados).
-        try:
-            from app.models.prazo_inicial_patrocinio import PrazoInicialPatrocinio
-            deleted_patrocinio = (
-                self.db.query(PrazoInicialPatrocinio)
-                .filter(PrazoInicialPatrocinio.intake_id == intake.id)
-                .delete(synchronize_session=False)
-            )
-        except Exception:  # noqa: BLE001
-            deleted_patrocinio = 0
-
-        # Atualiza campos do intake.
-        intake.cnj_number = normalized_cnj
-        intake.capa_json = capa_json
-        intake.integra_json = integra_json
-        intake.metadata_json = metadata_json
-        if new_pdf_path is not None:
-            intake.pdf_path = new_pdf_path
-            intake.pdf_sha256 = new_pdf_sha256
-            intake.pdf_bytes = new_pdf_size
-            intake.pdf_filename_original = pdf_filename_original
-            # Em EXTERNAL_API o pdf_path JA EH a habilitacao. Se uma
-            # rotina anterior tinha promovido pra habilitacao_pdf_path,
-            # zera o campo agora — a habilitacao "ativa" volta pra
-            # pdf_path com o arquivo novo (e o antigo fica orfao).
-            intake.habilitacao_pdf_path = None
-            intake.habilitacao_pdf_sha256 = None
-            intake.habilitacao_pdf_bytes = None
-            intake.habilitacao_pdf_filename_original = None
-
-        # Reset de campos derivados — fluxo recomeca do zero.
-        intake.status = INTAKE_STATUS_RECEIVED
-        intake.error_message = None
-        intake.lawsuit_id = None
-        intake.office_id = None
-        intake.natureza_processo = None
-        intake.produto = None
-        intake.agravo_processo_origem_cnj = None
-        intake.agravo_decisao_agravada_resumo = None
-        intake.classification_batch_id = None
-        # Agregados da classificacao
-        intake.valor_total_pedido = None
-        intake.valor_total_estimado = None
-        intake.aprovisionamento_sugerido = None
-        intake.probabilidade_exito_global = None
-        intake.analise_estrategica = None
-        # Dispatch / treated — nao deveriam estar setados em status
-        # atualizavel, mas zera por seguranca defensiva.
-        intake.dispatch_pending = False
-        intake.dispatched_at = None
-        intake.dispatch_error_message = None
-        # received_at fica como esta (rastreabilidade do 1o recebimento).
-        # Adiciona uma marca de re-recebimento no metadata pra audit.
-        meta = dict(intake.metadata_json or {})
-        reingest_log = meta.setdefault("_reingest_log", [])
-        if isinstance(reingest_log, list):
-            reingest_log.append({
-                "at": _dt.now(_tz.utc).isoformat(),
-                "previous_status": intake.status,
-                "deleted_sugestoes": int(deleted_sugestoes),
-                "deleted_pedidos": int(deleted_pedidos),
-                "deleted_patrocinio": int(deleted_patrocinio),
-                "old_pdf_path": (
-                    intake.pdf_path
-                    if new_pdf_path is None
-                    else "preservado_no_disco"
-                ),
-            })
-            intake.metadata_json = meta
-
-        self.db.commit()
-        self.db.refresh(intake)
-
-        logger.info(
-            "Reingest intake %d (external_id=%s, cnj=%s): "
-            "sugestoes_apagadas=%d, pedidos_apagados=%d, "
-            "patrocinio_apagado=%d. Status -> RECEBIDO.",
-            intake.id, intake.external_id, normalized_cnj,
-            deleted_sugestoes, deleted_pedidos, deleted_patrocinio,
-        )
-
-        # AJUS classif enqueue eh idempotente em CNJ — re-chama por
-        # seguranca caso o intake nunca tenha sido enfileirado (ex.:
-        # falha na 1a recepcao). Fila AJUS de andamentos NAO eh
-        # re-enfileirada (UNIQUE em intake_id evita duplicar; o item
-        # antigo segue valido).
-        try:
-            from app.services.ajus.classificacao_service import (
-                AjusClassificacaoService,
-            )
-            classif = AjusClassificacaoService(self.db)
-            classif.enqueue_from_intake(intake)
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "Reingest: falha nao-fatal ao re-enfileirar AJUS classif "
-                "do intake %d.", intake.id,
-            )
-
-        return IntakeCreationResult(
-            intake=intake, already_existed=True, reingested=True,
-        )
 
     # ─── Devolução automática (pin019) ────────────────────────────────
 
@@ -629,7 +442,12 @@ class IntakeService:
             # entra em "Tratamento Web" (cancel legada) — o operador
             # vai apenas excluir manualmente do L1 e o sistema dispara
             # andamento de devolução AJUS.
-            if not is_devolucao:
+            # 2026-05-06: pular USER_UPLOAD — esses intakes vieram de PDF
+            # subido manualmente pelo operador, então NÃO existe task
+            # legada "Agendar Prazos" no L1 pra cancelar. Enfileirar
+            # gerava task_not_found em massa (33 falhas iguais quando o
+            # dispatch periódico foi ligado).
+            if not is_devolucao and intake.source == INTAKE_SOURCE_EXTERNAL_API:
                 try:
                     from app.services.prazos_iniciais.legacy_task_queue_service import (
                         PrazosIniciaisLegacyTaskQueueService,
