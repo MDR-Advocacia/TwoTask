@@ -52,6 +52,7 @@ from app.services.ajus.ajus_client import (
     AjusClient,
     AjusConfigError,
     encode_pdf_base64,
+    format_cnj_with_mask,
     format_date_brl,
     validate_arquivo_size,
 )
@@ -400,10 +401,13 @@ def _build_arquivos_for_item(
         ) from exc
 
     base64_str = encode_pdf_base64(pdf_bytes)
+    import hashlib as _hashlib
+    sha256_hex = _hashlib.sha256(pdf_bytes).hexdigest()
     logger.info(
-        "AJUS %s: item %d anexo OK — bytes=%d base64_len=%d "
-        "magic_ok=True",
-        label, item.id, size_bytes, len(base64_str),
+        "AJUS %s: item %d anexo OK — bytes=%d sha256=%s "
+        "base64_len=%d first16hex=%s magic_ok=True",
+        label, item.id, size_bytes, sha256_hex, len(base64_str),
+        pdf_bytes[:16].hex(),
     )
     return [{"nome": "habilitacao.pdf", "base64": base64_str}]
 
@@ -873,7 +877,7 @@ class AjusQueueService:
         index_to_item: dict[int, AjusAndamentoQueue] = {}
         for item in pending:
             entry: dict = {
-                "identificadorAcao": {"numeroProcesso": item.cnj_number},
+                "identificadorAcao": {"numeroProcesso": format_cnj_with_mask(item.cnj_number)},
                 "codAndamento": item.cod_andamento.codigo,
                 "situacao": item.situacao,
                 "dataEvento": format_date_brl(item.data_evento),
@@ -1060,7 +1064,7 @@ class AjusQueueService:
 
         # Monta payload (1 entrada).
         entry: dict = {
-            "identificadorAcao": {"numeroProcesso": item.cnj_number},
+            "identificadorAcao": {"numeroProcesso": format_cnj_with_mask(item.cnj_number)},
             "codAndamento": item.cod_andamento.codigo,
             "situacao": item.situacao,
             "dataEvento": format_date_brl(item.data_evento),
@@ -1585,7 +1589,7 @@ class AjusQueueService:
         index_to_item: dict[int, AjusAndamentoQueue] = {}
         for item in pending:
             entry: dict = {
-                "identificadorAcao": {"numeroProcesso": item.cnj_number},
+                "identificadorAcao": {"numeroProcesso": format_cnj_with_mask(item.cnj_number)},
                 "codAndamento": item.cod_andamento.codigo,
                 "situacao": item.situacao,
                 "dataEvento": format_date_brl(item.data_evento),

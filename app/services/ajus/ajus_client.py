@@ -170,12 +170,60 @@ class AjusClient:
             len(itens), self._base_url, self._cliente,
         )
 
+        # Log estrutural do payload (sem base64 cru, sem credenciais).
+        # Critico pra diagnosticar rejeicao "Para concluir o andamento
+        # HABILITACAO" -- queremos saber EXATAMENTE o que sai daqui.
+        try:
+            for idx, prazo in enumerate(itens):
+                ident = prazo.get("identificadorAcao") or {}
+                arquivos = prazo.get("arquivos") or []
+                arquivos_summary = []
+                for a in arquivos:
+                    nome = a.get("nome") if isinstance(a, dict) else None
+                    b64 = a.get("base64") if isinstance(a, dict) else ""
+                    arquivos_summary.append({
+                        "nome": nome,
+                        "base64_len": len(b64) if isinstance(b64, str) else None,
+                        "base64_first_24": (
+                            b64[:24] if isinstance(b64, str) else None
+                        ),
+                    })
+                logger.info(
+                    "AJUS payload[%d]: keys=%s identificadorAcao=%s "
+                    "codAndamento=%r situacao=%r dataEvento=%r "
+                    "dataAgendamento=%r dataFatal=%r informacao_len=%d "
+                    "arquivos=%s",
+                    idx,
+                    sorted(prazo.keys()),
+                    ident,
+                    prazo.get("codAndamento"),
+                    prazo.get("situacao"),
+                    prazo.get("dataEvento"),
+                    prazo.get("dataAgendamento"),
+                    prazo.get("dataFatal"),
+                    len(prazo.get("informacao") or ""),
+                    arquivos_summary,
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("AJUS payload-log falhou (segue mesmo assim)")
+
         try:
             response = requests.post(
                 url, json=body, headers=self._headers(), timeout=self._timeout,
             )
         except requests.RequestException as exc:
             raise AjusApiError(f"Falha de rede ao chamar AJUS: {exc}") from exc
+
+        # Log da resposta crua. Independente de status, queremos ver o
+        # que a AJUS realmente devolveu — header importante e body inteiro
+        # (truncado em 4KB pra log nao explodir).
+        logger.info(
+            "AJUS inserir-prazos: resposta status=%d content-type=%s "
+            "body[:4000]=%r",
+            response.status_code,
+            response.headers.get("Content-Type"),
+            response.text[:4000],
+        )
 
         if response.status_code == 401:
             raise AjusApiError(
@@ -262,6 +310,25 @@ def format_date_brl(value) -> str:
 def encode_pdf_base64(pdf_bytes: bytes) -> str:
     """Codifica bytes em base64 ASCII pro campo `arquivos[].base64`."""
     return base64.b64encode(pdf_bytes).decode("ascii")
+
+
+def format_cnj_with_mask(value: str) -> str:
+    """
+    Formata CNJ no padrao mascarado NNNNNNN-DD.AAAA.J.TR.OOOO que a
+    AJUS usa nas respostas (ex.: "8000820-14.2026.8.05.0176").
+    Aceita entrada com ou sem mascara — pega so' os 20 digitos e
+    aplica a mascara. Devolve `value` raw se nao tiver 20 digitos
+    (caller decide se isso eh erro).
+    """
+    if not value:
+        return value
+    digits = "".join(c for c in str(value) if c.isdigit())
+    if len(digits) != 20:
+        return value
+    return (
+        f"{digits[:7]}-{digits[7:9]}.{digits[9:13]}."
+        f"{digits[13:14]}.{digits[14:16]}.{digits[16:20]}"
+    )
 
 
 def validate_arquivo_size(size_bytes: int) -> None:
