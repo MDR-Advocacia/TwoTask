@@ -37,6 +37,19 @@ QUEUE_SUCCESS_REASONS = {
     "already_in_target_status",
 }
 
+# Motivos que tratamos como conclusão silenciosa (terminal sem ação): a
+# task legada não existe no L1, então não há nada pra cancelar. Casos:
+#   - USER_UPLOAD: operador subiu PDF manualmente, nunca houve task L1.
+#   - Backlog antigo: operador finalizou task no L1 em status fora do
+#     nosso filtro [0,3] (ex.: 1=Em andamento, 2=Concluído).
+# Movemos pra COMPLETED em vez de FAILED pra parar de poluir o contador
+# de falhas e o circuit breaker, mas preservamos `last_reason` pra
+# auditoria. Antes (2026-05-06) entravam em FAILED e ficavam empacando
+# o painel "Falhas por motivo: Task não encontrada".
+QUEUE_NOOP_REASONS = {
+    "task_not_found",
+}
+
 # Motivo gravado quando o operador cancela manualmente um item da fila pela UI.
 MANUAL_CANCEL_REASON = "manually_cancelled"
 
@@ -304,16 +317,24 @@ class PrazosIniciaisLegacyTaskQueueService:
         item.last_result = result
         item.last_reason = result.get("reason")
         item.selected_task_id = result.get("task_id")
-        if result.get("reason") in QUEUE_SUCCESS_REASONS:
+        reason_now = result.get("reason")
+        if reason_now in QUEUE_SUCCESS_REASONS:
             item.queue_status = QUEUE_STATUS_COMPLETED
             item.cancelled_task_id = result.get("task_id")
+            item.completed_at = self._utcnow()
+            item.last_error = None
+        elif reason_now in QUEUE_NOOP_REASONS:
+            # Não há task L1 pra cancelar — terminal sem ação. Mantém o
+            # last_reason ("task_not_found") pra auditoria mas marca
+            # COMPLETED pra parar de tentar e tirar do balde de falhas.
+            item.queue_status = QUEUE_STATUS_COMPLETED
             item.completed_at = self._utcnow()
             item.last_error = None
         else:
             item.queue_status = QUEUE_STATUS_FAILED
             item.last_error = (
                 result.get("runner_error")
-                or result.get("reason")
+                or reason_now
                 or "Falha ao cancelar task legada."
             )
         item.updated_at = self._utcnow()
@@ -435,7 +456,10 @@ class PrazosIniciaisLegacyTaskQueueService:
 
             reason = outcome["item"].get("last_reason")
 
-            if reason in QUEUE_SUCCESS_REASONS:
+            # NOOP (task_not_found) conta como sucesso pro CB e pro
+            # contador — o item virou COMPLETED no process_item, então
+            # tratar como falha aqui daria contagem inconsistente.
+            if reason in QUEUE_SUCCESS_REASONS or reason in QUEUE_NOOP_REASONS:
                 success_count += 1
                 cb.record_success()
             else:

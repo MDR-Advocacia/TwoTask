@@ -42,10 +42,19 @@ def _tick() -> None:
     try:
         batch_limit = max(1, settings.prazos_iniciais_dispatch_batch_limit)
 
+        # Ordenacao: itens nunca tentados (dispatch_error_message IS NULL)
+        # vem primeiro, depois os que ja falharam (retry com menor
+        # prioridade). Sem isso, se 10 intakes velhos falham
+        # consistentemente, o worker fica travado neles e nunca chega
+        # nos novos — sintoma classico observado em 2026-05-06 quando
+        # o dispatch periodico foi ligado e 273 intakes ficaram empacados.
         pending_ids = (
             db.query(PrazoInicialIntake.id)
             .filter(PrazoInicialIntake.dispatch_pending.is_(True))
-            .order_by(PrazoInicialIntake.treated_at.asc().nullslast())
+            .order_by(
+                PrazoInicialIntake.dispatch_error_message.is_(None).desc(),
+                PrazoInicialIntake.treated_at.asc().nullslast(),
+            )
             .limit(batch_limit)
             .all()
         )
