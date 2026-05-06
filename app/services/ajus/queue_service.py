@@ -155,7 +155,22 @@ def _resolve_pdf_bytes_with_fallback(
     if item.pdf_path:
         bytes_ = _read_ajus_pdf(item.pdf_path)
         if bytes_:
+            logger.info(
+                "AJUS dispatch: item %d usando PDF copia local (%s, %d bytes).",
+                item.id, item.pdf_path, len(bytes_),
+            )
             return bytes_
+        logger.warning(
+            "AJUS dispatch: item %d tem pdf_path=%r mas arquivo sumiu — "
+            "tentando fallback pelo intake.",
+            item.id, item.pdf_path,
+        )
+    else:
+        logger.info(
+            "AJUS dispatch: item %d sem pdf_path (cópia AJUS nao foi feita "
+            "no enqueue) — tentando fallback pelo intake.",
+            item.id,
+        )
 
     # Fallback: tenta pelo intake.
     intake = db.query(PrazoInicialIntake).filter(

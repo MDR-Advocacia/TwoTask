@@ -227,6 +227,20 @@ class AjusClient:
             sum(1 for r in out if r.inserido),
             sum(1 for r in out if not r.inserido),
         )
+        # Log explicito de cada falha pra acelerar diagnostico — operador
+        # nao precisa abrir o item da fila pra ver o erro_message: ja
+        # aparece direto no log do container.
+        for idx, result in enumerate(out):
+            if not result.inserido:
+                cnj = (
+                    result.identificador_acao.get("numeroProcesso")
+                    if isinstance(result.identificador_acao, dict)
+                    else None
+                )
+                logger.warning(
+                    "AJUS inserir-prazos: item[%d] cnj=%s rejeitado — msg=%r",
+                    idx, cnj, result.msg,
+                )
         return out
 
 
