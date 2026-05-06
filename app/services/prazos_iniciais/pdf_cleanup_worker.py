@@ -32,7 +32,10 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.models.prazo_inicial import PrazoInicialIntake
+from app.models.prazo_inicial import (
+    INTAKE_SOURCE_EXTERNAL_API,
+    PrazoInicialIntake,
+)
 from app.services.prazos_iniciais import storage as pdf_storage
 
 logger = logging.getLogger(__name__)
@@ -46,10 +49,27 @@ def cleanup_local_pdfs(db: Session) -> dict[str, int]:
     """
     Executa a limpeza e retorna contadores pra observabilidade:
       - ged_uploaded_cleaned: arquivos removidos por já estarem no GED
+      - ged_uploaded_promoted: pdf_path "renomeado" pra habilitacao_pdf_path
+        (EXTERNAL_API — preserva habilitacao no disco, regra
+        feedback_nao_apagar_habilitacao.md)
       - retention_expired_cleaned: arquivos removidos por retenção
+      - retention_expired_skipped: arquivos preservados por serem
+        habilitacao em EXTERNAL_API
       - failures: falhas ao tentar deletar (log warning mas não levanta)
+
+    A partir de 2026-05-06: NUNCA apaga PDF de habilitacao (EXTERNAL_API).
+    Em EXTERNAL_API o `pdf_path` JA EH a habilitacao — aqui promovemos
+    pra `habilitacao_pdf_path` (rename do campo, arquivo intocado).
+    Cleanup real (delete fisico) aplica somente a USER_UPLOAD onde
+    `pdf_path` eh a integra do processo (descartavel pos-extracao).
     """
-    stats = {"ged_uploaded_cleaned": 0, "retention_expired_cleaned": 0, "failures": 0}
+    stats = {
+        "ged_uploaded_cleaned": 0,
+        "ged_uploaded_promoted": 0,
+        "retention_expired_cleaned": 0,
+        "retention_expired_skipped": 0,
+        "failures": 0,
+    }
 
     # ── Caminho 1: já subiu pro GED, pode apagar imediatamente ──
     ged_orphans = (
@@ -61,6 +81,25 @@ def cleanup_local_pdfs(db: Session) -> dict[str, int]:
         .all()
     )
     for intake in ged_orphans:
+        # EXTERNAL_API: promove em vez de apagar — espelha
+        # `scheduling_service._cleanup_local_pdf`. Se habilitacao_pdf_path
+        # ainda esta None, eh seguro renomear o campo. Se ja foi
+        # promovido em outra rotina, mantem como esta (idempotente).
+        if intake.source == INTAKE_SOURCE_EXTERNAL_API:
+            if not getattr(intake, "habilitacao_pdf_path", None):
+                intake.habilitacao_pdf_path = intake.pdf_path
+                intake.habilitacao_pdf_sha256 = intake.pdf_sha256
+                intake.habilitacao_pdf_bytes = intake.pdf_bytes
+                intake.habilitacao_pdf_filename_original = (
+                    intake.pdf_filename_original
+                )
+                intake.pdf_path = None
+                intake.pdf_bytes = None
+                intake.pdf_sha256 = None
+                intake.pdf_filename_original = None
+                stats["ged_uploaded_promoted"] += 1
+            continue
+        # USER_UPLOAD: pdf_path eh a integra (descartavel).
         try:
             pdf_storage.delete_pdf(intake.pdf_path)
             intake.pdf_path = None
@@ -99,6 +138,13 @@ def cleanup_local_pdfs(db: Session) -> dict[str, int]:
             .all()
         )
         for intake in expired:
+            # EXTERNAL_API: pdf_path eh habilitacao — NUNCA apagar.
+            # Mesmo em status terminal de descarte (CANCELADO etc.) a
+            # habilitacao tem valor probatorio, operador faz cleanup
+            # manual do estoque depois.
+            if intake.source == INTAKE_SOURCE_EXTERNAL_API:
+                stats["retention_expired_skipped"] += 1
+                continue
             try:
                 pdf_storage.delete_pdf(intake.pdf_path)
                 intake.pdf_path = None
@@ -123,9 +169,12 @@ def _tick() -> None:
         logger.info("pdf_cleanup.tick.start")
         stats = cleanup_local_pdfs(db)
         logger.info(
-            "pdf_cleanup.tick.finish ged_cleaned=%d retention_cleaned=%d failures=%d",
+            "pdf_cleanup.tick.finish ged_cleaned=%d ged_promoted=%d "
+            "retention_cleaned=%d retention_skipped=%d failures=%d",
             stats["ged_uploaded_cleaned"],
+            stats["ged_uploaded_promoted"],
             stats["retention_expired_cleaned"],
+            stats["retention_expired_skipped"],
             stats["failures"],
         )
     except Exception:

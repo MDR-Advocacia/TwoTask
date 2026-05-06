@@ -493,9 +493,9 @@ class AjusQueueService:
                 item.cod_informacao_judicial = result.cod_informacao_judicial
                 item.error_message = None
                 success_ids.append(item.id)
-                # Cleanup do PDF copiado — não precisa mais
-                _delete_ajus_pdf_copy(item.pdf_path)
-                item.pdf_path = None
+                # Habilitacao na storage AJUS preservada (regra "salvar
+                # tudo" — feedback_nao_apagar_habilitacao.md). O campo
+                # `item.pdf_path` aponta pro arquivo, mantemos pra rastreio.
                 # Pin019: se o intake é de DEVOLUÇÃO, avança status pra
                 # ENVIADA (operador vê na listagem que o andamento já
                 # rolou e o caso pode sair da nossa base).
@@ -644,8 +644,7 @@ class AjusQueueService:
             item.status = AJUS_QUEUE_SUCESSO
             item.cod_informacao_judicial = result.cod_informacao_judicial
             item.error_message = None
-            _delete_ajus_pdf_copy(item.pdf_path)
-            item.pdf_path = None
+            # Habilitacao copiada preservada (regra "salvar tudo").
             # Espelho do branch de devolucao do batch (mantem
             # status do intake sincronizado quando o item eh DEVOLUCAO).
             from app.models.prazo_inicial import (
@@ -685,7 +684,9 @@ class AjusQueueService:
     # ── Ações por item ──────────────────────────────────────────────
 
     def cancel(self, item_id: int) -> AjusAndamentoQueue:
-        """Cancela um item pendente/erro — apaga PDF copiado e marca cancelado."""
+        """Cancela um item pendente/erro. PDF copiado preservado (regra
+        "salvar tudo" — feedback_nao_apagar_habilitacao.md). Operador
+        gerencia limpeza do estoque manualmente depois."""
         item = (
             self.db.query(AjusAndamentoQueue)
             .filter(AjusAndamentoQueue.id == item_id)
@@ -698,8 +699,6 @@ class AjusQueueService:
                 f"Cancelamento permitido apenas em pendente ou erro. "
                 f"Status atual: {item.status}."
             )
-        _delete_ajus_pdf_copy(item.pdf_path)
-        item.pdf_path = None
         item.status = "cancelado"
         self.db.commit()
         self.db.refresh(item)

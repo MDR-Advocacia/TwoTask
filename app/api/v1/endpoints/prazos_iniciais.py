@@ -51,6 +51,7 @@ from app.models.prazo_inicial import (
     INTAKE_STATUS_IN_REVIEW,
     INTAKE_STATUS_LAWSUIT_NOT_FOUND,
     INTAKE_STATUS_RECEIVED,
+    INTAKE_STATUSES_REINGEST_ALLOWED,
     PrazoInicialIntake,
     PrazoInicialSugestao,
 )
@@ -169,6 +170,12 @@ class IntakeResponse(BaseModel):
     status: str
     pdf_stored_path: Optional[str] = None
     already_existed: bool = False
+    # True quando o reenvio caiu no caminho de reingest (status era
+    # atualizavel — RECEBIDO/PROCESSO_NAO_ENCONTRADO/PRONTO/ERRO_CLASSIF —
+    # e o PDF + capa + integra foram atualizados). False em criacao
+    # 1a vez OU em reenvio puramente idempotente (status pos-classificacao,
+    # quando preserva trabalho HITL).
+    reingested: bool = False
 
 
 class SugestaoOut(BaseModel):
@@ -450,15 +457,60 @@ async def ingest_intake(
 
     service = IntakeService(db=db)
 
-    # 4. Se já existe, retorna sem reprocessar (mesmo sem ler o PDF adiante).
+    # 4. Se ja existe: dois caminhos possiveis.
+    #    a) Status em INTAKE_STATUSES_REINGEST_ALLOWED (limbo pre-HITL):
+    #       atualiza PDF + capa + integra. PDF antigo fica orfao no disco
+    #       (regra "nao apagar habilitacao" — operador faz cleanup manual).
+    #       Sugestoes/pedidos/patrocinio sao apagados (cascade) — o
+    #       fluxo recomeca como se fosse novo, mas mantendo o intake_id.
+    #    b) Status pos-classificacao (CLASSIFICADO/AGUARDANDO_TPL/EM_REVISAO/
+    #       AGENDADO/CONCLUIDO_*/DEVOLUCAO_*/CANCELADO): preserva trabalho
+    #       ja feito pelo HITL — comportamento idempotente original.
+    #       Operador 2026-05-06: "incremento nao muda o que ja ta classificado".
     existing = service.get_by_external_id(intake_payload.external_id)
     if existing is not None:
+        if existing.status in INTAKE_STATUSES_REINGEST_ALLOWED:
+            try:
+                reingest_result = service.reingest_intake(
+                    intake=existing,
+                    cnj_number=intake_payload.cnj_number,
+                    capa_json=intake_payload.capa.model_dump(mode="json"),
+                    integra_json=intake_payload.integra_json,
+                    metadata_json=intake_payload.metadata,
+                    pdf_bytes=pdf_bytes,
+                    pdf_filename_original=habilitacao.filename,
+                )
+            except PdfValidationError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(exc),
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(exc),
+                )
+            # Re-dispara resolucao de lawsuit em background (status caiu
+            # pra RECEBIDO, lawsuit_id zerado).
+            background_tasks.add_task(
+                service.resolve_lawsuit_for_intake, reingest_result.intake.id,
+            )
+            return IntakeResponse(
+                intake_id=reingest_result.intake.id,
+                external_id=reingest_result.intake.external_id,
+                status=reingest_result.intake.status,
+                pdf_stored_path=reingest_result.intake.pdf_path,
+                already_existed=True,
+                reingested=True,
+            )
+        # Status pos-HITL — preserva como esta (idempotente puro).
         return IntakeResponse(
             intake_id=existing.id,
             external_id=existing.external_id,
             status=existing.status,
             pdf_stored_path=existing.pdf_path,
             already_existed=True,
+            reingested=False,
         )
 
     # 5. Cria o intake (inclui gravação + validação dos bytes do PDF).
