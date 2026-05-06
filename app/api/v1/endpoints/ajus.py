@@ -20,6 +20,7 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
+    Form,
     HTTPException,
     Path as FastapiPath,
     Query,
@@ -427,6 +428,208 @@ def dispatch_one_andamento(
     except (AjusConfigError, AjusApiError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return DispatchOneResponse(**result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Upload em lote (manual) — arquivos com CNJ no titulo OU lista de CNJs
+# ═══════════════════════════════════════════════════════════════════════
+# Permite enfileirar N andamentos AJUS sem passar por intake. Dois modos:
+#   1) bulk-upload (multipart): N PDFs, CNJ extraido do nome do arquivo,
+#      o PDF vira anexo do andamento.
+#   2) bulk-cnj (JSON): lista de CNJs sem arquivo (andamento de capa).
+# Variaveis comuns (cod_andamento_id, situacao, datas, hora, template
+# de informacao) se aplicam ao lote inteiro. Itens criados com
+# intake_id=NULL e status=pendente; aparecem na fila normal e o
+# operador clica "Enviar próximos 20" como sempre.
+
+
+class BulkAndamentoVarsBase(BaseModel):
+    cod_andamento_id: int = Field(..., ge=1)
+    situacao: Optional[str] = Field(default=None, pattern="^[AC]$")
+    data_evento: Optional[date] = None
+    data_agendamento: Optional[date] = None
+    data_fatal: Optional[date] = None
+    hora_agendamento: Optional[time] = None
+    informacao_template_override: Optional[str] = None
+
+
+class BulkCnjIn(BulkAndamentoVarsBase):
+    cnj_list: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description=(
+            "Lista de CNJs (com ou sem mascara). Cada item gera 1 "
+            "andamento sem anexo de PDF."
+        ),
+    )
+
+
+class BulkAndamentoSkipped(BaseModel):
+    cnj: str
+    filename: Optional[str] = None
+    reason: str
+
+
+class BulkAndamentoResponse(BaseModel):
+    created: int
+    skipped: list[BulkAndamentoSkipped]
+    item_ids: list[int]
+
+
+def _resolve_cod_andamento_or_404(
+    db: Session, cod_andamento_id: int,
+) -> AjusCodAndamento:
+    cod = db.get(AjusCodAndamento, cod_andamento_id)
+    if cod is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Codigo de andamento {cod_andamento_id} nao encontrado.",
+        )
+    if not cod.is_active:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Codigo de andamento {cod.codigo} esta inativo. "
+                "Reative-o ou escolha outro."
+            ),
+        )
+    return cod
+
+
+# Limite local: AJUS aceita 10MB por arquivo, mantemos o mesmo aqui.
+_BULK_MAX_FILE_BYTES = 10 * 1024 * 1024
+
+
+@router.post(
+    "/andamentos/bulk-upload",
+    response_model=BulkAndamentoResponse,
+    summary=(
+        "Upload em lote de PDFs com CNJ no nome do arquivo. Cria 1 item "
+        "na fila por arquivo, com PDF anexado e variaveis comuns ao lote."
+    ),
+)
+async def bulk_upload_andamentos(
+    files: list[UploadFile] = File(..., description="PDFs com CNJ no nome."),
+    cod_andamento_id: int = Form(..., ge=1),
+    situacao: Optional[str] = Form(default=None, pattern="^[AC]$"),
+    data_evento: Optional[date] = Form(default=None),
+    data_agendamento: Optional[date] = Form(default=None),
+    data_fatal: Optional[date] = Form(default=None),
+    hora_agendamento: Optional[time] = Form(default=None),
+    informacao_template_override: Optional[str] = Form(default=None),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    """
+    Multipart: variaveis em form fields, arquivos em `files`. CNJ
+    extraido do nome de cada arquivo (regex CNJ; aceita com ou sem
+    mascara). Arquivo com CNJ nao encontrado vira `skipped`.
+    Tamanho > 10MB (limite AJUS) tambem skipa.
+
+    HTTP 404 se cod_andamento_id nao existe; 409 se inativo.
+    """
+    from app.services.ajus.queue_service import (
+        AjusQueueService,
+        extract_cnj_from_filename,
+    )
+
+    if not files:
+        raise HTTPException(status_code=400, detail="Nenhum arquivo enviado.")
+
+    cod = _resolve_cod_andamento_or_404(db, cod_andamento_id)
+
+    pre_skipped: list[dict] = []
+    valid_entries: list[dict] = []
+    for upload in files:
+        filename = upload.filename or ""
+        cnj = extract_cnj_from_filename(filename)
+        try:
+            content = await upload.read()
+        except Exception as exc:  # noqa: BLE001
+            pre_skipped.append({
+                "cnj": cnj or "",
+                "filename": filename,
+                "reason": f"Falha ao ler arquivo: {exc}",
+            })
+            continue
+        if len(content) > _BULK_MAX_FILE_BYTES:
+            pre_skipped.append({
+                "cnj": cnj or "",
+                "filename": filename,
+                "reason": (
+                    f"Arquivo excede 10MB (limite AJUS): {len(content)} bytes."
+                ),
+            })
+            continue
+        valid_entries.append({
+            "cnj": cnj or "",
+            "filename": filename,
+            "pdf_bytes": content,
+        })
+
+    service = AjusQueueService(db)
+    result = service.bulk_enqueue(
+        cod_andamento=cod,
+        entries=valid_entries,
+        situacao=situacao,
+        data_evento=data_evento,
+        data_agendamento=data_agendamento,
+        data_fatal=data_fatal,
+        hora_agendamento=hora_agendamento,
+        informacao_template_override=informacao_template_override,
+    )
+    return BulkAndamentoResponse(
+        created=result["created"],
+        skipped=[
+            BulkAndamentoSkipped(**s) for s in pre_skipped + result["skipped"]
+        ],
+        item_ids=result["item_ids"],
+    )
+
+
+@router.post(
+    "/andamentos/bulk-cnj",
+    response_model=BulkAndamentoResponse,
+    summary=(
+        "Cria N itens da fila a partir de uma lista de CNJs (sem anexo)."
+    ),
+)
+def bulk_cnj_andamentos(
+    payload: BulkCnjIn,
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    from app.services.ajus.queue_service import AjusQueueService
+
+    cod = _resolve_cod_andamento_or_404(db, payload.cod_andamento_id)
+
+    entries: list[dict] = [
+        {"cnj": raw.strip(), "filename": None, "pdf_bytes": None}
+        for raw in payload.cnj_list if raw and raw.strip()
+    ]
+    if not entries:
+        raise HTTPException(
+            status_code=400,
+            detail="Lista de CNJs vazia (apos limpar linhas em branco).",
+        )
+
+    service = AjusQueueService(db)
+    result = service.bulk_enqueue(
+        cod_andamento=cod,
+        entries=entries,
+        situacao=payload.situacao,
+        data_evento=payload.data_evento,
+        data_agendamento=payload.data_agendamento,
+        data_fatal=payload.data_fatal,
+        hora_agendamento=payload.hora_agendamento,
+        informacao_template_override=payload.informacao_template_override,
+    )
+    return BulkAndamentoResponse(
+        created=result["created"],
+        skipped=[BulkAndamentoSkipped(**s) for s in result["skipped"]],
+        item_ids=result["item_ids"],
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════

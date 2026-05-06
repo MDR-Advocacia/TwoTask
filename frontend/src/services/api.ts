@@ -1065,6 +1065,85 @@ export async function retryAjusAndamento(itemId: number) {
   return expectJson(res);
 }
 
+// ─── Bulk upload de andamentos (arquivos com CNJ no nome OU lista CNJ) ─
+
+export interface AjusBulkVarsPayload {
+  cod_andamento_id: number;
+  situacao?: "A" | "C" | null;
+  data_evento?: string | null;          // YYYY-MM-DD
+  data_agendamento?: string | null;
+  data_fatal?: string | null;
+  hora_agendamento?: string | null;     // HH:MM
+  informacao_template_override?: string | null;
+}
+
+export interface AjusBulkSkipped {
+  cnj: string;
+  filename: string | null;
+  reason: string;
+}
+
+export interface AjusBulkResponse {
+  created: number;
+  skipped: AjusBulkSkipped[];
+  item_ids: number[];
+}
+
+/**
+ * Upload em lote de PDFs com CNJ no nome do arquivo. Backend extrai
+ * o CNJ via regex; arquivos sem CNJ no nome viram "skipped" no
+ * retorno (operador re-envia depois). Cada arquivo vira 1 item da
+ * fila com o PDF anexado e as variaveis comuns informadas.
+ */
+export async function bulkUploadAjusAndamentos(
+  files: File[],
+  vars: AjusBulkVarsPayload,
+): Promise<AjusBulkResponse> {
+  const fd = new FormData();
+  for (const f of files) fd.append("files", f);
+  fd.append("cod_andamento_id", String(vars.cod_andamento_id));
+  if (vars.situacao) fd.append("situacao", vars.situacao);
+  if (vars.data_evento) fd.append("data_evento", vars.data_evento);
+  if (vars.data_agendamento) fd.append("data_agendamento", vars.data_agendamento);
+  if (vars.data_fatal) fd.append("data_fatal", vars.data_fatal);
+  if (vars.hora_agendamento) fd.append("hora_agendamento", vars.hora_agendamento);
+  if (vars.informacao_template_override) {
+    fd.append("informacao_template_override", vars.informacao_template_override);
+  }
+  const res = await apiFetch(`/api/v1/ajus/andamentos/bulk-upload`, {
+    method: "POST",
+    body: fd,
+  });
+  return expectJson<AjusBulkResponse>(res);
+}
+
+/**
+ * Cria N andamentos de capa (sem anexo de PDF) a partir de uma lista
+ * de CNJs. Util pra cancelamento massivo / aviso massivo onde nao ha
+ * arquivo associado. Mesmas variaveis comuns do bulk-upload.
+ */
+export async function bulkCnjAjusAndamentos(
+  cnjList: string[],
+  vars: AjusBulkVarsPayload,
+): Promise<AjusBulkResponse> {
+  const body = {
+    cnj_list: cnjList,
+    cod_andamento_id: vars.cod_andamento_id,
+    situacao: vars.situacao ?? null,
+    data_evento: vars.data_evento ?? null,
+    data_agendamento: vars.data_agendamento ?? null,
+    data_fatal: vars.data_fatal ?? null,
+    hora_agendamento: vars.hora_agendamento ?? null,
+    informacao_template_override: vars.informacao_template_override ?? null,
+  };
+  const res = await apiFetch(`/api/v1/ajus/andamentos/bulk-cnj`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return expectJson<AjusBulkResponse>(res);
+}
+
 // ─── Classificação AJUS (Chunk 1) ────────────────────────────────────
 
 export async function fetchAjusClassifDefaults(): Promise<AjusClassifDefaults> {

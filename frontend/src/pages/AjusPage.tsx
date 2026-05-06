@@ -10,6 +10,7 @@ import {
   RefreshCw,
   RotateCcw,
   Send,
+  Upload,
   Workflow,
   XCircle,
 } from "lucide-react";
@@ -60,6 +61,7 @@ import type {
 } from "@/types/api";
 import { CodAndamentoFormDialog } from "@/components/ajus/CodAndamentoFormDialog";
 import { ClassificacaoTab } from "@/components/ajus/ClassificacaoTab";
+import { BulkUploadAndamentosDialog } from "@/components/ajus/BulkUploadAndamentosDialog";
 
 const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "__all__", label: "Todos os status" },
@@ -112,6 +114,9 @@ export default function AjusPage() {
   const [codigosLoading, setCodigosLoading] = useState(false);
   const [codDialogOpen, setCodDialogOpen] = useState(false);
   const [editingCod, setEditingCod] = useState<AjusCodAndamento | null>(null);
+
+  // ─── Bulk upload ───────────────────────────────────────────────────
+  const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
 
   // ─── Loaders ───────────────────────────────────────────────────────
   const loadAndamentos = useCallback(async () => {
@@ -406,6 +411,16 @@ export default function AjusPage() {
                   </Button>
                   <Button
                     size="sm"
+                    variant="outline"
+                    onClick={() => setBulkDialogOpen(true)}
+                    disabled={codigos.filter((c) => c.is_active).length === 0}
+                    title="Upload em lote — N PDFs (CNJ no nome) ou lista de CNJs"
+                  >
+                    <Upload className="mr-2 h-3.5 w-3.5" />
+                    Upload em lote
+                  </Button>
+                  <Button
+                    size="sm"
                     onClick={handleDispatchPending}
                     disabled={isDispatching || (statusCounts.pendente || 0) === 0}
                   >
@@ -657,6 +672,13 @@ export default function AjusPage() {
         cod={editingCod}
         onCreate={handleCreateCod}
         onUpdate={handleUpdateCod}
+      />
+
+      <BulkUploadAndamentosDialog
+        open={bulkDialogOpen}
+        onOpenChange={setBulkDialogOpen}
+        codigos={codigos}
+        onSuccess={() => loadAndamentos()}
       />
     </div>
   );
