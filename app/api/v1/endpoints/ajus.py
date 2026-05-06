@@ -82,6 +82,10 @@ class CodAndamentoIn(BaseModel):
     dias_fatal_offset_uteis: int = Field(default=15, ge=-365, le=365)
     informacao_template: str = Field(default="Andamento — processo {cnj}.")
     is_default: bool = False
+    # Pin019: marcar este código como o usado pelo fluxo de devolução
+    # automática (POST /prazos-iniciais/intake/devolucao). Apenas 1 ativo
+    # pode ter is_devolucao=true por vez.
+    is_devolucao: bool = False
     is_active: bool = True
 
 
@@ -95,6 +99,7 @@ class CodAndamentoOut(BaseModel):
     dias_fatal_offset_uteis: int
     informacao_template: str
     is_default: bool
+    is_devolucao: bool
     is_active: bool
 
     class Config:
@@ -199,6 +204,12 @@ def create_cod_andamento(
         db.query(AjusCodAndamento).filter(
             AjusCodAndamento.is_default.is_(True),
         ).update({"is_default": False})
+    # Idem pra is_devolucao — apenas 1 ativo (pin019).
+    if payload.is_devolucao:
+        db.query(AjusCodAndamento).filter(
+            AjusCodAndamento.is_devolucao.is_(True),
+            AjusCodAndamento.is_active.is_(True),
+        ).update({"is_devolucao": False})
     obj = AjusCodAndamento(**payload.model_dump())
     db.add(obj)
     try:
@@ -229,6 +240,13 @@ def update_cod_andamento(
             AjusCodAndamento.is_default.is_(True),
             AjusCodAndamento.id != cod_id,
         ).update({"is_default": False})
+    # Idem pra is_devolucao — só um ativo por vez (pin019).
+    if payload.is_devolucao and not obj.is_devolucao:
+        db.query(AjusCodAndamento).filter(
+            AjusCodAndamento.is_devolucao.is_(True),
+            AjusCodAndamento.is_active.is_(True),
+            AjusCodAndamento.id != cod_id,
+        ).update({"is_devolucao": False})
     for k, v in payload.model_dump().items():
         setattr(obj, k, v)
     db.commit()

@@ -37,6 +37,7 @@ interface FormState {
   dias_fatal_offset_uteis: string;
   informacao_template: string;
   is_default: boolean;
+  is_devolucao: boolean;
   is_active: boolean;
 }
 
@@ -49,6 +50,7 @@ const DEFAULT_FORM: FormState = {
   dias_fatal_offset_uteis: "15",
   informacao_template: "Andamento — processo {cnj}.",
   is_default: false,
+  is_devolucao: false,
   is_active: true,
 };
 
@@ -62,6 +64,7 @@ function fromCodAndamento(t: AjusCodAndamento): FormState {
     dias_fatal_offset_uteis: String(t.dias_fatal_offset_uteis),
     informacao_template: t.informacao_template,
     is_default: t.is_default,
+    is_devolucao: t.is_devolucao ?? false,
     is_active: t.is_active,
   };
 }
@@ -126,6 +129,7 @@ export function CodAndamentoFormDialog({
       dias_fatal_offset_uteis: Number(form.dias_fatal_offset_uteis),
       informacao_template: form.informacao_template,
       is_default: form.is_default,
+      is_devolucao: form.is_devolucao,
       is_active: form.is_active,
     };
     setSubmitting(true);
@@ -286,6 +290,18 @@ export function CodAndamentoFormDialog({
               </div>
               <div className="flex items-center gap-2">
                 <Checkbox
+                  id="cod-devolucao"
+                  checked={form.is_devolucao}
+                  onCheckedChange={(v) =>
+                    setForm({ ...form, is_devolucao: Boolean(v) })
+                  }
+                />
+                <Label htmlFor="cod-devolucao" className="cursor-pointer">
+                  Devolução automática (usado pelo /intake/devolucao)
+                </Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <Checkbox
                   id="cod-active"
                   checked={form.is_active}
                   onCheckedChange={(v) =>
@@ -297,6 +313,13 @@ export function CodAndamentoFormDialog({
                 </Label>
               </div>
             </div>
+            <p className="text-xs text-muted-foreground">
+              <strong>Default</strong> e <strong>Devolução automática</strong>{" "}
+              são exclusivos: cada flag pode estar marcada em apenas{" "}
+              <em>um</em> código ativo por vez (a tela impede dois marcados
+              simultaneamente — se você marcar essa flag em outro código, o
+              anterior é automaticamente desmarcado).
+            </p>
           </div>
         </ScrollArea>
 
