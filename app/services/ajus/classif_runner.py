@@ -87,6 +87,58 @@ class AjusProcessNotFoundError(AjusRunnerError):
     """
 
 
+# ─── Classificacao de erros transitorios vs permanentes ──────────────
+
+
+# Padroes de erro que sao TIMING/transitorios — re-execucao normalmente
+# resolve (workspace que demorou pra liberar, combobox ExtJS que nao
+# carregou store a tempo, busca rapida que nao apareceu, etc.).
+# Quando o runner cair num desses, o item volta pra `pendente` ate o
+# limite de retries (ver mark_transient_error).
+_TRANSIENT_ERROR_PATTERNS = (
+    "ajus nao liberou workspace dentro do timeout",
+    "nao consegui selecionar",  # combobox ExtJS
+    "campo dependente",  # ex.: comarca dependente nao apareceu
+    "nao foi possivel localizar a busca rapida",
+    "nao consegui localizar",  # outros locators
+    "playwright timeout",
+    "navigation timeout",
+    "timeout 30000ms exceeded",
+    "timeout 45000ms exceeded",
+    "locator.click",
+    "locator.fill",
+    "locator.evaluate",
+    "page.goto",
+    "element is not visible",
+    "context manager",
+    "closed browser",
+    "target closed",
+    "session expired",
+    # Save parcial / popup bloqueando — geralmente proxima tentativa
+    # consegue completar (Natureza vem do CRM como 69 ja persistido,
+    # ou o setValue do combobox firma na 2a vez).
+    "capa nao ficou com os valores esperados",
+    "capa nao validou",
+    "encontrado 'selecione",  # display em placeholder pos-save
+    "encontrado 'nao classif",
+    "encontrado 'nao definido",
+    "extjs bloqueou save com popup",
+    # Bug colateral: mark_processing chamado 2x quando fallback de
+    # comarca rola dentro do mesmo classify_item. Re-execucao resolve
+    # porque na proxima rodada o item volta pra pendente.
+    "so itens pendentes podem ser marcados como processando",
+    "só itens pendentes podem ser marcados como processando",
+)
+
+
+def _is_transient_error(msg: str) -> bool:
+    """True se a mensagem de erro casa com algum padrao transitorio."""
+    if not msg:
+        return False
+    norm = msg.lower()
+    return any(p in norm for p in _TRANSIENT_ERROR_PATTERNS)
+
+
 # ─── Helpers de texto ────────────────────────────────────────────────
 
 
@@ -907,6 +959,18 @@ class AjusClassifRunner:
                     # Comarca persistiram e Materia/Risco nao gravaram.
                     self._reset_workspace()
                     self._open_process_by_cnj(item.cnj_number)
+                    # CRITICO: depois de reabrir o processo, o ExtJS dispara
+                    # ObjetoPedidoAcaoJudicialController.php?action=read pra
+                    # POPULAR o form. _validate_process_cover roda ANTES do
+                    # form ficar populado e ve "Selecione uma opção" em
+                    # tudo — gerando falso "save rejeitado" e gravando
+                    # erro no item que de fato foi salvo. Esperamos UF
+                    # casar com o valor ESPERADO (com timeout de 25s) —
+                    # garante que o populate do ExtJS terminou e o save
+                    # persistiu corretamente.
+                    self._wait_for_cover_populated(
+                        timeout_s=25, expected_uf=(item.uf or ""),
+                    )
                     self._validate_process_cover(item)
                     self.classif_service.mark_success(
                         item.id,
@@ -945,7 +1009,14 @@ class AjusClassifRunner:
                             )
                         continue
                     msg = str(exc)[:4000]
-                    self.classif_service.mark_error(item.id, error_message=msg)
+                    if _is_transient_error(msg):
+                        self.classif_service.mark_transient_error(
+                            item.id, error_message=msg,
+                        )
+                    else:
+                        self.classif_service.mark_error(
+                            item.id, error_message=msg,
+                        )
                     logger.exception(
                         "AJUS runner: falha classificando item %d (cnj=%s): %s",
                         item.id, item.cnj_number, msg,
@@ -953,7 +1024,14 @@ class AjusClassifRunner:
                     break
                 except Exception as exc:  # noqa: BLE001
                     msg = str(exc)[:4000]
-                    self.classif_service.mark_error(item.id, error_message=msg)
+                    if _is_transient_error(msg):
+                        self.classif_service.mark_transient_error(
+                            item.id, error_message=msg,
+                        )
+                    else:
+                        self.classif_service.mark_error(
+                            item.id, error_message=msg,
+                        )
                     logger.exception(
                         "AJUS runner: falha classificando item %d (cnj=%s): %s",
                         item.id, item.cnj_number, msg,
@@ -2071,9 +2149,519 @@ class AjusClassifRunner:
         self._fill_field_with_verify("Justica/Honorario", portal.PROCESS_JUSTICE_FEE_SELECTOR, item.justice_fee)
         self._fill_field_with_verify("Risco/Prob. Perda", portal.PROCESS_RISK_SELECTOR, item.risk_loss_probability)
 
-        # Salvar — agora com seguranca de que TODOS os campos firmaram.
-        self._click(portal.PROCESS_SAVE_SELECTOR)
+        # CAMPO 6 — *Natureza* (obrigatorio server-side). Sem isso o
+        # save bloqueia com popup "Natureza: preenchimento obrigatorio".
+        #
+        # AJUS roda Ext 3.x — Ext.ComponentQuery nao existe. Estrategia
+        # DOM-only: achar o input[name=codNatureza] que esta VAZIO e
+        # VISIVEL (form principal — outros sao sub-forms ocultos),
+        # localizar o trigger arrow no wrapper, clicar pra abrir picker,
+        # clicar no item "Cível" da lista.
+        # Localiza o input visivel do form principal (codNatureza vazio)
+        # via JS — devolve um seletor unico que o Playwright pode usar.
+        natureza_locate_js = (
+            "() => {"
+            "  try {"
+            "    const hiddens = Array.from(document.querySelectorAll('input[name=\"codNatureza\"]'));"
+            "    let target = null;"
+            "    for (const h of hiddens) {"
+            "      if (h.value) continue;"  # ja preenchido, pula
+            "      const wrap = h.closest('.x-form-field-wrap, .x-form-element, .x-trigger-wrap-focus, td');"
+            "      if (!wrap) continue;"
+            "      const visInp = wrap.querySelector('input[type=\"text\"]:not([type=\"hidden\"])');"
+            "      if (!visInp || visInp.offsetParent === null) continue;"
+            "      if (!visInp.id) visInp.id = '__natureza_' + Math.random().toString(36).slice(2);"
+            "      target = '#' + visInp.id; break;"
+            "    }"
+            "    return target || '';"
+            "  } catch(e) { return ''; }"
+            "}"
+        )
+        try:
+            natureza_input_sel = self._page.evaluate(natureza_locate_js)
+            logger.info(
+                "AJUS runner: Natureza input localizado (item %d cnj=%s): %r",
+                item.id, item.cnj_number, natureza_input_sel,
+            )
+            if natureza_input_sel:
+                # Usa o helper existente que ja sabe lidar com combobox
+                # ExtJS (clica trigger, espera picker, clica item).
+                self._fill_field_with_verify(
+                    "Natureza", natureza_input_sel, "Cível",
+                )
+            else:
+                logger.warning(
+                    "AJUS runner: Natureza input VAZIO nao localizado no "
+                    "form principal (item %d cnj=%s) — talvez ja esteja "
+                    "preenchido server-side.",
+                    item.id, item.cnj_number,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "AJUS runner: Natureza fill FALHOU (item %d, cnj=%s): %s "
+                "— seguindo, save vai validar server-side.",
+                item.id, item.cnj_number, exc,
+            )
+
+        # CRITICO: ExtJS dispara o save como XHR POST async pro
+        # /ajax.handler.php. Se o _reset_workspace() (que vem logo apos
+        # no classify_item) rodar page.reload() antes do XHR completar,
+        # o save eh cancelado no meio do voo e a capa volta TODA em
+        # placeholder na re-leitura — gerando "erro" em massa em itens
+        # que o servidor sequer chegou a processar.
+        #
+        # networkidle NAO funciona pra esse portal (AJUS faz long-polling,
+        # nunca fica idle — ver _goto comentario). Solucao: capturar
+        # explicitamente a response do POST /ajax.handler.php que sai
+        # logo apos o click no SAVE.
+        save_responses: list = []
+        all_requests: list = []
+
+        def _capture_request(request):
+            # DEBUG: TUDO que sai da pagina (GET, POST, qualquer URL).
+            try:
+                method = request.method
+                url = (request.url or "")[:250]
+                all_requests.append(f"{method} {url}")
+            except Exception:
+                pass
+
+        def _capture_response(response):
+            try:
+                req = response.request
+                if not req:
+                    return
+                method = req.method
+                url = (response.url or "").lower()
+                # Captura QUALQUER request que pareca de mutacao/save.
+                if method in ("POST", "PUT", "PATCH"):
+                    save_responses.append(response)
+                elif any(kw in url for kw in (
+                    "save", "update", "insert", "edit", "salvar",
+                    "atualizar", "gravar",
+                )):
+                    save_responses.append(response)
+            except Exception:
+                pass
+
+        try:
+            self._page.remove_all_listeners("request")
+            self._page.remove_all_listeners("response")
+        except Exception:
+            pass
+        try:
+            self._page.on("request", _capture_request)
+            self._page.on("response", _capture_response)
+        except Exception:
+            pass
+
+        # DEBUG: leitura direta dos 5 campos da capa via mesmo metodo
+        # do validate (_read_field_display_value), ANTES do click no
+        # save. Se algum estiver em placeholder mesmo apos
+        # _fill_field_with_verify ter dito que firmou, eh porque algo
+        # entre o ultimo fill e o save zera os campos (provavel
+        # dependencia ExtJS resetando filhos quando outro campo muda).
+        try:
+            # DEBUG: dump dos hidden inputs do form pra descobrir o NAME
+            # real do campo Natureza (vamos achar o codNatureza ou similar).
+            try:
+                hidden_dump = self._page.evaluate(
+                    "() => {"
+                    "  const inps = Array.from(document.querySelectorAll('input[name]'));"
+                    "  return inps.filter(i => {"
+                    "    const n = (i.name || '').toLowerCase();"
+                    "    return n.startsWith('cod') || n.startsWith('id') || n.includes('natureza');"
+                    "  }).slice(0, 40).map(i => i.name + '=' + (i.value || '')).join(' | ');"
+                    "}"
+                )
+                logger.info(
+                    "AJUS runner: HIDDEN inputs (cod/id/natureza) item %d: %s",
+                    item.id, str(hidden_dump)[:1500],
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("hidden dump falhou: %s", exc)
+
+            pre_save_state = {
+                "UF": self._read_field_display_value(portal.PROCESS_UF_SELECTOR),
+                "Comarca": self._read_field_display_value(portal.PROCESS_COMARCA_SELECTOR),
+                "Materia": self._read_field_display_value(portal.PROCESS_MATTER_SELECTOR),
+                "Justica": self._read_field_display_value(portal.PROCESS_JUSTICE_FEE_SELECTOR),
+                "Risco": self._read_field_display_value(portal.PROCESS_RISK_SELECTOR),
+                "Natureza": self._read_field_display_value(portal.PROCESS_NATUREZA_SELECTOR),
+            }
+            empties = [
+                k for k, v in pre_save_state.items()
+                if not v or self._placeholder_or_empty(v)
+            ]
+            logger.info(
+                "AJUS runner: estado dos 5 campos da CAPA ANTES do click "
+                "save (item %d cnj=%s): %s | em placeholder: %s",
+                item.id, item.cnj_number, pre_save_state,
+                empties or "(nenhum)",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "AJUS runner: falha lendo capa pre-save: %s", exc,
+            )
+
+        try:
+            # Salvar — agora com seguranca de que TODOS os campos firmaram.
+            self._click(portal.PROCESS_SAVE_SELECTOR)
+
+            # CRITICO: ExtJS pode bloquear o save com um popup de
+            # validacao client-side (Ext.Msg/messagebox flash). Quando
+            # isso acontece, NENHUM XHR sai e a capa nunca eh persistida.
+            # AJUS usa um popup "flash" que aparece e some sozinho em
+            # 3-5s; precisamos pollar o DOM em intervalo apertado pra
+            # capturar enquanto esta visivel.
+            popup_msg = ""
+            popup_deadline = time.monotonic() + 6
+            while time.monotonic() < popup_deadline:
+                self._page.wait_for_timeout(200)
+                msg = self._detect_extjs_popup(
+                    all_request_urls=all_requests,
+                )
+                if msg:
+                    popup_msg = msg
+                    break
+                # Tambem encerra o poll cedo se o XHR de save chegou
+                # (significa que NAO bloqueou — popup deve ter sido
+                # outra coisa, ex.: notif passageira de outra origem).
+                if save_responses:
+                    break
+            if popup_msg:
+                logger.warning(
+                    "AJUS runner: ExtJS popup bloqueou save: %r — "
+                    "tentando dismiss e raise pra retry.",
+                    popup_msg,
+                )
+                self._dismiss_extjs_popup()
+                raise AjusRunnerError(
+                    f"ExtJS bloqueou save com popup: {popup_msg[:300]}"
+                )
+            # Se nao detectou popup mas viu flash_evidence nas requests,
+            # dumpa innerText do body pra debug — o popup pode ter
+            # sumido antes mas precisamos saber o que era.
+            flash_seen = any(
+                ("messagebox_flash" in (u or "").lower())
+                or ("/warning.png" in (u or "").lower())
+                for u in all_requests
+            )
+            if flash_seen:
+                # Dump TARGETED: pega apenas elementos visiveis com classes
+                # tipicas de flash/alert/messagebox/notification + texto.
+                # Ignora navegacao, header, etc.
+                js_targeted = (
+                    "() => {"
+                    "  const sels = ["
+                    "    '[class*=\"flash\"]', '[class*=\"alert\"]',"
+                    "    '[class*=\"messagebox\"]', '[class*=\"msg-box\"]',"
+                    "    '[class*=\"warn\"]', '[class*=\"notif\"]',"
+                    "    '[class*=\"tooltip\"]', '[class*=\"x-tip\"]',"
+                    "    '[class*=\"erro\"]', '[class*=\"validation\"]'"
+                    "  ].join(',');"
+                    "  const all = Array.from(document.querySelectorAll(sels));"
+                    "  const visible = all.filter(el => {"
+                    "    try {"
+                    "      const r = el.getBoundingClientRect();"
+                    "      return r.width > 0 && r.height > 0 && el.offsetParent !== null;"
+                    "    } catch(e) { return false; }"
+                    "  });"
+                    "  return visible.slice(0, 20).map(el => {"
+                    "    const cls = el.className || '';"
+                    "    const txt = (el.innerText || el.textContent || '').trim().slice(0, 300);"
+                    "    return cls + ' :: ' + txt;"
+                    "  }).join(' ||| ');"
+                    "}"
+                )
+                try:
+                    targeted = self._page.evaluate(js_targeted)
+                    logger.info(
+                        "AJUS runner: flash visto sem detect — TARGETED dump: %r",
+                        (targeted or "(vazio)")[:2000],
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("targeted dump falhou: %s", exc)
+
+                # Tambem tenta dump por background-image messagebox_flash
+                js_bg = (
+                    "() => {"
+                    "  const out = [];"
+                    "  document.querySelectorAll('*').forEach(el => {"
+                    "    try {"
+                    "      const cs = window.getComputedStyle(el);"
+                    "      const bg = (cs.backgroundImage || '').toLowerCase();"
+                    "      if (!(bg.includes('messagebox_flash') || bg.includes('warning'))) return;"
+                    "      const r = el.getBoundingClientRect();"
+                    "      if (r.width <= 0 || r.height <= 0) return;"
+                    "      let node = el;"
+                    "      for (let i = 0; i < 10 && node; i++) {"
+                    "        const t = (node.innerText || '').trim();"
+                    "        if (t && t.length > 5 && t.length < 800) { out.push(t); break; }"
+                    "        node = node.parentElement;"
+                    "      }"
+                    "    } catch(e) {}"
+                    "  });"
+                    "  return out.slice(0, 5).join(' ||| ');"
+                    "}"
+                )
+                try:
+                    by_bg = self._page.evaluate(js_bg)
+                    if by_bg:
+                        logger.info(
+                            "AJUS runner: flash visto sem detect — by-bg dump: %r",
+                            str(by_bg)[:2000],
+                        )
+                except Exception:
+                    pass
+
+            # Aguarda ate captar a primeira POST response do ajax.handler
+            # OU timeout de 25s. Polling de 200ms mantem responsividade
+            # sem queimar CPU. Saves geralmente respondem em <3s.
+            deadline = time.monotonic() + 25
+            while time.monotonic() < deadline and not save_responses:
+                self._page.wait_for_timeout(200)
+
+            if save_responses:
+                resp = save_responses[-1]
+                try:
+                    status = resp.status
+                except Exception:
+                    status = -1
+                logger.info(
+                    "AJUS runner: save XHR completou status=%s url=%s",
+                    status, (resp.url or "")[:200],
+                )
+            else:
+                logger.warning(
+                    "AJUS runner: save XHR nao detectado em 25s — "
+                    "seguindo, validate vai conferir capa server-side. "
+                    "TODAS as requests vistas (GET+POST) durante a "
+                    "janela: %s",
+                    all_requests[:30] if all_requests else "(nenhuma)",
+                )
+        finally:
+            try:
+                self._page.remove_listener("request", _capture_request)
+            except Exception:
+                pass
+            try:
+                self._page.remove_listener("response", _capture_response)
+            except Exception:
+                pass
+
+        # Pequeno settle pra ExtJS terminar de processar a resposta
+        # (pode disparar refresh do form, fechar modal, etc.) antes do
+        # caller chamar _reset_workspace.
         self._settle(wait_ms=1500)
+
+    def _detect_extjs_popup(self, *, all_request_urls=None) -> str:
+        """
+        Detecta um MESSAGEBOX/FLASH ExtJS visivel.
+
+        AJUS usa um "messagebox_flash" custom — quando o save eh
+        bloqueado por validacao, ele carrega imagens de
+        /extjs/ux/images/images_messagebox_flash/{lt,ct,rt,...}.png
+        e renderiza um popup com warning.png como icone.
+
+        IMPORTANTE: NAO confundir com Ext.Window generica — a tela do
+        processo no AJUS *e* uma Ext.Window. Por isso evitamos
+        WindowMgr.getActive() (gerava falso-positivo).
+
+        Retorna o texto da mensagem se houver popup REAL; string vazia
+        caso contrario. Nao raise.
+
+        Se `all_request_urls` for fornecido (lista de URLs vistas na
+        janela do save), usamos como pista: aparicao de warning.png
+        OU messagebox_flash indica popup; nesse caso o detector eh
+        mais "agressivo" pra extrair texto via DOM ampliado.
+        """
+        flash_evidence = False
+        if all_request_urls:
+            flash_evidence = any(
+                ("messagebox_flash" in (u or "").lower())
+                or ("/warning.png" in (u or "").lower())
+                for u in all_request_urls
+            )
+        # Estrategia 1: API oficial do Ext.MessageBox.
+        # Ext.MessageBox.getDialog() retorna a INSTANCIA singleton do
+        # messagebox; isVisible() distingue de Ext.Window comum.
+        # Texto fica em ".ext-mb-text" dentro do dialog (Ext 3.x/4.x).
+        js = (
+            "() => {"
+            "  try {"
+            "    if (typeof Ext === 'undefined') return '';"
+            "    const MB = Ext.MessageBox || Ext.Msg;"
+            "    if (!MB) return '';"
+            "    const dlg = (typeof MB.getDialog === 'function') ? MB.getDialog() : null;"
+            "    if (!dlg || !dlg.isVisible || !dlg.isVisible()) return '';"
+            "    const title = (dlg.title || dlg.titleEl && dlg.titleEl.dom && dlg.titleEl.dom.innerText || '').toString().trim();"
+            "    let body = '';"
+            "    try {"
+            "      const txtEl = dlg.body && dlg.body.dom && dlg.body.dom.querySelector('.ext-mb-text, .ext-mb-content, .x-msg-box-text');"
+            "      body = txtEl ? txtEl.innerText : (dlg.body && dlg.body.dom && dlg.body.dom.innerText) || '';"
+            "    } catch (e) { body = ''; }"
+            "    body = body.toString().trim();"
+            "    if (!title && !body) return '';"
+            "    return (title + ' :: ' + body).trim();"
+            "  } catch (e) { return ''; }"
+            "}"
+        )
+        try:
+            text = self._page.evaluate(js)
+            if text:
+                return str(text)[:1000]
+        except Exception:
+            pass
+
+        # Estrategia 2: DOM exato do Ext.MessageBox.
+        try:
+            loc = self._page.locator(
+                ".x-window.x-message-box:visible, "
+                ".x-window:visible .ext-mb-text:visible"
+            ).first
+            if loc.count() > 0 and loc.is_visible(timeout=500):
+                text = (loc.inner_text(timeout=500) or "").strip()
+                if text and len(text) < 500:
+                    return text
+        except Exception:
+            pass
+
+        # Estrategia 3: AJUS custom messagebox_flash. Localizamos pelo
+        # icone de warning visivel ou por background-image apontando
+        # pra messagebox_flash, depois subimos pro container e pegamos
+        # texto. SO ativa quando ha evidencia de flash carregando.
+        if flash_evidence:
+            js = (
+                "() => {"
+                "  try {"
+                "    const candidates = [];"
+                "    document.querySelectorAll('img').forEach(img => {"
+                "      const s = (img.src || '').toLowerCase();"
+                "      if (s.includes('warning.png') || s.includes('messagebox_flash')) {"
+                "        const r = img.getBoundingClientRect();"
+                "        if (r.width > 0 && r.height > 0) candidates.push(img);"
+                "      }"
+                "    });"
+                "    document.querySelectorAll('*').forEach(el => {"
+                "      try {"
+                "        const cs = window.getComputedStyle(el);"
+                "        const bg = (cs.backgroundImage || '').toLowerCase();"
+                "        if (bg.includes('messagebox_flash')) {"
+                "          const r = el.getBoundingClientRect();"
+                "          if (r.width > 0 && r.height > 0) candidates.push(el);"
+                "        }"
+                "      } catch(e) {}"
+                "    });"
+                "    if (!candidates.length) return '';"
+                "    // Sobe ate um container que tenha texto razoavel."
+                "    for (const c of candidates) {"
+                "      let node = c;"
+                "      for (let i = 0; i < 10 && node; i++) {"
+                "        const t = (node.innerText || '').trim();"
+                "        if (t && t.length > 5 && t.length < 600) return t;"
+                "        node = node.parentElement;"
+                "      }"
+                "    }"
+                "    return '';"
+                "  } catch (e) { return ''; }"
+                "}"
+            )
+            try:
+                text = self._page.evaluate(js)
+                if text:
+                    return str(text)[:1000]
+            except Exception:
+                pass
+        return ""
+
+    def _dismiss_extjs_popup(self) -> None:
+        """
+        Tenta fechar o popup ExtJS clicando no botao default (Ok/Sim).
+        Best-effort — sem raise. Fallback: tecla ESC.
+        """
+        button_selectors = (
+            ".x-message-box button:has-text('OK')",
+            ".x-message-box button:has-text('Ok')",
+            ".x-message-box button:has-text('Sim')",
+            ".x-message-box button:has-text('Fechar')",
+            ".x-window button:has-text('OK')",
+            ".x-window button:has-text('Ok')",
+            ".x-tool-close",
+        )
+        for sel in button_selectors:
+            try:
+                loc = self._page.locator(sel).first
+                if loc.count() > 0 and loc.is_visible(timeout=300):
+                    loc.click(timeout=2000)
+                    self._page.wait_for_timeout(500)
+                    return
+            except Exception:
+                continue
+        try:
+            self._page.keyboard.press("Escape")
+        except Exception:
+            pass
+
+    def _wait_for_cover_populated(
+        self, *, timeout_s: int = 25, expected_uf: str = "",
+    ) -> None:
+        """
+        Espera o form da capa ficar populado server-side apos um reopen.
+
+        Apos `_open_process_by_cnj`, ExtJS dispara um XHR de leitura
+        (ObjetoPedidoAcaoJudicialController.php?action=read) que
+        retorna 200 e *depois* popula o form. Se o caller (validate)
+        roda antes desse populate, ve placeholder em tudo e gera
+        falso-positivo de "save rejeitado".
+
+        Heuristica: poll do display do campo UF ate o valor casar com
+        `expected_uf` (case-insensitive). Sem expected_uf, fallback pra
+        "qualquer string que NAO seja placeholder NEM o label do campo
+        (UF, Comarca, etc.)" — o ExtJS combobox vazio mostra o NAME do
+        campo (ex.: "UF") como placeholder, e o detector velho aceitava
+        isso erroneamente.
+        """
+        deadline = time.monotonic() + max(timeout_s, 1)
+        last_value = ""
+        # Lista de strings que NAO podem ser confundidas com valor real.
+        # Inclui labels comuns dos campos da capa.
+        invalid_values = {
+            "uf", "comarca", "materia", "matéria",
+            "justica", "justiça", "justica/honorario",
+            "justiça/honorário", "risco", "risco/prob. perda",
+            "risco/prob.perda", "tipo de acao", "tipo de ação",
+            "natureza", "polo", "foro",
+        }
+        norm_expected = (expected_uf or "").strip().lower()
+        while time.monotonic() < deadline:
+            try:
+                val = self._read_field_display_value(portal.PROCESS_UF_SELECTOR)
+            except Exception:
+                val = ""
+            last_value = val
+            norm_val = (val or "").strip().lower()
+            ok = False
+            if norm_expected:
+                ok = bool(norm_val) and norm_val == norm_expected
+            else:
+                ok = (
+                    bool(norm_val)
+                    and not self._placeholder_or_empty(val)
+                    and norm_val not in invalid_values
+                )
+            if ok:
+                logger.info(
+                    "AJUS runner: capa populada (UF display=%r, expected=%r) — "
+                    "seguindo pra validate.", val, expected_uf,
+                )
+                return
+            self._page.wait_for_timeout(500)
+        logger.warning(
+            "AJUS runner: capa nao populou em %ds (UF display final=%r, "
+            "expected=%r) — validate vai conferir mesmo assim.",
+            timeout_s, last_value, expected_uf,
+        )
 
     def _validate_process_cover(self, item: AjusClassificacaoQueue) -> None:
         """
