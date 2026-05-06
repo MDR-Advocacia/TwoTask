@@ -7,6 +7,7 @@ import { useState, useEffect, useContext } from 'react';
 // Componentes de Rota e Layout
 import ProtectedRoute from './components/ProtectedRoute';
 import { ChangePasswordDialog } from './components/ChangePasswordDialog';
+import AdminNoticeBar from './components/AdminNoticeBar';
 
 // Páginas
 import AdminPage from './pages/AdminPage';
@@ -47,6 +48,7 @@ function AppContent() {
   return (
     <>
       <Router>
+        <AdminNoticeBar />
         <Routes>
           {/* Rota Pública: Login */}
           <Route path="/login" element={<LoginPage />} />
