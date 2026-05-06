@@ -375,6 +375,28 @@ class AjusQueueService:
                 # Cleanup do PDF copiado — não precisa mais
                 _delete_ajus_pdf_copy(item.pdf_path)
                 item.pdf_path = None
+                # Pin019: se o intake é de DEVOLUÇÃO, avança status pra
+                # ENVIADA (operador vê na listagem que o andamento já
+                # rolou e o caso pode sair da nossa base).
+                from app.models.prazo_inicial import (
+                    INTAKE_STATUS_DEVOLUCAO_PENDING,
+                    INTAKE_STATUS_DEVOLUCAO_SENT,
+                    PrazoInicialIntake,
+                )
+                intake_obj = (
+                    self.db.query(PrazoInicialIntake)
+                    .filter(PrazoInicialIntake.id == item.intake_id)
+                    .first()
+                )
+                if (
+                    intake_obj is not None
+                    and intake_obj.status == INTAKE_STATUS_DEVOLUCAO_PENDING
+                ):
+                    intake_obj.status = INTAKE_STATUS_DEVOLUCAO_SENT
+                    logger.info(
+                        "Devolução[intake=%d]: AJUS enviado, status DEVOLUCAO_PENDENTE→DEVOLUCAO_ENVIADA",
+                        intake_obj.id,
+                    )
             else:
                 item.status = AJUS_QUEUE_ERRO
                 item.error_message = result.msg or "Falha sem mensagem da AJUS."

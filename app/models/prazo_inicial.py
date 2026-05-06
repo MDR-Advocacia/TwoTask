@@ -64,6 +64,15 @@ INTAKE_STATUS_SCHEDULE_ERROR = "ERRO_AGENDAMENTO"
 INTAKE_STATUS_GED_ERROR = "ERRO_GED"
 INTAKE_STATUS_CANCELLED = "CANCELADO"
 
+# ─── Fluxo de devolução automática (pin019) ───────────────────────────
+# Intake recebido pelo endpoint /intake/devolucao quando a automação
+# externa detecta que outro advogado já está habilitado no Master.
+# NÃO passa por classificação Sonnet — vai direto pra fila AJUS com
+# cod_andamento de devolução. Patrocínio é criado já APROVADO com
+# decisao=OUTRO_ESCRITORIO + suspeita_devolucao=true.
+INTAKE_STATUS_DEVOLUCAO_PENDING = "DEVOLUCAO_PENDENTE"
+INTAKE_STATUS_DEVOLUCAO_SENT = "DEVOLUCAO_ENVIADA"
+
 # ─── Status do batch (Anthropic Messages Batches API) ─────────────────
 
 PIN_BATCH_STATUS_SUBMITTED = "ENVIADO"

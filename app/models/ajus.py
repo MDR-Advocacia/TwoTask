@@ -96,6 +96,11 @@ class AjusCodAndamento(Base):
     )
 
     is_default = Column(Boolean, nullable=False, default=False)
+    # Marca o cod_andamento que é usado pelo fluxo de DEVOLUÇÃO automática
+    # (POST /prazos-iniciais/intake/devolucao). Apenas 1 ATIVO pode ter
+    # `is_devolucao=true` (partial unique index). Distinto do is_default
+    # — uma instalação típica tem AMBOS marcados em códigos diferentes.
+    is_devolucao = Column(Boolean, nullable=False, default=False)
     is_active = Column(Boolean, nullable=False, default=True, index=True)
 
     created_at = Column(

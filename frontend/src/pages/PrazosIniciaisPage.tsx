@@ -123,6 +123,9 @@ const DEFAULT_PENDING_STATUSES = [
   "ERRO_CLASSIFICACAO",
   "ERRO_AGENDAMENTO",
   "ERRO_GED",
+  // Pin019 — devolução automática pendente conta como pendente
+  // (operador ainda precisa confirmar que excluiu do L1).
+  "DEVOLUCAO_PENDENTE",
 ];
 const DEFAULT_PENDING_STATUSES_CSV = DEFAULT_PENDING_STATUSES.join(",");
 
@@ -143,6 +146,9 @@ const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "ERRO_AGENDAMENTO", label: "Erro no agendamento" },
   { value: "ERRO_GED", label: "Erro no GED" },
   { value: "CANCELADO", label: "Cancelado" },
+  // Pin019 — devolução automática
+  { value: "DEVOLUCAO_PENDENTE", label: "Devolução pendente" },
+  { value: "DEVOLUCAO_ENVIADA", label: "Devolução enviada" },
 ];
 
 const STATUS_LABEL: Record<string, string> = Object.fromEntries(
