@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time as dtime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Path, Query, UploadFile
@@ -101,6 +101,10 @@ class ConfirmSuggestionPayload(BaseModel):
     override_responsible_user_external_id: Optional[int] = Field(default=None, ge=1)
     override_data_base: Optional[date] = None
     override_data_final_calculada: Optional[date] = None
+    # Hora da audiencia editavel pelo operador (HH:MM[:SS]). Vai pro
+    # campo `audiencia_hora` da sugestao no banco antes de criar a task
+    # no L1. None = manter o valor da IA.
+    override_audiencia_hora: Optional[dtime] = None
     override_prazo_dias: Optional[int] = Field(default=None, ge=0, le=365)
     override_prazo_tipo: Optional[str] = None  # util | corrido
     override_priority: Optional[str] = None  # Low | Normal | High
@@ -198,6 +202,7 @@ def confirm_intake_scheduling(
                     override_responsible_user_external_id=item.override_responsible_user_external_id,
                     override_data_base=item.override_data_base,
                     override_data_final_calculada=item.override_data_final_calculada,
+                    override_audiencia_hora=item.override_audiencia_hora,
                     override_prazo_dias=item.override_prazo_dias,
                     override_prazo_tipo=item.override_prazo_tipo,
                     override_priority=item.override_priority,

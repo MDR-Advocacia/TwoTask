@@ -535,6 +535,10 @@ export default function PrazosIniciaisPage() {
         responsible_user_external_id: number | null;
         data_base: string; // YYYY-MM-DD ou ""
         data_final_calculada: string;
+        // Hora da audiencia (HH:MM, formato do <Input type="time">). So
+        // tem valor pra sugestoes de AUDIENCIA — nos demais tipos fica
+        // "" e o campo nem renderiza.
+        audiencia_hora: string;
         prazo_dias: string; // "" ou stringified number
         prazo_tipo: string; // "util" | "corrido" | ""
         priority: string; // Low | Normal | High
@@ -837,6 +841,10 @@ export default function PrazosIniciaisPage() {
         responsible_user_external_id: s.responsavel_sugerido_id,
         data_base: s.data_base ?? "",
         data_final_calculada: s.data_final_calculada ?? "",
+        // s.audiencia_hora vem do backend como "HH:MM:SS" (sqlalchemy
+        // Time → ISO). O <Input type="time" step={60}> trabalha em HH:MM,
+        // entao corta os segundos pra evitar warnings de valor invalido.
+        audiencia_hora: s.audiencia_hora ? String(s.audiencia_hora).slice(0, 5) : "",
         prazo_dias: s.prazo_dias != null ? String(s.prazo_dias) : "",
         prazo_tipo: s.prazo_tipo ?? "",
         priority: typeof payload.priority === "string" ? payload.priority : "Normal",
@@ -1346,6 +1354,7 @@ export default function PrazosIniciaisPage() {
       override_responsible_user_external_id?: number | null;
       override_data_base?: string | null;
       override_data_final_calculada?: string | null;
+      override_audiencia_hora?: string | null;
       override_prazo_dias?: number | null;
       override_prazo_tipo?: string | null;
       override_priority?: string | null;
@@ -1404,6 +1413,16 @@ export default function PrazosIniciaisPage() {
         ) {
           overrides.override_data_final_calculada =
             form.data_final_calculada || null;
+        }
+        // Hora da audiencia: normaliza original (HH:MM:SS) e form (HH:MM)
+        // pro mesmo formato antes de comparar — evita marcar override
+        // quando o operador so abriu e fechou o campo sem mudar nada.
+        const formHora = form.audiencia_hora ? form.audiencia_hora.slice(0, 5) : null;
+        const origHora = suggestion.audiencia_hora
+          ? String(suggestion.audiencia_hora).slice(0, 5)
+          : null;
+        if (formHora !== origHora) {
+          overrides.override_audiencia_hora = formHora;
         }
         const formPrazoDias = form.prazo_dias ? Number(form.prazo_dias) : null;
         if (formPrazoDias !== (suggestion.prazo_dias ?? null)) {
@@ -4102,7 +4121,7 @@ export default function PrazosIniciaisPage() {
                                 </div>
                               </div>
 
-                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                              <div className={`grid grid-cols-1 ${suggestion.audiencia_data ? "sm:grid-cols-4" : "sm:grid-cols-3"} gap-3`}>
                                 <div className="space-y-1">
                                   <Label className="text-xs">Data base</Label>
                                   <Input
@@ -4128,6 +4147,24 @@ export default function PrazosIniciaisPage() {
                                     }
                                   />
                                 </div>
+                                {suggestion.audiencia_data ? (
+                                  <div className="space-y-1">
+                                    <Label className="text-xs">Hora audiência *</Label>
+                                    <Input
+                                      type="time"
+                                      step={60}
+                                      value={form.audiencia_hora}
+                                      onChange={(e) =>
+                                        updateForm({ audiencia_hora: e.target.value })
+                                      }
+                                      className={
+                                        !form.audiencia_hora
+                                          ? "border-amber-300"
+                                          : undefined
+                                      }
+                                    />
+                                  </div>
+                                ) : null}
                                 <div className="space-y-1">
                                   <Label className="text-xs">Prazo (dias)</Label>
                                   <div className="flex gap-2">
