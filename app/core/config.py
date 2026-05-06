@@ -121,16 +121,17 @@ class Settings(BaseSettings):
     # silencioso via QUEUE_NOOP_REASONS — nao empacam mais a fila.
     prazos_iniciais_legacy_task_cancellation_enabled: bool = True
     prazos_iniciais_legacy_task_cancellation_interval_seconds: int = 60
-    # Batch=25 dobra a vazao sem estourar o L1 (rate limit por item
-    # ja existe). Cada Playwright dura ~30-130s — em 60s de tick o
-    # APScheduler nao reentra (max_instances=1), entao ticks ficam
-    # back-to-back; batch maior amortiza o login OnePass entre items.
-    prazos_iniciais_legacy_task_cancellation_batch_size: int = 25
-    # Rate limit entre items consecutivos na fila. Reduzido de 2.0s pra
-    # 0.5s — o Playwright ja serializa naturalmente (sem paralelismo no
-    # runner atual), e o L1 nao reclama de cancels consecutivos pela UI
-    # web (o limite deles eh na API REST).
-    prazos_iniciais_legacy_task_cancel_rate_limit_seconds: float = 0.5
+    # Batch=10 e' a vazao validada pre-2026-05-06. Tentei 25 nesse dia
+    # combinado com rate_limit=0.5s e o L1 comecou a NAO PERSISTIR saves
+    # (form retornava ok mas /Tasks/{id} mostrava statusId=0 — verificado
+    # pela API L1, que e' fonte da verdade desde 5e94fdb). Reverti pra
+    # nao estressar o L1 web.
+    prazos_iniciais_legacy_task_cancellation_batch_size: int = 10
+    # Rate limit entre items consecutivos. 2.0s e' o valor que o L1 web
+    # absorve sem rejeitar saves silenciosamente. Tentei 0.5s no mesmo
+    # dia (2026-05-06) e o save passou a falhar em massa — reverti.
+    # Operador pode customizar via env se quiser experimentar.
+    prazos_iniciais_legacy_task_cancel_rate_limit_seconds: float = 2.0
     # Cap de tentativas por item: depois disso, o worker periodico SKIPA
     # o item — ele ainda fica visivel em FAILED na UI pra reprocesso
     # manual ("Reprocessar" reseta attempt_count e devolve pra PENDING),
