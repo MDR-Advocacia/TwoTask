@@ -499,6 +499,107 @@ async def ingest_intake(
     )
 
 
+# ─── Intake de DEVOLUÇÃO automática (pin019) ───────────────────────────
+
+
+class IntakeDevolucaoPayload(BaseModel):
+    """Body simplificado pra fluxo de devolução automática.
+
+    Quando a automação externa identifica, no momento da captura/triagem
+    do processo, que outro advogado já está habilitado pelo Banco Master
+    e o caso NÃO É NOSSO, manda só o CNJ + motivo opcional. O sistema
+    cria intake mínimo (sem capa/integra/PDF), marca patrocínio aprovado
+    como `OUTRO_ESCRITORIO` + suspeita de devolução, e enfileira na fila
+    AJUS Andamentos pra postar o andamento de devolução automaticamente.
+    """
+
+    external_id: str = Field(min_length=1, max_length=255)
+    cnj_number: str = Field(min_length=1, max_length=32)
+    motivo: Optional[str] = Field(
+        default=None,
+        max_length=2000,
+        description=(
+            "Justificativa livre. Vai pro 'informacao' do andamento "
+            "AJUS e aparece no painel de Patrocínio do intake. Opcional."
+        ),
+    )
+
+
+class IntakeDevolucaoResponse(BaseModel):
+    intake_id: int
+    external_id: str
+    status: str
+    already_existed: bool = False
+
+
+@intake_router.post(
+    "/intake/devolucao",
+    response_model=IntakeDevolucaoResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary=(
+        "Intake de devolução automática — automação externa marca um "
+        "processo como NÃO patrocinado pelo MDR (outro advogado já "
+        "habilitado). Pula classificação Sonnet, vai direto pra fila AJUS."
+    ),
+)
+async def ingest_intake_devolucao(
+    background_tasks: BackgroundTasks,
+    payload: IntakeDevolucaoPayload,
+    _: str = Depends(_validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """
+    Cria um intake de devolução. Não recebe capa, integra ou PDF —
+    apenas CNJ + motivo opcional. O fluxo é:
+
+    1. Cria PrazoInicialIntake com status=DEVOLUCAO_PENDENTE.
+    2. Cria PrazoInicialPatrocinio aprovado (decisao=OUTRO_ESCRITORIO,
+       suspeita_devolucao=true, motivo).
+    3. Enfileira AjusAndamentoQueue com cod_andamento marcado como
+       is_devolucao=true (admin precisa cadastrar antes em /ajus/cod-andamento).
+    4. Em background, resolve lawsuit_id no L1 (operador precisa do
+       lawsuit pra excluir o processo da base do L1 manualmente).
+
+    202 Accepted em criação nova, 200 OK + already_existed=true em
+    reenvio idempotente (mesmo external_id).
+    """
+    service = IntakeService(db=db)
+
+    existing = service.get_by_external_id(payload.external_id)
+    if existing is not None:
+        return IntakeDevolucaoResponse(
+            intake_id=existing.id,
+            external_id=existing.external_id,
+            status=existing.status,
+            already_existed=True,
+        )
+
+    try:
+        result = service.create_devolucao_intake(
+            external_id=payload.external_id,
+            cnj_number=payload.cnj_number,
+            motivo=payload.motivo,
+        )
+    except ValueError as exc:
+        # normalize_cnj e afins
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
+
+    # Resolução do lawsuit no L1 em background (não bloqueia a resposta).
+    background_tasks.add_task(
+        service.resolve_lawsuit_for_intake, result.intake.id
+    )
+
+    return IntakeDevolucaoResponse(
+        intake_id=result.intake.id,
+        external_id=result.intake.external_id,
+        status=result.intake.status,
+        already_existed=False,
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Router interno (JWT + permissão `prazos_iniciais`)
 # ═══════════════════════════════════════════════════════════════════════

@@ -25,6 +25,7 @@ from app.db.session import SessionLocal
 from app.models.legal_one import LegalOneOffice
 from app.models.prazo_inicial import (
     INTAKE_SOURCE_EXTERNAL_API,
+    INTAKE_STATUS_DEVOLUCAO_PENDING,
     INTAKE_STATUS_LAWSUIT_NOT_FOUND,
     INTAKE_STATUS_READY_TO_CLASSIFY,
     INTAKE_STATUS_RECEIVED,
@@ -234,6 +235,121 @@ class IntakeService:
 
         return IntakeCreationResult(intake=intake, already_existed=False)
 
+    # ─── Devolução automática (pin019) ────────────────────────────────
+
+    def create_devolucao_intake(
+        self,
+        *,
+        external_id: str,
+        cnj_number: str,
+        motivo: Optional[str] = None,
+    ) -> IntakeCreationResult:
+        """
+        Cria um intake de DEVOLUÇÃO. Fluxo enxuto:
+        - Sem capa, integra ou PDF (a automação externa já decidiu pelo
+          CNJ que o caso não é nosso).
+        - Status = DEVOLUCAO_PENDENTE.
+        - Cria registro `prazo_inicial_patrocinio` já APROVADO com
+          decisao=OUTRO_ESCRITORIO + suspeita_devolucao=true.
+        - Enfileira na fila AJUS usando o cod_andamento marcado com
+          `is_devolucao=true` (não o default).
+        - Resolução do lawsuit no L1 fica a cargo do endpoint (background
+          task) — operador precisa do lawsuit pra excluir manualmente
+          do L1 no momento da devolução.
+
+        Idempotente por `external_id`.
+        """
+        from datetime import datetime, timezone as _tz
+
+        from app.models.ajus import AjusCodAndamento
+        from app.models.prazo_inicial_patrocinio import (
+            PATROCINIO_DECISAO_OUTRO,
+            PATROCINIO_REVIEW_APPROVED,
+            PrazoInicialPatrocinio,
+        )
+
+        existing = self.get_by_external_id(external_id)
+        if existing is not None:
+            logger.info(
+                "Devolução idempotente: external_id=%s já existe (id=%d)",
+                external_id, existing.id,
+            )
+            return IntakeCreationResult(intake=existing, already_existed=True)
+
+        normalized_cnj = normalize_cnj(cnj_number)
+
+        intake = PrazoInicialIntake(
+            external_id=external_id,
+            cnj_number=normalized_cnj,
+            capa_json={},
+            integra_json={},
+            metadata_json={
+                "fluxo": "devolucao_automatica",
+                "motivo": motivo,
+            },
+            pdf_path=None,
+            pdf_sha256=None,
+            pdf_bytes=None,
+            pdf_filename_original=None,
+            status=INTAKE_STATUS_DEVOLUCAO_PENDING,
+            source=INTAKE_SOURCE_EXTERNAL_API,
+        )
+        self.db.add(intake)
+        self.db.flush()  # garante intake.id antes do patrocinio FK
+
+        # Patrocínio já aprovado pela automação externa.
+        patrocinio = PrazoInicialPatrocinio(
+            intake_id=intake.id,
+            decisao=PATROCINIO_DECISAO_OUTRO,
+            suspeita_devolucao=True,
+            motivo_suspeita=motivo,
+            polo_passivo_confirmado=True,
+            confianca="alta",
+            fundamentacao=(
+                "Devolução solicitada pela automação externa (outro "
+                "advogado já habilitado pelo Banco Master)."
+            ),
+            review_status=PATROCINIO_REVIEW_APPROVED,
+            reviewed_at=datetime.now(_tz.utc),
+        )
+        self.db.add(patrocinio)
+        self.db.commit()
+        self.db.refresh(intake)
+        logger.info(
+            "Intake DEVOLUCAO criado: id=%d, external_id=%s, cnj=%s, motivo=%r",
+            intake.id, external_id, normalized_cnj, motivo,
+        )
+
+        # Enfileiramento AJUS com cod_andamento marcado is_devolucao.
+        try:
+            from app.services.ajus.queue_service import AjusQueueService
+            cod_devolucao = (
+                self.db.query(AjusCodAndamento)
+                .filter(
+                    AjusCodAndamento.is_devolucao.is_(True),
+                    AjusCodAndamento.is_active.is_(True),
+                )
+                .one_or_none()
+            )
+            if cod_devolucao is None:
+                logger.warning(
+                    "Devolução[intake=%d]: nenhum AjusCodAndamento ativo "
+                    "com is_devolucao=true cadastrado. Item NÃO enfileirado. "
+                    "Operador precisa cadastrar em /ajus/cod-andamento.",
+                    intake.id,
+                )
+            else:
+                ajus = AjusQueueService(self.db)
+                ajus.enqueue_for_intake(intake, cod_andamento=cod_devolucao)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Devolução[intake=%d]: falha não-fatal ao enfileirar AJUS "
+                "(operador pode reenviar manualmente).",
+                intake.id,
+            )
+
+        return IntakeCreationResult(intake=intake, already_existed=False)
+
     # ─── Resolução do lawsuit no L1 (background task) ─────────────────
 
     def resolve_lawsuit_for_intake(self, intake_id: int) -> None:
@@ -251,7 +367,10 @@ class IntakeService:
             if intake is None:
                 logger.error("resolve_lawsuit: intake %d não encontrado", intake_id)
                 return
-            if intake.status not in (
+            # Pin019: pra DEVOLUÇÃO, só preenche lawsuit_id/office_id e
+            # mantém o status DEVOLUCAO_PENDENTE — não vai pra classificação.
+            is_devolucao = intake.status == INTAKE_STATUS_DEVOLUCAO_PENDING
+            if not is_devolucao and intake.status not in (
                 INTAKE_STATUS_RECEIVED,
                 INTAKE_STATUS_LAWSUIT_NOT_FOUND,
             ):
@@ -275,14 +394,24 @@ class IntakeService:
                 return
 
             if not lawsuit:
-                intake.status = INTAKE_STATUS_LAWSUIT_NOT_FOUND
-                intake.error_message = (
-                    f"Processo com CNJ {intake.cnj_number} não encontrado no Legal One."
-                )
+                # Pra DEVOLUÇÃO: NÃO sobrescreve status (continua
+                # PENDENTE pra dispatch AJUS rolar mesmo sem lawsuit).
+                # Só registra o aviso. Operador resolve manualmente.
+                if is_devolucao:
+                    intake.error_message = (
+                        f"Processo com CNJ {intake.cnj_number} não "
+                        f"encontrado no Legal One — pode ser exclusão "
+                        f"manual ainda não realizada."
+                    )
+                else:
+                    intake.status = INTAKE_STATUS_LAWSUIT_NOT_FOUND
+                    intake.error_message = (
+                        f"Processo com CNJ {intake.cnj_number} não encontrado no Legal One."
+                    )
                 db.commit()
                 logger.warning(
-                    "Intake %d: CNJ %s não encontrado no L1",
-                    intake_id, intake.cnj_number,
+                    "Intake %d: CNJ %s não encontrado no L1 (devolucao=%s)",
+                    intake_id, intake.cnj_number, is_devolucao,
                 )
                 return
 
@@ -291,7 +420,10 @@ class IntakeService:
 
             intake.lawsuit_id = lawsuit_id
             intake.office_id = responsible_office_id
-            intake.status = INTAKE_STATUS_READY_TO_CLASSIFY
+            # Devolução: PRESERVA status DEVOLUCAO_PENDENTE; classificação
+            # normal: avança pra READY_TO_CLASSIFY.
+            if not is_devolucao:
+                intake.status = INTAKE_STATUS_READY_TO_CLASSIFY
             intake.error_message = None
             db.commit()
             logger.info(
@@ -306,26 +438,31 @@ class IntakeService:
             # via settings.prazos_iniciais_legacy_task_cancellation_enabled
             # = False) - operador clica "Processar selecionados" no
             # Tratamento Web. Ver memoria project_dispatch_treatment_web_decoupling.
-            try:
-                from app.services.prazos_iniciais.legacy_task_queue_service import (
-                    PrazosIniciaisLegacyTaskQueueService,
-                )
-                queue_svc = PrazosIniciaisLegacyTaskQueueService(db)
-                queue_svc.sync_item_from_intake(intake, force_queue=True)
-                logger.info(
-                    "Intake %d enfileirado no Tratamento Web (cancel legada).",
-                    intake_id,
-                )
-            except Exception:  # noqa: BLE001
-                # Falha aqui nao pode interromper o fluxo - operador pode
-                # enfileirar manualmente depois pelo Tratamento Web. Loga
-                # e segue: o intake ja esta PRONTO_PARA_CLASSIFICAR e a
-                # classificacao roda independente da fila de cancel.
-                logger.exception(
-                    "Falha nao-fatal ao enfileirar intake %d no Tratamento Web "
-                    "(seguindo sem fila - operador pode enfileirar manual).",
-                    intake_id,
-                )
+            # Pin019: fluxo de DEVOLUÇÃO não cria task legada nem
+            # entra em "Tratamento Web" (cancel legada) — o operador
+            # vai apenas excluir manualmente do L1 e o sistema dispara
+            # andamento de devolução AJUS.
+            if not is_devolucao:
+                try:
+                    from app.services.prazos_iniciais.legacy_task_queue_service import (
+                        PrazosIniciaisLegacyTaskQueueService,
+                    )
+                    queue_svc = PrazosIniciaisLegacyTaskQueueService(db)
+                    queue_svc.sync_item_from_intake(intake, force_queue=True)
+                    logger.info(
+                        "Intake %d enfileirado no Tratamento Web (cancel legada).",
+                        intake_id,
+                    )
+                except Exception:  # noqa: BLE001
+                    # Falha aqui nao pode interromper o fluxo - operador pode
+                    # enfileirar manualmente depois pelo Tratamento Web. Loga
+                    # e segue: o intake ja esta PRONTO_PARA_CLASSIFICAR e a
+                    # classificacao roda independente da fila de cancel.
+                    logger.exception(
+                        "Falha nao-fatal ao enfileirar intake %d no Tratamento Web "
+                        "(seguindo sem fila - operador pode enfileirar manual).",
+                        intake_id,
+                    )
 
 
 def _extract_office_id(db: Session, lawsuit: dict[str, Any]) -> Optional[int]:

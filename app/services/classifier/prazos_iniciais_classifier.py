@@ -526,10 +526,36 @@ class PrazosIniciaisBatchClassifier:
             .first()
         )
 
+        # Diagnóstico — ajuda a entender por que um intake não ganhou
+        # registro de patrocínio (caso clássico: Sonnet marcou
+        # aplicavel=false mesmo com vinculada Master no polo).
+        if patrocinio_resp is None:
+            logger.info(
+                "patrocinio[intake=%s]: response_obj.patrocinio is None — "
+                "Sonnet não emitiu o bloco. Verificar prompt/schema.",
+                intake.id,
+            )
+        else:
+            logger.info(
+                "patrocinio[intake=%s]: aplicavel=%s decisao=%s "
+                "natureza=%s suspeita=%s polo_confirmado=%s confianca=%s",
+                intake.id,
+                patrocinio_resp.aplicavel,
+                patrocinio_resp.decisao,
+                patrocinio_resp.natureza_acao,
+                patrocinio_resp.suspeita_devolucao,
+                patrocinio_resp.polo_passivo_confirmado,
+                patrocinio_resp.confianca,
+            )
+
         if patrocinio_resp is None or not patrocinio_resp.aplicavel:
             # Reprocessamento que não bate mais com vinculada — limpa
             # o registro pra não ficar dado obsoleto.
             if existing is not None:
+                logger.info(
+                    "patrocinio[intake=%s]: aplicavel=false — removendo "
+                    "registro existente (id=%s).", intake.id, existing.id,
+                )
                 self.db.delete(existing)
             return
 
@@ -592,10 +618,15 @@ class PrazosIniciaisBatchClassifier:
             .order_by(MasterVinculada.cnpj.asc())
             .all()
         )
-        return [
+        result = [
             {"cnpj": r.cnpj, "nome": r.nome, "estado": r.estado}
             for r in rows
         ]
+        logger.info(
+            "patrocinio: %d vinculadas Master ativas serão enviadas ao Sonnet",
+            len(result),
+        )
+        return result
 
 
     def _fetch_tipos_pedido_ativos(self) -> list[dict]:
