@@ -897,6 +897,16 @@ class AjusClassifRunner:
                 try:
                     self._open_process_by_cnj(item.cnj_number)
                     self._update_process_cover(item)
+                    # Server-truth validation: o display do form continua
+                    # mostrando os valores tipados mesmo se o save foi
+                    # rejeitado/parcial server-side (caso classico: ExtJS
+                    # mantem form state apos falha silenciosa). Forcamos
+                    # reload + reabrir o processo pra que _read_field_*
+                    # leia a capa server-side de verdade. Sem isso,
+                    # _validate_process_cover passa em itens onde so UF/
+                    # Comarca persistiram e Materia/Risco nao gravaram.
+                    self._reset_workspace()
+                    self._open_process_by_cnj(item.cnj_number)
                     self._validate_process_cover(item)
                     self.classif_service.mark_success(
                         item.id,
