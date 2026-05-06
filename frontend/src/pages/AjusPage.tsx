@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Clock,
   FileText,
+  History,
   Loader2,
   Plus,
   RefreshCw,
@@ -44,6 +45,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import {
+  backfillAjusFromIntakes,
   cancelAjusAndamento,
   createAjusCodAndamento,
   deleteAjusCodAndamento,
@@ -108,6 +110,7 @@ export default function AjusPage() {
   const [cnjFilter, setCnjFilter] = useState<string>("");
   const [actionItemId, setActionItemId] = useState<number | null>(null);
   const [isDispatching, setIsDispatching] = useState(false);
+  const [isBackfilling, setIsBackfilling] = useState(false);
 
   // ─── Aba Códigos ───────────────────────────────────────────────────
   const [codigos, setCodigos] = useState<AjusCodAndamento[]>([]);
@@ -181,6 +184,101 @@ export default function AjusPage() {
       });
     } finally {
       setIsDispatching(false);
+    }
+  };
+
+  /**
+   * Backfill: enfileira todos os intakes ja' classificados que ainda
+   * nao tem item na fila do AJUS. Idempotente -- rodar 2x nao duplica.
+   * Faz dry_run primeiro pra mostrar quantos vao ser enfileirados (e
+   * quantos sem PDF), aguarda confirmacao, depois executa.
+   */
+  const handleBackfill = async () => {
+    setIsBackfilling(true);
+    try {
+      // 1) Pre-visualiza
+      const preview = await backfillAjusFromIntakes({ dry_run: true });
+      if (preview.error) {
+        toast({
+          title: "Backfill bloqueado",
+          description: preview.error,
+          variant: "destructive",
+        });
+        return;
+      }
+      if (preview.enqueued === 0) {
+        toast({
+          title: "Nada a fazer",
+          description: (
+            preview.skipped_already > 0
+              ? `Todos os ${preview.candidates} candidato(s) ja' estao na fila.`
+              : "Nenhum intake elegivel encontrado."
+          ),
+        });
+        return;
+      }
+      const semPdf = preview.enqueued_without_pdf.length;
+      const linhas = [
+        `Vai enfileirar ${preview.enqueued} processo(s) na fila do AJUS.`,
+      ];
+      if (preview.skipped_already > 0) {
+        linhas.push(
+          `(${preview.skipped_already} ja' estao na fila e serao pulados.)`,
+        );
+      }
+      if (semPdf > 0) {
+        linhas.push(
+          `ATENCAO: ${semPdf} entrarao SEM PDF da habilitacao -- ` +
+            `marcados pra anexo manual antes do envio.`,
+        );
+      }
+      linhas.push("Confirmar?");
+      // eslint-disable-next-line no-alert
+      const ok = window.confirm(linhas.join("\n\n"));
+      if (!ok) return;
+
+      // 2) Executa
+      const result = await backfillAjusFromIntakes({ dry_run: false });
+      if (result.error) {
+        toast({
+          title: "Falha no backfill",
+          description: result.error,
+          variant: "destructive",
+        });
+        return;
+      }
+      const semPdfFinal = result.enqueued_without_pdf.length;
+      const partes = [`${result.enqueued} item(ns) enfileirado(s).`];
+      if (result.skipped_already > 0) {
+        partes.push(`${result.skipped_already} ja' estavam na fila.`);
+      }
+      if (result.skipped_other > 0) {
+        partes.push(`${result.skipped_other} com falha (ver logs).`);
+      }
+      if (semPdfFinal > 0) {
+        partes.push(
+          `${semPdfFinal} sem PDF -- anexar via "Upload em lote" antes de enviar.`,
+        );
+      }
+      toast({
+        title: "Backfill concluido",
+        description: partes.join(" "),
+        variant: semPdfFinal > 0 || result.skipped_other > 0
+          ? "destructive"
+          : "default",
+      });
+      if (semPdfFinal > 0) {
+        console.warn("AJUS backfill sem PDF:", result.enqueued_without_pdf);
+      }
+      await loadAndamentos();
+    } catch (e: unknown) {
+      toast({
+        title: "Falha no backfill",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setIsBackfilling(false);
     }
   };
 
@@ -418,6 +516,26 @@ export default function AjusPage() {
                   >
                     <Upload className="mr-2 h-3.5 w-3.5" />
                     Upload em lote
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleBackfill}
+                    disabled={
+                      isBackfilling ||
+                      codigos.filter((c) => c.is_active && c.is_default).length === 0
+                    }
+                    title={
+                      "Enfileira processos antigos ja' classificados que ainda " +
+                      "nao tem item na fila. Idempotente. Mostra preview antes."
+                    }
+                  >
+                    {isBackfilling ? (
+                      <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <History className="mr-2 h-3.5 w-3.5" />
+                    )}
+                    Backfill antigos
                   </Button>
                   <Button
                     size="sm"

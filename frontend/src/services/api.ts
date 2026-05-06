@@ -1031,6 +1031,51 @@ export async function dispatchAjusAndamentosPending(
   return expectJson<AjusDispatchBatchResponse>(res);
 }
 
+export interface AjusBackfillNoPdfItem {
+  intake_id: number;
+  cnj_number: string;
+}
+
+export interface AjusBackfillResponse {
+  candidates: number;
+  enqueued: number;
+  skipped_already: number;
+  skipped_other: number;
+  intake_ids_enqueued: number[];
+  enqueued_without_pdf: AjusBackfillNoPdfItem[];
+  dry_run: boolean;
+  error?: string | null;
+}
+
+export interface AjusBackfillRequest {
+  statuses?: string[] | null;
+  from_date?: string | null;
+  to_date?: string | null;
+  dry_run?: boolean;
+  limit?: number | null;
+}
+
+/**
+ * Backfill: enfileira na fila AJUS todos os intakes de prazos iniciais
+ * ja' classificados que ainda nao tem item -- pra cobrir os processos
+ * antigos anteriores ao auto-enqueue. Idempotente.
+ *
+ * Use `dry_run: true` pra obter o numero de candidatos antes de mandar
+ * valendo. Intakes sem PDF entram na fila marcados pra anexo manual e
+ * vem listados em `enqueued_without_pdf`.
+ */
+export async function backfillAjusFromIntakes(
+  payload: AjusBackfillRequest = {},
+): Promise<AjusBackfillResponse> {
+  const res = await apiFetch(`/api/v1/ajus/andamentos/backfill-from-intakes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return expectJson<AjusBackfillResponse>(res);
+}
+
+
 /** Dispatch pontual: envia 1 item especifico da fila pro AJUS.
  *  Aceita item em status pendente ou erro. Util pra debug + retry pontual. */
 export async function dispatchAjusAndamento(
