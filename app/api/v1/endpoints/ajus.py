@@ -377,6 +377,58 @@ def retry_andamento(
     return _queue_to_out(item)
 
 
+class DispatchOneResponse(BaseModel):
+    """Resposta do dispatch pontual (1 item).
+
+    `success` traduz o status_final pra um booleano amigavel —
+    True quando AJUS confirmou insercao (`inserido=true`), False
+    nos demais casos. `msg` carrega a mensagem do erro AJUS quando
+    success=False.
+    """
+    item_id: int
+    status_final: str
+    success: bool
+    msg: Optional[str] = None
+    cod_informacao_judicial: Optional[str] = None
+
+
+@router.post(
+    "/andamentos/{item_id}/dispatch",
+    response_model=DispatchOneResponse,
+    summary=(
+        "Dispatcha 1 item pontual da fila pro AJUS — debug-friendly. "
+        "Aceita item em status pendente ou erro; bloqueia sucesso/cancelado/enviando."
+    ),
+)
+def dispatch_one_andamento(
+    item_id: int = FastapiPath(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    """
+    Util pra:
+      - Testar credenciais AJUS com 1 caso conhecido antes de soltar lote.
+      - Re-disparar pontual depois de operador corrigir manualmente
+        algum dado do item (ex.: data_evento errada).
+      - Debug operacional ("processar este aqui agora, não esperar fila").
+
+    HTTP 502 quando a chamada AJUS em si falha (token invalido, 5xx do
+    AJUS, timeout). HTTP 409 quando status do item nao permite dispatch.
+    """
+    from app.services.ajus.ajus_client import AjusApiError, AjusConfigError
+
+    service = AjusQueueService(db)
+    try:
+        result = service.dispatch_one(item_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (AjusConfigError, AjusApiError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return DispatchOneResponse(**result)
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Classificação (Chunk 1 — fila + defaults; Playwright runner no Chunk 2)
 # ═══════════════════════════════════════════════════════════════════════

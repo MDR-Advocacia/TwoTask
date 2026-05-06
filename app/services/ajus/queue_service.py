@@ -421,6 +421,155 @@ class AjusQueueService:
             "errored": errored,
         }
 
+    # ── Dispatch pontual (1 item soh) ───────────────────────────────
+
+    def dispatch_one(self, item_id: int) -> dict:
+        """
+        Dispatcha UM item especifico da fila (qualquer item_id) pro AJUS,
+        em uma request isolada. Util pra debug ("disparar este aqui agora")
+        e pra reenvio pontual depois de operador corrigir manualmente algum
+        dado no item.
+
+        Aceita item nos status:
+          - PENDENTE: caminho normal, marca enviando -> sucesso/erro.
+          - ERRO: tenta de novo (parecido com retry+dispatch num passo soh,
+            evita o ciclo extra de marcar pendente antes).
+
+        Rejeita SUCESSO/CANCELADO/ENVIANDO (409). ENVIANDO eh um caso
+        suspeito (worker ja' pegou esse item) — operador clicaria 2x sem
+        perceber.
+
+        Returns:
+            dict com {item_id, status_final, success, msg, cod_informacao_judicial}.
+            Campo `success` = True se inserido com sucesso. `msg` traz a
+            mensagem de erro do AJUS quando success=False.
+
+        Raises:
+            ValueError em item_id invalido.
+            RuntimeError em status nao elegivel.
+            AjusConfigError / AjusApiError em falha de conexao ou auth
+              (operador ve via HTTP 502 no endpoint).
+        """
+        item = (
+            self.db.query(AjusAndamentoQueue)
+            .filter(AjusAndamentoQueue.id == item_id)
+            .one_or_none()
+        )
+        if item is None:
+            raise ValueError(f"Item AJUS {item_id} nao encontrado.")
+        if item.status not in (AJUS_QUEUE_PENDENTE, AJUS_QUEUE_ERRO):
+            raise RuntimeError(
+                f"Dispatch pontual permitido apenas em 'pendente' ou 'erro'. "
+                f"Status atual: {item.status}."
+            )
+
+        # Marca como enviando (idem batch — lock soft contra clique duplo).
+        item.status = AJUS_QUEUE_ENVIANDO
+        item.error_message = None
+        self.db.commit()
+
+        # Monta payload (1 entrada).
+        entry: dict = {
+            "identificadorAcao": {"numeroProcesso": item.cnj_number},
+            "codAndamento": item.cod_andamento.codigo,
+            "situacao": item.situacao,
+            "dataEvento": format_date_brl(item.data_evento),
+            "dataAgendamento": format_date_brl(item.data_agendamento),
+            "dataFatal": format_date_brl(item.data_fatal),
+            "informacao": item.informacao,
+        }
+        if item.hora_agendamento:
+            entry["horaAgendamento"] = item.hora_agendamento.strftime("%H:%M")
+        if item.pdf_path:
+            pdf_bytes = _read_ajus_pdf(item.pdf_path)
+            if pdf_bytes:
+                try:
+                    validate_arquivo_size(len(pdf_bytes))
+                    entry["arquivos"] = [{
+                        "nome": "habilitacao.pdf",
+                        "base64": encode_pdf_base64(pdf_bytes),
+                    }]
+                except ValueError as exc:
+                    logger.warning(
+                        "AJUS dispatch_one: PDF do item %d ultrapassa "
+                        "limite — segue sem anexo: %s",
+                        item.id, exc,
+                    )
+
+        try:
+            client = AjusClient()
+            results = client.inserir_prazos([entry])
+        except (AjusConfigError, AjusApiError) as exc:
+            item.status = AJUS_QUEUE_ERRO
+            item.error_message = f"Falha global no envio: {exc}"
+            self.db.commit()
+            self.db.refresh(item)
+            logger.exception(
+                "AJUS dispatch_one: falha global ao enviar item %d", item.id,
+            )
+            # Re-levanta pra o endpoint converter em 502.
+            raise
+
+        if not results:
+            # Resposta vazia (defensivo — AJUS deveria sempre devolver 1
+            # entrada por item enviado).
+            item.status = AJUS_QUEUE_ERRO
+            item.error_message = "AJUS devolveu resposta vazia."
+            self.db.commit()
+            self.db.refresh(item)
+            return {
+                "item_id": item.id,
+                "status_final": item.status,
+                "success": False,
+                "msg": item.error_message,
+                "cod_informacao_judicial": None,
+            }
+
+        result = results[0]
+        now = datetime.now(timezone.utc)
+        item.dispatched_at = now
+        if result.inserido:
+            item.status = AJUS_QUEUE_SUCESSO
+            item.cod_informacao_judicial = result.cod_informacao_judicial
+            item.error_message = None
+            _delete_ajus_pdf_copy(item.pdf_path)
+            item.pdf_path = None
+            # Espelho do branch de devolucao do batch (mantem
+            # status do intake sincronizado quando o item eh DEVOLUCAO).
+            from app.models.prazo_inicial import (
+                INTAKE_STATUS_DEVOLUCAO_PENDING,
+                INTAKE_STATUS_DEVOLUCAO_SENT,
+                PrazoInicialIntake,
+            )
+            intake_obj = (
+                self.db.query(PrazoInicialIntake)
+                .filter(PrazoInicialIntake.id == item.intake_id)
+                .first()
+            )
+            if (
+                intake_obj is not None
+                and intake_obj.status == INTAKE_STATUS_DEVOLUCAO_PENDING
+            ):
+                intake_obj.status = INTAKE_STATUS_DEVOLUCAO_SENT
+                logger.info(
+                    "Devolucao[intake=%d]: AJUS enviado via dispatch_one, "
+                    "status DEVOLUCAO_PENDENTE->DEVOLUCAO_ENVIADA",
+                    intake_obj.id,
+                )
+        else:
+            item.status = AJUS_QUEUE_ERRO
+            item.error_message = result.msg or "Falha sem mensagem da AJUS."
+        self.db.commit()
+        self.db.refresh(item)
+
+        return {
+            "item_id": item.id,
+            "status_final": item.status,
+            "success": item.status == AJUS_QUEUE_SUCESSO,
+            "msg": item.error_message,
+            "cod_informacao_judicial": item.cod_informacao_judicial,
+        }
+
     # ── Ações por item ──────────────────────────────────────────────
 
     def cancel(self, item_id: int) -> AjusAndamentoQueue:

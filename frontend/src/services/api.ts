@@ -1031,6 +1031,24 @@ export async function dispatchAjusAndamentosPending(
   return expectJson<AjusDispatchBatchResponse>(res);
 }
 
+/** Dispatch pontual: envia 1 item especifico da fila pro AJUS.
+ *  Aceita item em status pendente ou erro. Util pra debug + retry pontual. */
+export async function dispatchAjusAndamento(
+  itemId: number,
+): Promise<{
+  item_id: number;
+  status_final: string;
+  success: boolean;
+  msg: string | null;
+  cod_informacao_judicial: string | null;
+}> {
+  const res = await apiFetch(
+    `/api/v1/ajus/andamentos/${itemId}/dispatch`,
+    { method: "POST" },
+  );
+  return expectJson(res);
+}
+
 export async function cancelAjusAndamento(itemId: number) {
   const res = await apiFetch(
     `/api/v1/ajus/andamentos/${itemId}/cancel`,
