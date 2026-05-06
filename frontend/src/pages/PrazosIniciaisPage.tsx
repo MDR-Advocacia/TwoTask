@@ -281,6 +281,55 @@ function formatSuggestionDeadline(suggestion: PrazoInicialSugestao): string {
   return "-";
 }
 
+/**
+ * Espelho frontend de `_build_default_description` no classifier (backend).
+ * Usado pra prepopular o textarea Descricao no modal de Confirmar
+ * Agendamento quando o backend nao mandou um — caso tipico: sugestoes
+ * classificadas ANTES do deploy do fallback (2026-05-06). Sem isso, o
+ * operador via textarea vazio mesmo com dados disponiveis.
+ *
+ * Mantenha em sincronia com app/services/classifier/prazos_iniciais_classifier.py
+ * (`_build_default_description`).
+ */
+function buildDefaultDescription(args: {
+  cnj: string | null | undefined;
+  tipo_prazo: string | null | undefined;
+  subtipo: string | null | undefined;
+  data_final_calculada: string | null | undefined;
+  audiencia_data: string | null | undefined;
+  audiencia_hora: string | null | undefined;
+}): string {
+  const cnj = args.cnj || "?";
+  const label = args.tipo_prazo ? tipoPrazoLabel(args.tipo_prazo) : "?";
+
+  // Helper local: ISO YYYY-MM-DD → DD/MM/YYYY (sem TZ pra evitar drift).
+  const fmtDate = (iso: string | null | undefined): string => {
+    if (!iso) return "";
+    const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
+  };
+  const fmtTime = (hms: string | null | undefined): string => {
+    if (!hms) return "";
+    return String(hms).slice(0, 5);
+  };
+
+  if (args.tipo_prazo === "AUDIENCIA" && args.audiencia_data) {
+    let when = fmtDate(args.audiencia_data);
+    const t = fmtTime(args.audiencia_hora);
+    if (t) when += ` as ${t}`;
+    const sub = args.subtipo ? ` ${args.subtipo}` : "";
+    return `Audiencia${sub} em ${when} - processo ${cnj}`;
+  }
+  if (args.tipo_prazo === "JULGAMENTO" && args.data_final_calculada) {
+    const when = fmtDate(args.data_final_calculada);
+    const sub = args.subtipo ? ` ${args.subtipo}` : "";
+    return `Julgamento${sub} em ${when} - processo ${cnj}`;
+  }
+  const fatal = args.data_final_calculada ? fmtDate(args.data_final_calculada) : "";
+  if (fatal) return `${label} - processo ${cnj} - fatal ${fatal}`;
+  return `${label} - processo ${cnj}`;
+}
+
 function getPrimeiroPoloPassivo(detail: Pick<PrazoInicialIntakeDetail, "capa_json">): string {
   const polos = detail.capa_json?.polo_passivo || [];
   return polos[0]?.nome || "-";
@@ -843,6 +892,26 @@ export default function PrazosIniciaisPage() {
     for (const s of scheduleDetail.sugestoes) {
       nextIds[s.id] = s.created_task_id ? String(s.created_task_id) : "";
       const payload = (s.payload_proposto as Record<string, unknown> | null) || {};
+      // Fallback de descricao no frontend: o classifier ja' faz isso a
+      // partir de 2026-05-06, MAS so' pra intakes classificados depois
+      // do deploy. Pra os antigos (`payload.description=""` ou ausente),
+      // calculamos aqui com a mesma logica do backend
+      // (_build_default_description). Resultado: operador NUNCA ve
+      // textarea vazio quando ha dados suficientes.
+      const rawDescription =
+        typeof payload.description === "string" ? payload.description : "";
+      const description =
+        rawDescription.trim() !== ""
+          ? rawDescription
+          : buildDefaultDescription({
+              cnj: scheduleDetail.cnj_number,
+              tipo_prazo: s.tipo_prazo,
+              subtipo: s.subtipo,
+              data_final_calculada: s.data_final_calculada,
+              audiencia_data: s.audiencia_data,
+              audiencia_hora: s.audiencia_hora,
+            });
+
       nextForms[s.id] = {
         task_subtype_external_id: s.task_subtype_id,
         responsible_user_external_id: s.responsavel_sugerido_id,
@@ -855,7 +924,7 @@ export default function PrazosIniciaisPage() {
         prazo_dias: s.prazo_dias != null ? String(s.prazo_dias) : "",
         prazo_tipo: s.prazo_tipo ?? "",
         priority: typeof payload.priority === "string" ? payload.priority : "Normal",
-        description: typeof payload.description === "string" ? payload.description : "",
+        description,
         notes: typeof payload.notes === "string" ? payload.notes : "",
       };
     }

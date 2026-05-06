@@ -68,6 +68,7 @@ class ReapplyMetrics:
     intakes_processed: int = 0
     intakes_promoted: int = 0  # AGUARDANDO_CONFIG_TEMPLATE -> CLASSIFICADO
     sugestoes_updated: int = 0  # mapeamento L1 reescrito
+    sugestoes_created: int = 0  # NOVAS sugestoes pra templates adicionados depois
     sugestoes_skipped_already_in_l1: int = 0  # created_task_id NOT NULL
     sugestoes_skipped_edited: int = 0  # review_status=editado
     sugestoes_no_match: int = 0  # 0 templates casaram (mantida como esta)
@@ -79,6 +80,7 @@ class ReapplyMetrics:
             "intakes_processed": self.intakes_processed,
             "intakes_promoted": self.intakes_promoted,
             "sugestoes_updated": self.sugestoes_updated,
+            "sugestoes_created": self.sugestoes_created,
             "sugestoes_skipped_already_in_l1": self.sugestoes_skipped_already_in_l1,
             "sugestoes_skipped_edited": self.sugestoes_skipped_edited,
             "sugestoes_no_match": self.sugestoes_no_match,
@@ -136,6 +138,27 @@ def reapply_templates_bulk(
         metrics.intakes_processed += 1
         metrics.intake_ids_processed.append(intake.id)
 
+        # Coleta IDs de templates ja' cobertos por sugestoes existentes
+        # do intake (via payload_proposto.template_id). Permite detectar
+        # casos onde o operador adicionou um 2o template DEPOIS do
+        # intake ser classificado — o reapply agora cria sugestoes novas
+        # pros templates ainda nao cobertos, em vez de ignorar.
+        existing_template_ids: set[int] = set()
+        for s in intake.sugestoes or []:
+            tid = (s.payload_proposto or {}).get("template_id")
+            if isinstance(tid, int):
+                existing_template_ids.add(tid)
+
+        # Indexa sugestoes existentes por (tipo_prazo, subtipo) pra
+        # decidir, na criacao de sugestao nova, qual eh a "base" de
+        # campos da IA (data_base, data_final_calculada, etc.) — clonamos
+        # da primeira sugestao existente do mesmo bloco.
+        bloco_base: dict[tuple[str, Optional[str]], PrazoInicialSugestao] = {}
+        for s in intake.sugestoes or []:
+            key = (s.tipo_prazo, s.subtipo)
+            if key not in bloco_base:
+                bloco_base[key] = s
+
         # Aplica em cada sugestao elegivel.
         for sugestao in intake.sugestoes or []:
             if tipos_prazo and sugestao.tipo_prazo not in tipos_prazo:
@@ -158,15 +181,47 @@ def reapply_templates_bulk(
                 metrics.sugestoes_no_match += 1
                 continue
 
-            # Aplica o primeiro template casado (estavel por id asc no
-            # match_templates). Casos de N templates casando ficam de
-            # fora do reapply — operador usa Reclassificar pra isso.
+            # Aplica o primeiro template na sugestao existente (mantem
+            # ID estavel — nao quebra refs em URLs/links). Demais
+            # templates seguem pro create-loop abaixo.
             _apply_template_to_existing_sugestao(
                 sugestao=sugestao,
                 template=templates[0],
                 intake=intake,
             )
+            existing_template_ids.add(templates[0].id)
             metrics.sugestoes_updated += 1
+
+        # Pos-update: pra cada (tipo_prazo, subtipo) ja existente no
+        # intake, verifica se ha templates casando que NAO estao
+        # cobertos por nenhuma sugestao. Cria sugestao nova pra cada um.
+        # Isso resolve "operador criou 2o template depois" — o reapply
+        # agora gera a 2a sugestao automaticamente em vez de ignorar.
+        for (tipo_prazo, subtipo), base in bloco_base.items():
+            if tipos_prazo and tipo_prazo not in tipos_prazo:
+                continue
+            templates = match_templates(
+                db,
+                tipo_prazo=tipo_prazo,
+                subtipo=subtipo,
+                office_external_id=intake.office_id,
+                natureza_processo=intake.natureza_processo,
+            )
+            for template in templates:
+                if template.id in existing_template_ids:
+                    continue
+                # Clone da sugestao base (mantem campos da IA: data_base,
+                # data_final_calculada, audiencia_*, prazo_*, confianca,
+                # justificativa) e aplica o template novo em cima.
+                new_sugestao = _clone_sugestao_for_new_template(base)
+                _apply_template_to_existing_sugestao(
+                    sugestao=new_sugestao,
+                    template=template,
+                    intake=intake,
+                )
+                db.add(new_sugestao)
+                existing_template_ids.add(template.id)
+                metrics.sugestoes_created += 1
 
         # Promocao de status: se TODAS as sugestoes do intake agora
         # tem mapeamento L1 ou skip_task_creation, sai do limbo
@@ -189,10 +244,11 @@ def reapply_templates_bulk(
         db.commit()
 
     logger.info(
-        "reapply_templates_bulk: processed=%d updated=%d promoted=%d "
-        "skipped_l1=%d skipped_edited=%d no_match=%d dry_run=%s",
+        "reapply_templates_bulk: processed=%d updated=%d created=%d "
+        "promoted=%d skipped_l1=%d skipped_edited=%d no_match=%d dry_run=%s",
         metrics.intakes_processed,
         metrics.sugestoes_updated,
+        metrics.sugestoes_created,
         metrics.intakes_promoted,
         metrics.sugestoes_skipped_already_in_l1,
         metrics.sugestoes_skipped_edited,
@@ -200,6 +256,44 @@ def reapply_templates_bulk(
         dry_run,
     )
     return metrics
+
+
+def _clone_sugestao_for_new_template(
+    base: PrazoInicialSugestao,
+) -> PrazoInicialSugestao:
+    """
+    Clona a sugestao "base" (qualquer sugestao existente do mesmo bloco
+    tipo_prazo/subtipo do intake) preservando campos derivados da IA
+    (datas, audiencia_*, prazo_*, confianca, justificativa). Os campos
+    de mapeamento L1 (task_subtype_id, responsavel_sugerido_id) e
+    payload_proposto sao deixados pra `_apply_template_to_existing_sugestao`
+    sobrescrever com os dados do template novo.
+
+    review_status='pendente' — toda sugestao nova entra como pendente
+    pra HITL revisar.
+    """
+    clone = PrazoInicialSugestao(
+        intake_id=base.intake_id,
+        tipo_prazo=base.tipo_prazo,
+        subtipo=base.subtipo,
+        data_base=base.data_base,
+        prazo_dias=base.prazo_dias,
+        prazo_tipo=base.prazo_tipo,
+        data_final_calculada=base.data_final_calculada,
+        prazo_fatal_data=base.prazo_fatal_data,
+        prazo_fatal_fundamentacao=base.prazo_fatal_fundamentacao,
+        prazo_base_decisao=base.prazo_base_decisao,
+        audiencia_data=base.audiencia_data,
+        audiencia_hora=base.audiencia_hora,
+        audiencia_link=base.audiencia_link,
+        confianca=base.confianca,
+        justificativa=base.justificativa,
+        review_status="pendente",
+        # task_subtype_id, responsavel_sugerido_id, payload_proposto
+        # ficam None aqui — serao preenchidos por
+        # _apply_template_to_existing_sugestao em cima.
+    )
+    return clone
 
 
 def _sugestao_has_template_or_skip(sugestao: PrazoInicialSugestao) -> bool:

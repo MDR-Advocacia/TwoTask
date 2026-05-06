@@ -21,7 +21,6 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, status
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, exists, not_
 from sqlalchemy.orm import Session
 
 from app.core import auth as auth_security
@@ -134,25 +133,27 @@ def list_active_notices(
     """
     Filtros aplicados no SQL:
       - starts_at <= now() AND ends_at >= now() (janela ativa)
-      - NOT EXISTS (dismissal pro user_id corrente) — garante "uma vez
-        por usuario"
+      - id NOT IN (notice_ids ja' dispensados pelo user corrente) —
+        garante "uma vez por usuario"
 
-    Ordenado por severity (danger > warning > info) + ends_at ASC pra
-    avisos mais urgentes / com vencimento proximo aparecerem primeiro.
+    Ordenado por ends_at ASC pra avisos com vencimento proximo
+    aparecerem primeiro. NOT IN sub-select e' mais portavel entre
+    versoes do SQLAlchemy do que `not_(exists(query_object))`, que
+    quebra dependendo de como o ORM constroi o subquery.
     """
     now = datetime.now(timezone.utc)
 
-    dismissed_subq = (
-        db.query(AdminNoticeDismissal)
-        .filter(AdminNoticeDismissal.notice_id == AdminNotice.id)
+    dismissed_ids_subq = (
+        db.query(AdminNoticeDismissal.notice_id)
         .filter(AdminNoticeDismissal.user_id == current_user.id)
+        .subquery()
     )
 
     rows = (
         db.query(AdminNotice)
         .filter(AdminNotice.starts_at <= now)
         .filter(AdminNotice.ends_at >= now)
-        .filter(not_(exists(dismissed_subq)))
+        .filter(~AdminNotice.id.in_(dismissed_ids_subq))
         .order_by(AdminNotice.ends_at.asc())
         .all()
     )
