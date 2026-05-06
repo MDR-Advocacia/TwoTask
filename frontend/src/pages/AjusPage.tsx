@@ -46,6 +46,7 @@ import {
   cancelAjusAndamento,
   createAjusCodAndamento,
   deleteAjusCodAndamento,
+  dispatchAjusAndamento,
   dispatchAjusAndamentosPending,
   fetchAjusAndamentos,
   fetchAjusCodAndamento,
@@ -204,6 +205,43 @@ export default function AjusPage() {
     } catch (e: unknown) {
       toast({
         title: "Falha ao reenfileirar",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setActionItemId(null);
+    }
+  };
+
+  /**
+   * Dispatch pontual: envia 1 item agora numa request isolada (sem
+   * agrupar com a fila). Util pra debug ("testar este 1 caso") e pra
+   * reenviar pontual depois de operador corrigir dado num item em erro.
+   * Backend aceita item em status pendente ou erro.
+   */
+  const handleDispatchOne = async (id: number) => {
+    setActionItemId(id);
+    try {
+      const result = await dispatchAjusAndamento(id);
+      if (result.success) {
+        toast({
+          title: `Item #${id} enviado com sucesso`,
+          description: result.cod_informacao_judicial
+            ? `AJUS retornou cod_informacao_judicial=${result.cod_informacao_judicial}.`
+            : "AJUS confirmou inserção.",
+        });
+      } else {
+        toast({
+          title: `Item #${id}: AJUS rejeitou`,
+          description: result.msg || "AJUS retornou inserido=false sem mensagem.",
+          variant: "destructive",
+        });
+      }
+      await loadAndamentos();
+    } catch (e: unknown) {
+      // 502 (config/AJUS API), 409 (status nao elegivel), 404 (id sumiu).
+      toast({
+        title: `Falha ao disparar item #${id}`,
         description: e instanceof Error ? e.message : String(e),
         variant: "destructive",
       });
@@ -454,6 +492,18 @@ export default function AjusPage() {
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-1">
+                            {(item.status === "pendente" || item.status === "erro") && (
+                              <Button
+                                size="sm"
+                                variant="default"
+                                onClick={() => handleDispatchOne(item.id)}
+                                disabled={actionItemId === item.id}
+                                title="Dispara so' este item agora — debug 1 a 1, isolando do batch."
+                              >
+                                <Send className="mr-1 h-3 w-3" />
+                                Disparar
+                              </Button>
+                            )}
                             {item.status === "erro" && (
                               <Button
                                 size="sm"
