@@ -148,13 +148,10 @@ class AjusAndamentoQueue(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
-    # Nullable: itens bulk (upload manual de PDFs/CNJs em lote) nao tem
-    # intake associado. UNIQUE preservado — Postgres trata NULLs como
-    # distintos, entao multiplos bulk items com intake_id=NULL convivem.
     intake_id = Column(
         Integer,
         ForeignKey("prazo_inicial_intakes.id", ondelete="CASCADE"),
-        nullable=True,
+        nullable=False,
         unique=True,
     )
     cnj_number = Column(String(25), nullable=False, index=True)
@@ -337,6 +334,12 @@ class AjusClassificacaoQueue(Base):
     error_message = Column(Text, nullable=True)
     last_log = Column(Text, nullable=True)
     executed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Contador de retries automaticos pra erros transitorios (timeout
+    # de workspace, combobox que nao abriu, busca rapida que sumiu).
+    # Ver `mark_transient_error` no service: incrementa e devolve item
+    # pra `pendente`; ao atingir limite, vira `erro` definitivo.
+    retry_count = Column(Integer, nullable=False, default=0, server_default="0")
 
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,

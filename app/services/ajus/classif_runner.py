@@ -87,6 +87,39 @@ class AjusProcessNotFoundError(AjusRunnerError):
     """
 
 
+# ─── Classificacao de erros transitorios vs permanentes ──────────────
+
+
+# Padroes de erro que sao TIMING/transitorios — re-execucao normalmente
+# resolve (workspace que demorou pra liberar, combobox ExtJS que nao
+# carregou store a tempo, busca rapida que nao apareceu, etc.).
+# Quando o runner cair num desses, o item volta pra `pendente` ate o
+# limite de retries (ver mark_transient_error).
+_TRANSIENT_ERROR_PATTERNS = (
+    "ajus nao liberou workspace dentro do timeout",
+    "nao consegui selecionar",  # combobox ExtJS
+    "campo dependente",  # ex.: comarca dependente nao apareceu
+    "nao foi possivel localizar a busca rapida",
+    "nao consegui localizar",  # outros locators
+    "playwright timeout",
+    "navigation timeout",
+    "page.goto",
+    "element is not visible",
+    "context manager",
+    "closed browser",
+    "target closed",
+    "session expired",
+)
+
+
+def _is_transient_error(msg: str) -> bool:
+    """True se a mensagem de erro casa com algum padrao transitorio."""
+    if not msg:
+        return False
+    norm = msg.lower()
+    return any(p in norm for p in _TRANSIENT_ERROR_PATTERNS)
+
+
 # ─── Helpers de texto ────────────────────────────────────────────────
 
 
@@ -957,7 +990,14 @@ class AjusClassifRunner:
                             )
                         continue
                     msg = str(exc)[:4000]
-                    self.classif_service.mark_error(item.id, error_message=msg)
+                    if _is_transient_error(msg):
+                        self.classif_service.mark_transient_error(
+                            item.id, error_message=msg,
+                        )
+                    else:
+                        self.classif_service.mark_error(
+                            item.id, error_message=msg,
+                        )
                     logger.exception(
                         "AJUS runner: falha classificando item %d (cnj=%s): %s",
                         item.id, item.cnj_number, msg,
@@ -965,7 +1005,14 @@ class AjusClassifRunner:
                     break
                 except Exception as exc:  # noqa: BLE001
                     msg = str(exc)[:4000]
-                    self.classif_service.mark_error(item.id, error_message=msg)
+                    if _is_transient_error(msg):
+                        self.classif_service.mark_transient_error(
+                            item.id, error_message=msg,
+                        )
+                    else:
+                        self.classif_service.mark_error(
+                            item.id, error_message=msg,
+                        )
                     logger.exception(
                         "AJUS runner: falha classificando item %d (cnj=%s): %s",
                         item.id, item.cnj_number, msg,

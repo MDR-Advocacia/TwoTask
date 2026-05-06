@@ -289,6 +289,125 @@ def _resolve_pdf_bytes_with_fallback(
     return pdf_bytes
 
 
+# ─── Pre-flight de anexo (causa mais comum de rejeicao AJUS) ──────────
+
+
+class AjusAttachmentError(RuntimeError):
+    """
+    Pre-flight do anexo falhou — caller marca o item como ERRO com a
+    mensagem de causa, sem mandar a request pro AJUS (evita rejeicao
+    silenciosa por 'Para concluir o andamento HABILITAÇÃO DE
+    ADVOGADO eh necessario anexar o documento').
+    """
+
+
+# Magic bytes do PDF — primeiros 4 bytes de qualquer arquivo .pdf valido.
+# Se o arquivo no disco nao bate, ou nao eh PDF, ou esta corrompido.
+_PDF_MAGIC = b"%PDF"
+
+
+def _build_arquivos_for_item(
+    db: Session,
+    item: "AjusAndamentoQueue",
+    *,
+    label: str = "dispatch",
+) -> list[dict]:
+    """
+    Retorna o `arquivos` payload pro AJUS pra um item da fila.
+
+    Decide se o item TEM que ter PDF anexado:
+      - Sim, se item.pdf_path esta setado (cópia AJUS gravada).
+      - Sim, se o intake associado tem habilitacao_pdf_path ou pdf_path
+        (fallback retroativo).
+      - Nao, somente se ambos estao limpos (item enfileirado sem anexo
+        e intake tambem sem). Nesse caso o AJUS vai rejeitar do mesmo
+        jeito, entao falhamos pre-flight com mensagem clara em vez de
+        mandar pra ele e cair no erro generico.
+
+    Raises:
+        AjusAttachmentError: PDF deveria estar anexado mas nao foi
+            possivel ler (arquivo sumiu, vazio, ou nao eh PDF) OU
+            anexo ultrapassa 10MB (limite AJUS por arquivo). A
+            mensagem ja' vem em PT-BR pronta pra error_message do item.
+    """
+    intake_has_source = False
+    intake_obj = None
+    if item.intake_id:
+        from app.models.prazo_inicial import PrazoInicialIntake as _PII
+        intake_obj = (
+            db.query(_PII)
+            .filter(_PII.id == item.intake_id)
+            .one_or_none()
+        )
+        if intake_obj is not None:
+            intake_has_source = bool(
+                getattr(intake_obj, "habilitacao_pdf_path", None)
+                or intake_obj.pdf_path
+            )
+
+    expected = bool(item.pdf_path) or intake_has_source
+
+    pdf_bytes = _resolve_pdf_bytes_with_fallback(db, item)
+
+    if not pdf_bytes:
+        if expected:
+            # Aqui eh o caso problematico: tinhamos pdf_path setado mas
+            # o arquivo nao foi lido. Causas: arquivo deletado do volume,
+            # path divergente, permissao, etc.
+            details = (
+                f"item.pdf_path={item.pdf_path!r}, "
+                f"intake_id={item.intake_id}, "
+                f"intake_has_source={intake_has_source}"
+            )
+            logger.error(
+                "AJUS %s: item %d (cnj=%s) deveria ter PDF mas leitura "
+                "falhou — %s",
+                label, item.id, item.cnj_number, details,
+            )
+            raise AjusAttachmentError(
+                "PDF da habilitacao deveria estar anexado mas nao foi "
+                f"possivel ler do storage. Detalhes: {details}. "
+                "Use 'Anexar PDF' nessa linha pra subir manualmente."
+            )
+        # Nao tinha mesmo — operador precisa subir.
+        raise AjusAttachmentError(
+            "Item sem PDF anexado. Use 'Anexar PDF' pra subir a "
+            "habilitacao antes de disparar."
+        )
+
+    size_bytes = len(pdf_bytes)
+    if size_bytes == 0:
+        raise AjusAttachmentError(
+            "PDF lido tem 0 bytes (arquivo vazio no storage). "
+            "Cancele e re-anexe pelo 'Anexar PDF'."
+        )
+    if not pdf_bytes.startswith(_PDF_MAGIC):
+        # Arquivo existe mas nao tem magic bytes de PDF — pode ser que
+        # o que foi gravado nao eh PDF (HTML de erro, txt, etc.). AJUS
+        # rejeitaria com erro generico — falhamos pre-flight com causa.
+        sample = pdf_bytes[:16].hex()
+        raise AjusAttachmentError(
+            f"Arquivo no storage nao tem magic bytes de PDF "
+            f"(primeiros 4 bytes esperados: %PDF, recebidos: 0x{sample}). "
+            "Cancele e re-anexe pelo 'Anexar PDF'."
+        )
+    try:
+        validate_arquivo_size(size_bytes)
+    except ValueError as exc:
+        raise AjusAttachmentError(
+            f"PDF excede limite AJUS de 10MB ({size_bytes} bytes). "
+            "Reduza o arquivo (compressao/divisao) e re-anexe."
+        ) from exc
+
+    base64_str = encode_pdf_base64(pdf_bytes)
+    logger.info(
+        "AJUS %s: item %d anexo OK — bytes=%d base64_len=%d "
+        "magic_ok=True",
+        label, item.id, size_bytes, len(base64_str),
+    )
+    return [{"nome": "habilitacao.pdf", "base64": base64_str}]
+
+
 # ─── Lógica de fila ──────────────────────────────────────────────────
 
 
@@ -752,7 +871,7 @@ class AjusQueueService:
         # Monta payload por item — 1 item da fila → 1 prazo no payload
         payload_itens: list[dict] = []
         index_to_item: dict[int, AjusAndamentoQueue] = {}
-        for idx, item in enumerate(pending):
+        for item in pending:
             entry: dict = {
                 "identificadorAcao": {"numeroProcesso": item.cnj_number},
                 "codAndamento": item.cod_andamento.codigo,
@@ -768,42 +887,71 @@ class AjusQueueService:
             # sumiu, busca pelo intake.habilitacao_pdf_path | pdf_path
             # e re-copia JIT. Cobre itens enfileirados antes do fix de
             # 2026-05-06 (que copiavam pdf da integra ou nada).
-            pdf_bytes = _resolve_pdf_bytes_with_fallback(self.db, item)
-            if pdf_bytes:
-                try:
-                    validate_arquivo_size(len(pdf_bytes))
-                    entry["arquivos"] = [{
-                        "nome": "habilitacao.pdf",
-                        "base64": encode_pdf_base64(pdf_bytes),
-                    }]
-                except ValueError as exc:
-                    logger.warning(
-                        "AJUS dispatch: PDF do item %d ultrapassa "
-                        "limite — segue sem anexo: %s",
-                        item.id, exc,
-                    )
+            try:
+                arquivos = _build_arquivos_for_item(
+                    self.db, item, label="dispatch_batch",
+                )
+                entry["arquivos"] = arquivos
+            except AjusAttachmentError as exc:
+                # Pre-flight falhou — marca este item como ERRO e
+                # NAO o inclui no payload AJUS. Os demais seguem.
+                item.status = AJUS_QUEUE_ERRO
+                item.error_message = str(exc)
+                logger.warning(
+                    "AJUS dispatch_batch: item %d (cnj=%s) excluido "
+                    "do payload por anexo invalido: %s",
+                    item.id, item.cnj_number, exc,
+                )
+                continue
             payload_itens.append(entry)
-            index_to_item[idx] = item
+            index_to_item[len(payload_itens) - 1] = item
+
+        # Se nenhum item passou pre-flight, commita os erros e sai
+        # — nao chama AJUS com lista vazia (raise ValueError).
+        if not payload_itens:
+            self.db.commit()
+            errored_preflight = [
+                {"id": i.id, "msg": i.error_message or "Pre-flight falhou."}
+                for i in pending
+                if i.status == AJUS_QUEUE_ERRO
+            ]
+            logger.warning(
+                "AJUS dispatch: nenhum item passou pre-flight do anexo "
+                "(%d items rejeitados antes do AJUS).",
+                len(errored_preflight),
+            )
+            return {
+                "candidates": len(pending),
+                "success_count": 0,
+                "error_count": len(errored_preflight),
+                "success_ids": [],
+                "errored": errored_preflight,
+            }
 
         # Chama AJUS
         try:
             client = AjusClient()
             results = client.inserir_prazos(payload_itens)
         except (AjusConfigError, AjusApiError) as exc:
-            # Falha global: volta todos pra "erro" com mensagem explicativa
+            # Falha global: volta APENAS os que estavam ENVIANDO pra
+            # "erro" com mensagem da falha global. Itens que ja' caíram
+            # em ERRO no pre-flight preservam sua mensagem especifica.
             for item in pending:
-                item.status = AJUS_QUEUE_ERRO
-                item.error_message = f"Falha global no envio: {exc}"
+                if item.status == AJUS_QUEUE_ENVIANDO:
+                    item.status = AJUS_QUEUE_ERRO
+                    item.error_message = f"Falha global no envio: {exc}"
             self.db.commit()
             logger.exception("AJUS dispatch: falha global ao enviar lote")
+            errored_all = [
+                {"id": i.id, "msg": i.error_message}
+                for i in pending if i.status == AJUS_QUEUE_ERRO
+            ]
             return {
                 "candidates": len(pending),
                 "success_count": 0,
-                "error_count": len(pending),
+                "error_count": len(errored_all),
                 "success_ids": [],
-                "errored": [
-                    {"id": item.id, "msg": str(exc)} for item in pending
-                ],
+                "errored": errored_all,
             }
 
         # Match resposta x itens (mesma ordem)
@@ -922,22 +1070,28 @@ class AjusQueueService:
         }
         if item.hora_agendamento:
             entry["horaAgendamento"] = item.hora_agendamento.strftime("%H:%M")
-        # Mesma logica de fallback do batch — itens com pdf_path None
-        # ou arquivo sumido tentam ler do intake associado.
-        pdf_bytes = _resolve_pdf_bytes_with_fallback(self.db, item)
-        if pdf_bytes:
-            try:
-                validate_arquivo_size(len(pdf_bytes))
-                entry["arquivos"] = [{
-                    "nome": "habilitacao.pdf",
-                    "base64": encode_pdf_base64(pdf_bytes),
-                }]
-            except ValueError as exc:
-                logger.warning(
-                    "AJUS dispatch_one: PDF do item %d ultrapassa "
-                    "limite — segue sem anexo: %s",
-                    item.id, exc,
-                )
+        # Pre-flight do anexo — se nao da' pra anexar PDF valido,
+        # marca como ERRO com causa explicita e NAO chama AJUS.
+        try:
+            entry["arquivos"] = _build_arquivos_for_item(
+                self.db, item, label="dispatch_one",
+            )
+        except AjusAttachmentError as exc:
+            item.status = AJUS_QUEUE_ERRO
+            item.error_message = str(exc)
+            self.db.commit()
+            self.db.refresh(item)
+            logger.warning(
+                "AJUS dispatch_one: item %d (cnj=%s) abortado pre-flight: %s",
+                item.id, item.cnj_number, exc,
+            )
+            return {
+                "item_id": item.id,
+                "status_final": item.status,
+                "success": False,
+                "msg": item.error_message,
+                "cod_informacao_judicial": None,
+            }
 
         try:
             client = AjusClient()
@@ -1429,7 +1583,7 @@ class AjusQueueService:
         # Monta payload (espelho do dispatch_pending_batch).
         payload_itens: list[dict] = []
         index_to_item: dict[int, AjusAndamentoQueue] = {}
-        for idx, item in enumerate(pending):
+        for item in pending:
             entry: dict = {
                 "identificadorAcao": {"numeroProcesso": item.cnj_number},
                 "codAndamento": item.cod_andamento.codigo,
@@ -1441,40 +1595,65 @@ class AjusQueueService:
             }
             if item.hora_agendamento:
                 entry["horaAgendamento"] = item.hora_agendamento.strftime("%H:%M")
-            pdf_bytes = _resolve_pdf_bytes_with_fallback(self.db, item)
-            if pdf_bytes:
-                try:
-                    validate_arquivo_size(len(pdf_bytes))
-                    entry["arquivos"] = [{
-                        "nome": "habilitacao.pdf",
-                        "base64": encode_pdf_base64(pdf_bytes),
-                    }]
-                except ValueError as exc:
-                    logger.warning(
-                        "AJUS dispatch_selected: PDF do item %d ultrapassa "
-                        "limite -- segue sem anexo: %s",
-                        item.id, exc,
-                    )
+            try:
+                entry["arquivos"] = _build_arquivos_for_item(
+                    self.db, item, label="dispatch_selected",
+                )
+            except AjusAttachmentError as exc:
+                item.status = AJUS_QUEUE_ERRO
+                item.error_message = str(exc)
+                logger.warning(
+                    "AJUS dispatch_selected: item %d (cnj=%s) excluido "
+                    "do payload por anexo invalido: %s",
+                    item.id, item.cnj_number, exc,
+                )
+                continue
             payload_itens.append(entry)
-            index_to_item[idx] = item
+            index_to_item[len(payload_itens) - 1] = item
+
+        # Se nenhum item passou pre-flight, commita e sai sem chamar AJUS.
+        if not payload_itens:
+            self.db.commit()
+            errored_pf = [
+                {"id": i.id, "msg": i.error_message or "Pre-flight falhou."}
+                for i in pending
+                if i.status == AJUS_QUEUE_ERRO
+            ]
+            logger.warning(
+                "AJUS dispatch_selected: nenhum item passou pre-flight "
+                "(%d rejeitados).",
+                len(errored_pf),
+            )
+            return {
+                "candidates": len(pending),
+                "success_count": 0,
+                "error_count": len(errored_pf),
+                "success_ids": [],
+                "errored": errored_pf,
+            }
 
         try:
             client = AjusClient()
             results = client.inserir_prazos(payload_itens)
         except (AjusConfigError, AjusApiError) as exc:
+            # So' os que estavam ENVIANDO viram erro global. Itens que
+            # caíram em ERRO no pre-flight preservam sua mensagem.
             for item in pending:
-                item.status = AJUS_QUEUE_ERRO
-                item.error_message = f"Falha global no envio: {exc}"
+                if item.status == AJUS_QUEUE_ENVIANDO:
+                    item.status = AJUS_QUEUE_ERRO
+                    item.error_message = f"Falha global no envio: {exc}"
             self.db.commit()
             logger.exception("AJUS dispatch_selected: falha global")
+            errored_all = [
+                {"id": i.id, "msg": i.error_message}
+                for i in pending if i.status == AJUS_QUEUE_ERRO
+            ]
             return {
                 "candidates": len(pending),
                 "success_count": 0,
-                "error_count": len(pending),
+                "error_count": len(errored_all),
                 "success_ids": [],
-                "errored": [
-                    {"id": item.id, "msg": str(exc)} for item in pending
-                ],
+                "errored": errored_all,
             }
 
         success_ids: list[int] = []
