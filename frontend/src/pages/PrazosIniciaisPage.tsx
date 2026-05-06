@@ -423,6 +423,10 @@ export default function PrazosIniciaisPage() {
   const [appliedDateFrom, setAppliedDateFrom] = useState("");
   const [appliedDateTo, setAppliedDateTo] = useState("");
   const [appliedHasError, setAppliedHasError] = useState<"__all__" | "com" | "sem">("__all__");
+  // Classificacao = tipo_prazo das sugestoes (CSV). Filtra intakes que
+  // tenham AO MENOS uma sugestao com algum desses tipos.
+  const [tipoPrazoFilter, setTipoPrazoFilter] = useState("");      // CSV
+  const [appliedTipoPrazo, setAppliedTipoPrazo] = useState("");
   // Origem do intake (pin016).
   const [sourceFilter, setSourceFilter] = useState<"__all__" | "EXTERNAL_API" | "USER_UPLOAD">(
     "__all__",
@@ -475,7 +479,7 @@ export default function PrazosIniciaisPage() {
   const [l1TaskTypes, setL1TaskTypes] = useState<
     Array<{ id: number; name: string; sub_types: Array<{ external_id: number; name: string }> }>
   >([]);
-  const [l1Users, setL1Users] = useState<Array<{ external_id: number; name: string }>>([]);
+  const [l1Users, setL1Users] = useState<Array<{ id: number; external_id: number; name: string }>>([]);
   const [l1CatalogsLoading, setL1CatalogsLoading] = useState(false);
   const [l1CatalogsError, setL1CatalogsError] = useState<string | null>(null);
 
@@ -679,9 +683,18 @@ export default function PrazosIniciaisPage() {
           : appliedPdfFailed === "false" ? false
           : undefined;
         // "Minha fila" sobrepõe o filtro manual de submitted_by.
-        const submittedIdsCsv: string | undefined = mineOnly && user?.id
-          ? String(user.id)
-          : appliedSubmittedBy ?? undefined;
+        // appliedSubmittedBy vem do UserSelector como external_id (L1).
+        // No banco, submitted_by_user_id guarda o id INTERNO do LegalOneUser
+        // (current_user.id). Por isso fazemos o lookup external_id -> id
+        // antes de mandar pra API; sem isso o filtro retornava 0 matches.
+        const submittedIdsCsv: string | undefined = (() => {
+          if (mineOnly && user?.id) return String(user.id);
+          if (!appliedSubmittedBy) return undefined;
+          const externalId = parseInt(appliedSubmittedBy, 10);
+          if (Number.isNaN(externalId)) return undefined;
+          const u = l1Users.find((x) => x.external_id === externalId);
+          return u ? String(u.id) : undefined;
+        })();
         const payload = await fetchPrazosIniciaisIntakes({
           status: appliedStatus || undefined,
           cnj_number: appliedCnj || undefined,
@@ -694,6 +707,7 @@ export default function PrazosIniciaisPage() {
           has_error,
           source: appliedSource !== "__all__" ? appliedSource : undefined,
           submitted_by_user_id: submittedIdsCsv,
+          tipo_prazo: appliedTipoPrazo || undefined,
           pdf_extraction_failed,
           limit: pageSize,
           offset: nextOffset,
@@ -721,8 +735,8 @@ export default function PrazosIniciaisPage() {
     [
       appliedCnj, appliedStatus, appliedOffice, appliedNatureza,
       appliedProduto, appliedProbExito, appliedDateFrom, appliedDateTo,
-      appliedHasError, appliedSource, appliedSubmittedBy, appliedPdfFailed,
-      mineOnly, user?.id, offset, pageSize,
+      appliedHasError, appliedSource, appliedSubmittedBy, appliedTipoPrazo,
+      appliedPdfFailed, mineOnly, user?.id, l1Users, offset, pageSize,
     ],
   );
 
@@ -877,6 +891,7 @@ export default function PrazosIniciaisPage() {
     setAppliedHasError(hasErrorFilter);
     setAppliedSource(sourceFilter);
     setAppliedSubmittedBy(submittedByFilter);
+    setAppliedTipoPrazo(tipoPrazoFilter);
     setAppliedPdfFailed(pdfFailedFilter);
     setOffset(0);
   };
@@ -896,6 +911,7 @@ export default function PrazosIniciaisPage() {
     setHasErrorFilter("__all__");
     setSourceFilter("__all__");
     setSubmittedByFilter(null);
+    setTipoPrazoFilter("");
     setPdfFailedFilter("__all__");
     setMineOnly(false);
     setAppliedStatus(DEFAULT_PENDING_STATUSES_CSV);
@@ -909,6 +925,7 @@ export default function PrazosIniciaisPage() {
     setAppliedHasError("__all__");
     setAppliedSource("__all__");
     setAppliedSubmittedBy(null);
+    setAppliedTipoPrazo("");
     setAppliedPdfFailed("__all__");
     setOffset(0);
   };
@@ -2236,6 +2253,23 @@ export default function PrazosIniciaisPage() {
                 defaultValue={produtoFilter ? produtoFilter.split(",").filter(Boolean) : []}
                 onValueChange={(vals) => setProdutoFilter(vals.join(","))}
                 placeholder={enums ? "Todos" : "Carregando..."}
+                className="h-9 text-sm"
+                maxCount={2}
+              />
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Classificação
+              </Label>
+              <MultiSelect
+                options={(enums?.tipos_prazo ?? []).map((t) => ({
+                  value: t,
+                  label: tipoPrazoLabel(t),
+                }))}
+                defaultValue={tipoPrazoFilter ? tipoPrazoFilter.split(",").filter(Boolean) : []}
+                onValueChange={(vals) => setTipoPrazoFilter(vals.join(","))}
+                placeholder={enums ? "Todas" : "Carregando..."}
                 className="h-9 text-sm"
                 maxCount={2}
               />
