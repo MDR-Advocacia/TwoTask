@@ -176,6 +176,10 @@ class IntakeResponse(BaseModel):
     # 1a vez OU em reenvio puramente idempotente (status pos-classificacao,
     # quando preserva trabalho HITL).
     reingested: bool = False
+    # True quando o reenvio em status pos-HITL atualizou somente o PDF
+    # da habilitacao (preservando capa/integra/sugestoes/status). Util
+    # pra "saneamento de habilitacoes apagadas" em casos antigos.
+    pdf_refreshed: bool = False
 
 
 class SugestaoOut(BaseModel):
@@ -503,14 +507,37 @@ async def ingest_intake(
                 already_existed=True,
                 reingested=True,
             )
-        # Status pos-HITL — preserva como esta (idempotente puro).
+        # Status pos-HITL — preserva capa/integra/sugestoes/status etc.
+        # MAS atualiza o PDF da habilitacao (caso de uso operador
+        # 2026-05-06: "saneamento dos delete dos casos passados" — o
+        # cleanup antigo apagou habilitacoes em EXTERNAL_API; reenvio
+        # restaura o PDF pra que AJUS dispatch volte a ter anexo, sem
+        # zerar o trabalho do HITL).
+        try:
+            service.refresh_intake_pdf(
+                intake=existing,
+                pdf_bytes=pdf_bytes,
+                pdf_filename_original=habilitacao.filename,
+            )
+        except PdfValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            )
+        # Path retornado: prioriza habilitacao_pdf_path (que acabou de
+        # ser atualizada). Fallback pdf_path so pra compat (ja era None
+        # nos casos pos-cleanup).
+        refreshed_path = (
+            existing.habilitacao_pdf_path or existing.pdf_path
+        )
         return IntakeResponse(
             intake_id=existing.id,
             external_id=existing.external_id,
             status=existing.status,
-            pdf_stored_path=existing.pdf_path,
+            pdf_stored_path=refreshed_path,
             already_existed=True,
             reingested=False,
+            pdf_refreshed=True,
         )
 
     # 5. Cria o intake (inclui gravação + validação dos bytes do PDF).
