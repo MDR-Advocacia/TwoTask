@@ -62,6 +62,7 @@ from app.services.classifier.prazos_iniciais_schema import (
     TIPO_PRAZO_CONTRARRAZOES,
     TIPO_PRAZO_INDETERMINADO,
     TIPO_PRAZO_JULGAMENTO,
+    TIPO_PRAZO_LABELS,
     TIPO_PRAZO_LIMINAR,
     TIPO_PRAZO_MANIFESTACAO_AVULSA,
     TIPO_PRAZO_SEM_DETERMINACAO,
@@ -1082,10 +1083,74 @@ def _apply_template_to_sugestao(
         payload["description"] = _render_template(
             template.description_template, render_ctx
         )
+    else:
+        # Fallback automatico: monta uma descricao curta com tipo de
+        # classificacao + numero do processo + prazo fatal (data/hora
+        # da audiencia, quando aplicavel). Operador estava digitando isso
+        # manualmente em todo template; auto-fill economiza fricao no
+        # modal de Confirmar Agendamento (que ja le payload.description).
+        # Operador continua podendo sobrescrever via override_description
+        # ou definindo description_template explicito no template.
+        payload["description"] = _build_default_description(
+            intake=intake,
+            sugestao=sugestao,
+            tipo_prazo=tipo_prazo,
+        )
     if template.notes_template:
         payload["notes"] = _render_template(template.notes_template, render_ctx)
 
     sugestao.payload_proposto = payload or None
+
+
+def _build_default_description(
+    *,
+    intake: PrazoInicialIntake,
+    sugestao: PrazoInicialSugestao,
+    tipo_prazo: str,
+) -> str:
+    """
+    Monta a descricao padrao da tarefa quando o template nao define
+    `description_template`. Formato curto pt-BR pra encaixar no campo
+    description do L1 (max 250 chars):
+
+        - AUDIENCIA: "Audiencia <subtipo> em DD/MM/AAAA as HH:MM - <CNJ>"
+        - JULGAMENTO: "Julgamento <subtipo> em DD/MM/AAAA - <CNJ>"
+        - Demais: "<Rotulo> - processo <CNJ> - fatal DD/MM/AAAA"
+
+    Quando algum dado obrigatorio falta (ex.: sugestao sem
+    `data_final_calculada`), degrada graciosamente em vez de levantar
+    excecao — operador vai ver no modal antes de confirmar e edita se
+    quiser.
+    """
+    label = TIPO_PRAZO_LABELS.get(tipo_prazo, tipo_prazo)
+    cnj = intake.cnj_number or "?"
+
+    if (
+        tipo_prazo == TIPO_PRAZO_AUDIENCIA
+        and sugestao.audiencia_data is not None
+    ):
+        when = sugestao.audiencia_data.strftime("%d/%m/%Y")
+        if sugestao.audiencia_hora is not None:
+            when += " as " + sugestao.audiencia_hora.strftime("%H:%M")
+        subtipo = f" {sugestao.subtipo}" if sugestao.subtipo else ""
+        return f"Audiencia{subtipo} em {when} - processo {cnj}"
+
+    if (
+        tipo_prazo == TIPO_PRAZO_JULGAMENTO
+        and sugestao.data_final_calculada is not None
+    ):
+        when = sugestao.data_final_calculada.strftime("%d/%m/%Y")
+        subtipo = f" {sugestao.subtipo}" if sugestao.subtipo else ""
+        return f"Julgamento{subtipo} em {when} - processo {cnj}"
+
+    fatal = (
+        sugestao.data_final_calculada.strftime("%d/%m/%Y")
+        if sugestao.data_final_calculada is not None
+        else None
+    )
+    if fatal:
+        return f"{label} - processo {cnj} - fatal {fatal}"
+    return f"{label} - processo {cnj}"
 
 
 def _build_render_context(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time as dtime, timezone
 from typing import Any, Optional
 
 from sqlalchemy.orm import Session, joinedload
@@ -69,6 +69,10 @@ class ConfirmedSuggestionInput:
     override_responsible_user_external_id: Optional[int] = None
     override_data_base: Optional[date] = None
     override_data_final_calculada: Optional[date] = None
+    # Hora da audiencia editavel direto no modal. Valor None = nao
+    # alterar (mantem o que veio da IA). Vai virar `sugestao.audiencia_hora`
+    # na hora de confirmar.
+    override_audiencia_hora: Optional[dtime] = None
     override_prazo_dias: Optional[int] = None
     override_prazo_tipo: Optional[str] = None  # util | corrido
     override_priority: Optional[str] = None
@@ -83,6 +87,7 @@ class ConfirmedSuggestionInput:
                 "override_responsible_user_external_id",
                 "override_data_base",
                 "override_data_final_calculada",
+                "override_audiencia_hora",
                 "override_prazo_dias",
                 "override_prazo_tipo",
                 "override_priority",
@@ -408,6 +413,8 @@ class PrazosIniciaisSchedulingService:
             sugestao.data_base = entry.override_data_base
         if entry.override_data_final_calculada is not None:
             sugestao.data_final_calculada = entry.override_data_final_calculada
+        if entry.override_audiencia_hora is not None:
+            sugestao.audiencia_hora = entry.override_audiencia_hora
         if entry.override_prazo_dias is not None:
             sugestao.prazo_dias = int(entry.override_prazo_dias)
         if entry.override_prazo_tipo is not None:
