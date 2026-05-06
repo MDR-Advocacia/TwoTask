@@ -144,14 +144,14 @@ class DispatchBatchResponse(BaseModel):
 class BackfillCompletedRequest(BaseModel):
     """
     Filtros opcionais pro backfill da fila AJUS a partir dos intakes
-    de prazos iniciais ja' concluidos com sucesso (CONCLUIDO,
-    CONCLUIDO_SEM_PROVIDENCIA, GED_ENVIADO).
+    de prazos iniciais ja' classificados (qualquer status pos-classificacao,
+    incluindo erros e concluidos).
     """
     statuses: Optional[list[str]] = Field(
         default=None,
         description=(
-            "Lista de status do intake. None = usa o set padrao de "
-            "'concluidos com sucesso'."
+            "Lista de status do intake. None = usa o set padrao "
+            "(qualquer status pos-classificacao)."
         ),
     )
     from_date: Optional[date] = Field(
@@ -161,13 +161,6 @@ class BackfillCompletedRequest(BaseModel):
     to_date: Optional[date] = Field(
         default=None,
         description="Filtra intakes criados ate esta data (inclusivo).",
-    )
-    only_with_pdf: bool = Field(
-        default=True,
-        description=(
-            "Pula intakes sem PDF de habilitacao disponivel "
-            "(AJUS rejeita andamento sem anexo)."
-        ),
     )
     dry_run: bool = Field(
         default=False,
@@ -181,13 +174,18 @@ class BackfillCompletedRequest(BaseModel):
     )
 
 
+class BackfillNoPdfItem(BaseModel):
+    intake_id: int
+    cnj_number: str
+
+
 class BackfillCompletedResponse(BaseModel):
     candidates: int
     enqueued: int
     skipped_already: int
-    skipped_no_pdf: int
     skipped_other: int
     intake_ids_enqueued: list[int]
+    enqueued_without_pdf: list[BackfillNoPdfItem]
     dry_run: bool
     error: Optional[str] = None
 
@@ -401,10 +399,10 @@ def dispatch_pending(
     "/andamentos/backfill-from-intakes",
     response_model=BackfillCompletedResponse,
     summary=(
-        "Enfileira no AJUS os intakes de prazos iniciais ja' concluidos "
-        "com sucesso (CONCLUIDO, CONCLUIDO_SEM_PROVIDENCIA, GED_ENVIADO) "
-        "que ainda nao tem item na fila. Idempotente -- rodar 2x nao "
-        "duplica. Use `dry_run=true` pra ver o numero de candidatos antes."
+        "Enfileira no AJUS os intakes de prazos iniciais ja' classificados "
+        "que ainda nao tem item na fila. Inclui status de erro pos-classificacao "
+        "e finalizados. Intakes sem PDF entram na fila marcados pra anexo manual. "
+        "Idempotente -- rodar 2x nao duplica. Use `dry_run=true` pra preview."
     ),
 )
 def backfill_from_intakes(
@@ -417,7 +415,6 @@ def backfill_from_intakes(
         statuses=payload.statuses,
         from_date=payload.from_date,
         to_date=payload.to_date,
-        only_with_pdf=payload.only_with_pdf,
         dry_run=payload.dry_run,
         limit=payload.limit,
     )
@@ -551,8 +548,11 @@ class BulkAndamentoSkipped(BaseModel):
 
 class BulkAndamentoResponse(BaseModel):
     created: int
+    updated: int = 0
     skipped: list[BulkAndamentoSkipped]
     item_ids: list[int]
+    created_ids: list[int] = []
+    updated_ids: list[int] = []
 
 
 def _resolve_cod_andamento_or_404(
@@ -659,10 +659,13 @@ async def bulk_upload_andamentos(
     )
     return BulkAndamentoResponse(
         created=result["created"],
+        updated=result.get("updated", 0),
         skipped=[
             BulkAndamentoSkipped(**s) for s in pre_skipped + result["skipped"]
         ],
         item_ids=result["item_ids"],
+        created_ids=result.get("created_ids", []),
+        updated_ids=result.get("updated_ids", []),
     )
 
 
@@ -705,8 +708,11 @@ def bulk_cnj_andamentos(
     )
     return BulkAndamentoResponse(
         created=result["created"],
+        updated=result.get("updated", 0),
         skipped=[BulkAndamentoSkipped(**s) for s in result["skipped"]],
         item_ids=result["item_ids"],
+        created_ids=result.get("created_ids", []),
+        updated_ids=result.get("updated_ids", []),
     )
 
 

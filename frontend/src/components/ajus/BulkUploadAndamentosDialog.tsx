@@ -206,7 +206,13 @@ export function BulkUploadAndamentosDialog({
   };
 
   const showSummary = (resp: AjusBulkResponse) => {
-    const lines = [`${resp.created} item(ns) enfileirado(s).`];
+    const updated = resp.updated ?? 0;
+    const lines: string[] = [];
+    if (resp.created > 0) lines.push(`${resp.created} novo(s) enfileirado(s).`);
+    if (updated > 0) lines.push(`${updated} atualizado(s) (PDF anexado).`);
+    if (resp.created === 0 && updated === 0) {
+      lines.push("Nenhum item criado ou atualizado.");
+    }
     if (resp.skipped.length > 0) {
       lines.push(`${resp.skipped.length} ignorado(s).`);
     }
@@ -235,7 +241,7 @@ export function BulkUploadAndamentosDialog({
       );
       showSummary(resp);
       onSuccess?.(resp);
-      if (resp.created > 0) {
+      if (resp.created > 0 || (resp.updated ?? 0) > 0) {
         onOpenChange(false);
       }
     } catch (e: unknown) {
@@ -264,7 +270,7 @@ export function BulkUploadAndamentosDialog({
       const resp = await bulkCnjAjusAndamentos(cnjListParsed, vars);
       showSummary(resp);
       onSuccess?.(resp);
-      if (resp.created > 0) {
+      if (resp.created > 0 || (resp.updated ?? 0) > 0) {
         onOpenChange(false);
       }
     } catch (e: unknown) {

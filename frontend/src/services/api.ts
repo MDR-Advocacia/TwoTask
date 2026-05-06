@@ -1085,8 +1085,12 @@ export interface AjusBulkSkipped {
 
 export interface AjusBulkResponse {
   created: number;
+  /** Itens existentes que ganharam PDF (smart-merge do bulk-upload). */
+  updated?: number;
   skipped: AjusBulkSkipped[];
   item_ids: number[];
+  created_ids?: number[];
+  updated_ids?: number[];
 }
 
 /**

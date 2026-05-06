@@ -37,6 +37,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.ajus import (
+    AJUS_QUEUE_CANCELADO,
     AJUS_QUEUE_ENVIANDO,
     AJUS_QUEUE_ERRO,
     AJUS_QUEUE_PENDENTE,
@@ -443,6 +444,15 @@ class AjusQueueService:
 
     # ── Bulk enqueue (upload manual em lote sem intake) ─────────────
 
+    # Reasons agregadas no `skipped` do bulk_enqueue. Frontend pode
+    # tratar com mensagens diferentes; backend sempre devolve a string
+    # explicativa em PT-BR pra log/console.
+    BULK_SKIP_CNJ_INVALIDO = "cnj_invalido"
+    BULK_SKIP_JA_TINHA_PDF = "ja_tinha_pdf"
+    BULK_SKIP_JA_PROCESSADO = "ja_processado"
+    BULK_SKIP_EM_ENVIO = "em_envio"
+    BULK_SKIP_CANCELADO_ANTES = "cancelado_anteriormente"
+
     def bulk_enqueue(
         self,
         *,
@@ -456,7 +466,25 @@ class AjusQueueService:
         informacao_template_override: Optional[str] = None,
     ) -> dict:
         """
-        Cria N itens na fila AJUS direto (sem intake), 1 por entry.
+        Smart-merge: cria itens novos OU atualiza itens existentes na
+        fila pelos mesmos CNJs.
+
+        Comportamento por CNJ (olhando o item mais recente, se houver):
+          - Inexistente -> cria novo item (comportamento original).
+          - PENDENTE/ERRO sem PDF -> ATUALIZA: anexa o PDF, remove o
+            prefixo BACKFILL_NO_PDF_PREFIX do `informacao` se estiver
+            presente, mantem demais campos. Caso de uso principal:
+            operador roda backfill (cria itens sem PDF marcados) e
+            depois sobe os PDFs em lote pra completar.
+          - PENDENTE/ERRO com PDF -> skip "ja_tinha_pdf" (operador
+            provavelmente subiu duplicado por engano).
+          - SUCESSO -> skip "ja_processado" (AJUS ja registrou o
+            andamento -- reabrir geraria duplicacao no Master).
+          - ENVIANDO -> skip "em_envio" (worker pegou esse item
+            agora; nao mexer pra evitar race).
+          - CANCELADO -> skip "cancelado_anteriormente" (operador
+            cancelou de proposito; criar de novo via bulk parece
+            descuido -- se quiser mesmo, retry/cancel manual).
 
         Cada `entry` deve ter pelo menos:
           - `cnj` (str): 20 digitos. Origem livre (nome de arquivo,
@@ -466,19 +494,20 @@ class AjusQueueService:
           - `filename` (Optional[str]): nome de origem, so' pra log.
 
         Variaveis comuns (situacao/datas/hora) e o template do
-        `informacao` se aplicam ao lote inteiro. Se algum campo vier
-        None, herda do `cod_andamento` (datas calculadas via offset
-        de dias uteis).
+        `informacao` se aplicam APENAS aos itens criados do zero.
+        Atualizacoes preservam os campos do item existente -- so' o
+        PDF e o `informacao` (limpando o prefixo) sao tocados.
 
         Returns:
             dict com:
-              - created (int): itens enfileirados.
-              - skipped (list[dict]): itens rejeitados (cnj invalido,
-                falha gravando PDF, etc.) — cada item tem
-                {cnj, filename, reason}.
-              - item_ids (list[int]): ids dos itens criados.
+              - created (int): itens novos enfileirados.
+              - updated (int): itens existentes que ganharam PDF.
+              - skipped (list[dict]): rejeitados ({cnj, filename, reason}).
+              - item_ids (list[int]): created_ids + updated_ids juntos
+                (compat com frontend antigo que so' olha esse campo).
+              - created_ids (list[int])
+              - updated_ids (list[int])
         """
-        # Resolve defaults de data/situacao a partir do cod_andamento.
         eff_situacao = situacao or cod_andamento.situacao or "A"
         eff_data_evento = data_evento or date.today()
         eff_data_agend = data_agendamento or add_business_days(
@@ -494,6 +523,7 @@ class AjusQueueService:
         )
 
         created_ids: list[int] = []
+        updated_ids: list[int] = []
         skipped: list[dict] = []
         for entry in entries:
             raw_cnj = entry.get("cnj")
@@ -506,26 +536,135 @@ class AjusQueueService:
                     "cnj": str(raw_cnj or ""),
                     "filename": filename,
                     "reason": (
-                        "CNJ invalido ou nao encontrado no nome do arquivo"
-                        f" ({raw_cnj!r})."
+                        f"CNJ invalido ou nao encontrado no nome do arquivo "
+                        f"({raw_cnj!r})."
                     ),
                 })
                 continue
 
-            # Salva PDF (quando houver). Falha de gravacao NAO bloqueia
-            # — segue sem anexo (mesmo padrao do enqueue_for_intake).
-            pdf_rel: Optional[str] = None
-            if pdf_bytes:
+            # Smart-merge: pega o item mais recente desse CNJ pra decidir
+            # entre criar/atualizar/skipar. Em geral so' tem 1 ativo, mas
+            # operador pode ter cancelado um e ressuscitado depois -- por
+            # isso ordenamos por created_at desc.
+            existing = (
+                self.db.query(AjusAndamentoQueue)
+                .filter(AjusAndamentoQueue.cnj_number == cnj)
+                .order_by(AjusAndamentoQueue.created_at.desc())
+                .first()
+            )
+
+            if existing is not None:
+                if existing.status == AJUS_QUEUE_SUCESSO:
+                    skipped.append({
+                        "cnj": cnj,
+                        "filename": filename,
+                        "reason": (
+                            f"CNJ ja' tem andamento enviado com sucesso ao AJUS "
+                            f"(item #{existing.id})."
+                        ),
+                    })
+                    continue
+                if existing.status == AJUS_QUEUE_ENVIANDO:
+                    skipped.append({
+                        "cnj": cnj,
+                        "filename": filename,
+                        "reason": (
+                            f"CNJ tem item em envio ativo no momento "
+                            f"(item #{existing.id}). Tente novamente depois."
+                        ),
+                    })
+                    continue
+                if existing.status == AJUS_QUEUE_CANCELADO:
+                    skipped.append({
+                        "cnj": cnj,
+                        "filename": filename,
+                        "reason": (
+                            f"CNJ teve item cancelado anteriormente "
+                            f"(item #{existing.id}). Reactive via retry "
+                            f"manual se quiser reenviar."
+                        ),
+                    })
+                    continue
+                # Restam: PENDENTE ou ERRO -- candidatos a UPDATE.
+                if existing.pdf_path:
+                    skipped.append({
+                        "cnj": cnj,
+                        "filename": filename,
+                        "reason": (
+                            f"CNJ ja' tem item na fila com PDF anexado "
+                            f"(item #{existing.id}, status={existing.status})."
+                        ),
+                    })
+                    continue
+
+                # Aqui: PENDENTE/ERRO sem PDF -> anexa.
+                if not pdf_bytes:
+                    # Sem PDF pra anexar e existente tambem nao tem -- nada
+                    # a fazer. Skip, mas com reason diferente (usuario
+                    # tentou subir entry sem arquivo, ex.: bulk-cnj sobre
+                    # CNJ ja' enfileirado pelo backfill).
+                    skipped.append({
+                        "cnj": cnj,
+                        "filename": filename,
+                        "reason": (
+                            f"CNJ ja' esta na fila sem PDF (item #{existing.id}). "
+                            f"Suba a habilitacao via 'Upload em lote' pra anexar."
+                        ),
+                    })
+                    continue
+
+                pdf_rel: Optional[str] = None
                 try:
                     pdf_rel = _save_pdf_bytes_to_ajus_storage(pdf_bytes)
                 except OSError as exc:  # noqa: BLE001
                     logger.warning(
-                        "AJUS bulk: falha gravando PDF do CNJ %s "
-                        "(filename=%r): %s — segue sem anexo",
+                        "AJUS bulk update: falha gravando PDF do CNJ %s "
+                        "(filename=%r): %s",
+                        cnj, filename, exc,
+                    )
+                    skipped.append({
+                        "cnj": cnj,
+                        "filename": filename,
+                        "reason": f"Falha ao gravar PDF: {exc}",
+                    })
+                    continue
+
+                existing.pdf_path = pdf_rel
+                # Limpa o prefixo de "sem anexo" (deixado pelo backfill)
+                # se estiver presente, pra a observacao voltar ao normal.
+                if (
+                    existing.informacao
+                    and existing.informacao.startswith(self.BACKFILL_NO_PDF_PREFIX)
+                ):
+                    existing.informacao = existing.informacao[
+                        len(self.BACKFILL_NO_PDF_PREFIX):
+                    ]
+                # Se o item estava em ERRO por falta de anexo, volta pra
+                # pendente pra re-disparar com o PDF agora. Em PENDENTE
+                # mantem o status (ja estava esperando).
+                if existing.status == AJUS_QUEUE_ERRO:
+                    existing.status = AJUS_QUEUE_PENDENTE
+                    existing.error_message = None
+                self.db.flush()
+                updated_ids.append(existing.id)
+                logger.info(
+                    "AJUS bulk update: item id=%d ganhou PDF (cnj=%s, status=%s)",
+                    existing.id, cnj, existing.status,
+                )
+                continue
+
+            # Caminho normal: nao tem item, cria do zero.
+            new_pdf_rel: Optional[str] = None
+            if pdf_bytes:
+                try:
+                    new_pdf_rel = _save_pdf_bytes_to_ajus_storage(pdf_bytes)
+                except OSError as exc:  # noqa: BLE001
+                    logger.warning(
+                        "AJUS bulk create: falha gravando PDF do CNJ %s "
+                        "(filename=%r): %s -- segue sem anexo",
                         cnj, filename, exc,
                     )
 
-            # Render do `informacao` com mesmo placeholders do fluxo auto.
             ctx = {
                 "cnj": cnj,
                 "data_recebimento": format_date_brl(eff_data_evento),
@@ -536,7 +675,7 @@ class AjusQueueService:
             except (KeyError, IndexError) as exc:
                 logger.warning(
                     "AJUS bulk: placeholder desconhecido em template "
-                    "(cod=%s): %s — usando template raw",
+                    "(cod=%s): %s -- usando template raw",
                     cod_andamento.codigo, exc,
                 )
                 informacao = info_template
@@ -551,22 +690,25 @@ class AjusQueueService:
                 data_fatal=eff_data_fatal,
                 hora_agendamento=hora_agendamento,
                 informacao=informacao,
-                pdf_path=pdf_rel,
+                pdf_path=new_pdf_rel,
                 status=AJUS_QUEUE_PENDENTE,
             )
             self.db.add(item)
             self.db.flush()
             created_ids.append(item.id)
             logger.info(
-                "AJUS bulk: item id=%d criado (cnj=%s, cod=%s, has_pdf=%s)",
-                item.id, cnj, cod_andamento.codigo, bool(pdf_rel),
+                "AJUS bulk create: item id=%d criado (cnj=%s, cod=%s, has_pdf=%s)",
+                item.id, cnj, cod_andamento.codigo, bool(new_pdf_rel),
             )
 
         self.db.commit()
         return {
             "created": len(created_ids),
+            "updated": len(updated_ids),
             "skipped": skipped,
-            "item_ids": created_ids,
+            "item_ids": created_ids + updated_ids,
+            "created_ids": created_ids,
+            "updated_ids": updated_ids,
         }
 
     # ── Dispatch ────────────────────────────────────────────────────
@@ -914,66 +1056,78 @@ class AjusQueueService:
 
     # -- Backfill retroativo (intakes antigos) -----------------------
 
+    # Status considerados "ja classificados" -- ponto de corte do
+    # backfill. RECEBIDO/PRONTO_PARA_CLASSIFICAR/EM_CLASSIFICACAO/
+    # PROCESSO_NAO_ENCONTRADO/ERRO_CLASSIFICACAO ainda nao chegaram a
+    # ser classificados, entao ficam de fora. CANCELADO tambem (foi
+    # cancelado intencionalmente). DEVOLUCAO_* tem fluxo proprio.
+    BACKFILL_DEFAULT_STATUSES = (
+        "CLASSIFICADO",
+        "AGUARDANDO_CONFIG_TEMPLATE",
+        "EM_REVISAO",
+        "AGENDADO",
+        "CONCLUIDO_SEM_PROVIDENCIA",
+        "GED_ENVIADO",
+        "CONCLUIDO",
+        "ERRO_AGENDAMENTO",
+        "ERRO_GED",
+    )
+
+    BACKFILL_NO_PDF_PREFIX = (
+        "[SEM ANEXO - ANEXAR PDF DA HABILITACAO ANTES DO ENVIO] "
+    )
+
     def backfill_completed_intakes(
         self,
         *,
         statuses: Optional[Iterable[str]] = None,
         from_date: Optional[date] = None,
         to_date: Optional[date] = None,
-        only_with_pdf: bool = True,
         dry_run: bool = False,
         limit: Optional[int] = None,
     ) -> dict:
         """
-        Enfileira no AJUS todos os intakes "concluidos com sucesso" que
-        ainda nao tem item na fila -- pra cobrir os processos antigos
+        Enfileira no AJUS todos os intakes "ja classificados" que ainda
+        nao tem item na fila -- pra cobrir os processos antigos
         anteriores ao auto-enqueue (intake_service:215).
 
         Reusa `enqueue_for_intake`, que ja eh idempotente via UNIQUE
         (intake_id), entao rodar 2x nao duplica. Tambem usa o
         `cod_andamento` default -- se nao tiver default cadastrado,
         nada eh enfileirado e o resumo traz contadores zerados +
-        `error="sem_cod_default"`.
+        `error`.
+
+        Intakes SEM PDF da habilitacao tambem entram na fila. Nesse
+        caso, o campo `informacao` do item recebe o prefixo
+        `BACKFILL_NO_PDF_PREFIX` pra o operador ver na listagem que
+        precisa anexar manualmente antes do dispatch. A lista desses
+        casos volta no campo `enqueued_without_pdf` da resposta pra
+        o frontend alertar.
 
         Args:
             statuses: lista de status do intake a considerar. Default =
-                {CONCLUIDO, CONCLUIDO_SEM_PROVIDENCIA, GED_ENVIADO} --
-                terminais positivos. DEVOLUCAO_* fica de fora (fluxo
-                AJUS proprio).
+                BACKFILL_DEFAULT_STATUSES (qualquer estado pos-classificacao).
             from_date / to_date: filtro opcional por created_at do
                 intake (inclusivo nos dois lados).
-            only_with_pdf: se True (default), pula intakes sem PDF de
-                habilitacao disponivel -- AJUS rejeita andamento sem
-                anexo. Setar False forca enfileirar mesmo assim
-                (operador pode anexar manualmente depois).
             dry_run: se True, so conta candidatos sem mexer na fila.
             limit: corta o numero de intakes processados nessa chamada
                 (None = sem limite).
 
         Returns:
             dict {
-                "candidates": int,        # intakes que passaram no filtro
-                "enqueued": int,          # itens AJUS criados de fato
-                "skipped_already": int,   # ja tinham item na fila
-                "skipped_no_pdf": int,    # sem habilitacao disponivel
-                "skipped_other": int,     # enqueue retornou None por outro motivo
+                "candidates": int,             # intakes que passaram no filtro
+                "enqueued": int,               # itens AJUS criados de fato (com ou sem PDF)
+                "skipped_already": int,        # ja tinham item na fila
+                "skipped_other": int,          # enqueue retornou None por outro motivo
                 "intake_ids_enqueued": list[int],
+                "enqueued_without_pdf": list[{"intake_id": int, "cnj_number": str}],
                 "dry_run": bool,
                 "error": Optional[str],
             }
         """
-        # Import local pra evitar import circular no topo do modulo.
-        from app.models.prazo_inicial import (
-            INTAKE_STATUS_COMPLETED,
-            INTAKE_STATUS_COMPLETED_WITHOUT_PROVIDENCE,
-            INTAKE_STATUS_GED_SENT,
+        eff_statuses = list(statuses) if statuses else list(
+            self.BACKFILL_DEFAULT_STATUSES,
         )
-
-        eff_statuses = list(statuses) if statuses else [
-            INTAKE_STATUS_COMPLETED,
-            INTAKE_STATUS_COMPLETED_WITHOUT_PROVIDENCE,
-            INTAKE_STATUS_GED_SENT,
-        ]
 
         # Pre-checa cod default -- se nao tem, sai cedo com mensagem
         # explicativa. Evita iterar centenas de intakes sem necessidade.
@@ -990,9 +1144,9 @@ class AjusQueueService:
                 "candidates": 0,
                 "enqueued": 0,
                 "skipped_already": 0,
-                "skipped_no_pdf": 0,
                 "skipped_other": 0,
                 "intake_ids_enqueued": [],
+                "enqueued_without_pdf": [],
                 "dry_run": dry_run,
                 "error": (
                     "Nenhum cod_andamento default ativo cadastrado. "
@@ -1019,9 +1173,9 @@ class AjusQueueService:
         candidates = len(intakes)
         enqueued = 0
         skipped_already = 0
-        skipped_no_pdf = 0
         skipped_other = 0
         enqueued_ids: list[int] = []
+        enqueued_without_pdf: list[dict] = []
 
         # Pre-carrega ids ja na fila pra contar "skipped_already" sem
         # custar 1 SELECT por iteracao em dry_run.
@@ -1047,20 +1201,19 @@ class AjusQueueService:
                 getattr(intake, "habilitacao_pdf_path", None)
                 or intake.pdf_path
             )
-            if only_with_pdf and not has_pdf:
-                skipped_no_pdf += 1
-                logger.info(
-                    "Backfill AJUS: intake %d (cnj=%s, status=%s) sem PDF "
-                    "de habilitacao -- pulado.",
-                    intake.id, intake.cnj_number, intake.status,
-                )
-                continue
 
             if dry_run:
                 # Conta como "enqueued" no preview pra o operador ter o
-                # numero real do que sairia daqui.
+                # numero real do que sairia daqui. Tambem reporta os
+                # sem-PDF pra o frontend ja conseguir alertar antes do
+                # disparo real.
                 enqueued += 1
                 enqueued_ids.append(intake.id)
+                if not has_pdf:
+                    enqueued_without_pdf.append({
+                        "intake_id": intake.id,
+                        "cnj_number": intake.cnj_number or "",
+                    })
                 continue
 
             try:
@@ -1086,21 +1239,38 @@ class AjusQueueService:
             enqueued += 1
             enqueued_ids.append(intake.id)
 
+            # Sem PDF anexado -- prefixa a observacao do item pra o
+            # operador ver na listagem que precisa anexar antes do
+            # dispatch (AJUS rejeita andamento de habilitacao sem
+            # arquivo). Reporta no resultado pra o frontend exibir
+            # alerta agregado.
+            if not item.pdf_path:
+                if not (item.informacao or "").startswith(
+                    self.BACKFILL_NO_PDF_PREFIX,
+                ):
+                    item.informacao = (
+                        self.BACKFILL_NO_PDF_PREFIX + (item.informacao or "")
+                    )
+                    self.db.commit()
+                enqueued_without_pdf.append({
+                    "intake_id": intake.id,
+                    "cnj_number": intake.cnj_number or "",
+                })
+
         logger.info(
             "Backfill AJUS concluido: candidates=%d enqueued=%d "
-            "skipped_already=%d skipped_no_pdf=%d skipped_other=%d "
-            "dry_run=%s",
-            candidates, enqueued, skipped_already, skipped_no_pdf,
-            skipped_other, dry_run,
+            "skipped_already=%d skipped_other=%d sem_pdf=%d dry_run=%s",
+            candidates, enqueued, skipped_already, skipped_other,
+            len(enqueued_without_pdf), dry_run,
         )
 
         return {
             "candidates": candidates,
             "enqueued": enqueued,
             "skipped_already": skipped_already,
-            "skipped_no_pdf": skipped_no_pdf,
             "skipped_other": skipped_other,
             "intake_ids_enqueued": enqueued_ids,
+            "enqueued_without_pdf": enqueued_without_pdf,
             "dry_run": dry_run,
             "error": None,
         }
