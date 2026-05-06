@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import models as _models
 from app.api.v1.endpoints import (
     admin,
+    admin_notices,
     auth,
     ajus,
     automations,
@@ -237,6 +238,11 @@ app.add_middleware(
 protected_dependencies = [Depends(auth_security.get_current_user)]
 
 app.include_router(admin.router, prefix="/api/v1/admin", tags=["Admin"], dependencies=protected_dependencies)
+# admin_notices.router usa o prefixo /api/v1 cru porque algumas rotas
+# (active/dismiss) sao acessiveis a qualquer JWT, e outras (CRUD) tem
+# guard interno de role=admin. Manter sob /api/v1/admin/notices nao
+# requer prefixo extra — o router ja' usa "/admin/notices/...".
+app.include_router(admin_notices.router, prefix="/api/v1", tags=["Admin: Avisos"], dependencies=protected_dependencies)
 app.include_router(capture_health.router, prefix="/api/v1/admin", tags=["Admin"], dependencies=protected_dependencies)
 app.include_router(taxonomy_admin.router, prefix="/api/v1/admin", tags=["Admin: Taxonomia"], dependencies=protected_dependencies)
 app.include_router(admin.me_router, prefix="/api/v1", tags=["User"], dependencies=protected_dependencies)

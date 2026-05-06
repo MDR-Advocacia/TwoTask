@@ -22,6 +22,10 @@ import {
   PrazoInicialBatchListResponse,
   PrazoInicialBatchSummary,
   PrazoInicialClassifyPendingResponse,
+  AdminNotice,
+  AdminNoticeActive,
+  AdminNoticeCreatePayload,
+  AdminNoticeUpdatePayload,
   EncaminharDevolucaoResponse,
   PatrocinioRelatorioFilters,
   PatrocinioRelatorioResponse,
@@ -1399,4 +1403,64 @@ export async function downloadPatrocinioRelatorioCsv(
     throw new Error(`HTTP ${res.status} ao baixar CSV do relatorio`);
   }
   return await res.blob();
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// Admin notices (banner de avisos)
+// ════════════════════════════════════════════════════════════════════
+
+/** Lista avisos ativos pendentes de dismiss pro usuario corrente.
+ *  Chamado pelo AdminNoticeBar a cada 30s. Retorna array vazio em
+ *  401 (sessao expirou) — o componente nem mostra nada nesse caso. */
+export async function fetchActiveAdminNotices(): Promise<AdminNoticeActive[]> {
+  const res = await apiFetch(`/api/v1/admin/notices/active`);
+  if (res.status === 401 || res.status === 403) return [];
+  return expectJson<AdminNoticeActive[]>(res);
+}
+
+/** Marca aviso como fechado pro usuario corrente (idempotente). */
+export async function dismissAdminNotice(noticeId: number): Promise<void> {
+  const res = await apiFetch(`/api/v1/admin/notices/${noticeId}/dismiss`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} ao dispensar aviso`);
+  }
+}
+
+/** Lista TODOS os avisos (admin only — backend retorna 403 se nao). */
+export async function fetchAllAdminNotices(): Promise<AdminNotice[]> {
+  const res = await apiFetch(`/api/v1/admin/notices`);
+  return expectJson<AdminNotice[]>(res);
+}
+
+export async function createAdminNotice(
+  payload: AdminNoticeCreatePayload,
+): Promise<AdminNotice> {
+  const res = await apiFetch(`/api/v1/admin/notices`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return expectJson<AdminNotice>(res);
+}
+
+export async function updateAdminNotice(
+  id: number,
+  payload: AdminNoticeUpdatePayload,
+): Promise<AdminNotice> {
+  const res = await apiFetch(`/api/v1/admin/notices/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+  return expectJson<AdminNotice>(res);
+}
+
+export async function deleteAdminNotice(id: number): Promise<void> {
+  const res = await apiFetch(`/api/v1/admin/notices/${id}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 204) {
+    throw new Error(`HTTP ${res.status} ao apagar aviso`);
+  }
 }

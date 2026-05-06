@@ -935,6 +935,47 @@ export interface PrazoInicialEnums {
 
 
 
+// ── Admin notices (banner de avisos pra usuarios online) ──
+
+export type AdminNoticeSeverity = "info" | "warning" | "danger";
+export type AdminNoticeStatus = "agendado" | "ativo" | "expirado";
+
+/** Subset do aviso visivel pra qualquer usuario (GET /admin/notices/active). */
+export interface AdminNoticeActive {
+  id: number;
+  title: string;
+  message: string;
+  severity: AdminNoticeSeverity;
+  starts_at: string | null;
+  ends_at: string | null;
+}
+
+/** Versao completa pro CRUD admin (inclui contadores + status calculado). */
+export interface AdminNotice {
+  id: number;
+  title: string;
+  message: string;
+  severity: AdminNoticeSeverity;
+  starts_at: string;
+  ends_at: string;
+  created_by_user_id: number | null;
+  created_at: string;
+  updated_at: string;
+  status: AdminNoticeStatus;
+  dismissed_count: number;
+}
+
+export interface AdminNoticeCreatePayload {
+  title: string;
+  message: string;
+  severity: AdminNoticeSeverity;
+  starts_at: string;
+  ends_at: string;
+}
+
+export type AdminNoticeUpdatePayload = Partial<AdminNoticeCreatePayload>;
+
+
 // ── Encaminhar devolucao + relatorio de patrocinio (Frentes 2 + 3) ──
 
 export interface EncaminharDevolucaoResponse {
