@@ -206,7 +206,13 @@ class ScheduledAutomationService:
                 logger.error("Automation %d has no schedule defined", automation.id)
                 return
 
-            # Register job
+            # Register job. coalesce=True + max_instances=1 protegem contra
+            # misfire storm: se o app rebootou e perdeu N execucoes do cron
+            # (ex.: feriado prolongado ou deploy demorado), o APScheduler
+            # combina os misfires em UMA execucao soh em vez de disparar N
+            # em sequencia (cada uma classificando os mesmos 490 acumulados,
+            # torrando tokens 4x). misfire_grace_time=3600 aceita execucoes
+            # ate 1h atrasadas (alem disso descarta — o proximo cron pega).
             self.scheduler.add_job(
                 self._execute_automation,
                 trigger=trigger,
@@ -214,6 +220,9 @@ class ScheduledAutomationService:
                 args=[automation.id],
                 name=automation.name,
                 replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=3600,
             )
             logger.info("Registered job %s for automation %s", job_id, automation.name)
         except Exception as e:
@@ -302,19 +311,48 @@ class ScheduledAutomationService:
                             "records_found": result.get("records_found", 0),
                         })
                     elif step == "classify":
-                        self._update_progress(
-                            run_id,
-                            phase="classify",
-                            current=0,
-                            total=None,
-                            message=f"Etapa {step_idx}/{total_steps}: Classificando publicações",
+                        # Skip se o step pull_publications anterior (no mesmo
+                        # run) retornou 0 novos. Evita reclassificar os mesmos
+                        # registros pendentes acumulados em cada cron diario
+                        # quando nao houve nada novo no dia — economizou
+                        # tokens da Anthropic Batch API. Caso de borda: se o
+                        # classify roda sozinho (sem pull antes), o
+                        # `pull_records_found` fica None e a logica permite
+                        # classificar (intencional: operador pode acionar
+                        # classify isolado via futuro endpoint manual).
+                        pull_records_found = next(
+                            (
+                                int(s.get("records_found", 0))
+                                for s in steps_executed
+                                if s.get("step") == "pull_publications"
+                            ),
+                            None,
                         )
-                        result = self._execute_classify(automation.office_ids, run_id=run_id)
-                        steps_executed.append({
-                            "step": "classify",
-                            "status": "success",
-                            "records_classified": result.get("records_classified", 0),
-                        })
+                        if pull_records_found == 0:
+                            logger.info(
+                                "Classify pulado: pull_publications retornou 0 novos. "
+                                "Sem nada pra classificar nesse run.",
+                            )
+                            steps_executed.append({
+                                "step": "classify",
+                                "status": "skipped",
+                                "records_classified": 0,
+                                "reason": "no_new_records",
+                            })
+                        else:
+                            self._update_progress(
+                                run_id,
+                                phase="classify",
+                                current=0,
+                                total=None,
+                                message=f"Etapa {step_idx}/{total_steps}: Classificando publicações",
+                            )
+                            result = self._execute_classify(automation.office_ids, run_id=run_id)
+                            steps_executed.append({
+                                "step": "classify",
+                                "status": "success",
+                                "records_classified": result.get("records_classified", 0),
+                            })
                     elif step == "treat_publications":
                         self._update_progress(
                             run_id,

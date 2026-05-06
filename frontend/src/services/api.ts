@@ -22,6 +22,9 @@ import {
   PrazoInicialBatchListResponse,
   PrazoInicialBatchSummary,
   PrazoInicialClassifyPendingResponse,
+  EncaminharDevolucaoResponse,
+  PatrocinioRelatorioFilters,
+  PatrocinioRelatorioResponse,
   PrazoInicialEnums,
   PrazoInicialIntakeDetail,
   PrazoInicialIntakeFilters,
@@ -1337,4 +1340,63 @@ export async function cancelAjusClassifPendentes(): Promise<AjusClassifCancelRes
     method: "POST",
   });
   return expectJson<AjusClassifCancelResponse>(res);
+}
+
+
+
+// ════════════════════════════════════════════════════════════════════
+// Patrocinio — encaminhar devolucao + relatorio (Frentes 2 + 3)
+// ════════════════════════════════════════════════════════════════════
+
+/**
+ * Encaminha um intake existente pra fila de devolucao do AJUS.
+ * Marca patrocinio como aprovado/devolucao + status DEVOLUCAO_PENDENTE
+ * + dispatch_pending=True. Backend faz tudo numa transacao soh.
+ */
+export async function encaminharIntakeParaDevolucao(
+  intakeId: number,
+  motivo?: string,
+): Promise<EncaminharDevolucaoResponse> {
+  const res = await apiFetch(
+    `/api/v1/prazos-iniciais/intakes/${intakeId}/encaminhar-devolucao`,
+    {
+      method: "POST",
+      body: JSON.stringify({ motivo: motivo || null }),
+    },
+  );
+  return expectJson<EncaminharDevolucaoResponse>(res);
+}
+
+/** Lista paginada do relatorio de devolucoes aprovadas. */
+export async function fetchPatrocinioRelatorio(
+  filters: PatrocinioRelatorioFilters = {},
+): Promise<PatrocinioRelatorioResponse> {
+  const params = new URLSearchParams();
+  if (filters.since) params.set("since", filters.since);
+  if (filters.until) params.set("until", filters.until);
+  if (filters.office_id != null) params.set("office_id", String(filters.office_id));
+  params.set("limit", String(filters.limit ?? 50));
+  params.set("offset", String(filters.offset ?? 0));
+  const res = await apiFetch(
+    `/api/v1/prazos-iniciais/patrocinio/relatorio?${params.toString()}`,
+  );
+  return expectJson<PatrocinioRelatorioResponse>(res);
+}
+
+/** Baixa o CSV do relatorio com os filtros atuais. Retorna Blob pra
+ *  o caller fazer download via createObjectURL. */
+export async function downloadPatrocinioRelatorioCsv(
+  filters: PatrocinioRelatorioFilters = {},
+): Promise<Blob> {
+  const params = new URLSearchParams();
+  if (filters.since) params.set("since", filters.since);
+  if (filters.until) params.set("until", filters.until);
+  if (filters.office_id != null) params.set("office_id", String(filters.office_id));
+  const res = await apiFetch(
+    `/api/v1/prazos-iniciais/patrocinio/relatorio/export.csv?${params.toString()}`,
+  );
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} ao baixar CSV do relatorio`);
+  }
+  return await res.blob();
 }

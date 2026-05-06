@@ -3878,3 +3878,208 @@ def diagnose_intake_routing(
         "intake_status": intake.status,
         "sugestoes": diagnoses,
     }
+
+
+
+# ════════════════════════════════════════════════════════════════════
+# Relatorio de patrocinio — devolucoes aprovadas (Frente 3)
+# ════════════════════════════════════════════════════════════════════
+
+class PatrocinioRelatorioItem(BaseModel):
+    """Linha do relatorio: 1 intake/patrocinio aprovado pra devolucao."""
+    intake_id: int
+    cnj_number: Optional[str]
+    lawsuit_id: Optional[int]
+    office_id: Optional[int]
+    intake_status: str
+    received_at: Optional[datetime]
+    decisao: str
+    suspeita_devolucao: bool
+    natureza_acao: Optional[str]
+    motivo_suspeita: Optional[str]
+    outro_advogado_nome: Optional[str]
+    outro_advogado_oab: Optional[str]
+    outro_advogado_data_habilitacao: Optional[date]
+    outro_escritorio_nome: Optional[str]
+    polo_passivo_confirmado: bool
+    confianca: Optional[str]
+    fundamentacao: Optional[str]
+    review_status: str
+    reviewed_by_email: Optional[str]
+    reviewed_by_name: Optional[str]
+    reviewed_at: Optional[datetime]
+    ajus_queue_status: Optional[str]
+    ajus_queue_id: Optional[int]
+
+
+class PatrocinioRelatorioResponse(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[PatrocinioRelatorioItem]
+
+
+def _build_relatorio_query(
+    db: Session,
+    *,
+    since: Optional[datetime],
+    until: Optional[datetime],
+    office_id: Optional[int],
+):
+    """Query base do relatorio — patrocinios aprovados com suspeita devolucao,
+    join com intake (pra CNJ/office/status). Reusada no list e no export."""
+    from app.models.prazo_inicial_patrocinio import (
+        PATROCINIO_REVIEW_APPROVED,
+        PrazoInicialPatrocinio,
+    )
+
+    q = (
+        db.query(PrazoInicialPatrocinio, PrazoInicialIntake)
+        .join(PrazoInicialIntake, PrazoInicialPatrocinio.intake_id == PrazoInicialIntake.id)
+        .filter(PrazoInicialPatrocinio.review_status == PATROCINIO_REVIEW_APPROVED)
+        .filter(PrazoInicialPatrocinio.suspeita_devolucao.is_(True))
+    )
+    if since is not None:
+        q = q.filter(PrazoInicialPatrocinio.reviewed_at >= since)
+    if until is not None:
+        q = q.filter(PrazoInicialPatrocinio.reviewed_at <= until)
+    if office_id is not None:
+        q = q.filter(PrazoInicialIntake.office_id == office_id)
+    q = q.order_by(PrazoInicialPatrocinio.reviewed_at.desc().nulls_last())
+    return q
+
+
+def _ajus_queue_status_for_intake(db: Session, intake_id: int) -> tuple[Optional[str], Optional[int]]:
+    """Pega status + id do item AJUS associado ao intake (se existir)."""
+    from app.models.ajus import AjusAndamentoQueue
+    item = (
+        db.query(AjusAndamentoQueue)
+        .filter(AjusAndamentoQueue.intake_id == intake_id)
+        .one_or_none()
+    )
+    if item is None:
+        return None, None
+    return item.status, item.id
+
+
+@router.get(
+    "/patrocinio/relatorio",
+    response_model=PatrocinioRelatorioResponse,
+    summary=(
+        "Lista paginada dos casos de devolucao aprovados (patrocinio "
+        "aprovado + suspeita_devolucao=True). Base do relatorio que vai "
+        "ao banco."
+    ),
+)
+def list_patrocinio_relatorio(
+    since: Optional[datetime] = Query(default=None, description="Reviewed_at >= since (ISO)"),
+    until: Optional[datetime] = Query(default=None, description="Reviewed_at <= until (ISO)"),
+    office_id: Optional[int] = Query(default=None, ge=1, description="Filtra por intake.office_id (interno)"),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(
+        auth_security.require_permission("prazos_iniciais")
+    ),
+):
+    q = _build_relatorio_query(db, since=since, until=until, office_id=office_id)
+    total = q.count()
+    rows = q.offset(offset).limit(limit).all()
+
+    items: list[PatrocinioRelatorioItem] = []
+    for patrocinio, intake in rows:
+        ajus_status, ajus_id = _ajus_queue_status_for_intake(db, intake.id)
+        items.append(PatrocinioRelatorioItem(
+            intake_id=intake.id,
+            cnj_number=intake.cnj_number,
+            lawsuit_id=intake.lawsuit_id,
+            office_id=intake.office_id,
+            intake_status=intake.status,
+            received_at=intake.received_at,
+            decisao=patrocinio.decisao,
+            suspeita_devolucao=bool(patrocinio.suspeita_devolucao),
+            natureza_acao=patrocinio.natureza_acao,
+            motivo_suspeita=patrocinio.motivo_suspeita,
+            outro_advogado_nome=patrocinio.outro_advogado_nome,
+            outro_advogado_oab=patrocinio.outro_advogado_oab,
+            outro_advogado_data_habilitacao=patrocinio.outro_advogado_data_habilitacao,
+            outro_escritorio_nome=patrocinio.outro_escritorio_nome,
+            polo_passivo_confirmado=bool(patrocinio.polo_passivo_confirmado),
+            confianca=patrocinio.confianca,
+            fundamentacao=patrocinio.fundamentacao,
+            review_status=patrocinio.review_status,
+            reviewed_by_email=patrocinio.reviewed_by_email,
+            reviewed_by_name=patrocinio.reviewed_by_name,
+            reviewed_at=patrocinio.reviewed_at,
+            ajus_queue_status=ajus_status,
+            ajus_queue_id=ajus_id,
+        ))
+
+    return PatrocinioRelatorioResponse(
+        total=total, limit=limit, offset=offset, items=items,
+    )
+
+
+@router.get(
+    "/patrocinio/relatorio/export.csv",
+    summary="Exporta o relatorio de devolucoes aprovadas em CSV.",
+)
+def export_patrocinio_relatorio_csv(
+    since: Optional[datetime] = Query(default=None),
+    until: Optional[datetime] = Query(default=None),
+    office_id: Optional[int] = Query(default=None, ge=1),
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(
+        auth_security.require_permission("prazos_iniciais")
+    ),
+):
+    import csv
+    import io as _io
+    from datetime import datetime as _dt
+
+    q = _build_relatorio_query(db, since=since, until=until, office_id=office_id)
+    rows = q.all()
+
+    buf = _io.StringIO()
+    writer = csv.writer(buf, delimiter=";", quoting=csv.QUOTE_MINIMAL)
+    writer.writerow([
+        "intake_id", "cnj", "lawsuit_id", "office_id", "intake_status",
+        "received_at", "decisao", "natureza_acao", "motivo_suspeita",
+        "outro_advogado_nome", "outro_advogado_oab",
+        "outro_advogado_data_habilitacao", "outro_escritorio_nome",
+        "polo_passivo_confirmado", "confianca", "fundamentacao",
+        "reviewed_by_email", "reviewed_at", "ajus_queue_status",
+    ])
+    for patrocinio, intake in rows:
+        ajus_status, _ = _ajus_queue_status_for_intake(db, intake.id)
+        writer.writerow([
+            intake.id,
+            intake.cnj_number or "",
+            intake.lawsuit_id or "",
+            intake.office_id or "",
+            intake.status,
+            intake.received_at.isoformat() if intake.received_at else "",
+            patrocinio.decisao,
+            patrocinio.natureza_acao or "",
+            patrocinio.motivo_suspeita or "",
+            patrocinio.outro_advogado_nome or "",
+            patrocinio.outro_advogado_oab or "",
+            patrocinio.outro_advogado_data_habilitacao.isoformat() if patrocinio.outro_advogado_data_habilitacao else "",
+            patrocinio.outro_escritorio_nome or "",
+            "sim" if patrocinio.polo_passivo_confirmado else "nao",
+            patrocinio.confianca or "",
+            (patrocinio.fundamentacao or "").replace("\n", " ").replace("\r", " "),
+            patrocinio.reviewed_by_email or "",
+            patrocinio.reviewed_at.isoformat() if patrocinio.reviewed_at else "",
+            ajus_status or "",
+        ])
+
+    csv_bytes = buf.getvalue().encode("utf-8-sig")  # BOM pra Excel pt-BR
+
+    from fastapi.responses import StreamingResponse as _StreamingResponse
+    fname = f"patrocinio-relatorio-{_dt.utcnow().strftime('%Y%m%d-%H%M%S')}.csv"
+    return _StreamingResponse(
+        _io.BytesIO(csv_bytes),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={fname}"},
+    )

@@ -22,7 +22,10 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
-import { patchPrazoInicialPatrocinio } from "@/services/api";
+import {
+  encaminharIntakeParaDevolucao,
+  patchPrazoInicialPatrocinio,
+} from "@/services/api";
 import type {
   PrazoInicialPatrocinio,
   PrazoInicialPatrocinioPatch,
@@ -127,6 +130,34 @@ export function PatrocinioPanel({ patrocinio, onUpdated }: Props) {
     async (action: "aprovado" | "editado" | "rejeitado") => {
       setSubmitting(true);
       try {
+        // Caso especial: aprovacao quando ha suspeita de devolucao na
+        // sugestao da IA. Em vez de so carimbar review_status=aprovado,
+        // dispara o fluxo completo de devolucao — marca patrocinio
+        // aprovado, transiciona intake pra DEVOLUCAO_PENDENTE,
+        // dispatch_pending=True (worker cancela legada + GED) e
+        // enfileira AJUS com cod_andamento.is_devolucao=True. Tudo na
+        // mesma transacao do backend.
+        if (action === "aprovado" && patrocinio.suspeita_devolucao) {
+          await encaminharIntakeParaDevolucao(
+            patrocinio.intake_id,
+            patrocinio.motivo_suspeita || undefined,
+          );
+          toast({
+            title: "Patrocínio aprovado e encaminhado p/ devolução",
+            description:
+              "Caso entrou na fila do AJUS e o worker vai cancelar a task legada do L1 + subir habilitação no GED.",
+          });
+          // Forca refresh da pagina pai pra puxar o estado novo
+          // (intake.status, ajus_queue, dispatch_pending). O backend
+          // tambem atualizou o patrocinio (review_status=aprovado).
+          onUpdated({
+            ...patrocinio,
+            review_status: "aprovado",
+            reviewed_at: new Date().toISOString(),
+          });
+          setEditing(false);
+          return;
+        }
         const payload: PrazoInicialPatrocinioPatch = { review_action: action };
         if (action === "editado") {
           payload.decisao = decisao as PrazoInicialPatrocinioPatch["decisao"];
@@ -212,9 +243,16 @@ export function PatrocinioPanel({ patrocinio, onUpdated }: Props) {
               variant="default"
               disabled={submitting}
               onClick={() => handleAction("aprovado")}
+              title={
+                patrocinio.suspeita_devolucao
+                  ? "Aprova diagnostico + encaminha caso pra fila de devolucao do AJUS (cancela legada do L1, sobe GED, manda AJUS)."
+                  : "Confirma a decisao de patrocinio sem alterar campos."
+              }
             >
               <CheckCircle2 className="mr-1 h-4 w-4" />
-              Aprovar
+              {patrocinio.suspeita_devolucao
+                ? "Aprovar e encaminhar p/ devolução"
+                : "Aprovar"}
             </Button>
             <Button
               size="sm"

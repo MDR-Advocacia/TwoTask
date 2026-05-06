@@ -208,9 +208,24 @@ Lê pela CLASSE + CAUSA DE PEDIR da PI:
 - `TRABALHISTA` — Justiça do Trabalho, vínculo CLT.
 - `OUTRO` — qualquer coisa fora de consumo (penal, eleitoral, falência, recuperação judicial sem viés consumerista).
 
+## Advogados internos do MDR (NUNCA classificar como "outro escritório")
+
+O MDR Advocacia atua via 1 advogado nomeado em todas as habilitações:
+
+- **Marcos Délli** (variações: "Marcos Delli", "MARCOS DELLI", "Marcos D. de Sousa", iniciais "M. Delli")
+
+Quando QUALQUER habilitação no polo passivo da vinculada Master estiver
+em nome de Marcos Délli (com ou sem acento, com ou sem iniciais), ELE
+**É** o MDR. Não preencha `outro_advogado_*` com esse nome. Decisão
+default = `MDR_ADVOCACIA` + `suspeita_devolucao=false` (a menos que
+outra regra dispare, como natureza não-consumerista).
+
+Só ative `OUTRO_ESCRITORIO` ou `suspeita_devolucao=true` quando o
+advogado habilitado for nome **DIFERENTE** de Marcos Délli.
+
 ## `decisao` — regra principal
 
-Identifique TODOS os advogados habilitados pela vinculada Master no polo passivo (do bloco `Partes Advogados` da capa, e cite-se/contestações na PI). Pra cada um, anote nome + OAB + DATA DE HABILITAÇÃO (data da petição de habilitação ou da primeira manifestação).
+Identifique TODOS os advogados habilitados pela vinculada Master no polo passivo (do bloco `Partes Advogados` da capa, e cite-se/contestações na PI). Pra cada um, anote nome + OAB + DATA DE HABILITAÇÃO (data da petição de habilitação ou da primeira manifestação). **Ignore Marcos Délli** — ele é interno (vide seção acima).
 
 **Data de corte: 18/03/2026** (início do contrato MDR/Master — hardcoded).
 
