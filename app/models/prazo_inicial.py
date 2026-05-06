@@ -45,6 +45,14 @@ from app.db.session import Base
 #                     tela de revisão — ver `template_matching_service`).
 
 INTAKE_STATUS_RECEIVED = "RECEBIDO"
+# Status onde reenvio do mesmo external_id pelo POST /intake atualiza o
+# registro (PDF, capa, integra) em vez de virar idempotente. Usado pra
+# automacao externa reenviar tudo periodicamente sem fazer overrule do
+# trabalho ja feito pelo HITL — quando o intake ja foi classificado/
+# agendado/finalizado, o reenvio NAO mexe.
+# Ficam ELEGIVEIS pra atualizar somente os "limbos" pre-classificacao
+# e estados de erro recuperaveis. EM_CLASSIFICACAO fica de fora
+# (job em curso — interromper poderia perder bytes em flight).
 INTAKE_STATUS_LAWSUIT_NOT_FOUND = "PROCESSO_NAO_ENCONTRADO"
 INTAKE_STATUS_READY_TO_CLASSIFY = "PRONTO_PARA_CLASSIFICAR"
 INTAKE_STATUS_IN_CLASSIFICATION = "EM_CLASSIFICACAO"
@@ -63,6 +71,20 @@ INTAKE_STATUS_CLASSIFICATION_ERROR = "ERRO_CLASSIFICACAO"
 INTAKE_STATUS_SCHEDULE_ERROR = "ERRO_AGENDAMENTO"
 INTAKE_STATUS_GED_ERROR = "ERRO_GED"
 INTAKE_STATUS_CANCELLED = "CANCELADO"
+
+INTAKE_STATUSES_REINGEST_ALLOWED = frozenset({
+    INTAKE_STATUS_RECEIVED,
+    INTAKE_STATUS_LAWSUIT_NOT_FOUND,
+    INTAKE_STATUS_READY_TO_CLASSIFY,
+    INTAKE_STATUS_CLASSIFICATION_ERROR,
+})
+# CLASSIFICADO/AGUARDANDO_CONFIG_TEMPLATE/EM_REVISAO/AGENDADO/CONCLUIDO_*/
+# GED_*/ DEVOLUCAO_*/CANCELADO ficam de fora — preserva trabalho ja
+# feito pelo HITL (operador 2026-05-06: "incremento nao muda o que ja
+# ta classificado"). Erros pos-classificacao (ERRO_AGENDAMENTO,
+# ERRO_GED) tambem ficam de fora porque ja TEM sugestoes/decisoes
+# materializadas que o operador esta tentando recuperar — nao quer
+# zerar pra reclassificar do zero.
 
 # ─── Fluxo de devolução automática (pin019) ───────────────────────────
 # Intake recebido pelo endpoint /intake/devolucao quando a automação
