@@ -148,10 +148,13 @@ class AjusAndamentoQueue(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
+    # Nullable: itens bulk (upload manual de PDFs/CNJs em lote) nao tem
+    # intake associado. UNIQUE preservado — Postgres trata NULLs como
+    # distintos, entao multiplos bulk items com intake_id=NULL convivem.
     intake_id = Column(
         Integer,
         ForeignKey("prazo_inicial_intakes.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         unique=True,
     )
     cnj_number = Column(String(25), nullable=False, index=True)

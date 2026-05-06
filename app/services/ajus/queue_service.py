@@ -26,11 +26,12 @@ Storage do PDF:
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 from sqlalchemy.orm import Session
 
@@ -56,6 +57,45 @@ from app.services.ajus.ajus_client import (
 from app.services.prazos_iniciais.prazo_calculator import add_business_days
 
 logger = logging.getLogger(__name__)
+
+
+# ─── Helpers de CNJ ──────────────────────────────────────────────────
+
+# CNJ padrao: NNNNNNN-DD.AAAA.J.TR.OOOO (20 digitos). Aceita com/sem
+# mascara — capturamos a sequencia conhecida de tamanhos.
+_CNJ_REGEX = re.compile(
+    r"(\d{7})[-.\s]?(\d{2})[-.\s]?(\d{4})[-.\s]?(\d{1})[-.\s]?(\d{2})[-.\s]?(\d{4})",
+)
+
+
+def extract_cnj_from_filename(filename: str) -> Optional[str]:
+    """
+    Tenta extrair um CNJ do nome do arquivo. Retorna so' digitos (20)
+    ou None se nao bater. Aceita variacoes com ou sem mascara — pega o
+    primeiro match.
+    """
+    if not filename:
+        return None
+    base = filename.rsplit(".", 1)[0] if "." in filename else filename
+    match = _CNJ_REGEX.search(base)
+    if not match:
+        return None
+    return "".join(match.groups())
+
+
+def normalize_cnj_basic(raw: str) -> Optional[str]:
+    """
+    Normaliza CNJ aceitando entrada com ou sem mascara. Retorna so'
+    digitos se a contagem for 20, None caso contrario. Mais estrito
+    que o normalize_cnj do intake_service (que tolera 15..25) — aqui
+    queremos rejeitar CNJ truncado pra o operador rever.
+    """
+    if not raw:
+        return None
+    digits = "".join(c for c in str(raw) if c.isdigit())
+    if len(digits) != 20:
+        return None
+    return digits
 
 
 # ─── Storage helpers ─────────────────────────────────────────────────
@@ -101,6 +141,27 @@ def _copy_pdf_to_ajus_storage(source_relative_path: str) -> Optional[str]:
     logger.info(
         "AJUS enqueue: PDF copiado %s → %s",
         source_abs, dest_abs,
+    )
+    return rel_path
+
+
+def _save_pdf_bytes_to_ajus_storage(pdf_bytes: bytes) -> Optional[str]:
+    """
+    Persiste bytes de um PDF (vindo de upload em lote) direto no storage
+    AJUS. Retorna o `relative_path` gravado, mesmo layout do
+    `_copy_pdf_to_ajus_storage` (YYYY/MM/DD/{uuid}.pdf).
+    """
+    if not pdf_bytes:
+        return None
+    now = datetime.now(timezone.utc)
+    rel_dir = f"{now.year:04d}/{now.month:02d}/{now.day:02d}"
+    filename = f"{uuid.uuid4().hex}.pdf"
+    rel_path = f"{rel_dir}/{filename}"
+    dest_abs = _ajus_storage_root() / rel_path
+    dest_abs.parent.mkdir(parents=True, exist_ok=True)
+    dest_abs.write_bytes(pdf_bytes)
+    logger.info(
+        "AJUS bulk: PDF salvo em %s (%d bytes)", dest_abs, len(pdf_bytes),
     )
     return rel_path
 
@@ -379,6 +440,134 @@ class AjusQueueService:
             item.id, intake.id, intake.cnj_number, cod_andamento.codigo,
         )
         return item
+
+    # ── Bulk enqueue (upload manual em lote sem intake) ─────────────
+
+    def bulk_enqueue(
+        self,
+        *,
+        cod_andamento: AjusCodAndamento,
+        entries: Iterable[dict],
+        situacao: Optional[str] = None,
+        data_evento: Optional[date] = None,
+        data_agendamento: Optional[date] = None,
+        data_fatal: Optional[date] = None,
+        hora_agendamento: Optional[time] = None,
+        informacao_template_override: Optional[str] = None,
+    ) -> dict:
+        """
+        Cria N itens na fila AJUS direto (sem intake), 1 por entry.
+
+        Cada `entry` deve ter pelo menos:
+          - `cnj` (str): 20 digitos. Origem livre (nome de arquivo,
+            textarea, etc.). Caller normaliza.
+          - `pdf_bytes` (Optional[bytes]): conteudo do PDF a anexar
+            (None = sem anexo).
+          - `filename` (Optional[str]): nome de origem, so' pra log.
+
+        Variaveis comuns (situacao/datas/hora) e o template do
+        `informacao` se aplicam ao lote inteiro. Se algum campo vier
+        None, herda do `cod_andamento` (datas calculadas via offset
+        de dias uteis).
+
+        Returns:
+            dict com:
+              - created (int): itens enfileirados.
+              - skipped (list[dict]): itens rejeitados (cnj invalido,
+                falha gravando PDF, etc.) — cada item tem
+                {cnj, filename, reason}.
+              - item_ids (list[int]): ids dos itens criados.
+        """
+        # Resolve defaults de data/situacao a partir do cod_andamento.
+        eff_situacao = situacao or cod_andamento.situacao or "A"
+        eff_data_evento = data_evento or date.today()
+        eff_data_agend = data_agendamento or add_business_days(
+            eff_data_evento, cod_andamento.dias_agendamento_offset_uteis,
+        )
+        eff_data_fatal = data_fatal or add_business_days(
+            eff_data_evento, cod_andamento.dias_fatal_offset_uteis,
+        )
+        info_template = (
+            informacao_template_override
+            if informacao_template_override is not None
+            else (cod_andamento.informacao_template or "")
+        )
+
+        created_ids: list[int] = []
+        skipped: list[dict] = []
+        for entry in entries:
+            raw_cnj = entry.get("cnj")
+            filename = entry.get("filename")
+            pdf_bytes = entry.get("pdf_bytes")
+
+            cnj = normalize_cnj_basic(raw_cnj or "")
+            if cnj is None:
+                skipped.append({
+                    "cnj": str(raw_cnj or ""),
+                    "filename": filename,
+                    "reason": (
+                        "CNJ invalido ou nao encontrado no nome do arquivo"
+                        f" ({raw_cnj!r})."
+                    ),
+                })
+                continue
+
+            # Salva PDF (quando houver). Falha de gravacao NAO bloqueia
+            # — segue sem anexo (mesmo padrao do enqueue_for_intake).
+            pdf_rel: Optional[str] = None
+            if pdf_bytes:
+                try:
+                    pdf_rel = _save_pdf_bytes_to_ajus_storage(pdf_bytes)
+                except OSError as exc:  # noqa: BLE001
+                    logger.warning(
+                        "AJUS bulk: falha gravando PDF do CNJ %s "
+                        "(filename=%r): %s — segue sem anexo",
+                        cnj, filename, exc,
+                    )
+
+            # Render do `informacao` com mesmo placeholders do fluxo auto.
+            ctx = {
+                "cnj": cnj,
+                "data_recebimento": format_date_brl(eff_data_evento),
+                "motivo": "",
+            }
+            try:
+                informacao = info_template.format(**ctx)
+            except (KeyError, IndexError) as exc:
+                logger.warning(
+                    "AJUS bulk: placeholder desconhecido em template "
+                    "(cod=%s): %s — usando template raw",
+                    cod_andamento.codigo, exc,
+                )
+                informacao = info_template
+
+            item = AjusAndamentoQueue(
+                intake_id=None,
+                cnj_number=cnj,
+                cod_andamento_id=cod_andamento.id,
+                situacao=eff_situacao,
+                data_evento=eff_data_evento,
+                data_agendamento=eff_data_agend,
+                data_fatal=eff_data_fatal,
+                hora_agendamento=hora_agendamento,
+                informacao=informacao,
+                pdf_path=pdf_rel,
+                status=AJUS_QUEUE_PENDENTE,
+            )
+            self.db.add(item)
+            self.db.flush()
+            created_ids.append(item.id)
+            logger.info(
+                "AJUS bulk: item id=%d criado (cnj=%s, cod=%s, has_pdf=%s)",
+                item.id, cnj, cod_andamento.codigo, bool(pdf_rel),
+            )
+
+        self.db.commit()
+        return {
+            "created": len(created_ids),
+            "skipped": skipped,
+            "item_ids": created_ids,
+        }
 
     # ── Dispatch ────────────────────────────────────────────────────
 
