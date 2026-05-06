@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime, time as dtime, timezone
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session, joinedload
 
@@ -150,6 +151,30 @@ class PrazosIniciaisSchedulingService:
     def _utcnow() -> datetime:
         return datetime.now(timezone.utc)
 
+    # Timezone do Brasil (BRT). O L1 IGNORA o offset ISO ao parsear
+    # datetime - trata o numero literal como UTC e depois renderiza em
+    # BRT (subtrai 3h). Por isso converte-se local BRT -> UTC com `Z`
+    # antes de mandar. Caso contrario, 23:59Z aparece como 20:59 na
+    # tela do L1. Mesma logica de Publications (publication_search_service).
+    _BR_TZ = ZoneInfo("America/Sao_Paulo")
+
+    @classmethod
+    def _brt_to_utc_iso(
+        cls, due_date: date, due_time: Optional[dtime] = None
+    ) -> str:
+        """
+        Combina date + time (interpretados em BRT) e converte pra ISO
+        UTC com `Z`. Default `due_time=None` -> 23:59:59 BRT (fim do
+        expediente, padrao usado pra prazos sem horario especifico).
+        """
+        local_time = due_time if due_time is not None else dtime(23, 59, 59)
+        local_dt = datetime.combine(due_date, local_time).replace(
+            tzinfo=cls._BR_TZ,
+        )
+        return local_dt.astimezone(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+        )
+
     def _load_intake(self, intake_id: int) -> Optional[PrazoInicialIntake]:
         return (
             self.db.query(PrazoInicialIntake)
@@ -284,14 +309,21 @@ class PrazosIniciaisSchedulingService:
                 "no catálogo local — sincronize o catálogo de tasks do L1."
             )
 
-        # Data final da sugestão (Date) vira "YYYY-MM-DDT23:59:00Z" no L1.
+        # startDateTime/endDateTime: data_final_calculada + audiencia_hora
+        # (quando houver), interpretado em BRT e convertido pra UTC com `Z`.
+        # Caso contrario o L1 trata o numero literal como UTC e renderiza
+        # com -3h na tela (ex.: 23:59Z apareceria como 20:59 BRT - bug que
+        # afetava audiencias antes desse ajuste). Sugestoes sem horario
+        # (contestar, liminar, manifestacao) caem em 23:59:59 BRT.
+        # Mesma logica de Publications.
         due_date: date = sugestao.data_final_calculada
-        due_iso = f"{due_date.isoformat()}T23:59:00Z"
+        due_iso = self._brt_to_utc_iso(due_date, sugestao.audiencia_hora)
 
-        # publishDate: L1 exige quando SubTypeId está preenchido. Usa a data
-        # base da sugestão (origem do prazo) ou cai na due_date.
+        # publishDate: L1 exige quando SubTypeId esta preenchido. Usa a data
+        # base da sugestao (origem do prazo) ou cai na due_date - sempre
+        # 00:00:00 BRT convertido pra UTC.
         base_date: date = sugestao.data_base or due_date
-        publish_iso = f"{base_date.isoformat()}T00:00:00Z"
+        publish_iso = self._brt_to_utc_iso(base_date, dtime(0, 0, 0))
 
         # Preserva description/notes/priority já renderizados pelo template
         # via _apply_template_to_sugestao. Se não houver, gera fallback
@@ -522,8 +554,11 @@ class PrazosIniciaisSchedulingService:
                 "tasks do L1."
             )
 
-        due_iso = f"{custom_task.due_date.isoformat()}T23:59:00Z"
-        publish_iso = f"{custom_task.due_date.isoformat()}T00:00:00Z"
+        # Tarefa avulsa nao tem horario especifico - usa fim do dia BRT
+        # (23:59:59) convertido pra UTC. publishDate em 00:00:00 BRT.
+        # Mesma logica do path de sugestao via template.
+        due_iso = self._brt_to_utc_iso(custom_task.due_date, None)
+        publish_iso = self._brt_to_utc_iso(custom_task.due_date, dtime(0, 0, 0))
 
         description = custom_task.description.strip()
         if len(description) > _L1_DESCRIPTION_MAX_CHARS:
