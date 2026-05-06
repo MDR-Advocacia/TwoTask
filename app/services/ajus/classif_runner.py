@@ -2084,17 +2084,56 @@ class AjusClassifRunner:
         self._fill_field_with_verify("Risco/Prob. Perda", portal.PROCESS_RISK_SELECTOR, item.risk_loss_probability)
 
         # CAMPO 6 — *Natureza* (obrigatorio server-side). Sem isso o
-        # save bloqueia com popup "Natureza: preenchimento obrigatorio"
-        # e nenhum XHR sai (causa raiz dos saves bloqueados/fantasmas).
-        # MDR define valor fixo "Civel" pra todos os processos.
+        # save bloqueia com popup "Natureza: preenchimento obrigatorio".
+        #
+        # AJUS roda Ext 3.x — Ext.ComponentQuery nao existe. Estrategia
+        # DOM-only: achar o input[name=codNatureza] que esta VAZIO e
+        # VISIVEL (form principal — outros sao sub-forms ocultos),
+        # localizar o trigger arrow no wrapper, clicar pra abrir picker,
+        # clicar no item "Cível" da lista.
+        # Localiza o input visivel do form principal (codNatureza vazio)
+        # via JS — devolve um seletor unico que o Playwright pode usar.
+        natureza_locate_js = (
+            "() => {"
+            "  try {"
+            "    const hiddens = Array.from(document.querySelectorAll('input[name=\"codNatureza\"]'));"
+            "    let target = null;"
+            "    for (const h of hiddens) {"
+            "      if (h.value) continue;"  # ja preenchido, pula
+            "      const wrap = h.closest('.x-form-field-wrap, .x-form-element, .x-trigger-wrap-focus, td');"
+            "      if (!wrap) continue;"
+            "      const visInp = wrap.querySelector('input[type=\"text\"]:not([type=\"hidden\"])');"
+            "      if (!visInp || visInp.offsetParent === null) continue;"
+            "      if (!visInp.id) visInp.id = '__natureza_' + Math.random().toString(36).slice(2);"
+            "      target = '#' + visInp.id; break;"
+            "    }"
+            "    return target || '';"
+            "  } catch(e) { return ''; }"
+            "}"
+        )
         try:
-            self._fill_field_with_verify(
-                "Natureza", portal.PROCESS_NATUREZA_SELECTOR, "Cível",
+            natureza_input_sel = self._page.evaluate(natureza_locate_js)
+            logger.info(
+                "AJUS runner: Natureza input localizado (item %d cnj=%s): %r",
+                item.id, item.cnj_number, natureza_input_sel,
             )
+            if natureza_input_sel:
+                # Usa o helper existente que ja sabe lidar com combobox
+                # ExtJS (clica trigger, espera picker, clica item).
+                self._fill_field_with_verify(
+                    "Natureza", natureza_input_sel, "Cível",
+                )
+            else:
+                logger.warning(
+                    "AJUS runner: Natureza input VAZIO nao localizado no "
+                    "form principal (item %d cnj=%s) — talvez ja esteja "
+                    "preenchido server-side.",
+                    item.id, item.cnj_number,
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "AJUS runner: Natureza nao firmou no combobox (item %d, "
-                "cnj=%s): %s — seguindo, save vai validar server-side.",
+                "AJUS runner: Natureza fill FALHOU (item %d, cnj=%s): %s "
+                "— seguindo, save vai validar server-side.",
                 item.id, item.cnj_number, exc,
             )
 

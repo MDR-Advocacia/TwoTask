@@ -1274,3 +1274,247 @@ class AjusQueueService:
             "dry_run": dry_run,
             "error": None,
         }
+
+    # -- PDF read/attach por item -----------------------------------
+
+    def get_pdf_bytes(self, item_id: int) -> tuple[bytes, str]:
+        """
+        Le os bytes do PDF anexado a um item da fila pra download.
+        Usa o mesmo fallback do dispatch (cobre itens enfileirados antes
+        do fix de copia local). Retorna (bytes, filename_sugerido).
+
+        Raises:
+            ValueError em item nao encontrado.
+            FileNotFoundError em item sem PDF anexado.
+        """
+        item = (
+            self.db.query(AjusAndamentoQueue)
+            .filter(AjusAndamentoQueue.id == item_id)
+            .one_or_none()
+        )
+        if item is None:
+            raise ValueError(f"Item AJUS {item_id} nao encontrado.")
+        pdf_bytes = _resolve_pdf_bytes_with_fallback(self.db, item)
+        if not pdf_bytes:
+            raise FileNotFoundError(
+                f"Item AJUS {item_id} nao tem PDF anexado."
+            )
+        # Filename amigavel: habilitacao_<cnj>.pdf
+        filename = f"habilitacao_{item.cnj_number or item_id}.pdf"
+        return pdf_bytes, filename
+
+    def attach_pdf(
+        self, item_id: int, pdf_bytes: bytes,
+    ) -> AjusAndamentoQueue:
+        """
+        Anexa PDF a um item existente que nao tinha. Limpa o prefixo
+        BACKFILL_NO_PDF_PREFIX da observacao se estiver presente. Se
+        o item estava em ERRO, volta pra PENDENTE pra re-disparar.
+
+        Aceita item em PENDENTE ou ERRO. Rejeita SUCESSO/CANCELADO/
+        ENVIANDO -- esses nao admitem anexo retroativo.
+
+        Raises:
+            ValueError em item_id invalido.
+            RuntimeError em status nao elegivel ou item ja com PDF.
+            OSError em falha de gravacao do PDF (caller pega).
+        """
+        if not pdf_bytes:
+            raise RuntimeError("PDF vazio -- nada a anexar.")
+        item = (
+            self.db.query(AjusAndamentoQueue)
+            .filter(AjusAndamentoQueue.id == item_id)
+            .one_or_none()
+        )
+        if item is None:
+            raise ValueError(f"Item AJUS {item_id} nao encontrado.")
+        if item.status not in (AJUS_QUEUE_PENDENTE, AJUS_QUEUE_ERRO):
+            raise RuntimeError(
+                f"Anexo permitido apenas em pendente/erro. "
+                f"Status atual: {item.status}."
+            )
+        if item.pdf_path:
+            raise RuntimeError(
+                f"Item ja' tem PDF anexado. Cancele e re-enfileire se "
+                f"quiser trocar."
+            )
+        # Grava o PDF na storage AJUS.
+        pdf_rel = _save_pdf_bytes_to_ajus_storage(pdf_bytes)
+        if pdf_rel is None:
+            raise RuntimeError(
+                "Falha desconhecida ao gravar PDF no storage AJUS."
+            )
+        item.pdf_path = pdf_rel
+        # Limpa prefixo de "sem anexo" se estiver presente.
+        if (
+            item.informacao
+            and item.informacao.startswith(self.BACKFILL_NO_PDF_PREFIX)
+        ):
+            item.informacao = item.informacao[
+                len(self.BACKFILL_NO_PDF_PREFIX):
+            ]
+        # Reseta erro pra pendente -- agora tem o anexo, vale tentar.
+        if item.status == AJUS_QUEUE_ERRO:
+            item.status = AJUS_QUEUE_PENDENTE
+            item.error_message = None
+        self.db.commit()
+        self.db.refresh(item)
+        logger.info(
+            "AJUS attach_pdf: item id=%d ganhou PDF (cnj=%s, status=%s)",
+            item.id, item.cnj_number, item.status,
+        )
+        return item
+
+    # -- Dispatch de itens selecionados pelo operador ---------------
+
+    def dispatch_selected(self, item_ids: list[int]) -> dict:
+        """
+        Dispatcha em UMA request AJUS um conjunto especifico de itens
+        escolhidos pelo operador (multi-select na UI). Espelha o
+        dispatch_pending_batch mas filtra por id, nao por status order.
+
+        Aceita itens em pendente ou erro. Rejeita o batch inteiro com
+        409 se algum id estiver em status nao elegivel (sucesso/
+        cancelado/enviando) -- evita silenciosamente ignorar.
+        Limita a MAX_ITENS_POR_REQUEST (limite AJUS por request).
+
+        Returns: mesmo shape do dispatch_pending_batch.
+        Raises:
+            ValueError em ids invalidos / vazio.
+            RuntimeError em ids em status nao elegivel.
+        """
+        if not item_ids:
+            raise ValueError("Lista de ids vazia.")
+        if len(item_ids) > MAX_ITENS_POR_REQUEST:
+            raise ValueError(
+                f"Maximo {MAX_ITENS_POR_REQUEST} itens por request "
+                f"(limite AJUS). Recebido {len(item_ids)}."
+            )
+
+        items = (
+            self.db.query(AjusAndamentoQueue)
+            .filter(AjusAndamentoQueue.id.in_(item_ids))
+            .all()
+        )
+        found_ids = {i.id for i in items}
+        missing = [i for i in item_ids if i not in found_ids]
+        if missing:
+            raise ValueError(
+                f"Itens nao encontrados: {missing}.",
+            )
+
+        not_eligible = [
+            (i.id, i.status)
+            for i in items
+            if i.status not in (AJUS_QUEUE_PENDENTE, AJUS_QUEUE_ERRO)
+        ]
+        if not_eligible:
+            raise RuntimeError(
+                f"Itens em status nao elegivel: "
+                f"{not_eligible}. So' pendente/erro podem ser disparados.",
+            )
+
+        # Ordena na ordem em que o operador selecionou (estavel se ele
+        # passou em ordem cronologica). Se nao importar, ordem do DB
+        # serve.
+        items_by_id = {i.id: i for i in items}
+        pending = [items_by_id[i] for i in item_ids]
+
+        # Marca como enviando (lock soft).
+        for item in pending:
+            item.status = AJUS_QUEUE_ENVIANDO
+            item.error_message = None
+        self.db.commit()
+
+        # Monta payload (espelho do dispatch_pending_batch).
+        payload_itens: list[dict] = []
+        index_to_item: dict[int, AjusAndamentoQueue] = {}
+        for idx, item in enumerate(pending):
+            entry: dict = {
+                "identificadorAcao": {"numeroProcesso": item.cnj_number},
+                "codAndamento": item.cod_andamento.codigo,
+                "situacao": item.situacao,
+                "dataEvento": format_date_brl(item.data_evento),
+                "dataAgendamento": format_date_brl(item.data_agendamento),
+                "dataFatal": format_date_brl(item.data_fatal),
+                "informacao": item.informacao,
+            }
+            if item.hora_agendamento:
+                entry["horaAgendamento"] = item.hora_agendamento.strftime("%H:%M")
+            pdf_bytes = _resolve_pdf_bytes_with_fallback(self.db, item)
+            if pdf_bytes:
+                try:
+                    validate_arquivo_size(len(pdf_bytes))
+                    entry["arquivos"] = [{
+                        "nome": "habilitacao.pdf",
+                        "base64": encode_pdf_base64(pdf_bytes),
+                    }]
+                except ValueError as exc:
+                    logger.warning(
+                        "AJUS dispatch_selected: PDF do item %d ultrapassa "
+                        "limite -- segue sem anexo: %s",
+                        item.id, exc,
+                    )
+            payload_itens.append(entry)
+            index_to_item[idx] = item
+
+        try:
+            client = AjusClient()
+            results = client.inserir_prazos(payload_itens)
+        except (AjusConfigError, AjusApiError) as exc:
+            for item in pending:
+                item.status = AJUS_QUEUE_ERRO
+                item.error_message = f"Falha global no envio: {exc}"
+            self.db.commit()
+            logger.exception("AJUS dispatch_selected: falha global")
+            return {
+                "candidates": len(pending),
+                "success_count": 0,
+                "error_count": len(pending),
+                "success_ids": [],
+                "errored": [
+                    {"id": item.id, "msg": str(exc)} for item in pending
+                ],
+            }
+
+        success_ids: list[int] = []
+        errored: list[dict] = []
+        now = datetime.now(timezone.utc)
+        for idx, result in enumerate(results):
+            item = index_to_item.get(idx)
+            if item is None:
+                continue
+            item.dispatched_at = now
+            if result.inserido:
+                item.status = AJUS_QUEUE_SUCESSO
+                item.cod_informacao_judicial = result.cod_informacao_judicial
+                item.error_message = None
+                success_ids.append(item.id)
+                from app.models.prazo_inicial import (
+                    INTAKE_STATUS_DEVOLUCAO_PENDING,
+                    INTAKE_STATUS_DEVOLUCAO_SENT,
+                    PrazoInicialIntake,
+                )
+                intake_obj = (
+                    self.db.query(PrazoInicialIntake)
+                    .filter(PrazoInicialIntake.id == item.intake_id)
+                    .first()
+                )
+                if (
+                    intake_obj is not None
+                    and intake_obj.status == INTAKE_STATUS_DEVOLUCAO_PENDING
+                ):
+                    intake_obj.status = INTAKE_STATUS_DEVOLUCAO_SENT
+            else:
+                item.status = AJUS_QUEUE_ERRO
+                item.error_message = result.msg or "Falha sem mensagem da AJUS."
+                errored.append({"id": item.id, "msg": item.error_message})
+        self.db.commit()
+
+        return {
+            "candidates": len(pending),
+            "success_count": len(success_ids),
+            "error_count": len(errored),
+            "success_ids": success_ids,
+            "errored": errored,
+        }

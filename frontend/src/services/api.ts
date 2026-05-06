@@ -1094,6 +1094,65 @@ export async function dispatchAjusAndamento(
   return expectJson(res);
 }
 
+/**
+ * Faz download do PDF da habilitacao anexado ao item da fila e devolve
+ * um Blob URL pra abrir em nova aba ou usar como href. Caller eh
+ * responsavel por chamar URL.revokeObjectURL depois.
+ *
+ * Lança erro com status 410 se o item existe mas nao tem PDF.
+ */
+export async function fetchAjusAndamentoPdfBlobUrl(
+  itemId: number,
+): Promise<string> {
+  const res = await apiFetch(`/api/v1/ajus/andamentos/${itemId}/pdf`);
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const data = await res.json();
+      detail = data.detail || detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(`Falha ao baixar PDF (HTTP ${res.status}): ${detail}`);
+  }
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
+/**
+ * Anexa um PDF a um item existente que estava sem anexo. Retorna o
+ * item atualizado (com `has_pdf=true`). Falha 409 se item ja' tem PDF
+ * ou esta em status nao elegivel; 413 se PDF ultrapassa 10MB.
+ */
+export async function uploadAjusAndamentoPdf(
+  itemId: number,
+  file: File,
+): Promise<AjusAndamentoQueueItem> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await apiFetch(`/api/v1/ajus/andamentos/${itemId}/pdf`, {
+    method: "POST",
+    body: fd,
+  });
+  return expectJson<AjusAndamentoQueueItem>(res);
+}
+
+/**
+ * Dispatcha em UMA request um conjunto de itens escolhidos pelo
+ * operador (multi-select). Limite: 20 itens por chamada.
+ */
+export async function dispatchSelectedAjusAndamentos(
+  itemIds: number[],
+): Promise<AjusDispatchBatchResponse> {
+  const res = await apiFetch(`/api/v1/ajus/andamentos/dispatch-selected`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ item_ids: itemIds }),
+  });
+  return expectJson<AjusDispatchBatchResponse>(res);
+}
+
+
 export async function cancelAjusAndamento(itemId: number) {
   const res = await apiFetch(
     `/api/v1/ajus/andamentos/${itemId}/cancel`,

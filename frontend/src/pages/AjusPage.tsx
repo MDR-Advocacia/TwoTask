@@ -1,12 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   Ban,
   CheckCircle2,
   Clock,
+  Eye,
   FileText,
+  FileWarning,
   History,
   Loader2,
+  Paperclip,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -51,10 +54,13 @@ import {
   deleteAjusCodAndamento,
   dispatchAjusAndamento,
   dispatchAjusAndamentosPending,
+  dispatchSelectedAjusAndamentos,
+  fetchAjusAndamentoPdfBlobUrl,
   fetchAjusAndamentos,
   fetchAjusCodAndamento,
   retryAjusAndamento,
   updateAjusCodAndamento,
+  uploadAjusAndamentoPdf,
 } from "@/services/api";
 import type {
   AjusAndamentoQueueItem,
@@ -111,6 +117,16 @@ export default function AjusPage() {
   const [actionItemId, setActionItemId] = useState<number | null>(null);
   const [isDispatching, setIsDispatching] = useState(false);
   const [isBackfilling, setIsBackfilling] = useState(false);
+  const [isDispatchingSelected, setIsDispatchingSelected] = useState(false);
+  // Paginacao
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(50);
+  // Multi-selecao (apenas pendente/erro sao selecionaveis)
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  // Upload de PDF — track qual item esta em upload pra mostrar spinner
+  const [uploadingItemId, setUploadingItemId] = useState<number | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadTargetItemRef = useRef<number | null>(null);
 
   // ─── Aba Códigos ───────────────────────────────────────────────────
   const [codigos, setCodigos] = useState<AjusCodAndamento[]>([]);
@@ -125,7 +141,10 @@ export default function AjusPage() {
   const loadAndamentos = useCallback(async () => {
     setAndamentosLoading(true);
     try {
-      const filters: Parameters<typeof fetchAjusAndamentos>[0] = { limit: 100 };
+      const filters: Parameters<typeof fetchAjusAndamentos>[0] = {
+        limit: pageSize,
+        offset: page * pageSize,
+      };
       if (statusFilter !== "__all__") filters.status = statusFilter;
       if (cnjFilter.trim()) filters.cnj_number = cnjFilter.trim();
       const resp = await fetchAjusAndamentos(filters);
@@ -140,7 +159,35 @@ export default function AjusPage() {
     } finally {
       setAndamentosLoading(false);
     }
-  }, [statusFilter, cnjFilter, toast]);
+  }, [statusFilter, cnjFilter, page, pageSize, toast]);
+
+  // Reset de pagina quando filtros mudam, pra nao ficar olhando offset
+  // que ja' nao existe (ex.: filtra por status e o total cai de 300 pra 5).
+  useEffect(() => { setPage(0); }, [statusFilter, cnjFilter, pageSize]);
+
+  // Limpa selecao ao trocar de pagina/filtros — selecionar tem escopo
+  // local da pagina atual, evita confusao de "selecionei 18 mas so' 5
+  // estao na tela".
+  useEffect(() => { setSelectedIds(new Set()); }, [page, pageSize, statusFilter, cnjFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(andamentosTotal / pageSize));
+  const safePage = Math.min(page, totalPages - 1);
+
+  // Itens elegiveis pra dispatch (multi-select)
+  const selectableIds = useMemo(
+    () => andamentos
+      .filter((i) => i.status === "pendente" || i.status === "erro")
+      .map((i) => i.id),
+    [andamentos],
+  );
+  const allOnPageSelected = (
+    selectableIds.length > 0
+    && selectableIds.every((id) => selectedIds.has(id))
+  );
+  const someOnPageSelected = (
+    !allOnPageSelected
+    && selectableIds.some((id) => selectedIds.has(id))
+  );
 
   const loadCodigos = useCallback(async () => {
     setCodigosLoading(true);
@@ -279,6 +326,137 @@ export default function AjusPage() {
       });
     } finally {
       setIsBackfilling(false);
+    }
+  };
+
+  // ─── Handlers — multi-select dispatch ─────────────────────────────
+  const toggleSelect = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const toggleSelectAllOnPage = () => {
+    setSelectedIds((prev) => {
+      if (allOnPageSelected) {
+        const next = new Set(prev);
+        for (const id of selectableIds) next.delete(id);
+        return next;
+      }
+      const next = new Set(prev);
+      for (const id of selectableIds) next.add(id);
+      return next;
+    });
+  };
+
+  const handleDispatchSelected = async () => {
+    if (selectedIds.size === 0) return;
+    if (selectedIds.size > 20) {
+      toast({
+        title: "Limite excedido",
+        description: "Maximo de 20 itens por disparo (limite AJUS). Reduza a selecao.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setIsDispatchingSelected(true);
+    try {
+      const result = await dispatchSelectedAjusAndamentos(
+        Array.from(selectedIds),
+      );
+      const lines = [
+        `${result.success_count} enviado(s) com sucesso`,
+        result.error_count ? `${result.error_count} erro(s)` : null,
+      ].filter(Boolean);
+      toast({
+        title: "Disparo selecionado concluido",
+        description: `${result.candidates} item(ns) processado(s). ${lines.join(" · ")}`,
+        variant: result.error_count > 0 ? "destructive" : "default",
+      });
+      setSelectedIds(new Set());
+      await loadAndamentos();
+    } catch (e: unknown) {
+      toast({
+        title: "Falha ao disparar selecionados",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setIsDispatchingSelected(false);
+    }
+  };
+
+  // ─── Handlers — PDF (visualizar / anexar) ─────────────────────────
+  const handleViewPdf = async (id: number) => {
+    try {
+      const url = await fetchAjusAndamentoPdfBlobUrl(id);
+      const w = window.open(url, "_blank", "noopener,noreferrer");
+      // Revoga apos um tempo pra liberar memoria; se a aba nao abrir
+      // (popup bloqueado) ja' setamos como fallback href via toast.
+      if (!w) {
+        toast({
+          title: "Pop-up bloqueado",
+          description: "Permita pop-ups pra abrir o PDF.",
+          variant: "destructive",
+        });
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e: unknown) {
+      toast({
+        title: "Erro ao abrir PDF",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    }
+  };
+
+  const triggerUpload = (id: number) => {
+    uploadTargetItemRef.current = id;
+    fileInputRef.current?.click();
+  };
+
+  const handleFileSelected = async (
+    ev: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = ev.target.files?.[0];
+    // Reset do input agora pra permitir re-upload do mesmo arquivo.
+    ev.target.value = "";
+    const targetId = uploadTargetItemRef.current;
+    uploadTargetItemRef.current = null;
+    if (!file || !targetId) return;
+    if (!file.name.toLowerCase().endsWith(".pdf")) {
+      toast({
+        title: "Arquivo invalido",
+        description: "Selecione um arquivo .pdf.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      toast({
+        title: "Arquivo grande",
+        description: "PDF excede 10MB (limite AJUS).",
+        variant: "destructive",
+      });
+      return;
+    }
+    setUploadingItemId(targetId);
+    try {
+      await uploadAjusAndamentoPdf(targetId, file);
+      toast({
+        title: `PDF anexado ao item #${targetId}`,
+        description: "Item pronto pra disparo.",
+      });
+      await loadAndamentos();
+    } catch (e: unknown) {
+      toast({
+        title: "Falha ao anexar PDF",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setUploadingItemId(null);
     }
   };
 
@@ -553,9 +731,67 @@ export default function AjusPage() {
               </div>
             </CardHeader>
             <CardContent>
+              {/* Hidden file input — usado pelos botoes "Anexar PDF" das linhas. */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/pdf,.pdf"
+                className="hidden"
+                onChange={handleFileSelected}
+              />
+              {/* Toolbar de selecao multipla — aparece quando ha selecionados. */}
+              {selectedIds.size > 0 && (
+                <div className="mb-3 flex items-center justify-between rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                  <div>
+                    <strong>{selectedIds.size}</strong> item(ns) selecionado(s)
+                    {selectedIds.size > 20 && (
+                      <span className="ml-2 text-destructive">
+                        (excede 20 — limite AJUS por request)
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setSelectedIds(new Set())}
+                    >
+                      Limpar
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={handleDispatchSelected}
+                      disabled={
+                        isDispatchingSelected
+                        || selectedIds.size === 0
+                        || selectedIds.size > 20
+                      }
+                    >
+                      {isDispatchingSelected ? (
+                        <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Send className="mr-2 h-3.5 w-3.5" />
+                      )}
+                      Disparar selecionados ({selectedIds.size})
+                    </Button>
+                  </div>
+                </div>
+              )}
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead className="w-[36px]">
+                      <input
+                        type="checkbox"
+                        aria-label="Selecionar todos da pagina"
+                        checked={allOnPageSelected}
+                        ref={(el) => {
+                          if (el) el.indeterminate = someOnPageSelected;
+                        }}
+                        onChange={toggleSelectAllOnPage}
+                        disabled={selectableIds.length === 0}
+                      />
+                    </TableHead>
                     <TableHead>CNJ</TableHead>
                     <TableHead>Código</TableHead>
                     <TableHead>Sit.</TableHead>
@@ -570,7 +806,7 @@ export default function AjusPage() {
                 <TableBody>
                   {andamentos.length === 0 && !andamentosLoading && (
                     <TableRow>
-                      <TableCell colSpan={9} className="text-center text-sm text-muted-foreground py-8">
+                      <TableCell colSpan={10} className="text-center text-sm text-muted-foreground py-8">
                         Nenhum andamento na fila com os filtros atuais.
                       </TableCell>
                     </TableRow>
@@ -580,8 +816,24 @@ export default function AjusPage() {
                       label: item.status,
                       className: "",
                     };
+                    const selectable = item.status === "pendente" || item.status === "erro";
+                    const isUploadingThis = uploadingItemId === item.id;
                     return (
                       <TableRow key={item.id}>
+                        <TableCell>
+                          <input
+                            type="checkbox"
+                            aria-label={`Selecionar item ${item.id}`}
+                            checked={selectedIds.has(item.id)}
+                            onChange={() => toggleSelect(item.id)}
+                            disabled={!selectable}
+                            title={
+                              selectable
+                                ? undefined
+                                : `Apenas pendente/erro podem ser selecionados (status: ${item.status})`
+                            }
+                          />
+                        </TableCell>
                         <TableCell className="font-mono text-xs">
                           {formatCnj(item.cnj_number)}
                         </TableCell>
@@ -597,9 +849,35 @@ export default function AjusPage() {
                         <TableCell className="text-xs">{formatDate(item.data_fatal)}</TableCell>
                         <TableCell>
                           {item.has_pdf ? (
-                            <FileText className="h-3.5 w-3.5 text-emerald-600" />
+                            <button
+                              type="button"
+                              onClick={() => handleViewPdf(item.id)}
+                              className="inline-flex items-center gap-1 text-xs text-emerald-700 hover:text-emerald-900 hover:underline"
+                              title="Abrir PDF da habilitacao"
+                            >
+                              <FileText className="h-3.5 w-3.5" />
+                              <Eye className="h-3 w-3" />
+                            </button>
+                          ) : selectable ? (
+                            <button
+                              type="button"
+                              onClick={() => triggerUpload(item.id)}
+                              disabled={isUploadingThis}
+                              className="inline-flex items-center gap-1 text-xs text-rose-700 hover:text-rose-900 hover:underline disabled:opacity-50"
+                              title="Sem PDF — clique pra anexar"
+                            >
+                              {isUploadingThis ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <FileWarning className="h-3.5 w-3.5" />
+                              )}
+                              <Paperclip className="h-3 w-3" />
+                            </button>
                           ) : (
-                            <span className="text-xs text-muted-foreground">—</span>
+                            <FileWarning
+                              className="h-3.5 w-3.5 text-rose-500"
+                              aria-label="Sem PDF"
+                            />
                           )}
                         </TableCell>
                         <TableCell>
@@ -666,6 +944,60 @@ export default function AjusPage() {
                   })}
                 </TableBody>
               </Table>
+              {/* Controles de paginacao */}
+              <div className="mt-3 flex items-center justify-between border-t pt-3 text-xs text-muted-foreground">
+                <div>
+                  {andamentosTotal === 0 ? (
+                    "Sem itens."
+                  ) : (
+                    <>
+                      Mostrando {safePage * pageSize + 1}–
+                      {Math.min((safePage + 1) * pageSize, andamentosTotal)} de{" "}
+                      {andamentosTotal} item(ns)
+                    </>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-[10px] uppercase tracking-wide">
+                    Por pagina
+                  </label>
+                  <Select
+                    value={String(pageSize)}
+                    onValueChange={(v) => setPageSize(Number(v))}
+                  >
+                    <SelectTrigger className="h-7 w-[70px] text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="25">25</SelectItem>
+                      <SelectItem value="50">50</SelectItem>
+                      <SelectItem value="100">100</SelectItem>
+                      <SelectItem value="200">200</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2"
+                    onClick={() => setPage((p) => Math.max(0, p - 1))}
+                    disabled={safePage === 0 || andamentosLoading}
+                  >
+                    Anterior
+                  </Button>
+                  <span>
+                    Página {safePage + 1} de {totalPages}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2"
+                    onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                    disabled={safePage >= totalPages - 1 || andamentosLoading}
+                  >
+                    Próxima
+                  </Button>
+                </div>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>

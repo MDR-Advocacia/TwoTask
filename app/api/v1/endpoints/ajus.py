@@ -421,6 +421,116 @@ def backfill_from_intakes(
     return BackfillCompletedResponse(**result)
 
 
+
+class DispatchSelectedRequest(BaseModel):
+    item_ids: list[int] = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_ITENS_POR_REQUEST,
+        description=(
+            f"Ids dos itens a disparar (max {MAX_ITENS_POR_REQUEST} por "
+            "request, limite AJUS). Todos devem estar em pendente ou erro."
+        ),
+    )
+
+
+@router.post(
+    "/andamentos/dispatch-selected",
+    response_model=DispatchBatchResponse,
+    summary=(
+        "Dispatcha em UMA request um conjunto de itens escolhidos pelo "
+        f"operador. Limite: {MAX_ITENS_POR_REQUEST} itens por chamada."
+    ),
+)
+def dispatch_selected_andamentos(
+    payload: DispatchSelectedRequest,
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    service = AjusQueueService(db)
+    try:
+        result = service.dispatch_selected(payload.item_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return DispatchBatchResponse(**result)
+
+
+@router.get(
+    "/andamentos/{item_id}/pdf",
+    summary=(
+        "Devolve o PDF da habilitacao anexado ao item. 404 se item nao "
+        "existe; 410 se item nao tem PDF anexado (ainda)."
+    ),
+)
+def download_andamento_pdf(
+    item_id: int = FastapiPath(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    service = AjusQueueService(db)
+    try:
+        pdf_bytes, filename = service.get_pdf_bytes(item_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        # 410 Gone -- semanticamente correto: existe o item, mas o anexo
+        # nao esta disponivel. Frontend pode tratar como "anexar via upload".
+        raise HTTPException(status_code=410, detail=str(exc)) from exc
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Content-Length": str(len(pdf_bytes)),
+        },
+    )
+
+
+@router.post(
+    "/andamentos/{item_id}/pdf",
+    response_model=AndamentoQueueOut,
+    summary=(
+        "Anexa um PDF a um item existente que nao tem anexo. Limpa o "
+        "prefixo de 'sem anexo' do informacao e, se em ERRO, volta pra "
+        "PENDENTE pra re-disparar."
+    ),
+)
+async def upload_andamento_pdf(
+    item_id: int = FastapiPath(..., ge=1),
+    file: UploadFile = File(..., description="PDF da habilitacao."),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    try:
+        pdf_bytes = await file.read()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=400, detail=f"Falha ao ler arquivo: {exc}",
+        ) from exc
+    if len(pdf_bytes) > _BULK_MAX_FILE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Arquivo excede 10MB (limite AJUS): {len(pdf_bytes)} bytes."
+            ),
+        )
+    service = AjusQueueService(db)
+    try:
+        item = service.attach_pdf(item_id, pdf_bytes)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Falha ao gravar PDF no storage: {exc}",
+        ) from exc
+    return _queue_to_out(item)
+
+
 @router.post("/andamentos/{item_id}/cancel", response_model=AndamentoQueueOut)
 def cancel_andamento(
     item_id: int = FastapiPath(..., ge=1),
