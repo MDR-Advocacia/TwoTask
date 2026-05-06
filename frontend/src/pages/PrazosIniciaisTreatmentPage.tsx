@@ -10,7 +10,6 @@ import {
   ExternalLink,
   Eraser,
   Loader2,
-  Play,
   RefreshCw,
   RotateCcw,
   Rocket,
@@ -18,6 +17,7 @@ import {
   ShieldCheck,
   Unlock,
   Workflow,
+  Zap,
 } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -37,9 +37,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { useToast } from "@/hooks/use-toast";
 import {
   cancelPrazosIniciaisLegacyTaskCancelItem,
-  dispatchPrazoInicialTreatmentWeb,
+  dispatchPrazoInicialPendingBatch,
   downloadPrazosIniciaisLegacyTaskCancelQueueCsv,
-  fetchPrazosIniciaisIntakes,
   fetchPrazosIniciaisLegacyTaskCancelQueue,
   fetchPrazosIniciaisLegacyTaskCancelQueueMetrics,
   processPrazosIniciaisLegacyTaskCancelQueue,
@@ -47,7 +46,6 @@ import {
   resetPrazosIniciaisLegacyTaskCancelCircuitBreaker,
 } from "@/services/api";
 import type {
-  PrazoInicialIntakeSummary,
   PrazoInicialLegacyTaskCancelQueueItem,
   PrazoInicialLegacyTaskCancelQueueStatus,
   PrazoInicialLegacyTaskQueueFilters,
@@ -187,16 +185,11 @@ export default function PrazosIniciaisTreatmentPage() {
   const [pageSize, setPageSize] = useState<25 | 50 | 100>(25);
   const [offset, setOffset] = useState(0);
 
-  // Intakes pendentes de disparo (dispatch_pending=True). Etapa
-  // ANTERIOR a fila de cancel da legada — sao os intakes que ja foram
-  // confirmados pelo operador (status AGENDADO ou CONCLUIDO_SEM_PROVIDENCIA)
-  // mas ainda nao tiveram o GED upload + enqueue cancel disparado.
-  // Permite tratamento 1 por 1 (botao "Disparar" individual em cada
-  // linha — util pra fase de testes).
-  const [pendingIntakes, setPendingIntakes] = useState<PrazoInicialIntakeSummary[]>([]);
-  const [pendingIntakesTotal, setPendingIntakesTotal] = useState(0);
-  const [pendingIntakesLoading, setPendingIntakesLoading] = useState(false);
-  const [dispatchingIntakeId, setDispatchingIntakeId] = useState<number | null>(null);
+  // Disparo em lote dos intakes com dispatch_pending=true. O worker
+  // periodico (config: prazos_iniciais_dispatch_enabled) ja processa
+  // automaticamente a cada 5 min — esse botao da o operador um caminho
+  // pra forcar antecipacao quando precisa, em vez de esperar o tick.
+  const [isDispatchingAll, setIsDispatchingAll] = useState(false);
 
   // Debounce dos filtros de texto pra evitar refetch a cada keystroke. Os
   // filtros de Select / datetime-local ficam síncronos porque são cliques
@@ -237,62 +230,34 @@ export default function PrazosIniciaisTreatmentPage() {
     setOffset(0);
   };
 
-  const loadPendingIntakes = async () => {
-    setPendingIntakesLoading(true);
+  const handleDispatchAll = async () => {
+    setIsDispatchingAll(true);
     try {
-      // Lista intakes com dispatch_pending=true ordenados por
-      // received_at desc (default do endpoint). Pega ate 100 — fase
-      // de testes nao deve ter pilha enorme, e operador filtra na
-      // PrazosIniciaisPage se quiser ver historico.
-      const payload = await fetchPrazosIniciaisIntakes({
-        dispatch_pending: true,
-        limit: 100,
-        offset: 0,
-      });
-      setPendingIntakes(payload.items);
-      setPendingIntakesTotal(payload.total);
-    } catch (err) {
-      console.warn("Falha ao carregar intakes pendentes de disparo:", err);
-    } finally {
-      setPendingIntakesLoading(false);
-    }
-  };
-
-  const handleDispatchIntake = async (intakeId: number) => {
-    setDispatchingIntakeId(intakeId);
-    try {
-      const result = await dispatchPrazoInicialTreatmentWeb(intakeId);
-      // Endpoint eh idempotente — `skipped:true` quando dispatch_pending
-      // ja era false (ex.: outra aba/worker disparou antes).
-      if (result.skipped) {
-        toast({
-          title: `Intake #${intakeId} ja foi disparado`,
-          description: result.reason || "Sem mudanças.",
-        });
-      } else {
-        const queueItem = result.legacy_task_cancellation_item as
-          | { id?: number }
-          | null;
-        const queueId = queueItem?.id;
-        toast({
-          title: "Disparo concluído",
-          description: queueId
-            ? `Intake #${intakeId}: GED enviado e item #${queueId} entrou na fila de cancelamento.`
-            : `Intake #${intakeId}: disparo OK.`,
-        });
-      }
-      // Recarrega ambas as listas — o intake sai dos pendentes e
-      // (em geral) aparece na fila de cancel.
-      await Promise.all([loadPendingIntakes(), loadData()]);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Falha desconhecida.";
+      // batch_limit=100 (max do backend) — em produçao pendentes raramente
+      // passam disso de uma vez; se passar, operador clica de novo.
+      const result = await dispatchPrazoInicialPendingBatch(100);
+      const ok = result.success_count ?? 0;
+      const fail = result.failure_count ?? 0;
+      const skip = result.skipped_count ?? 0;
       toast({
-        title: `Falha ao disparar intake #${intakeId}`,
+        title: ok + fail + skip > 0
+          ? `Disparo em lote: ${ok} sucesso · ${fail} falha · ${skip} pulado`
+          : "Sem intakes pendentes",
+        description: ok + fail + skip > 0
+          ? `Candidatos: ${result.candidates}. Os disparos seguiram em background — atualize a fila técnica em alguns segundos.`
+          : "Nenhum intake estava aguardando disparo.",
+      });
+      // Refresh da fila técnica pra refletir os novos itens enfileirados.
+      await loadData();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Falha ao disparar pendentes.";
+      toast({
+        title: "Falha no disparo em lote",
         description: message,
         variant: "destructive",
       });
     } finally {
-      setDispatchingIntakeId(null);
+      setIsDispatchingAll(false);
     }
   };
 
@@ -342,17 +307,9 @@ export default function PrazosIniciaisTreatmentPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statusFilter, debouncedCnjFilter, debouncedIntakeFilter, sinceFilter, untilFilter, offset, pageSize]);
 
-  // Lista de intakes pendentes de disparo carrega 1x e auto-refresh
-  // junto com o restante (5s). Nao depende dos filtros da fila de cancel.
-  useEffect(() => {
-    loadPendingIntakes();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   useEffect(() => {
     const intervalId = setInterval(() => {
       loadData();
-      loadPendingIntakes();
     }, 5000);
     return () => clearInterval(intervalId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -573,7 +530,21 @@ export default function PrazosIniciaisTreatmentPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" onClick={handleProcessQueue} disabled={isLoading || isSubmitting}>
+          <Button
+            size="sm"
+            variant="default"
+            onClick={handleDispatchAll}
+            disabled={isLoading || isDispatchingAll}
+            title="Sobe a habilitacao no GED + enfileira cancelamento da legada para TODOS os intakes com dispatch_pending=true (ate 100 por chamada)."
+          >
+            {isDispatchingAll ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Zap className="mr-2 h-4 w-4" />
+            )}
+            Disparar todos pendentes
+          </Button>
+          <Button size="sm" variant="outline" onClick={handleProcessQueue} disabled={isLoading || isSubmitting}>
             {isSubmitting ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             ) : (
@@ -600,7 +571,6 @@ export default function PrazosIniciaisTreatmentPage() {
             size="sm"
             onClick={() => {
               loadData(true);
-              loadPendingIntakes();
             }}
             disabled={isLoading || isSubmitting}
           >
@@ -754,149 +724,6 @@ export default function PrazosIniciaisTreatmentPage() {
           </CardContent>
         </Card>
       ) : null}
-
-      {/* ─── Intakes pendentes de disparo (1 por 1) ──────────────────
-          Etapa ANTERIOR a fila de cancel. Lista intakes que ja foram
-          confirmados mas ainda nao tiveram GED upload + enqueue cancel
-          disparado. Operador pode disparar 1 por 1 (botao "Disparar"
-          em cada linha) — util pra fase de testes onde queremos
-          observar cada caso isoladamente, em vez do batch de 10. */}
-      <Card className="border-0 shadow-sm">
-        <CardHeader className="flex flex-row items-start justify-between gap-4">
-          <div>
-            <CardTitle className="flex items-center gap-2">
-              <Play className="h-5 w-5" />
-              Intakes pendentes de disparo
-              <Badge
-                className={
-                  pendingIntakesTotal > 0
-                    ? "bg-amber-100 text-amber-800"
-                    : "bg-green-100 text-green-800"
-                }
-              >
-                {pendingIntakesTotal}
-              </Badge>
-            </CardTitle>
-            <CardDescription>
-              Intakes confirmados (status AGENDADO ou CONCLUÍDO_SEM_PROVIDÊNCIA)
-              ainda não disparados — disparo executa GED upload + enfileira o
-              cancelamento da task legada. Use "Disparar" individual pra
-              testar 1 por 1.
-            </CardDescription>
-          </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={loadPendingIntakes}
-            disabled={pendingIntakesLoading}
-            title="Recarregar a lista de pendentes"
-          >
-            <RefreshCw
-              className={`mr-2 h-4 w-4 ${pendingIntakesLoading ? "animate-spin" : ""}`}
-            />
-            Atualizar
-          </Button>
-        </CardHeader>
-        <CardContent>
-          {pendingIntakesLoading && pendingIntakes.length === 0 ? (
-            <div className="flex min-h-24 items-center justify-center text-muted-foreground">
-              <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-              Carregando...
-            </div>
-          ) : pendingIntakes.length === 0 ? (
-            <div className="text-sm text-muted-foreground py-4 text-center">
-              Sem intakes aguardando disparo. Os próximos confirmados aparecem
-              aqui automaticamente.
-            </div>
-          ) : (
-            <div className="overflow-x-auto rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-[80px]">Intake</TableHead>
-                    <TableHead>CNJ</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Tratado em</TableHead>
-                    <TableHead>Tratado por</TableHead>
-                    <TableHead>Última falha de disparo</TableHead>
-                    <TableHead className="w-[140px] text-right">Ações</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {pendingIntakes.map((intake) => {
-                    const isDispatchingThis = dispatchingIntakeId === intake.id;
-                    const anyDispatching = dispatchingIntakeId !== null;
-                    return (
-                      <TableRow key={intake.id}>
-                        <TableCell className="font-mono text-xs">
-                          #{intake.id}
-                        </TableCell>
-                        <TableCell className="font-mono text-xs">
-                          {intake.cnj_number || "-"}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant="outline" className="text-[10px]">
-                            {intake.status}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">
-                          {formatDateTime(intake.treated_at)}
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">
-                          {intake.treated_by_name || intake.treated_by_email || "-"}
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground max-w-[280px] truncate">
-                          {intake.dispatch_error_message ? (
-                            <span
-                              className="text-red-700"
-                              title={intake.dispatch_error_message}
-                            >
-                              {intake.dispatch_error_message}
-                            </span>
-                          ) : (
-                            "—"
-                          )}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex items-center justify-end gap-2">
-                            <Link
-                              to={`/prazos-iniciais?intake=${intake.id}`}
-                              className="text-xs text-blue-600 hover:underline"
-                              title="Abrir intake na página principal"
-                            >
-                              Detalhes
-                            </Link>
-                            <Button
-                              size="sm"
-                              variant="default"
-                              disabled={anyDispatching}
-                              onClick={() => handleDispatchIntake(intake.id)}
-                              title="Sobe habilitação no GED + enfileira cancelamento da task legada"
-                            >
-                              {isDispatchingThis ? (
-                                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                              ) : (
-                                <Play className="mr-1 h-3.5 w-3.5" />
-                              )}
-                              Disparar
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-          {pendingIntakesTotal > pendingIntakes.length ? (
-            <div className="mt-2 text-xs text-muted-foreground">
-              Mostrando {pendingIntakes.length} de {pendingIntakesTotal} intakes
-              pendentes. Use a página principal pra ver todos com filtros.
-            </div>
-          ) : null}
-        </CardContent>
-      </Card>
 
       <Card className="border-0 shadow-sm">
         <CardHeader>

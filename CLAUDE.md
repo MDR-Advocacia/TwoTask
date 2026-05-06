@@ -88,6 +88,45 @@ git push origin main
 - Não inventar etapas extras (ex.: `git pull` antes do push, validação
   de diff, etc.) a não ser que o usuário peça.
 
+## ⚠️ WORKTREE INTERNA — NUNCA EDITAR DENTRO DA `.claude/worktrees/` ⚠️
+
+**O usuário commita SEMPRE do checkout principal**
+(`C:\Users\jonil\OneDrive\Desktop\Projetos HUB\OneTask - Solo\onetask`),
+NÃO de qualquer worktree em `.claude/worktrees/<nome>/`. Se o ambiente
+do agente foi inicializado com worktree (system prompt mostra
+"Worktree path: …\.claude\worktrees\<nome>"), os `Edit`/`Write`
+default do agente caem dentro da worktree e o `git add -A` do bloco
+PowerShell entregue ao usuário NÃO PEGA NADA — porque ele roda no
+checkout principal, que está limpo. JÁ FALHOU múltiplas vezes; o
+usuário só descobre depois de pushar e ver "tudo certinho" sem a
+mudança real.
+
+**REGRA OBRIGATÓRIA — antes de entregar bloco PowerShell, espelhar
+todo arquivo modificado do worktree pro checkout principal**:
+
+```bash
+WT="<system-prompt-worktree-path>"
+MAIN="C:/Users/jonil/OneDrive/Desktop/Projetos HUB/OneTask - Solo/onetask"
+for f in <lista de arquivos modificados nessa sessão>; do
+  cp -f "$WT/$f" "$MAIN/$f"
+  # bater wc -l do destino com o source pra confirmar a copia integra
+done
+```
+
+Validar SEMPRE com `wc -l` em ambos os lados (se diferir, alguma cópia
+falhou silenciosa — ver guard de truncamento abaixo).
+
+Sintomas de que esqueci dessa trava:
+- Usuário roda o bloco e o `git diff --cached` aparece vazio.
+- `git status` no checkout principal mostra "working tree clean" antes
+  do commit, mesmo eu tendo "editado" arquivos.
+- Push sobe um commit vazio ou só um merge.
+
+**NÃO confundir worktree interna (`.claude/worktrees/<nome>`, gerada
+pelo Claude Code automaticamente) com branches de feature do projeto
+(`feat/prazos-iniciais`, etc.) — branches são commits no mesmo
+checkout, worktree é uma cópia separada do filesystem.**
+
 ## ⚠️ EDIT/WRITE EM ARQUIVO GRANDE — TRUNCAMENTO RECORRENTE ⚠️
 
 **AS TOOLS `Edit` E `Write` ESTÃO TRUNCANDO ARQUIVOS GRANDES** (>~800

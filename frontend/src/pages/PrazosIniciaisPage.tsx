@@ -17,6 +17,7 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  Send,
   Sparkles,
   Trash2,
   Undo2,
@@ -67,6 +68,7 @@ import {
   confirmarAgendamentoPrazoInicial,
   dispatchPrazoInicialPendingBatch,
   dispatchPrazoInicialTreatmentWeb,
+  encaminharIntakeParaDevolucao,
   fetchPrazoInicialDetail,
   deletePrazoInicialIntake,
   bulkDeletePrazoInicialIntakes,
@@ -569,6 +571,11 @@ export default function PrazosIniciaisPage() {
   >([]);
   const [scheduleSubmitting, setScheduleSubmitting] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  // Botao "Encaminhar para devolucao" no modal — flag separada porque
+  // ele eh uma rota alternativa ao Confirmar agendamento (nao cria task,
+  // marca patrocinio + dispara AJUS) e roda em paralelo enquanto o
+  // operador ainda pode mexer no resto do modal.
+  const [isEncaminhandoDevolucao, setIsEncaminhandoDevolucao] = useState(false);
 
   // Resolve preview do assistente da squad de um user e atualiza o
   // draft de tarefa avulsa correspondente. Chamado quando o operador
@@ -1611,6 +1618,53 @@ export default function PrazosIniciaisPage() {
     setScheduleIntakeId(null);
   }, []);
 
+  /**
+   * Encaminha o intake atual pra fila de devolucao do AJUS.
+   * Caminho alternativo ao Confirmar agendamento — usar quando o
+   * processo NAO eh nosso (advogado externo se habilitou OU natureza
+   * fora do escopo MDR/Master). Backend faz tudo em transacao soh:
+   * marca patrocinio aprovado/devolucao, status DEVOLUCAO_PENDENTE,
+   * dispatch_pending=True (worker periodico cancela legada + GED) e
+   * enfileira AjusAndamentoQueue com cod_andamento.is_devolucao=True.
+   */
+  const onEncaminharDevolucao = useCallback(async () => {
+    if (!scheduleDetail) return;
+    const intakeId = scheduleDetail.id;
+    const motivo = window.prompt(
+      "Motivo da devolucao (opcional, vai pra patrocinio.motivo_suspeita e auditoria):",
+      "",
+    );
+    if (motivo === null) {
+      // Cancelou o prompt — abandona sem agir.
+      return;
+    }
+    setIsEncaminhandoDevolucao(true);
+    try {
+      const result = await encaminharIntakeParaDevolucao(
+        intakeId,
+        motivo.trim() || undefined,
+      );
+      toast({
+        title: "Encaminhado para devolucao",
+        description:
+          `Intake #${result.intake_id}: status=${result.intake_status}, ` +
+          `AJUS #${result.ajus_queue_item_id ?? "—"}, ` +
+          `dispatch_pending=${result.dispatch_pending ? "sim" : "nao"}.`,
+      });
+      closeScheduleDialog();
+      await loadIntakes();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Falha desconhecida.";
+      toast({
+        title: "Falha ao encaminhar para devolucao",
+        description: msg,
+        variant: "destructive",
+      });
+    } finally {
+      setIsEncaminhandoDevolucao(false);
+    }
+  }, [scheduleDetail, toast, closeScheduleDialog, loadIntakes]);
+
   const setAllScheduleSuggestions = useCallback(
     (checked: boolean) => {
       if (!scheduleDetail) return;
@@ -2066,6 +2120,12 @@ export default function PrazosIniciaisPage() {
               Tratamento Web Agendamentos Iniciais
             </Link>
           </Button>
+          <Button asChild variant="outline" className="w-full sm:w-auto">
+            <Link to="/prazos-iniciais/patrocinio/relatorio">
+              <FileText className="mr-2 h-4 w-4" />
+              Relatório de Patrocínio
+            </Link>
+          </Button>
         </div>
       </div>
 
@@ -2231,8 +2291,11 @@ export default function PrazosIniciaisPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {/* ── Linha 1: Status, Natureza, Produto ──────────────────── */}
-          <div className="grid gap-3 md:grid-cols-3">
+          {/* ── Linha 1: Status, Natureza, Produto, Classificacao ─────
+              md:grid-cols-4 pra os 4 filtros ficarem visualmente
+              alinhados. Antes era cols-3 e o quarto (Classificacao)
+              wrappava pra linha de baixo sozinho — operador nao via. */}
+          <div className="grid gap-3 md:grid-cols-4">
             <div className="space-y-1">
               <Label className="text-xs uppercase tracking-wide text-muted-foreground">
                 Status
@@ -4506,8 +4569,24 @@ export default function PrazosIniciaisPage() {
               Cancelar
             </Button>
             <Button
+              variant="outline"
+              className="border-orange-300 text-orange-800 hover:bg-orange-50"
+              onClick={() => onEncaminharDevolucao()}
+              disabled={
+                !scheduleDetail || scheduleSubmitting || isEncaminhandoDevolucao
+              }
+              title="Encaminha o processo pra fila de devolucao do AJUS (cancela task legada do L1, sobe habilitacao no GED, envia AJUS com cod_andamento de devolucao). Nao cria tarefas de prazo."
+            >
+              {isEncaminhandoDevolucao ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Send className="mr-2 h-4 w-4" />
+              )}
+              Encaminhar para devolução
+            </Button>
+            <Button
               onClick={onConfirmarAgendamentos}
-              disabled={!canSubmitSchedule}
+              disabled={!canSubmitSchedule || isEncaminhandoDevolucao}
             >
               {scheduleSubmitting ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />

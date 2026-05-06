@@ -696,6 +696,12 @@ const PublicationsPage = () => {
   // Search history
   const [searches, setSearches] = useState<SearchItem[]>([]);
   const [searchesExpanded, setSearchesExpanded] = useState(false);
+  // Paginacao client-side do Historico de Buscas. Default 10 por pagina;
+  // a lista vem com ate 100 do servidor. Quando o operador filtra ou
+  // recarrega, o offset eh resetado pra 0 no useEffect que monitora
+  // searches.length.
+  const [searchesPage, setSearchesPage] = useState(0);
+  const [searchesPageSize, setSearchesPageSize] = useState<10 | 25 | 50>(10);
 
   // Grouped records
   const [grouped, setGrouped] = useState<GroupedResponse | null>(null);
@@ -869,7 +875,10 @@ const PublicationsPage = () => {
 
   const loadSearches = useCallback(async () => {
     try {
-      const res = await apiFetch(`${API}/searches?limit=15`);
+      // limit=100 pra carregar uma janela razoavel de historico — a UI
+      // pagina client-side em chunks (default 10 por pagina). Se precisar
+      // de mais, operador filtra por data ou abre o admin direto.
+      const res = await apiFetch(`${API}/searches?limit=100`);
       if (res.ok) setSearches(await res.json());
     } catch { /* ignore */ }
   }, []);
@@ -2683,44 +2692,93 @@ const PublicationsPage = () => {
               {searchesExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             </div>
           </CardHeader>
-          {searchesExpanded && (
+          {searchesExpanded && (() => {
+            // Slice client-side da pagina atual. Total = searches.length;
+            // pageStart/pageEnd usados pra mostrar "X-Y de N".
+            const total = searches.length;
+            const pageStart = searchesPage * searchesPageSize;
+            const pageEnd = Math.min(pageStart + searchesPageSize, total);
+            const pageItems = searches.slice(pageStart, pageEnd);
+            const totalPages = Math.max(1, Math.ceil(total / searchesPageSize));
+            return (
             <CardContent className="pt-0">
-              <ScrollArea className="max-h-[200px]">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>ID</TableHead>
-                      <TableHead>Período</TableHead>
-                      <TableHead>Escritório</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Encontradas</TableHead>
-                      <TableHead>Novas</TableHead>
-                      <TableHead>Data</TableHead>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>ID</TableHead>
+                    <TableHead>Período</TableHead>
+                    <TableHead>Escritório</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Encontradas</TableHead>
+                    <TableHead>Novas</TableHead>
+                    <TableHead>Data</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {pageItems.map((s) => (
+                    <TableRow key={s.id}>
+                      <TableCell className="font-mono text-xs">#{s.id}</TableCell>
+                      <TableCell className="text-xs">
+                        {formatDateShort(s.date_from)}{s.date_to ? ` → ${formatDateShort(s.date_to)}` : ""}
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        {s.office_filter ? (officeName(parseInt(s.office_filter)) || s.office_filter) : "—"}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={statusColor(s.status)} className="text-xs">{s.status}</Badge>
+                      </TableCell>
+                      <TableCell className="font-semibold">{s.total_found}</TableCell>
+                      <TableCell className="text-green-600">{s.total_new}</TableCell>
+                      <TableCell className="text-xs">{formatDate(s.created_at)}</TableCell>
                     </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {searches.map((s) => (
-                      <TableRow key={s.id}>
-                        <TableCell className="font-mono text-xs">#{s.id}</TableCell>
-                        <TableCell className="text-xs">
-                          {formatDateShort(s.date_from)}{s.date_to ? ` → ${formatDateShort(s.date_to)}` : ""}
-                        </TableCell>
-                        <TableCell className="text-xs">
-                          {s.office_filter ? (officeName(parseInt(s.office_filter)) || s.office_filter) : "—"}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={statusColor(s.status)} className="text-xs">{s.status}</Badge>
-                        </TableCell>
-                        <TableCell className="font-semibold">{s.total_found}</TableCell>
-                        <TableCell className="text-green-600">{s.total_new}</TableCell>
-                        <TableCell className="text-xs">{formatDate(s.created_at)}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </ScrollArea>
+                  ))}
+                </TableBody>
+              </Table>
+              <div className="mt-3 flex flex-col items-center justify-between gap-2 sm:flex-row">
+                <div className="text-xs text-muted-foreground">
+                  {total === 0
+                    ? "Sem registros"
+                    : `Mostrando ${pageStart + 1}-${pageEnd} de ${total}`}
+                </div>
+                <div className="flex items-center gap-2">
+                  <select
+                    className="h-8 rounded-md border bg-background px-2 text-xs"
+                    value={searchesPageSize}
+                    onChange={(e) => {
+                      setSearchesPageSize(Number(e.target.value) as 10 | 25 | 50);
+                      setSearchesPage(0);
+                    }}
+                  >
+                    <option value="10">10/pág.</option>
+                    <option value="25">25/pág.</option>
+                    <option value="50">50/pág.</option>
+                  </select>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2"
+                    disabled={searchesPage === 0}
+                    onClick={() => setSearchesPage((p) => Math.max(0, p - 1))}
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                  </Button>
+                  <span className="min-w-[80px] text-center text-xs">
+                    {totalPages === 0 ? "—" : `Pág. ${searchesPage + 1}/${totalPages}`}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2"
+                    disabled={searchesPage + 1 >= totalPages}
+                    onClick={() => setSearchesPage((p) => p + 1)}
+                  >
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
             </CardContent>
-          )}
+            );
+          })()}
         </Card>
       )}
 

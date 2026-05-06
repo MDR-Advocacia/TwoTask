@@ -136,9 +136,11 @@ class Settings(BaseSettings):
     # ── Disparo periódico do tratamento web (Onda 3 #6) ─────────────────
     # Worker que varre intakes com `dispatch_pending=True` e dispara
     # GED upload + enqueue cancel da legada em ordem cronológica.
-    # Desligado por padrão até a TI validar — operador pode disparar
-    # manualmente pelo botão "Disparar próximos 10".
-    prazos_iniciais_dispatch_enabled: bool = False
+    # Ligado por padrao em 2026-05-06 apos validacao operacional —
+    # antes ficava desligado e o operador disparava 1 por 1 via UI
+    # de debug. O batch_limit=10 da uma vazao razoavel sem inundar
+    # o L1, e o intervalo 300s respeita o rate limit deles.
+    prazos_iniciais_dispatch_enabled: bool = True
     prazos_iniciais_dispatch_interval_seconds: int = 300
     prazos_iniciais_dispatch_batch_limit: int = 10
 

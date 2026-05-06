@@ -25,6 +25,7 @@ import LookupByCnjPage from './pages/LookupByCnjPage';
 import PrazosIniciaisPage from './pages/PrazosIniciaisPage';
 import PrazosIniciaisTreatmentPage from './pages/PrazosIniciaisTreatmentPage';
 import PrazosIniciaisTemplatesAdminPage from './pages/PrazosIniciaisTemplatesAdminPage';
+import PatrocinioRelatorioPage from './pages/PatrocinioRelatorioPage';
 import AjusPage from './pages/AjusPage';
 
 // Contexto de Autenticação
@@ -68,6 +69,10 @@ function AppContent() {
             <Route
               path="/prazos-iniciais/templates"
               element={<PrazosIniciaisTemplatesAdminPage />}
+            />
+            <Route
+              path="/prazos-iniciais/patrocinio/relatorio"
+              element={<PatrocinioRelatorioPage />}
             />
             <Route path="/ajus" element={<AjusPage />} />
           </Route>

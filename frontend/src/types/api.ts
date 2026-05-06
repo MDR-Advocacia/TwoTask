@@ -932,3 +932,55 @@ export interface PrazoInicialEnums {
   priorities: string[];
   due_date_references: string[];
 }
+
+
+
+// ── Encaminhar devolucao + relatorio de patrocinio (Frentes 2 + 3) ──
+
+export interface EncaminharDevolucaoResponse {
+  intake_id: number;
+  intake_status: string;
+  ajus_queue_item_id: number | null;
+  dispatch_pending: boolean;
+}
+
+export interface PatrocinioRelatorioFilters {
+  since?: string | null;
+  until?: string | null;
+  office_id?: number | null;
+  limit?: number;
+  offset?: number;
+}
+
+export interface PatrocinioRelatorioItem {
+  intake_id: number;
+  cnj_number: string | null;
+  lawsuit_id: number | null;
+  office_id: number | null;
+  intake_status: string;
+  received_at: string | null;
+  decisao: string;
+  suspeita_devolucao: boolean;
+  natureza_acao: string | null;
+  motivo_suspeita: string | null;
+  outro_advogado_nome: string | null;
+  outro_advogado_oab: string | null;
+  outro_advogado_data_habilitacao: string | null;
+  outro_escritorio_nome: string | null;
+  polo_passivo_confirmado: boolean;
+  confianca: string | null;
+  fundamentacao: string | null;
+  review_status: string;
+  reviewed_by_email: string | null;
+  reviewed_by_name: string | null;
+  reviewed_at: string | null;
+  ajus_queue_status: string | null;
+  ajus_queue_id: number | null;
+}
+
+export interface PatrocinioRelatorioResponse {
+  total: number;
+  limit: number;
+  offset: number;
+  items: PatrocinioRelatorioItem[];
+}

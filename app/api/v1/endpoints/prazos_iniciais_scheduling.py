@@ -728,3 +728,61 @@ async def debug_ged_upload(
         "litigation_id": litigation_id,
         "type_id": type_id,
     }
+
+
+
+# ════════════════════════════════════════════════════════════════════
+# Encaminhar pra devolucao (Frente 2 + 3)
+# ════════════════════════════════════════════════════════════════════
+
+class EncaminharDevolucaoRequest(BaseModel):
+    """Body do POST /intakes/{id}/encaminhar-devolucao. `motivo` cai em
+    patrocinio.motivo_suspeita + intake.metadata_json.encaminhar_devolucao."""
+    motivo: Optional[str] = Field(default=None, max_length=2000)
+
+
+class EncaminharDevolucaoResponse(BaseModel):
+    intake_id: int
+    intake_status: str
+    ajus_queue_item_id: Optional[int] = None
+    dispatch_pending: bool
+
+
+@router.post(
+    "/intakes/{intake_id}/encaminhar-devolucao",
+    response_model=EncaminharDevolucaoResponse,
+    summary=(
+        "Encaminha um intake existente pra fila de devolucao do AJUS — "
+        "marca patrocinio como aprovado/devolucao, status DEVOLUCAO_PENDENTE, "
+        "e dispatch_pending=True (worker sobe GED + cancela legada)."
+    ),
+)
+def encaminhar_intake_para_devolucao(
+    payload: EncaminharDevolucaoRequest,
+    intake_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(
+        auth_security.require_permission("prazos_iniciais")
+    ),
+):
+    service = PrazosIniciaisSchedulingService(db)
+    try:
+        result = service.encaminhar_para_devolucao(
+            intake_id=intake_id,
+            motivo=(payload.motivo or None),
+            approved_by_email=current_user.email,
+            approved_by_user_id=current_user.id,
+            approved_by_name=current_user.name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    intake = result["intake"]
+    return EncaminharDevolucaoResponse(
+        intake_id=intake.id,
+        intake_status=intake.status,
+        ajus_queue_item_id=result.get("ajus_queue_item_id"),
+        dispatch_pending=bool(intake.dispatch_pending),
+    )

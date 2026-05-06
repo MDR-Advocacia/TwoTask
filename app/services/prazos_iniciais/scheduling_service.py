@@ -12,6 +12,7 @@ from app.models.prazo_inicial import (
     INTAKE_STATUS_AWAITING_TEMPLATE_CONFIG,
     INTAKE_STATUS_CLASSIFIED,
     INTAKE_STATUS_COMPLETED_WITHOUT_PROVIDENCE,
+    INTAKE_STATUS_DEVOLUCAO_PENDING,
     INTAKE_STATUS_IN_REVIEW,
     INTAKE_STATUS_SCHEDULE_ERROR,
     INTAKE_STATUS_SCHEDULED,
@@ -1072,6 +1073,179 @@ class PrazosIniciaisSchedulingService:
             "legacy_task_cancellation_item": None,  # diferido — Onda 3 #5
         }
 
+    # Status elegiveis pra encaminhar pra devolucao (intake existente
+    # cujo patrocinio nao eh nosso). AGENDADO incluido — operador pode
+    # mudar de ideia depois de ja ter agendado, e o dispatch_treatment_web
+    # cancela a task legada na mesma pipeline.
+    _DEVOLUCAO_ALLOWED_STATUSES = frozenset({
+        INTAKE_STATUS_IN_REVIEW,
+        INTAKE_STATUS_CLASSIFIED,
+        INTAKE_STATUS_AWAITING_TEMPLATE_CONFIG,
+        INTAKE_STATUS_SCHEDULE_ERROR,
+        INTAKE_STATUS_SCHEDULED,
+        INTAKE_STATUS_DEVOLUCAO_PENDING,  # idempotente
+    })
+
+    def encaminhar_para_devolucao(
+        self,
+        *,
+        intake_id: int,
+        motivo: Optional[str],
+        approved_by_email: str,
+        approved_by_user_id: Optional[int] = None,
+        approved_by_name: Optional[str] = None,
+    ) -> dict:
+        """
+        Encaminha um intake EXISTENTE pra fila de devolucao do AJUS.
+        Mirror simplificado de `finalize_without_scheduling`, mas:
+
+        - status alvo = DEVOLUCAO_PENDENTE (nao CONCLUIDO_SEM_PROVIDENCIA).
+        - Marca patrocinio com suspeita_devolucao=True + review_status=aprovado
+          (cria patrocinio se nao existir — caso de intake sem analise
+          previa pelo classifier; raro mas possivel).
+        - Enfileira AjusAndamentoQueue com cod_andamento.is_devolucao=True
+          (idempotente via AjusQueueService.enqueue_for_intake — UNIQUE
+          em intake_id).
+        - dispatch_pending=True pra que o worker periodico (ou botao
+          "Disparar pendentes") suba a habilitacao no GED + cancele a
+          task legada do L1.
+
+        Idempotente: rodar 2x mantem o mesmo estado final.
+
+        Levanta ValueError se intake nao existe; RuntimeError se status
+        nao permite. Sem AjusCodAndamento marcado is_devolucao=true
+        cadastrado, loga warning mas NAO falha (consistente com o fluxo
+        de devolucao automatica externa).
+        """
+        from datetime import datetime, timezone as _tz
+
+        from app.models.ajus import AjusCodAndamento
+        from app.models.prazo_inicial_patrocinio import (
+            PATROCINIO_DECISAO_OUTRO,
+            PATROCINIO_REVIEW_APPROVED,
+            PrazoInicialPatrocinio,
+        )
+
+        intake = self._load_intake(intake_id)
+        if intake is None:
+            raise ValueError("Intake nao encontrado.")
+
+        if intake.status not in self._DEVOLUCAO_ALLOWED_STATUSES:
+            raise RuntimeError(
+                "Encaminhamento pra devolucao so eh permitido nos status "
+                f"{sorted(self._DEVOLUCAO_ALLOWED_STATUSES)}. "
+                f"Status atual: {intake.status}."
+            )
+
+        if not intake.lawsuit_id:
+            raise RuntimeError(
+                "Intake sem lawsuit_id — GED do L1 + AJUS exigem vinculo "
+                "a processo. Reprocesse o CNJ antes ou cancele o intake."
+            )
+
+        now = self._utcnow()
+
+        # Patrocinio: cria se nao existe, atualiza se existe.
+        patrocinio = (
+            self.db.query(PrazoInicialPatrocinio)
+            .filter(PrazoInicialPatrocinio.intake_id == intake.id)
+            .one_or_none()
+        )
+        if patrocinio is None:
+            patrocinio = PrazoInicialPatrocinio(
+                intake_id=intake.id,
+                decisao=PATROCINIO_DECISAO_OUTRO,
+                suspeita_devolucao=True,
+                motivo_suspeita=motivo,
+                polo_passivo_confirmado=True,
+                confianca="alta",
+                fundamentacao=(
+                    "Encaminhamento manual pra devolucao pelo operador."
+                ),
+                review_status=PATROCINIO_REVIEW_APPROVED,
+                reviewed_by_user_id=approved_by_user_id,
+                reviewed_by_email=approved_by_email,
+                reviewed_by_name=approved_by_name,
+                reviewed_at=now,
+            )
+            self.db.add(patrocinio)
+        else:
+            patrocinio.suspeita_devolucao = True
+            if motivo:
+                patrocinio.motivo_suspeita = motivo
+            patrocinio.review_status = PATROCINIO_REVIEW_APPROVED
+            patrocinio.reviewed_by_user_id = approved_by_user_id
+            patrocinio.reviewed_by_email = approved_by_email
+            patrocinio.reviewed_by_name = approved_by_name
+            patrocinio.reviewed_at = now
+
+        # Status + auditoria + dispatch_pending.
+        intake.status = INTAKE_STATUS_DEVOLUCAO_PENDING
+        intake.error_message = None
+        intake.treated_by_user_id = approved_by_user_id
+        intake.treated_by_email = approved_by_email
+        intake.treated_by_name = approved_by_name
+        intake.treated_at = now
+        intake.dispatch_pending = True
+        intake.dispatched_at = None
+        intake.dispatch_error_message = None
+
+        # Anexa nota de auditoria em metadata_json (preserva o resto).
+        if motivo:
+            meta = dict(intake.metadata_json or {})
+            log = meta.setdefault("encaminhar_devolucao", [])
+            if isinstance(log, list):
+                log.append({
+                    "at": now.isoformat(),
+                    "by": approved_by_email,
+                    "motivo": motivo[:500],
+                })
+                intake.metadata_json = meta
+
+        # Enfileira AJUS com cod_andamento marcado is_devolucao.
+        ajus_item_id: Optional[int] = None
+        try:
+            from app.services.ajus.queue_service import AjusQueueService
+            cod_devolucao = (
+                self.db.query(AjusCodAndamento)
+                .filter(
+                    AjusCodAndamento.is_devolucao.is_(True),
+                    AjusCodAndamento.is_active.is_(True),
+                )
+                .one_or_none()
+            )
+            if cod_devolucao is None:
+                logger.warning(
+                    "Encaminhar devolucao[intake=%d]: nenhum AjusCodAndamento "
+                    "ativo com is_devolucao=true cadastrado. AJUS NAO "
+                    "enfileirado. Cadastre em /ajus/cod-andamento.",
+                    intake.id,
+                )
+            else:
+                ajus = AjusQueueService(self.db)
+                queue = ajus.enqueue_for_intake(intake, cod_andamento=cod_devolucao)
+                if queue is not None:
+                    ajus_item_id = queue.id
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Encaminhar devolucao[intake=%d]: enqueue AJUS falhou "
+                "(operador pode reenviar manualmente).",
+                intake.id,
+            )
+
+        self.db.commit()
+        self.db.refresh(intake)
+
+        logger.info(
+            "intake %s encaminhado pra devolucao por %s — dispatch_pending=True, ajus_item=%s",
+            intake_id, approved_by_email, ajus_item_id,
+        )
+
+        return {
+            "intake": intake,
+            "ajus_queue_item_id": ajus_item_id,
+        }
+
     # ──────────────────────────────────────────────
     # Onda 3 #5 — Disparo desacoplado: Tratamento Web
     # ──────────────────────────────────────────────
@@ -1126,10 +1300,12 @@ class PrazosIniciaisSchedulingService:
         if intake.status not in (
             INTAKE_STATUS_SCHEDULED,
             INTAKE_STATUS_COMPLETED_WITHOUT_PROVIDENCE,
+            INTAKE_STATUS_DEVOLUCAO_PENDING,
         ):
             raise RuntimeError(
-                "Disparo só é permitido em AGENDADO ou "
-                f"CONCLUIDO_SEM_PROVIDENCIA. Status atual: {intake.status}."
+                "Disparo só é permitido em AGENDADO, "
+                "CONCLUIDO_SEM_PROVIDENCIA ou DEVOLUCAO_PENDENTE. "
+                f"Status atual: {intake.status}."
             )
 
         if not intake.lawsuit_id:
