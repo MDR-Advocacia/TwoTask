@@ -21,6 +21,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core import auth as auth_security
@@ -143,17 +144,19 @@ def list_active_notices(
     """
     now = datetime.now(timezone.utc)
 
-    dismissed_ids_subq = (
-        db.query(AdminNoticeDismissal.notice_id)
-        .filter(AdminNoticeDismissal.user_id == current_user.id)
-        .subquery()
+    # `select()` (em vez de `subquery()`) evita o SAWarning
+    # "Coercing Subquery object into a select() for use in IN()"
+    # — IN() em SQLAlchemy 2.x quer um Select, nao um Subquery.
+    dismissed_select = (
+        select(AdminNoticeDismissal.notice_id)
+        .where(AdminNoticeDismissal.user_id == current_user.id)
     )
 
     rows = (
         db.query(AdminNotice)
         .filter(AdminNotice.starts_at <= now)
         .filter(AdminNotice.ends_at >= now)
-        .filter(~AdminNotice.id.in_(dismissed_ids_subq))
+        .filter(~AdminNotice.id.in_(dismissed_select))
         .order_by(AdminNotice.ends_at.asc())
         .all()
     )
