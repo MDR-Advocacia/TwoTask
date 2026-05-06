@@ -141,6 +141,57 @@ class DispatchBatchResponse(BaseModel):
     errored: list[dict]
 
 
+class BackfillCompletedRequest(BaseModel):
+    """
+    Filtros opcionais pro backfill da fila AJUS a partir dos intakes
+    de prazos iniciais ja' concluidos com sucesso (CONCLUIDO,
+    CONCLUIDO_SEM_PROVIDENCIA, GED_ENVIADO).
+    """
+    statuses: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Lista de status do intake. None = usa o set padrao de "
+            "'concluidos com sucesso'."
+        ),
+    )
+    from_date: Optional[date] = Field(
+        default=None,
+        description="Filtra intakes criados a partir desta data (inclusivo).",
+    )
+    to_date: Optional[date] = Field(
+        default=None,
+        description="Filtra intakes criados ate esta data (inclusivo).",
+    )
+    only_with_pdf: bool = Field(
+        default=True,
+        description=(
+            "Pula intakes sem PDF de habilitacao disponivel "
+            "(AJUS rejeita andamento sem anexo)."
+        ),
+    )
+    dry_run: bool = Field(
+        default=False,
+        description="Se True, so' conta candidatos sem mexer na fila.",
+    )
+    limit: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=10000,
+        description="Limite de intakes processados nessa chamada.",
+    )
+
+
+class BackfillCompletedResponse(BaseModel):
+    candidates: int
+    enqueued: int
+    skipped_already: int
+    skipped_no_pdf: int
+    skipped_other: int
+    intake_ids_enqueued: list[int]
+    dry_run: bool
+    error: Optional[str] = None
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Helpers de serialização
 # ═══════════════════════════════════════════════════════════════════════
@@ -344,6 +395,33 @@ def dispatch_pending(
     service = AjusQueueService(db)
     result = service.dispatch_pending_batch(batch_limit=batch_limit)
     return DispatchBatchResponse(**result)
+
+
+@router.post(
+    "/andamentos/backfill-from-intakes",
+    response_model=BackfillCompletedResponse,
+    summary=(
+        "Enfileira no AJUS os intakes de prazos iniciais ja' concluidos "
+        "com sucesso (CONCLUIDO, CONCLUIDO_SEM_PROVIDENCIA, GED_ENVIADO) "
+        "que ainda nao tem item na fila. Idempotente -- rodar 2x nao "
+        "duplica. Use `dry_run=true` pra ver o numero de candidatos antes."
+    ),
+)
+def backfill_from_intakes(
+    payload: BackfillCompletedRequest = BackfillCompletedRequest(),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    service = AjusQueueService(db)
+    result = service.backfill_completed_intakes(
+        statuses=payload.statuses,
+        from_date=payload.from_date,
+        to_date=payload.to_date,
+        only_with_pdf=payload.only_with_pdf,
+        dry_run=payload.dry_run,
+        limit=payload.limit,
+    )
+    return BackfillCompletedResponse(**result)
 
 
 @router.post("/andamentos/{item_id}/cancel", response_model=AndamentoQueueOut)

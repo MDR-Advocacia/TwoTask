@@ -911,3 +911,196 @@ class AjusQueueService:
         self.db.commit()
         self.db.refresh(item)
         return item
+
+    # -- Backfill retroativo (intakes antigos) -----------------------
+
+    def backfill_completed_intakes(
+        self,
+        *,
+        statuses: Optional[Iterable[str]] = None,
+        from_date: Optional[date] = None,
+        to_date: Optional[date] = None,
+        only_with_pdf: bool = True,
+        dry_run: bool = False,
+        limit: Optional[int] = None,
+    ) -> dict:
+        """
+        Enfileira no AJUS todos os intakes "concluidos com sucesso" que
+        ainda nao tem item na fila -- pra cobrir os processos antigos
+        anteriores ao auto-enqueue (intake_service:215).
+
+        Reusa `enqueue_for_intake`, que ja eh idempotente via UNIQUE
+        (intake_id), entao rodar 2x nao duplica. Tambem usa o
+        `cod_andamento` default -- se nao tiver default cadastrado,
+        nada eh enfileirado e o resumo traz contadores zerados +
+        `error="sem_cod_default"`.
+
+        Args:
+            statuses: lista de status do intake a considerar. Default =
+                {CONCLUIDO, CONCLUIDO_SEM_PROVIDENCIA, GED_ENVIADO} --
+                terminais positivos. DEVOLUCAO_* fica de fora (fluxo
+                AJUS proprio).
+            from_date / to_date: filtro opcional por created_at do
+                intake (inclusivo nos dois lados).
+            only_with_pdf: se True (default), pula intakes sem PDF de
+                habilitacao disponivel -- AJUS rejeita andamento sem
+                anexo. Setar False forca enfileirar mesmo assim
+                (operador pode anexar manualmente depois).
+            dry_run: se True, so conta candidatos sem mexer na fila.
+            limit: corta o numero de intakes processados nessa chamada
+                (None = sem limite).
+
+        Returns:
+            dict {
+                "candidates": int,        # intakes que passaram no filtro
+                "enqueued": int,          # itens AJUS criados de fato
+                "skipped_already": int,   # ja tinham item na fila
+                "skipped_no_pdf": int,    # sem habilitacao disponivel
+                "skipped_other": int,     # enqueue retornou None por outro motivo
+                "intake_ids_enqueued": list[int],
+                "dry_run": bool,
+                "error": Optional[str],
+            }
+        """
+        # Import local pra evitar import circular no topo do modulo.
+        from app.models.prazo_inicial import (
+            INTAKE_STATUS_COMPLETED,
+            INTAKE_STATUS_COMPLETED_WITHOUT_PROVIDENCE,
+            INTAKE_STATUS_GED_SENT,
+        )
+
+        eff_statuses = list(statuses) if statuses else [
+            INTAKE_STATUS_COMPLETED,
+            INTAKE_STATUS_COMPLETED_WITHOUT_PROVIDENCE,
+            INTAKE_STATUS_GED_SENT,
+        ]
+
+        # Pre-checa cod default -- se nao tem, sai cedo com mensagem
+        # explicativa. Evita iterar centenas de intakes sem necessidade.
+        cod_default = (
+            self.db.query(AjusCodAndamento)
+            .filter(
+                AjusCodAndamento.is_default.is_(True),
+                AjusCodAndamento.is_active.is_(True),
+            )
+            .one_or_none()
+        )
+        if cod_default is None:
+            return {
+                "candidates": 0,
+                "enqueued": 0,
+                "skipped_already": 0,
+                "skipped_no_pdf": 0,
+                "skipped_other": 0,
+                "intake_ids_enqueued": [],
+                "dry_run": dry_run,
+                "error": (
+                    "Nenhum cod_andamento default ativo cadastrado. "
+                    "Cadastre em /ajus/cod-andamento antes de rodar o backfill."
+                ),
+            }
+
+        q = (
+            self.db.query(PrazoInicialIntake)
+            .filter(PrazoInicialIntake.status.in_(eff_statuses))
+        )
+        if from_date is not None:
+            q = q.filter(PrazoInicialIntake.created_at >= from_date)
+        if to_date is not None:
+            # to_date inclusivo: pega ate o fim do dia.
+            q = q.filter(
+                PrazoInicialIntake.created_at < (to_date + timedelta(days=1)),
+            )
+        q = q.order_by(PrazoInicialIntake.created_at.asc())
+        if limit is not None and limit > 0:
+            q = q.limit(limit)
+        intakes = q.all()
+
+        candidates = len(intakes)
+        enqueued = 0
+        skipped_already = 0
+        skipped_no_pdf = 0
+        skipped_other = 0
+        enqueued_ids: list[int] = []
+
+        # Pre-carrega ids ja na fila pra contar "skipped_already" sem
+        # custar 1 SELECT por iteracao em dry_run.
+        existing_intake_ids: set[int] = set()
+        if intakes:
+            existing_intake_ids = {
+                row[0]
+                for row in (
+                    self.db.query(AjusAndamentoQueue.intake_id)
+                    .filter(AjusAndamentoQueue.intake_id.in_(
+                        [i.id for i in intakes],
+                    ))
+                    .all()
+                )
+            }
+
+        for intake in intakes:
+            if intake.id in existing_intake_ids:
+                skipped_already += 1
+                continue
+
+            has_pdf = bool(
+                getattr(intake, "habilitacao_pdf_path", None)
+                or intake.pdf_path
+            )
+            if only_with_pdf and not has_pdf:
+                skipped_no_pdf += 1
+                logger.info(
+                    "Backfill AJUS: intake %d (cnj=%s, status=%s) sem PDF "
+                    "de habilitacao -- pulado.",
+                    intake.id, intake.cnj_number, intake.status,
+                )
+                continue
+
+            if dry_run:
+                # Conta como "enqueued" no preview pra o operador ter o
+                # numero real do que sairia daqui.
+                enqueued += 1
+                enqueued_ids.append(intake.id)
+                continue
+
+            try:
+                item = self.enqueue_for_intake(
+                    intake, cod_andamento=cod_default,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Backfill AJUS: falha enfileirando intake %d -- pulado.",
+                    intake.id,
+                )
+                skipped_other += 1
+                continue
+
+            if item is None:
+                # enqueue_for_intake devolve None em 2 casos: ja existia
+                # (race com outro processo) ou faltou cod default. O
+                # cod default ja foi checado, entao atribui a "ja
+                # existia" -- incrementa skipped_already.
+                skipped_already += 1
+                continue
+
+            enqueued += 1
+            enqueued_ids.append(intake.id)
+
+        logger.info(
+            "Backfill AJUS concluido: candidates=%d enqueued=%d "
+            "skipped_already=%d skipped_no_pdf=%d skipped_other=%d "
+            "dry_run=%s",
+            candidates, enqueued, skipped_already, skipped_no_pdf,
+            skipped_other, dry_run,
+        )
+
+        return {
+            "candidates": candidates,
+            "enqueued": enqueued,
+            "skipped_already": skipped_already,
+            "skipped_no_pdf": skipped_no_pdf,
+            "skipped_other": skipped_other,
+            "intake_ids_enqueued": enqueued_ids,
+            "dry_run": dry_run,
+            "error": None,
+        }

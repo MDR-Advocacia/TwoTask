@@ -907,6 +907,15 @@ class AjusClassifRunner:
                     # Comarca persistiram e Materia/Risco nao gravaram.
                     self._reset_workspace()
                     self._open_process_by_cnj(item.cnj_number)
+                    # CRITICO: depois de reabrir o processo, o ExtJS dispara
+                    # ObjetoPedidoAcaoJudicialController.php?action=read pra
+                    # POPULAR o form. _validate_process_cover roda ANTES do
+                    # form ficar populado e ve "Selecione uma opção" em
+                    # tudo — gerando falso "save rejeitado" e gravando
+                    # erro no item que de fato foi salvo. Soluciona-se
+                    # esperando o UF sair de placeholder (proxy pra "form
+                    # populado server-side") com timeout de 25s.
+                    self._wait_for_cover_populated(timeout_s=25)
                     self._validate_process_cover(item)
                     self.classif_service.mark_success(
                         item.id,
@@ -2083,33 +2092,67 @@ class AjusClassifRunner:
         # explicitamente a response do POST /ajax.handler.php que sai
         # logo apos o click no SAVE.
         save_responses: list = []
+        all_requests: list = []
 
-        def _capture_save_response(response):
+        def _capture_request(request):
+            # DEBUG: TUDO que sai da pagina (GET, POST, qualquer URL).
+            try:
+                method = request.method
+                url = (request.url or "")[:250]
+                all_requests.append(f"{method} {url}")
+            except Exception:
+                pass
+
+        def _capture_response(response):
             try:
                 req = response.request
-                if (
-                    req
-                    and req.method == "POST"
-                    and "ajax.handler.php" in (response.url or "").lower()
-                ):
+                if not req:
+                    return
+                method = req.method
+                url = (response.url or "").lower()
+                # Captura QUALQUER request que pareca de mutacao/save.
+                if method in ("POST", "PUT", "PATCH"):
+                    save_responses.append(response)
+                elif any(kw in url for kw in (
+                    "save", "update", "insert", "edit", "salvar",
+                    "atualizar", "gravar",
+                )):
                     save_responses.append(response)
             except Exception:
                 pass
 
-        # Limpa listeners residuais antes de adicionar o novo (defesa
-        # contra leak progressivo entre items).
         try:
+            self._page.remove_all_listeners("request")
             self._page.remove_all_listeners("response")
         except Exception:
             pass
         try:
-            self._page.on("response", _capture_save_response)
+            self._page.on("request", _capture_request)
+            self._page.on("response", _capture_response)
         except Exception:
             pass
 
         try:
             # Salvar — agora com seguranca de que TODOS os campos firmaram.
             self._click(portal.PROCESS_SAVE_SELECTOR)
+
+            # CRITICO: ExtJS pode bloquear o save com um popup de
+            # validacao client-side (Ext.Msg/messagebox). Quando isso
+            # acontece, NENHUM XHR sai e a capa nunca eh persistida.
+            # Detectamos o popup logo apos o click — se aparecer,
+            # logamos a mensagem, dispatch dismiss, e raise pra retry.
+            self._page.wait_for_timeout(1500)
+            popup_msg = self._detect_extjs_popup()
+            if popup_msg:
+                logger.warning(
+                    "AJUS runner: ExtJS popup bloqueou save: %r — "
+                    "tentando dismiss e raise pra retry.",
+                    popup_msg,
+                )
+                self._dismiss_extjs_popup()
+                raise AjusRunnerError(
+                    f"ExtJS bloqueou save com popup: {popup_msg[:300]}"
+                )
 
             # Aguarda ate captar a primeira POST response do ajax.handler
             # OU timeout de 25s. Polling de 200ms mantem responsividade
@@ -2131,13 +2174,18 @@ class AjusClassifRunner:
             else:
                 logger.warning(
                     "AJUS runner: save XHR nao detectado em 25s — "
-                    "seguindo, validate vai conferir capa server-side.",
+                    "seguindo, validate vai conferir capa server-side. "
+                    "TODAS as requests vistas (GET+POST) durante a "
+                    "janela: %s",
+                    all_requests[:30] if all_requests else "(nenhuma)",
                 )
         finally:
             try:
-                self._page.remove_listener(
-                    "response", _capture_save_response,
-                )
+                self._page.remove_listener("request", _capture_request)
+            except Exception:
+                pass
+            try:
+                self._page.remove_listener("response", _capture_response)
             except Exception:
                 pass
 
@@ -2145,6 +2193,133 @@ class AjusClassifRunner:
         # (pode disparar refresh do form, fechar modal, etc.) antes do
         # caller chamar _reset_workspace.
         self._settle(wait_ms=1500)
+
+    def _detect_extjs_popup(self) -> str:
+        """
+        Detecta um MESSAGEBOX ExtJS visivel (Ext.MessageBox / Ext.Msg).
+
+        IMPORTANTE: NAO confundir com Ext.Window generica — a tela do
+        processo no AJUS *e* uma Ext.Window, e WindowMgr.getActive()
+        retornaria ela como "popup", gerando falso-positivo.
+
+        Retorna o texto da mensagem se houver popup REAL; string vazia
+        caso contrario. Nao raise.
+        """
+        # Estrategia 1: API oficial do Ext.MessageBox.
+        # Ext.MessageBox.getDialog() retorna a INSTANCIA singleton do
+        # messagebox; isVisible() distingue de Ext.Window comum.
+        # Texto fica em ".ext-mb-text" dentro do dialog (Ext 3.x/4.x).
+        js = (
+            "() => {"
+            "  try {"
+            "    if (typeof Ext === 'undefined') return '';"
+            "    const MB = Ext.MessageBox || Ext.Msg;"
+            "    if (!MB) return '';"
+            "    const dlg = (typeof MB.getDialog === 'function') ? MB.getDialog() : null;"
+            "    if (!dlg || !dlg.isVisible || !dlg.isVisible()) return '';"
+            "    const title = (dlg.title || dlg.titleEl && dlg.titleEl.dom && dlg.titleEl.dom.innerText || '').toString().trim();"
+            "    let body = '';"
+            "    try {"
+            "      const txtEl = dlg.body && dlg.body.dom && dlg.body.dom.querySelector('.ext-mb-text, .ext-mb-content, .x-msg-box-text');"
+            "      body = txtEl ? txtEl.innerText : (dlg.body && dlg.body.dom && dlg.body.dom.innerText) || '';"
+            "    } catch (e) { body = ''; }"
+            "    body = body.toString().trim();"
+            "    if (!title && !body) return '';"
+            "    return (title + ' :: ' + body).trim();"
+            "  } catch (e) { return ''; }"
+            "}"
+        )
+        try:
+            text = self._page.evaluate(js)
+            if text:
+                return str(text)[:1000]
+        except Exception:
+            pass
+
+        # Estrategia 2: DOM. SO matcha o container EXATO do messagebox
+        # (.x-message-box dentro de .x-window) — evita falso-positivo
+        # com janela do processo.
+        try:
+            loc = self._page.locator(
+                ".x-window.x-message-box:visible, "
+                ".x-window:visible .ext-mb-text:visible"
+            ).first
+            if loc.count() > 0 and loc.is_visible(timeout=500):
+                text = (loc.inner_text(timeout=500) or "").strip()
+                # Sanity check: messagebox de verdade tem < 500 chars.
+                # Se o "popup" tem 1000+ chars (a tela do processo), eh
+                # falso-positivo — devolve vazio.
+                if text and len(text) < 500:
+                    return text
+        except Exception:
+            pass
+        return ""
+
+    def _dismiss_extjs_popup(self) -> None:
+        """
+        Tenta fechar o popup ExtJS clicando no botao default (Ok/Sim).
+        Best-effort — sem raise. Fallback: tecla ESC.
+        """
+        button_selectors = (
+            ".x-message-box button:has-text('OK')",
+            ".x-message-box button:has-text('Ok')",
+            ".x-message-box button:has-text('Sim')",
+            ".x-message-box button:has-text('Fechar')",
+            ".x-window button:has-text('OK')",
+            ".x-window button:has-text('Ok')",
+            ".x-tool-close",
+        )
+        for sel in button_selectors:
+            try:
+                loc = self._page.locator(sel).first
+                if loc.count() > 0 and loc.is_visible(timeout=300):
+                    loc.click(timeout=2000)
+                    self._page.wait_for_timeout(500)
+                    return
+            except Exception:
+                continue
+        try:
+            self._page.keyboard.press("Escape")
+        except Exception:
+            pass
+
+    def _wait_for_cover_populated(self, *, timeout_s: int = 25) -> None:
+        """
+        Espera o form da capa ficar populado server-side apos um reopen.
+
+        Apos `_open_process_by_cnj`, ExtJS dispara um XHR de leitura
+        (ObjetoPedidoAcaoJudicialController.php?action=read) que
+        retorna 200 e *depois* popula o form. Se o caller (validate)
+        roda antes desse populate, ve placeholder em tudo e gera
+        falso-positivo de "save rejeitado".
+
+        Heuristica: poll do display do campo UF ate sair de
+        placeholder. UF eh o primeiro campo populado pelo ExtJS,
+        funciona como sentinela. Se em `timeout_s` segundos nao
+        popular, segue mesmo assim — o validate vai capturar como
+        erro real (o que eh OK porque ai o save provavelmente falhou
+        de fato).
+        """
+        deadline = time.monotonic() + max(timeout_s, 1)
+        last_value = ""
+        while time.monotonic() < deadline:
+            try:
+                val = self._read_field_display_value(portal.PROCESS_UF_SELECTOR)
+            except Exception:
+                val = ""
+            last_value = val
+            if val and not self._placeholder_or_empty(val):
+                logger.info(
+                    "AJUS runner: capa populada (UF display=%r) — "
+                    "seguindo pra validate.", val,
+                )
+                return
+            self._page.wait_for_timeout(500)
+        logger.warning(
+            "AJUS runner: capa nao populou em %ds (UF display final=%r) — "
+            "validate vai conferir mesmo assim.",
+            timeout_s, last_value,
+        )
 
     def _validate_process_cover(self, item: AjusClassificacaoQueue) -> None:
         """
