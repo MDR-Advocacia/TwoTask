@@ -2071,8 +2071,79 @@ class AjusClassifRunner:
         self._fill_field_with_verify("Justica/Honorario", portal.PROCESS_JUSTICE_FEE_SELECTOR, item.justice_fee)
         self._fill_field_with_verify("Risco/Prob. Perda", portal.PROCESS_RISK_SELECTOR, item.risk_loss_probability)
 
-        # Salvar — agora com seguranca de que TODOS os campos firmaram.
-        self._click(portal.PROCESS_SAVE_SELECTOR)
+        # CRITICO: ExtJS dispara o save como XHR POST async pro
+        # /ajax.handler.php. Se o _reset_workspace() (que vem logo apos
+        # no classify_item) rodar page.reload() antes do XHR completar,
+        # o save eh cancelado no meio do voo e a capa volta TODA em
+        # placeholder na re-leitura — gerando "erro" em massa em itens
+        # que o servidor sequer chegou a processar.
+        #
+        # networkidle NAO funciona pra esse portal (AJUS faz long-polling,
+        # nunca fica idle — ver _goto comentario). Solucao: capturar
+        # explicitamente a response do POST /ajax.handler.php que sai
+        # logo apos o click no SAVE.
+        save_responses: list = []
+
+        def _capture_save_response(response):
+            try:
+                req = response.request
+                if (
+                    req
+                    and req.method == "POST"
+                    and "ajax.handler.php" in (response.url or "").lower()
+                ):
+                    save_responses.append(response)
+            except Exception:
+                pass
+
+        # Limpa listeners residuais antes de adicionar o novo (defesa
+        # contra leak progressivo entre items).
+        try:
+            self._page.remove_all_listeners("response")
+        except Exception:
+            pass
+        try:
+            self._page.on("response", _capture_save_response)
+        except Exception:
+            pass
+
+        try:
+            # Salvar — agora com seguranca de que TODOS os campos firmaram.
+            self._click(portal.PROCESS_SAVE_SELECTOR)
+
+            # Aguarda ate captar a primeira POST response do ajax.handler
+            # OU timeout de 25s. Polling de 200ms mantem responsividade
+            # sem queimar CPU. Saves geralmente respondem em <3s.
+            deadline = time.monotonic() + 25
+            while time.monotonic() < deadline and not save_responses:
+                self._page.wait_for_timeout(200)
+
+            if save_responses:
+                resp = save_responses[-1]
+                try:
+                    status = resp.status
+                except Exception:
+                    status = -1
+                logger.info(
+                    "AJUS runner: save XHR completou status=%s url=%s",
+                    status, (resp.url or "")[:200],
+                )
+            else:
+                logger.warning(
+                    "AJUS runner: save XHR nao detectado em 25s — "
+                    "seguindo, validate vai conferir capa server-side.",
+                )
+        finally:
+            try:
+                self._page.remove_listener(
+                    "response", _capture_save_response,
+                )
+            except Exception:
+                pass
+
+        # Pequeno settle pra ExtJS terminar de processar a resposta
+        # (pode disparar refresh do form, fechar modal, etc.) antes do
+        # caller chamar _reset_workspace.
         self._settle(wait_ms=1500)
 
     def _validate_process_cover(self, item: AjusClassificacaoQueue) -> None:
