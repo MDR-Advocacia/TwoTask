@@ -225,10 +225,20 @@ class AjusQueueService:
             data_evento, cod_andamento.dias_fatal_offset_uteis,
         )
 
-        # Render do `informacao` com placeholders simples
+        # Render do `informacao` com placeholders simples.
+        # `motivo` (pin019) — preenchido apenas no fluxo de devolução
+        # automática (vem em intake.metadata_json["motivo"]). Pra o
+        # fluxo principal vira string vazia, então o template pode usar
+        # `{motivo}` sem quebrar — só fica vazio quando não aplica.
+        motivo = ""
+        if intake.metadata_json and isinstance(intake.metadata_json, dict):
+            raw_motivo = intake.metadata_json.get("motivo")
+            if raw_motivo:
+                motivo = str(raw_motivo).strip()
         ctx = {
             "cnj": intake.cnj_number or "",
             "data_recebimento": format_date_brl(data_evento),
+            "motivo": motivo,
         }
         try:
             informacao = (cod_andamento.informacao_template or "").format(**ctx)

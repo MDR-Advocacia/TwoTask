@@ -67,8 +67,12 @@ class AjusCodAndamento(Base):
 
     O `informacao_template` aceita placeholders simples interpolados no
     momento do enfileiramento:
-      - {cnj}            — número do processo do intake
+      - {cnj}              — número do processo do intake
       - {data_recebimento} — data de criação do intake (dd/MM/yyyy)
+      - {motivo}           — texto livre vindo do payload (pin019).
+                              Preenchido apenas no fluxo de devolução
+                              automática (POST /intake/devolucao); fluxo
+                              principal usa string vazia.
     """
 
     __tablename__ = "ajus_cod_andamento"
