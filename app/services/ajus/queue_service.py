@@ -1159,13 +1159,13 @@ class AjusQueueService:
             .filter(PrazoInicialIntake.status.in_(eff_statuses))
         )
         if from_date is not None:
-            q = q.filter(PrazoInicialIntake.created_at >= from_date)
+            q = q.filter(PrazoInicialIntake.received_at >= from_date)
         if to_date is not None:
             # to_date inclusivo: pega ate o fim do dia.
             q = q.filter(
-                PrazoInicialIntake.created_at < (to_date + timedelta(days=1)),
+                PrazoInicialIntake.received_at < (to_date + timedelta(days=1)),
             )
-        q = q.order_by(PrazoInicialIntake.created_at.asc())
+        q = q.order_by(PrazoInicialIntake.received_at.asc())
         if limit is not None and limit > 0:
             q = q.limit(limit)
         intakes = q.all()

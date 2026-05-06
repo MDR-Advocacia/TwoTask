@@ -2083,6 +2083,21 @@ class AjusClassifRunner:
         self._fill_field_with_verify("Justica/Honorario", portal.PROCESS_JUSTICE_FEE_SELECTOR, item.justice_fee)
         self._fill_field_with_verify("Risco/Prob. Perda", portal.PROCESS_RISK_SELECTOR, item.risk_loss_probability)
 
+        # CAMPO 6 — *Natureza* (obrigatorio server-side). Sem isso o
+        # save bloqueia com popup "Natureza: preenchimento obrigatorio"
+        # e nenhum XHR sai (causa raiz dos saves bloqueados/fantasmas).
+        # MDR define valor fixo "Civel" pra todos os processos.
+        try:
+            self._fill_field_with_verify(
+                "Natureza", portal.PROCESS_NATUREZA_SELECTOR, "Cível",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "AJUS runner: Natureza nao firmou no combobox (item %d, "
+                "cnj=%s): %s — seguindo, save vai validar server-side.",
+                item.id, item.cnj_number, exc,
+            )
+
         # CRITICO: ExtJS dispara o save como XHR POST async pro
         # /ajax.handler.php. Se o _reset_workspace() (que vem logo apos
         # no classify_item) rodar page.reload() antes do XHR completar,
@@ -2142,12 +2157,32 @@ class AjusClassifRunner:
         # entre o ultimo fill e o save zera os campos (provavel
         # dependencia ExtJS resetando filhos quando outro campo muda).
         try:
+            # DEBUG: dump dos hidden inputs do form pra descobrir o NAME
+            # real do campo Natureza (vamos achar o codNatureza ou similar).
+            try:
+                hidden_dump = self._page.evaluate(
+                    "() => {"
+                    "  const inps = Array.from(document.querySelectorAll('input[name]'));"
+                    "  return inps.filter(i => {"
+                    "    const n = (i.name || '').toLowerCase();"
+                    "    return n.startsWith('cod') || n.startsWith('id') || n.includes('natureza');"
+                    "  }).slice(0, 40).map(i => i.name + '=' + (i.value || '')).join(' | ');"
+                    "}"
+                )
+                logger.info(
+                    "AJUS runner: HIDDEN inputs (cod/id/natureza) item %d: %s",
+                    item.id, str(hidden_dump)[:1500],
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("hidden dump falhou: %s", exc)
+
             pre_save_state = {
                 "UF": self._read_field_display_value(portal.PROCESS_UF_SELECTOR),
                 "Comarca": self._read_field_display_value(portal.PROCESS_COMARCA_SELECTOR),
                 "Materia": self._read_field_display_value(portal.PROCESS_MATTER_SELECTOR),
                 "Justica": self._read_field_display_value(portal.PROCESS_JUSTICE_FEE_SELECTOR),
                 "Risco": self._read_field_display_value(portal.PROCESS_RISK_SELECTOR),
+                "Natureza": self._read_field_display_value(portal.PROCESS_NATUREZA_SELECTOR),
             }
             empties = [
                 k for k, v in pre_save_state.items()
