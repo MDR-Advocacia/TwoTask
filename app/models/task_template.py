@@ -92,6 +92,25 @@ class TaskTemplate(Base):
 
     is_active = Column(Boolean, default=True, nullable=False, index=True)
 
+    # Versionamento da taxonomia (v1 / v2). Templates v1 sao os criados
+    # antes do redesenho de polo. v2 sao os criados/revisados na taxonomia
+    # nova. Engine de proposta de tarefa so usa templates v2 ativos.
+    # Migration: tax003.
+    taxonomy_version = Column(
+        String(8), nullable=False, default="v1", server_default="v1",
+    )
+    # Snapshot textual "<categoria_v1> / <subcategoria_v1>" mostrado no
+    # banner amarelo do modal de edicao pra que o operador saiba a qual
+    # classificacao o template referenciava antes de escolher o equivalente
+    # na arvore nova.
+    legacy_label = Column(Text, nullable=True)
+    # Quando true, o template fica dormente: nao casa com publicacao
+    # nenhuma. Operador limpa a flag salvando o template no modal com a
+    # classificacao v2 selecionada.
+    needs_taxonomy_review = Column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 

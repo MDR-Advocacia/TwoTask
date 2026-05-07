@@ -44,6 +44,13 @@ class ClassificationCategory(Base):
     is_active = Column(
         Boolean, nullable=False, default=True, server_default="true",
     )
+    # Polo a que essa categoria pertence na taxonomia v2.
+    # 'ativo' / 'passivo' / 'ambos'. Categorias da v1 (legadas) ficam como
+    # 'ambos' para que registros antigos continuem casando independente
+    # do polo_scope do escritorio. Migration: tax002.
+    polo_scope = Column(
+        String(16), nullable=False, default="ambos", server_default="ambos",
+    )
 
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,

@@ -63,6 +63,18 @@ class OfficeClassificationOverride(Base):
     custom_description = Column(Text, nullable=True)
 
     is_active = Column(Boolean, default=True, nullable=False)
+
+    # Versionamento da taxonomia. Mesmo tratamento de task_templates:
+    # overrides v1 ficam dormentes ate o operador revisar e re-apontar
+    # pra cat/sub da v2. Migration: tax004.
+    taxonomy_version = Column(
+        String(8), nullable=False, default="v1", server_default="v1",
+    )
+    legacy_label = Column(Text, nullable=True)
+    needs_taxonomy_review = Column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 

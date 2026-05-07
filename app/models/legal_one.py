@@ -44,6 +44,13 @@ class LegalOneOffice(Base):
     name = Column(String, nullable=False)
     path = Column(String)
     is_active = Column(Boolean, default=True)
+    # Polo do processo que esse escritorio atende. Determina qual arvore
+    # da taxonomia v2 (ativo/passivo) e oferecida em UI de templates e
+    # injetada no prompt do classificador. 'ambos' = sem filtro (default).
+    # Migration: tax002.
+    polo_scope = Column(
+        String(16), nullable=False, default="ambos", server_default="ambos",
+    )
 
 
 class LegalOneUser(Base):
