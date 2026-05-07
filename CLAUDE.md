@@ -88,6 +88,40 @@ git push origin main
 - Não inventar etapas extras (ex.: `git pull` antes do push, validação
   de diff, etc.) a não ser que o usuário peça.
 
+## ⚠️ MIGRATION NOVA — SEMPRE CONFERIR HISTÓRICO ANTES ⚠️
+
+**Antes de criar QUALQUER migration alembic, é OBRIGATÓRIO** rodar:
+
+```bash
+docker exec onetask-api-1 sh -c "cd /app && alembic heads"
+```
+
+E **olhar o(s) head(s) atual(is)** pra usar como `down_revision` na nova
+migration. Se `heads` retornar mais de uma linha, ANTES de criar a sua,
+crie uma migration de `merge_heads` (vazia, com
+`revises = ('h1', 'h2')`) pra unificar — senão o alembic explode no
+boot com `MultipleHeads` ou `Ambiguous walk` e o Coolify falha o deploy.
+
+**Padrão de IDs da casa:**
+
+- `ajus*` — features do módulo AJUS (próximos: `ajus009`, `ajus010`, …)
+- `pin*` — features de Prazos Iniciais (próximos: `pin021`, `pin022`, …)
+- `pubX` / `taxX` / `usrX` / `cX` / `notX` — outros módulos seguem
+  numeração própria.
+
+**Quando duas branches mexem em alembic ao mesmo tempo:**
+
+- Cada branch deve criar sua migration em cima do head que existia
+  QUANDO a branch foi cortada. Isso vai gerar 2 heads quando ambas
+  mergearem pra `feat`/`main`.
+- A pessoa que mergear primeiro fica com a chain limpa.
+- A segunda DEVE criar **antes do commit final** uma migration
+  `<modulo>NNN_merge_heads_<a>_and_<b>.py` que une as duas pontas, OU
+  re-encadear a sua migration via `down_revision = "<head_unico_atual>"`.
+
+Já travamos o boot do Coolify com `MultipleHeads` mais de uma vez —
+checar `alembic heads` ANTES de commitar evita o problema.
+
 ## ⚠️ WORKTREE INTERNA — NUNCA EDITAR DENTRO DA `.claude/worktrees/` ⚠️
 
 **O usuário commita SEMPRE do checkout principal**
