@@ -220,6 +220,34 @@ class PrazoInicialIntake(Base):
     probabilidade_exito_global = Column(String(16), nullable=True)
     analise_estrategica = Column(Text, nullable=True)
 
+    # Contestação já apresentada (pin021) — análise paralela da IA
+    # quando a íntegra contém uma petição de contestação. Não interfere
+    # em sugestões de prazo/patrocínio — só metadado pro HITL decidir
+    # se complementa, refaz, ou confirma sem providência.
+    #
+    # `contestacao_existe`: flag principal. False = nada detectado;
+    #    demais campos ficam null nesse caso.
+    # `contestacao_apresentada_por_mdr`: True se assinada por Marcos
+    #    Délli (qualquer variação). False se outro advogado. Null se
+    #    a peça está truncada ou sem assinatura legível.
+    # `contestacao_parte_representada`: qual réu do polo passivo a
+    #    peça defendeu — crítico em multi-réus (contestação do Banco
+    #    Will não conta como contestação do Master).
+    # `contestacao_generica`: True quando boilerplate puro (sem citar
+    #    autor/contrato, teses padronizadas). False quando customizada.
+    contestacao_existe = Column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    )
+    contestacao_apresentada_por_mdr = Column(Boolean, nullable=True)
+    contestacao_apresentada_por_nome = Column(String(255), nullable=True)
+    contestacao_apresentada_por_oab = Column(String(32), nullable=True)
+    contestacao_parte_representada = Column(String(255), nullable=True)
+    contestacao_data_apresentacao = Column(Date, nullable=True)
+    contestacao_generica = Column(Boolean, nullable=True)
+    contestacao_analise_qualidade = Column(Text, nullable=True)
+
     # Quem tratou finalisticamente o intake — preenchido quando o operador
     # confirma agendamentos OU finaliza sem providência (pin011). NULL
     # enquanto o intake estiver em fluxo. Usado pra "Tratado por: <nome>"

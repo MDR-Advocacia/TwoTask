@@ -284,6 +284,62 @@ Sempre preencher quando `aplicavel=true`. Texto curto (3-5 frases) explicando o 
 - `media`: alguma ambiguidade (advogado sem data clara, natureza limítrofe)
 - `baixa`: cadastro divergente PI/capa, dados incompletos
 
+# BLOCO `contestacao_existente` (raiz, análise PARALELA — não interfere em prazos/tasks/patrocínio)
+
+Detecta se a íntegra **já contém uma contestação apresentada** (caso típico: reprocessamento de intake antigo, intake atrasado onde escritório anterior já contestou, ou processo herdado). Independe de haver prazo aberto pra nova contestação — pode coexistir com `contestar.aplica=true` (ex.: contestação anterior foi rejeitada e juiz reabriu prazo).
+
+## Quando preencher
+
+Procure na íntegra por petições do polo passivo classificadas como contestação. Sinais típicos no PJe:
+- Label da movimentação: "Contestação", "Petição (Contestação)", "Defesa", "Resposta do réu".
+- `document_kind` = `"contestacao"` (já reclassificado pelo sanitizer).
+- Texto da peça começa com "vem, respeitosamente, [RÉU], … apresentar CONTESTAÇÃO" ou similar.
+
+Se NADA disso aparece → `existe=false` e demais campos null. Termine.
+
+Se aparece UMA OU MAIS contestações: pegue a MAIS RECENTE (a anterior pode ter sido rejeitada, complementada, etc.) e preencha o bloco.
+
+## `apresentada_por_mdr`
+
+A contestação foi assinada por **Marcos Délli** (advogado interno do MDR — variações: "Marcos Delli", "MARCOS DELLI", "Marcos D. de Sousa", "M. Delli")?
+
+- `true` quando a assinatura/qualificação é clara: "MARCOS DELLI - OAB/BA NNNNN" ou similar. Mesmo com OAB de outra UF, se o nome bate é Marcos.
+- `false` quando o signatário é OUTRO advogado (Pinheiro Neto, escritório local, etc.).
+- `null` apenas se a peça não tem assinatura legível ou está truncada.
+
+Use a mesma regra de naming do bloco `patrocinio` — Marcos Délli em qualquer variação É o MDR.
+
+## `parte_representada`
+
+QUAL réu do polo passivo essa contestação está defendendo? Em processo com múltiplos réus (Banco Master + Banco Will + EFB Regimes Especiais), CADA RÉU tem sua própria contestação. Identifique pelo cabeçalho/qualificação da peça: "vem, respeitosamente, BANCO MASTER S/A, …".
+
+Anote o NOME da pessoa jurídica conforme a peça (ex.: "BANCO MASTER S.A."). Isso é crítico — contestação do Banco Will não conta como contestação do Master.
+
+## `generica` — heurísticas pra classificar
+
+Marque `generica=true` quando a contestação tem uma OU MAIS dessas características:
+- Não cita o nome do autor nem dados específicos do contrato/relação discutida.
+- Teses padronizadas que poderiam servir pra qualquer ação consumerista do banco (ex.: "ausência de defeito", "exercício regular de direito", "inversão do ônus da prova é inaplicável", boilerplate de jurisprudência).
+- Não rebate pedidos específicos da PI um a um.
+- Tamanho desproporcional ao caso (ex.: 80 páginas pra ação de R$ 5.000 com 1 pedido) ou vice-versa.
+- Repete mesmo texto encontrado em outras contestações do mesmo escritório no mesmo processo.
+
+Marque `generica=false` quando:
+- Cita nominalmente o autor/contrato/data dos fatos.
+- Tem seção específica rebatendo cada pedido da inicial.
+- Anexa prova documental relevante (extratos, contratos, gravações).
+- Texto demonstra leitura efetiva da PI.
+
+`null` apenas se a contestação está truncada na íntegra e você não consegue avaliar.
+
+## `analise_qualidade`
+
+Texto curto (1-3 frases) descrevendo o que viu — teses invocadas, se enfrentou a causa de pedir, preliminares (incompetência/prescrição/ilegitimidade), prova documental, etc. O operador HITL usa pra decidir se aproveita como base ou refaz do zero.
+
+Exemplos:
+- "Contestação genérica de 12 páginas alegando exercício regular de direito e inversão do ônus, sem citar o autor ou o contrato. Sem preliminares específicas, sem prova documental anexa."
+- "Contestação customizada (28 pp.): preliminar de incompetência absoluta, mérito rebatendo cada pedido com extratos juntados, requereu produção de prova oral. Apta a aproveitamento."
+
 # RESPOSTA — schema
 
 ```json
@@ -304,6 +360,7 @@ Sempre preencher quando `aplicavel=true`. Texto curto (3-5 frases) explicando o 
   "pedidos": [],
   "analise_estrategica": null,
   "patrocinio": {"aplicavel": false, "decisao": null, "outro_escritorio_nome": null, "outro_advogado_nome": null, "outro_advogado_oab": null, "outro_advogado_data_habilitacao": null, "suspeita_devolucao": false, "motivo_suspeita": null, "natureza_acao": null, "polo_passivo_confirmado": true, "polo_passivo_observacao": null, "confianca": null, "fundamentacao": null},
+  "contestacao_existente": {"existe": false, "apresentada_por_mdr": null, "apresentada_por_nome": null, "apresentada_por_oab": null, "parte_representada": null, "data_apresentacao": null, "generica": null, "analise_qualidade": null, "justificativa": ""},
   "confianca_geral": "alta",
   "observacoes": null
 }
@@ -428,6 +485,32 @@ Sem outras movimentacoes claras pra contextualizar quem e a "parte interessada".
   "observacoes": "Despacho ambiguo — operador precisa abrir o processo e ler o despacho anterior."
 }
 ```
+
+## Ex. 5 — Contestação preexistente: MDR já contestou (genérica)
+
+Capa: Procedimento Comum, Vara Cível, autor PF, ré BANCO MASTER S.A. (CNPJ 33.923.798/0001-00).
+Íntegra (movimentações):
+- 12/04/2026 — Petição (Contestação) — assinado por MARCOS DELLI, OAB/BA 22.345. Texto curto (10 pp.) com teses padronizadas: "ausência de defeito do serviço", "exercício regular de direito", "inversão do ônus da prova é inaplicável", sem citar o autor nem o contrato em discussão. Sem preliminares, sem prova documental anexa.
+- 18/04/2026 — Despacho determinando réplica do autor em 15 dias.
+PI: revisão de cláusulas de empréstimo consignado.
+
+Bloco `contestacao_existente`:
+
+```json
+"contestacao_existente": {
+  "existe": true,
+  "apresentada_por_mdr": true,
+  "apresentada_por_nome": "MARCOS DELLI",
+  "apresentada_por_oab": "OAB/BA 22.345",
+  "parte_representada": "BANCO MASTER S.A.",
+  "data_apresentacao": "2026-04-12",
+  "generica": true,
+  "analise_qualidade": "Contestação curta (10 pp.) com teses padronizadas (ausência de defeito, exercício regular, inversão do ônus). Não cita o autor nem o contrato discutido, sem preliminares específicas, sem prova documental. Boilerplate puro — operador deve avaliar se complementa antes do julgamento.",
+  "justificativa": "Movimentação 12/04/2026 'Petição (Contestação)' assinada por MARCOS DELLI representando BANCO MASTER S.A. Conteúdo é o template padrão do escritório, sem adequação ao caso concreto."
+}
+```
+
+(Demais blocos: `contestar.aplica=false` (já contestou), `sem_prazo_em_aberto=true` com `motivo_sem_prazo=AGUARDANDO_AUTOR` (réplica), `patrocinio.decisao=MDR_ADVOCACIA` + `suspeita_devolucao=false`.)
 
 Responda APENAS o JSON.
 """

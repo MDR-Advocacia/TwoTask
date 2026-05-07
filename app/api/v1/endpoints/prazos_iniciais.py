@@ -298,6 +298,33 @@ class IntakeSummary(BaseModel):
     patrocinio_decisao: Optional[str] = None
     patrocinio_suspeita_devolucao: bool = False
     patrocinio_review_status: Optional[str] = None
+    # Contestação já apresentada (pin021) — análise paralela.
+    # Listagem só leva o flag + se foi MDR + se é genérica pra
+    # operador filtrar/ordenar; o detalhe completo (nome/OAB/data/
+    # parte representada/análise) vai no IntakeDetail.
+    contestacao_existe: bool = False
+    contestacao_apresentada_por_mdr: Optional[bool] = None
+    contestacao_generica: Optional[bool] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ContestacaoExistenteOut(BaseModel):
+    """
+    Bloco completo de contestação já apresentada — vai no IntakeDetail.
+    Inclui nome/OAB do signatário, parte representada, data e análise
+    de qualidade pra HITL decidir se complementa, refaz, ou confirma.
+    """
+
+    existe: bool = False
+    apresentada_por_mdr: Optional[bool] = None
+    apresentada_por_nome: Optional[str] = None
+    apresentada_por_oab: Optional[str] = None
+    parte_representada: Optional[str] = None
+    data_apresentacao: Optional[date] = None
+    generica: Optional[bool] = None
+    analise_qualidade: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -341,6 +368,10 @@ class IntakeDetail(IntakeSummary):
     # Patrocínio (pin018) — bloco opcional, presente apenas quando o
     # intake bateu com vinculada Master.
     patrocinio: Optional[PatrocinioOut] = None
+    # Contestação já apresentada (pin021) — bloco completo com nome/OAB
+    # do signatário, parte representada e análise de qualidade. Sempre
+    # presente; quando `existe=false`, demais campos são null.
+    contestacao_existente: Optional[ContestacaoExistenteOut] = None
 
 
 class IntakeListResponse(BaseModel):
@@ -760,6 +791,11 @@ def _intake_to_summary(intake: PrazoInicialIntake) -> IntakeSummary:
         patrocinio_review_status=(
             intake.patrocinio.review_status if getattr(intake, "patrocinio", None) else None
         ),
+        contestacao_existe=bool(getattr(intake, "contestacao_existe", False)),
+        contestacao_apresentada_por_mdr=getattr(
+            intake, "contestacao_apresentada_por_mdr", None
+        ),
+        contestacao_generica=getattr(intake, "contestacao_generica", None),
     )
 
 
@@ -1352,6 +1388,19 @@ def get_intake(
     if getattr(intake, "patrocinio", None) is not None:
         patrocinio_out = PatrocinioOut.model_validate(intake.patrocinio)
 
+    # Contestação já apresentada (pin021) — bloco virtual montado a partir
+    # das colunas contestacao_* do próprio intake (não há tabela 1:1).
+    contestacao_existente_out = ContestacaoExistenteOut(
+        existe=bool(getattr(intake, "contestacao_existe", False)),
+        apresentada_por_mdr=getattr(intake, "contestacao_apresentada_por_mdr", None),
+        apresentada_por_nome=getattr(intake, "contestacao_apresentada_por_nome", None),
+        apresentada_por_oab=getattr(intake, "contestacao_apresentada_por_oab", None),
+        parte_representada=getattr(intake, "contestacao_parte_representada", None),
+        data_apresentacao=getattr(intake, "contestacao_data_apresentacao", None),
+        generica=getattr(intake, "contestacao_generica", None),
+        analise_qualidade=getattr(intake, "contestacao_analise_qualidade", None),
+    )
+
     return IntakeDetail(
         **summary.model_dump(),
         capa_json=intake.capa_json,
@@ -1362,6 +1411,7 @@ def get_intake(
         ],
         pedidos=pedidos_serialized,
         patrocinio=patrocinio_out,
+        contestacao_existente=contestacao_existente_out,
     )
 
 

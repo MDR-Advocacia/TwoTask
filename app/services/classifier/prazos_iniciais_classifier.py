@@ -369,6 +369,18 @@ class PrazosIniciaisBatchClassifier:
                     intake.id, exc,
                 )
 
+            # Contestação já apresentada (pin021) — análise paralela.
+            # Persiste flags do bloco contestacao_existente direto no
+            # intake (colunas contestacao_*). Falhas aqui NÃO interrompem
+            # o intake — só logam.
+            try:
+                self._materialize_contestacao_existente(intake, response_obj)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "Erro materializando contestação existente do intake %s: %s",
+                    intake.id, exc,
+                )
+
             # Precisamos commitar pedidos antes de agregar (senão o
             # flush ainda não gravou). O classifier já usa flush
             # implicito via session; força aqui pra garantir que
@@ -603,6 +615,63 @@ class PrazosIniciaisBatchClassifier:
         existing.polo_passivo_observacao = patrocinio_resp.polo_passivo_observacao
         existing.confianca = patrocinio_resp.confianca
         existing.fundamentacao = patrocinio_resp.fundamentacao
+
+
+    def _materialize_contestacao_existente(
+        self,
+        intake: "PrazoInicialIntake",
+        response: "PrazoInicialClassificationResponse",
+    ) -> None:
+        """
+        Persiste os campos do BlocoContestacaoExistente direto nas
+        colunas `contestacao_*` do intake. Idempotente — em
+        reprocessamento sobrescreve com os valores novos da IA.
+
+        Quando `existe=false`, zera todos os campos (limpeza defensiva
+        caso a IA antes tenha detectado e agora não detecte mais).
+        """
+        bloco = getattr(response, "contestacao_existente", None)
+        if bloco is None:
+            # Schema legado sem o bloco — zera defensivamente.
+            intake.contestacao_existe = False
+            intake.contestacao_apresentada_por_mdr = None
+            intake.contestacao_apresentada_por_nome = None
+            intake.contestacao_apresentada_por_oab = None
+            intake.contestacao_parte_representada = None
+            intake.contestacao_data_apresentacao = None
+            intake.contestacao_generica = None
+            intake.contestacao_analise_qualidade = None
+            return
+
+        intake.contestacao_existe = bool(bloco.existe)
+        if not bloco.existe:
+            # Validador do schema já zera, mas mantemos defesa em
+            # profundidade — limpa colunas pra não persistir lixo.
+            intake.contestacao_apresentada_por_mdr = None
+            intake.contestacao_apresentada_por_nome = None
+            intake.contestacao_apresentada_por_oab = None
+            intake.contestacao_parte_representada = None
+            intake.contestacao_data_apresentacao = None
+            intake.contestacao_generica = None
+            intake.contestacao_analise_qualidade = None
+            return
+
+        intake.contestacao_apresentada_por_mdr = bloco.apresentada_por_mdr
+        intake.contestacao_apresentada_por_nome = bloco.apresentada_por_nome
+        intake.contestacao_apresentada_por_oab = bloco.apresentada_por_oab
+        intake.contestacao_parte_representada = bloco.parte_representada
+        intake.contestacao_data_apresentacao = bloco.data_apresentacao
+        intake.contestacao_generica = bloco.generica
+        # Junta `analise_qualidade` + `justificativa` se ambos vierem,
+        # senão usa o que houver. Operador HITL prefere texto consolidado.
+        partes = []
+        if bloco.analise_qualidade:
+            partes.append(bloco.analise_qualidade.strip())
+        if bloco.justificativa:
+            partes.append(f"[Trecho da íntegra: {bloco.justificativa.strip()}]")
+        intake.contestacao_analise_qualidade = (
+            "\n\n".join(partes) if partes else None
+        )
 
 
     def _fetch_master_vinculadas(self) -> list[dict]:

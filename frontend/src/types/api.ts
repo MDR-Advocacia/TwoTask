@@ -274,6 +274,24 @@ export interface PrazoInicialIntakeSummary {
     | "rejeitado"
     | string
     | null;
+  // Contestacao ja apresentada (pin021) — flags sumarias pra badge
+  // na listagem (`existe`, `apresentada_por_mdr`, `generica`). O bloco
+  // completo com nome/OAB/data/parte representada/analise vai no
+  // detalhe (PrazoInicialContestacaoExistente).
+  contestacao_existe?: boolean;
+  contestacao_apresentada_por_mdr?: boolean | null;
+  contestacao_generica?: boolean | null;
+}
+
+export interface PrazoInicialContestacaoExistente {
+  existe: boolean;
+  apresentada_por_mdr: boolean | null;
+  apresentada_por_nome: string | null;
+  apresentada_por_oab: string | null;
+  parte_representada: string | null;
+  data_apresentacao: string | null;
+  generica: boolean | null;
+  analise_qualidade: string | null;
 }
 
 export interface PrazoInicialPatrocinio {
@@ -402,6 +420,10 @@ export interface PrazoInicialIntakeDetail extends PrazoInicialIntakeSummary {
   sugestoes: PrazoInicialSugestao[];
   pedidos: PrazoInicialPedido[];
   patrocinio: PrazoInicialPatrocinio | null;
+  // Contestacao ja apresentada (pin021) — sempre presente; quando
+  // `existe=false`, demais campos vem null. UI esconde o bloco
+  // inteiro nesses casos.
+  contestacao_existente: PrazoInicialContestacaoExistente | null;
 }
 
 export interface PrazoInicialIntakeListResponse {
@@ -834,23 +856,6 @@ export interface PrazoInicialLegacyTaskQueueMetrics {
   circuit_breaker: PrazoInicialLegacyTaskCircuitBreakerSnapshot;
   rate_limit_seconds: number;
   last_tick: PrazoInicialLegacyTaskLastTickState;
-  // Zumbis: items em PROCESSANDO ha mais de N min sem update.
-  // O worker periodico recupera automaticamente, mas a UI mostra o
-  // contador atual pra dar visibilidade. zombie_threshold_minutes vem
-  // de config.prazos_iniciais_legacy_task_zombie_threshold_minutes.
-  zombie_count: number;
-  zombie_threshold_minutes: number;
-}
-
-export interface PrazoInicialLegacyTaskZombieListResponse {
-  threshold_minutes: number;
-  items: PrazoInicialLegacyTaskCancelQueueItem[];
-}
-
-export interface PrazoInicialLegacyTaskZombieRecoverResponse {
-  recovered_count: number;
-  threshold_minutes: number;
-  items: PrazoInicialLegacyTaskCancelQueueItem[];
 }
 
 export interface PrazoInicialLegacyTaskQueueItemActionResponse {

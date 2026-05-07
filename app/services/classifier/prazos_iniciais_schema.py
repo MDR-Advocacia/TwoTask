@@ -546,6 +546,101 @@ class BlocoPatrocinio(BaseModel):
     data de habilitação, natureza da ação extraída da PI."""
 
 
+# ─── Contestação já apresentada (pin021) ─────────────────────────────
+# Análise paralela: quando a íntegra já contém uma petição de
+# contestação, a IA detecta quem apresentou (MDR via Marcos Délli vs.
+# outro escritório), por qual parte do polo passivo, e se o conteúdo
+# é uma contestação genérica/boilerplate ou foi customizada pro caso.
+# Ajuda o HITL a decidir se complementa, refaz, ou só confirma sem
+# providência. Não afeta sugestões de prazo nem patrocínio — é só
+# metadado pra revisão humana.
+
+# Marcos Délli reconhecido como advogado interno do MDR em todas as
+# variações (acento/iniciais/etc.). Mesma lista usada na análise de
+# patrocínio — manter sincronizado se mudar.
+ADVOGADOS_INTERNOS_MDR = (
+    "Marcos Délli",
+    "Marcos Delli",
+    "MARCOS DELLI",
+    "Marcos D. de Sousa",
+    "M. Delli",
+)
+
+
+class BlocoContestacaoExistente(BaseModel):
+    """
+    Detecção de contestação já apresentada na íntegra do processo.
+
+    Casos típicos onde aparece:
+    - Reprocessamento de intake antigo (já houve contestação no L1).
+    - Intake atrasado: contestação foi apresentada antes da automação
+      pegar o processo (ex.: prazo perdido, escritório anterior, etc.).
+    - Processo herdado de outro escritório com contestação preexistente.
+
+    Quando `existe=false`, demais campos viram null (validador limpa).
+    """
+
+    existe: bool = False
+    """True quando a íntegra contém uma petição classificada como
+    contestação (label do PJe "Contestação", "Petição (Contestação)",
+    "Defesa", ou texto que claramente exerce função contestatória)."""
+
+    apresentada_por_mdr: Optional[bool] = None
+    """True quando a contestação foi assinada por Marcos Délli (qualquer
+    variação do nome). False quando foi outro advogado. Null se
+    `existe=false` ou se a IA não conseguiu identificar o assinante."""
+
+    apresentada_por_nome: Optional[str] = None
+    """Nome do advogado signatário (do bloco de assinaturas ou
+    qualificação da petição). Útil pra HITL confirmar."""
+
+    apresentada_por_oab: Optional[str] = None
+    """OAB do signatário, formato típico OAB/UF NNNNN."""
+
+    parte_representada: Optional[str] = None
+    """Qual parte do polo passivo essa contestação defendeu (nome da
+    pessoa jurídica conforme a qualificação da petição). Em processos
+    com múltiplos réus, é crítico identificar — contestação do Banco
+    Will não é contestação da Master."""
+
+    data_apresentacao: Optional[date] = None
+    """Data da petição de contestação (cabeçalho da peça ou metadados
+    da movimentação no PJe)."""
+
+    generica: Optional[bool] = None
+    """True quando a contestação é claramente boilerplate (mesmas
+    teses padronizadas sem aderência aos fatos da PI, sem citar nomes
+    de partes, sem rebater pedidos específicos da inicial). False
+    quando há customização clara pro caso. Null se `existe=false` ou
+    indeterminado."""
+
+    analise_qualidade: Optional[str] = None
+    """1-3 frases descrevendo a qualidade da contestação: teses
+    invocadas, se rebate os pedidos da PI, se cita prova produzida,
+    se há preliminares, etc. Operador usa pra decidir se aproveita
+    como base ou refaz do zero."""
+
+    justificativa: str = ""
+    """Trecho/frase da íntegra que sustenta a detecção (label da
+    movimentação, primeira linha da peça, ou frase-chave que mostra
+    se é genérica ou customizada). Sempre obrigatório quando
+    existe=true."""
+
+    @model_validator(mode="after")
+    def _clear_when_not_present(self) -> "BlocoContestacaoExistente":
+        """Quando `existe=False`, ignora demais campos pra evitar
+        persistir lixo no banco."""
+        if not self.existe:
+            self.apresentada_por_mdr = None
+            self.apresentada_por_nome = None
+            self.apresentada_por_oab = None
+            self.parte_representada = None
+            self.data_apresentacao = None
+            self.generica = None
+            self.analise_qualidade = None
+        return self
+
+
 # ─── Resposta completa da IA ─────────────────────────────────────────
 
 
@@ -667,6 +762,13 @@ class PrazoInicialClassificationResponse(BaseModel):
     # `aplicavel=false` e o classifier não persiste registro.
     patrocinio: Optional[BlocoPatrocinio] = Field(
         default_factory=lambda: BlocoPatrocinio(aplicavel=False)
+    )
+
+    # Contestação já apresentada (pin021) — análise paralela. Sempre
+    # presente; quando a íntegra NÃO contém contestação, vem
+    # `existe=false` e o classifier persiste flags zeradas no intake.
+    contestacao_existente: BlocoContestacaoExistente = Field(
+        default_factory=lambda: BlocoContestacaoExistente(existe=False)
     )
 
     # Meta.

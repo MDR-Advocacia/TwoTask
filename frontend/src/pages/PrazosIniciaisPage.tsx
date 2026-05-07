@@ -92,6 +92,7 @@ import {
 } from "@/services/api";
 import { UploadProcessoDialog } from "@/components/prazos-iniciais/UploadProcessoDialog";
 import { PatrocinioPanel } from "@/components/prazos-iniciais/PatrocinioPanel";
+import { ContestacaoExistentePanel } from "@/components/prazos-iniciais/ContestacaoExistentePanel";
 import { useAuth } from "@/hooks/useAuth";
 import type {
   PrazoInicialBatchSummary,
@@ -3440,6 +3441,21 @@ export default function PrazosIniciaisPage() {
                         prev ? { ...prev, patrocinio: next } : prev,
                       )
                     }
+                  />
+                  <Separator />
+                </>
+              ) : null}
+
+              {/* Pin021 — Contestação já apresentada: análise paralela
+                  read-only. Aparece SOMENTE quando a IA detectou
+                  contestação preexistente na íntegra. Mostra quem
+                  assinou (MDR vs. outro), pra qual réu defendeu, e se
+                  é genérica/customizada. Sem botões — info pro HITL
+                  decidir se complementa, refaz, ou confirma. */}
+              {detail.contestacao_existente?.existe ? (
+                <>
+                  <ContestacaoExistentePanel
+                    contestacao={detail.contestacao_existente}
                   />
                   <Separator />
                 </>

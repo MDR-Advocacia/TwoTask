@@ -2159,19 +2159,34 @@ class AjusClassifRunner:
         # clicar no item "Cível" da lista.
         # Localiza o input visivel do form principal (codNatureza vazio)
         # via JS — devolve um seletor unico que o Playwright pode usar.
+        # PRIORIDADE: input do form PRINCIPAL (com codNatureza populado
+        # server-side OU vizinho de codAcaoJudicial populado). Fallback
+        # pro caso antigo (form novo, todos vazios).
         natureza_locate_js = (
             "() => {"
             "  try {"
             "    const hiddens = Array.from(document.querySelectorAll('input[name=\"codNatureza\"]'));"
             "    let target = null;"
+            "    let bestScore = -1;"
             "    for (const h of hiddens) {"
-            "      if (h.value) continue;"  # ja preenchido, pula
             "      const wrap = h.closest('.x-form-field-wrap, .x-form-element, .x-trigger-wrap-focus, td');"
             "      if (!wrap) continue;"
             "      const visInp = wrap.querySelector('input[type=\"text\"]:not([type=\"hidden\"])');"
             "      if (!visInp || visInp.offsetParent === null) continue;"
-            "      if (!visInp.id) visInp.id = '__natureza_' + Math.random().toString(36).slice(2);"
-            "      target = '#' + visInp.id; break;"
+            "      const formContainer = h.closest('form, .x-form, .x-panel-body');"
+            "      let score = 0;"
+            "      if (formContainer) {"
+            "        const popHiddens = formContainer.querySelectorAll('input[type=\"hidden\"]');"
+            "        for (const ph of popHiddens) {"
+            "          if (ph.value && ph.value.length > 0) score++;"
+            "        }"
+            "      }"
+            "      if (h.value) score += 100;"
+            "      if (score > bestScore) {"
+            "        bestScore = score;"
+            "        if (!visInp.id) visInp.id = '__natureza_' + Math.random().toString(36).slice(2);"
+            "        target = '#' + visInp.id;"
+            "      }"
             "    }"
             "    return target || '';"
             "  } catch(e) { return ''; }"
@@ -2184,11 +2199,60 @@ class AjusClassifRunner:
                 item.id, item.cnj_number, natureza_input_sel,
             )
             if natureza_input_sel:
-                # Usa o helper existente que ja sabe lidar com combobox
-                # ExtJS (clica trigger, espera picker, clica item).
-                self._fill_field_with_verify(
-                    "Natureza", natureza_input_sel, "Cível",
+                # Tenta primeiro o helper de combobox (abre + clica item).
+                try:
+                    self._fill_field_with_verify(
+                        "Natureza", natureza_input_sel, "Cível",
+                    )
+                except Exception as exc_combo:
+                    logger.warning(
+                        "AJUS runner: fill via combobox falhou: %s — "
+                        "tentando setValue programatico Ext.",
+                        exc_combo,
+                    )
+                # SEMPRE: depois do fill via UI, FORCAR setValue via API
+                # Ext do componente. Isso resolve o caso do form principal
+                # de edicao onde o display ficaria em placeholder mesmo
+                # com codNatureza=69 server-side. setValue programatico
+                # dispara display update + binding hidden.
+                # JS embedando o seletor inline pra evitar problemas de
+                # marshal de args do playwright. Funcao simples, retorna
+                # objeto com diagnostico.
+                _esc_sel = (natureza_input_sel or "").replace("'", "\\'")
+                force_setvalue_js = (
+                    "() => { try {\n"
+                    f"  var inp = document.querySelector('{_esc_sel}');\n"
+                    "  if (!inp) return {ok:false, reason:'input-nao-achado'};\n"
+                    "  var E = window.Ext;\n"
+                    "  if (!E || !E.ComponentMgr) return {ok:false, reason:'sem-ext'};\n"
+                    "  var all = (E.ComponentMgr.all && E.ComponentMgr.all.items) || [];\n"
+                    "  var cmp = null;\n"
+                    "  for (var i=0; i<all.length; i++) {\n"
+                    "    var c = all[i];\n"
+                    "    try {\n"
+                    "      if (c && c.el && c.el.dom && c.el.dom.contains(inp) && typeof c.setValue === 'function') {\n"
+                    "        cmp = c; break;\n"
+                    "      }\n"
+                    "    } catch(e1) {}\n"
+                    "  }\n"
+                    "  if (!cmp) return {ok:false, reason:'cmp-nao-achado'};\n"
+                    "  var before = inp.value;\n"
+                    "  try { cmp.setValue(69); } catch(e2) { return {ok:false, reason:'setValue-falhou:'+String(e2)}; }\n"
+                    "  return {ok:true, before:before, after:inp.value, cmpId:cmp.id||null};\n"
+                    "} catch(e) { return {ok:false, reason:String(e)}; } }"
                 )
+                try:
+                    sv = self._page.evaluate(force_setvalue_js)
+                    logger.info(
+                        "AJUS runner: setValue programatico Ext da Natureza "
+                        "(item %d cnj=%s): %r",
+                        item.id, item.cnj_number, sv,
+                    )
+                except Exception as exc_sv:
+                    logger.warning(
+                        "AJUS runner: setValue programatico falhou: %s",
+                        exc_sv,
+                    )
             else:
                 logger.warning(
                     "AJUS runner: Natureza input VAZIO nao localizado no "
@@ -2436,20 +2500,54 @@ class AjusClassifRunner:
                     .replace("ê", "e").replace("ã", "a").replace("í", "i")
                     .replace("ú", "u").replace("ç", "c")
                 )
+                _foro_handled = False
                 for needle, friendly in permanent_patterns:
                     if needle in combined_dump:
-                        # Extrai pequena amostra do flash pra log
                         sample = (str(targeted or str(by_bg or ""))[:200])
+                        # FORO: autopick antes de marcar como erro permanente.
+                        # Operador autorizou chutar o 1o foro disponivel.
+                        if needle == "foro:":
+                            logger.warning(
+                                "AJUS runner: flash 'Foro obrigatorio' — "
+                                "tentando AUTOPICK do 1o foro disponivel "
+                                "antes de marcar como erro. Amostra: %r",
+                                sample,
+                            )
+                            if self._autopick_foro():
+                                try:
+                                    save_btn = self._page.locator(
+                                        "button:has-text('Salvar'), "
+                                        "a:has-text('Salvar'), "
+                                        "*[role='button']:has-text('Salvar')"
+                                    ).first
+                                    save_btn.click(timeout=3_000)
+                                    logger.info(
+                                        "AJUS runner: re-save apos autopick "
+                                        "Foro disparado."
+                                    )
+                                    self._settle(wait_ms=2_000)
+                                    _foro_handled = True
+                                    break
+                                except Exception as exc:
+                                    logger.warning(
+                                        "AJUS runner: re-save apos autopick "
+                                        "Foro falhou: %s",
+                                        exc,
+                                    )
+                            logger.error(
+                                "AJUS runner: autopick Foro nao funcionou — "
+                                "marcando item como erro permanente."
+                            )
+                            raise AjusRunnerError(
+                                f"AJUS flash bloqueou save permanentemente: {friendly}. "
+                                f"Detalhe: {sample}"
+                            )
                         logger.error(
                             "AJUS runner: flash com erro PERMANENTE detectado "
                             "(needle=%r) — item nao sera reenfileirado. "
                             "Amostra: %r",
                             needle, sample,
                         )
-                        # AjusPermanentError eh uma string-marker que o
-                        # _is_transient_error nao casa, garantindo que o
-                        # service marque como erro definitivo (nao volte
-                        # pra pendente).
                         raise AjusRunnerError(
                             f"AJUS flash bloqueou save permanentemente: {friendly}. "
                             f"Detalhe: {sample}"
@@ -2615,6 +2713,85 @@ class AjusClassifRunner:
                 pass
         return ""
 
+    def _autopick_foro(self) -> bool:
+        """Tenta selecionar a 1a opcao do combobox Foro (capa do processo).
+
+        Usado quando o save eh bloqueado por flash 'Foro: campo
+        obrigatorio'. Em vez de marcar o item como erro permanente,
+        chutamos qualquer foro disponivel pra o operador conseguir
+        ao menos pos-classificar a capa.
+        """
+        js_open_foro = (
+            "() => {"
+            "  try {"
+            "    const labels = Array.from(document.querySelectorAll('label, .x-form-item-label'))"
+            "      .filter(l => {"
+            "        const t = (l.innerText || l.textContent || '').trim();"
+            "        if (!t) return false;"
+            "        if (!/^Foro\\s*:?$/i.test(t)) return false;"
+            "        const r = l.getBoundingClientRect();"
+            "        return r.width > 0 && r.height > 0;"
+            "      });"
+            "    if (!labels.length) return {ok:false, reason:'no-foro-label'};"
+            "    for (const lbl of labels) {"
+            "      let container = lbl.closest('.x-form-item') || lbl.parentElement;"
+            "      if (!container) continue;"
+            "      const trigger = container.querySelector('.x-form-trigger') ||"
+            "                      container.querySelector('img.x-form-trigger') ||"
+            "                      container.querySelector('.x-form-arrow-trigger');"
+            "      if (trigger) {"
+            "        const r = trigger.getBoundingClientRect();"
+            "        if (r.width > 0 && r.height > 0) {"
+            "          trigger.click();"
+            "          return {ok:true};"
+            "        }"
+            "      }"
+            "    }"
+            "    return {ok:false, reason:'no-trigger'};"
+            "  } catch(e) { return {ok:false, reason:String(e)}; }"
+            "}"
+        )
+        try:
+            res = self._page.evaluate(js_open_foro)
+        except Exception as exc:
+            logger.warning("AJUS runner: autopick Foro falhou ao abrir: %s", exc)
+            return False
+        if not (res and res.get("ok")):
+            logger.warning(
+                "AJUS runner: autopick Foro nao achou trigger (reason=%s).",
+                (res or {}).get("reason"),
+            )
+            return False
+        try:
+            self._page.wait_for_selector(
+                ".x-boundlist:visible .x-boundlist-item",
+                timeout=5_000,
+            )
+        except Exception as exc:
+            logger.warning(
+                "AJUS runner: autopick Foro - boundlist nao apareceu (%s).",
+                exc,
+            )
+            return False
+        try:
+            first_item = self._page.locator(
+                ".x-boundlist:visible .x-boundlist-item"
+            ).first
+            text_picked = (first_item.inner_text(timeout=2_000) or "").strip()
+            first_item.click(timeout=3_000)
+            logger.info(
+                "AJUS runner: autopick Foro selecionou %r",
+                text_picked,
+            )
+            self._settle(wait_ms=500)
+            return True
+        except Exception as exc:
+            logger.warning(
+                "AJUS runner: autopick Foro - click no 1o item falhou: %s",
+                exc,
+            )
+            return False
+
     def _dismiss_extjs_popup(self) -> None:
         """
         Tenta fechar o popup ExtJS clicando no botao default (Ok/Sim).
@@ -2691,9 +2868,38 @@ class AjusClassifRunner:
                     and norm_val not in invalid_values
                 )
             if ok:
-                logger.info(
-                    "AJUS runner: capa populada (UF display=%r, expected=%r) — "
-                    "seguindo pra validate.", val, expected_uf,
+                # UF populou. Mas Materia/Justica/Risco populam DEPOIS
+                # (combo cascata). Antes de retornar, esperar tb Materia
+                # sair de placeholder/label — usando o mesmo budget de
+                # tempo restante. Se Materia nunca sair, segue mesmo
+                # assim (validate vai conferir e gerar erro real).
+                deadline2 = time.monotonic() + max(int(deadline - time.monotonic()), 5)
+                last_mat = ""
+                while time.monotonic() < deadline2:
+                    try:
+                        m = self._read_field_display_value(portal.PROCESS_MATTER_SELECTOR)
+                    except Exception:
+                        m = ""
+                    last_mat = m
+                    norm_m = (m or "").strip().lower()
+                    if (
+                        bool(norm_m)
+                        and not self._placeholder_or_empty(m)
+                        and norm_m not in invalid_values
+                        and "nao classif" not in norm_m
+                        and "não classif" not in norm_m
+                    ):
+                        logger.info(
+                            "AJUS runner: capa populada (UF=%r, Materia=%r, "
+                            "expected_uf=%r) — seguindo pra validate.",
+                            val, m, expected_uf,
+                        )
+                        return
+                    self._page.wait_for_timeout(400)
+                logger.warning(
+                    "AJUS runner: UF populou (%r) mas Materia ainda "
+                    "vazia (%r) apos timeout — seguindo pra validate.",
+                    val, last_mat,
                 )
                 return
             self._page.wait_for_timeout(500)

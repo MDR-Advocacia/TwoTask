@@ -135,11 +135,17 @@ def cmd_create(args, creds) -> int:
         sys.exit(f"ERRO: PDF tem {len(pdf_bytes)} bytes (>10MB, limite AJUS).")
     b64 = base64.b64encode(pdf_bytes).decode("ascii")
 
+    situacao = args.situacao.upper()
+    if situacao not in ("A", "C"):
+        sys.exit(f"ERRO: --situacao deve ser A ou C. Recebido: {args.situacao!r}")
+
     print(f"{BOLD}Setup CREATE:{RESET}")
     print(f"  base_url = {creds['base_url']}")
     print(f"  cliente  = {creds['cliente']}")
     print(f"  cnj      = {args.cnj}")
     print(f"  cod      = {args.cod}")
+    print(f"  situacao = {situacao} "
+          f"({'aberto' if situacao == 'A' else 'concluido'})")
     print(f"  pdf      = {pdf_path} ({len(pdf_bytes)} bytes, "
           f"base64 {len(b64)} chars)")
     print(f"  data     = {_today_brl()}")
@@ -151,19 +157,18 @@ def cmd_create(args, creds) -> int:
         "prazos": [{
             "identificadorAcao": {"numeroProcesso": args.cnj},
             "codAndamento": args.cod,
-            "situacao": "A",
+            "situacao": situacao,
             "dataEvento": today,
             "dataAgendamento": today,
             "dataFatal": today,
             "informacao": (
-                f"[TESTE 2-STEP] passo 1 (A) — habilitacao via API "
-                f"cod={args.cod}"
+                f"[TESTE 2-STEP] situacao={situacao} cod={args.cod} via API"
             ),
             "arquivos": [{"nome": "habilitacao.pdf", "base64": b64}],
         }],
     }
     resp = _post(creds, "inserir-prazos", body,
-                 "PASSO 1: inserir-prazos (situacao=A + arquivo)")
+                 f"inserir-prazos (situacao={situacao} + arquivo)")
     if not (resp and isinstance(resp, list) and resp):
         print(f"\n{RED}Resposta inesperada — abortando.{RESET}")
         return 1
@@ -174,21 +179,28 @@ def cmd_create(args, creds) -> int:
 
     print()
     if inserido and cod_info:
+        label = "ABERTO" if situacao == "A" else "JÁ CONCLUÍDO"
         print(f"{BOLD}{GREEN}╔══════════════════════════════════════════════╗{RESET}")
-        print(f"{BOLD}{GREEN}║  PASSO 1 OK — andamento criado em ABERTO    ║{RESET}")
+        print(f"{BOLD}{GREEN}║  OK — andamento criado em {label:<18s}║{RESET}")
         print(f"{BOLD}{GREEN}║                                              ║{RESET}")
         print(f"{BOLD}{GREEN}║  codInformacaoJudicial = {cod_info:<20s}║{RESET}")
         print(f"{BOLD}{GREEN}╚══════════════════════════════════════════════╝{RESET}")
-        print(f"\n{BOLD}Proximos passos:{RESET}")
-        print(f"  1. Confere na UI do AJUS que o andamento aparece "
-              f"no processo {args.cnj}")
-        print(f"  2. Confere que o PDF da habilitacao esta anexado nele")
-        print(f"  3. Quando estiver tudo OK, roda o passo 2:")
-        print(f"\n     {CYAN}python scripts/test_ajus_2step.py "
-              f"conclude --cod-info {cod_info}{RESET}\n")
+        if situacao == "A":
+            print(f"\n{BOLD}Proximos passos:{RESET}")
+            print(f"  1. Confere na UI do AJUS que o andamento aparece "
+                  f"no processo {args.cnj}")
+            print(f"  2. Confere que o PDF da habilitacao esta anexado nele")
+            print(f"  3. Quando estiver tudo OK, roda o passo 2:")
+            print(f"\n     {CYAN}python scripts/test_ajus_2step.py "
+                  f"conclude --cod-info {cod_info}{RESET}\n")
+        else:
+            print(f"\n{BOLD}Andamento ja foi criado como CONCLUIDO em "
+                  f"uma chamada so. Sem passo 2.{RESET}")
+            print(f"Confere na UI do AJUS o processo {args.cnj}.\n")
         return 0
     else:
-        print(f"{BOLD}{RED}PASSO 1 FALHOU{RESET}")
+        print(f"{BOLD}{RED}FALHOU{RESET}")
+        print(f"  situacao = {situacao}")
         print(f"  inserido = {inserido}")
         print(f"  cod      = {cod_info!r}")
         print(f"  msg      = {msg!r}")
@@ -253,12 +265,18 @@ def main() -> int:
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    pc = sub.add_parser("create", help="Passo 1: cria em A com arquivo.")
+    pc = sub.add_parser(
+        "create",
+        help="inserir-prazos com arquivo. --situacao A (default) ou C.",
+    )
     pc.add_argument("--pdf", required=True, help="Caminho pro PDF.")
     pc.add_argument("--cnj", required=True,
                     help="CNJ mascarado do processo.")
     pc.add_argument("--cod", default="84",
                     help="codAndamento (default: 84 HABILITACAO).")
+    pc.add_argument("--situacao", default="A",
+                    help="A=aberto (passo 1 do 2-step), C=concluido (one-shot, "
+                         "depende do ajuste novo da AJUS). Default: A.")
 
     pk = sub.add_parser("conclude", help="Passo 2: conclui o cod do passo 1.")
     pk.add_argument("--cod-info", required=True,
