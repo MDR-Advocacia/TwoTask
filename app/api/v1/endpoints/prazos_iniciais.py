@@ -1655,6 +1655,23 @@ async def upload_intake_pdf(
     # 6. Cria intake.
     pdf_extraction_failed = not extraction.success
 
+    # PDF só é descartado quando a extração foi GENUINAMENTE útil:
+    # success=True, CNJ identificado E integra preenchida (timeline ou
+    # texto_cru). Sem isso, preservamos o PDF — caso contrário, quando
+    # o extractor erra silenciosamente (template detectado errado,
+    # regex de timeline não bate, etc.) o operador fica sem nada pra
+    # reprocessar, porque success=True por si só não garante conteúdo.
+    integra_payload = extraction.integra_json or {}
+    integra_has_timeline = bool(integra_payload.get("timeline"))
+    integra_has_texto = bool(
+        (integra_payload.get("texto_cru") or "").strip()
+    )
+    extraction_useful = bool(
+        extraction.success
+        and extraction.cnj_number
+        and (integra_has_timeline or integra_has_texto)
+    )
+
     try:
         result = service.create_intake(
             external_id=external_id,
@@ -1668,6 +1685,7 @@ async def upload_intake_pdf(
                 "pdf_sha256": sha,
                 "pdf_size_bytes": len(processo_bytes),
                 "submitted_via": "upload_endpoint_v1",
+                "extraction_useful": extraction_useful,
             },
             pdf_bytes=processo_bytes,
             pdf_filename_original=processo_pdf.filename,
@@ -1680,11 +1698,7 @@ async def upload_intake_pdf(
             extraction_confidence=extraction.confidence,
             habilitacao_pdf_bytes=habilitacao_bytes,
             habilitacao_pdf_filename_original=habilitacao_filename,
-            # Quando a extração foi bem-sucedida, descarta o PDF do
-            # processo (capa+integra já estão no JSON, não precisamos
-            # do arquivo bruto). Falha de extração mantém o PDF pra
-            # operador conseguir baixar e classificar manualmente.
-            skip_pdf_storage=not pdf_extraction_failed,
+            skip_pdf_storage=extraction_useful,
         )
     except PdfValidationError as exc:
         raise HTTPException(

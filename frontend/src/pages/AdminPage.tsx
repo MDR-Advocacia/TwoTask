@@ -1,6 +1,8 @@
 // frontend/src/pages/AdminPage.tsx
 
 import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
+import { TaxonomyToggleCard } from "@/components/TaxonomyToggleCard";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -657,6 +659,32 @@ const SyncManager = () => {
                     </Button>
                 </CardContent>
             </Card>
+
+            {/* Card: Polo dos Escritórios (Taxonomy v2 — fase 10) */}
+            <Card>
+                <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                        Polo dos Escritórios
+                        <Badge variant="outline" className="text-xs">Taxonomy v2</Badge>
+                    </CardTitle>
+                    <CardDescription>
+                        Configure a qual polo do processo cada escritório atende
+                        (ativo / passivo / ambos). Determina qual árvore aparece nos
+                        templates desse escritório e é injetada no prompt do
+                        classificador quando a v2 estiver ativa.
+                    </CardDescription>
+                </CardHeader>
+                <CardContent>
+                    <Button asChild size="sm" variant="outline">
+                        <Link to="/admin/offices/polo-scope">
+                            Configurar polo por escritório
+                        </Link>
+                    </Button>
+                </CardContent>
+            </Card>
+
+            {/* Card: Toggle Taxonomy v1 <-> v2 (fase 11) */}
+            <TaxonomyToggleCard />
 
             {/* Card: Cache de Escritórios (Índice) */}
             <Card>

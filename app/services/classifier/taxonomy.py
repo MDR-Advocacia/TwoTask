@@ -37,10 +37,27 @@ _TREE_CACHE_LOCK = threading.Lock()
 
 
 def get_active_taxonomy_version() -> str:
-    """Versao da taxonomia ativa globalmente. Lida do env por enquanto;
-    a fase 11 substitui pela leitura do app_settings com toggle UI.
-    Default 'v1' preserva comportamento atual (apos tax006 seedar a v2,
-    a v1 continua sendo usada ate alguem virar a chave)."""
+    """Versao da taxonomia ativa globalmente.
+
+    Resolucao em cascata:
+      1. app_settings['taxonomy_active_version'] (DB, com cache 60s)
+      2. env TAXONOMY_ACTIVE_VERSION (override pra dev/staging)
+      3. default 'v1' (preserva comportamento pre-v2)
+
+    O endpoint admin (PATCH /admin/taxonomy/settings) escreve no
+    app_settings; o env continua util pra testes locais sem mexer no
+    DB. Mudanca via endpoint invalida cache do app_settings + cache
+    de taxonomia automaticamente (chama invalidate_taxonomy_cache no
+    handler)."""
+    try:
+        from app.services.app_settings import get_setting
+        db_value = get_setting("taxonomy_active_version")
+        if db_value:
+            return db_value.strip().lower()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Taxonomy: falha lendo app_settings, caindo no env: %s", exc,
+        )
     return (os.getenv("TAXONOMY_ACTIVE_VERSION") or "v1").strip().lower()
 
 

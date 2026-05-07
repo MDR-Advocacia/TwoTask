@@ -610,6 +610,136 @@ def deactivate_user(
     }
 
 
+# ─── Taxonomy v2 toggle (fase 11) ───────────────────────────────────────────
+
+
+class TaxonomyToggleResponse(BaseModel):
+    active_version: str  # 'v1' | 'v2'
+    pending_templates: int
+    pending_overrides: int
+    can_activate_v2: bool
+    threshold: int
+
+
+class TaxonomyToggleRequest(BaseModel):
+    active_version: str  # 'v1' | 'v2'
+    # Se True, ignora o gate de pendentes (operador confirmou que aceita
+    # subir v2 com templates ainda pendentes; eles vao ficar dormentes
+    # ate serem revisados).
+    force: bool = False
+
+
+# Threshold default: nao deixa ativar v2 se houver mais de N templates
+# pendentes — protege contra "subi v2 e perdi 90% das propostas
+# automaticas". Operador pode setar `force=true` pra burlar.
+TAXONOMY_TOGGLE_THRESHOLD = 0
+
+
+def _count_taxonomy_pending(db: Session) -> tuple[int, int]:
+    """Retorna (templates_pendentes, overrides_pendentes)."""
+    from app.models.task_template import TaskTemplate
+    from app.models.office_classification import OfficeClassificationOverride
+
+    tpl = (
+        db.query(TaskTemplate)
+        .filter(TaskTemplate.needs_taxonomy_review == True)
+        .count()
+    )
+    ovr = (
+        db.query(OfficeClassificationOverride)
+        .filter(OfficeClassificationOverride.needs_taxonomy_review == True)
+        .count()
+    )
+    return tpl, ovr
+
+
+@router.get(
+    "/taxonomy/settings",
+    response_model=TaxonomyToggleResponse,
+    summary="Estado do toggle taxonomy v1<->v2",
+    tags=["Admin"],
+)
+def get_taxonomy_settings(db: Session = Depends(get_db)):
+    """Le o toggle global e a contagem de pendentes pra que a UI
+    decida se permite ativar v2 (threshold)."""
+    from app.services.app_settings import get_setting
+
+    active = (get_setting("taxonomy_active_version") or "v1").strip().lower()
+    if active not in ("v1", "v2"):
+        active = "v1"
+
+    pending_tpl, pending_ovr = _count_taxonomy_pending(db)
+    total_pending = pending_tpl + pending_ovr
+    can_activate = (
+        active == "v2" or total_pending <= TAXONOMY_TOGGLE_THRESHOLD
+    )
+    return TaxonomyToggleResponse(
+        active_version=active,
+        pending_templates=pending_tpl,
+        pending_overrides=pending_ovr,
+        can_activate_v2=can_activate,
+        threshold=TAXONOMY_TOGGLE_THRESHOLD,
+    )
+
+
+@router.patch(
+    "/taxonomy/settings",
+    response_model=TaxonomyToggleResponse,
+    summary="Atualizar toggle taxonomy v1<->v2",
+    tags=["Admin"],
+)
+def update_taxonomy_settings(
+    body: TaxonomyToggleRequest,
+    db: Session = Depends(get_db),
+):
+    """Atualiza o toggle global. Bloqueia ativacao da v2 quando ha
+    pendentes acima do threshold (a menos que `force=true`).
+
+    Reverter pra v1 e sempre permitido — nao tem gate."""
+    from app.services.app_settings import set_setting
+    from app.services.classifier.taxonomy import invalidate_taxonomy_cache
+
+    target = body.active_version.strip().lower()
+    if target not in ("v1", "v2"):
+        raise HTTPException(
+            400,
+            "active_version deve ser 'v1' ou 'v2'.",
+        )
+
+    if target == "v2" and not body.force:
+        pending_tpl, pending_ovr = _count_taxonomy_pending(db)
+        total = pending_tpl + pending_ovr
+        if total > TAXONOMY_TOGGLE_THRESHOLD:
+            raise HTTPException(
+                409,
+                f"Existem {total} item(ns) pendente(s) de revisao "
+                f"({pending_tpl} templates + {pending_ovr} overrides). "
+                "Revise via Admin > Templates Pendentes de Revisao antes "
+                "de ativar a v2 — ou use force=true pra ignorar o gate.",
+            )
+
+    set_setting(
+        "taxonomy_active_version",
+        target,
+        description=(
+            "Versao da taxonomia ativa globalmente. v1=legacy, v2=nova "
+            "com polos. Mude via Admin > Toggle Taxonomy."
+        ),
+    )
+    # Invalida cache de taxonomia pra que o proximo classifier carregue
+    # a arvore correta imediatamente (nao espera os 60s do TTL).
+    invalidate_taxonomy_cache()
+
+    pending_tpl, pending_ovr = _count_taxonomy_pending(db)
+    return TaxonomyToggleResponse(
+        active_version=target,
+        pending_templates=pending_tpl,
+        pending_overrides=pending_ovr,
+        can_activate_v2=True,
+        threshold=TAXONOMY_TOGGLE_THRESHOLD,
+    )
+
+
 # ─── Saved Filters ──────────────────────────────────────────────────────────
 
 class SavedFilterCreateRequest(BaseModel):

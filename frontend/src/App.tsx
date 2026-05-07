@@ -19,6 +19,7 @@ import CreateTaskFromSpreadsheetPage from './pages/CreateTaskFromSpreadsheetPage
 import PublicationsPage from './pages/PublicationsPage';
 import TaskTemplatesPage from './pages/TaskTemplatesPage';
 import TemplateReviewPage from './pages/TemplateReviewPage';
+import OfficePoloScopePage from './pages/OfficePoloScopePage';
 import AutomationsPage from './pages/AutomationsPage';
 import ProfilePage from './pages/ProfilePage';
 import BatchExecutionsPage from './pages/BatchExecutionsPage';
@@ -68,6 +69,10 @@ function AppContent() {
             <Route
               path="/publications/templates/review-pending"
               element={<TemplateReviewPage />}
+            />
+            <Route
+              path="/admin/offices/polo-scope"
+              element={<OfficePoloScopePage />}
             />
             <Route path="/automations" element={<AutomationsPage />} />
             <Route path="/batches" element={<BatchExecutionsPage />} />
