@@ -15,7 +15,7 @@ Campos extras (cod_ajus, materia) vem da planilha pra debug — nao
 sao usados pelo dispatch, so' visiveis na UI/log.
 
 Revision ID: ajus009
-Revises: tax006
+Revises: tax007
 """
 
 from typing import Sequence, Union
@@ -25,7 +25,7 @@ from alembic import op
 
 
 revision: str = "ajus009"
-down_revision: Union[str, None] = "tax006"
+down_revision: Union[str, None] = "tax007"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

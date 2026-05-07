@@ -291,6 +291,61 @@ def _resolve_pdf_bytes_with_fallback(
     return pdf_bytes
 
 
+# ─── Blocklist de classificacao pendente ────────────────────
+
+
+def _digits(s) -> str:
+    return "".join(c for c in (str(s) if s else "") if c.isdigit())
+
+
+def _split_blocked_by_classification(
+    db: Session,
+    items: list["AjusAndamentoQueue"],
+) -> tuple[list["AjusAndamentoQueue"], list["AjusAndamentoQueue"]]:
+    """
+    Particiona `items` em (allowed, blocked) consultando o
+    `ajus_classification_blocklist`. Items cujo CNJ (so' digitos) estah
+    no blocklist sao retornados em `blocked` -- caller pula esses no
+    dispatch (NAO muda o status do item).
+
+    1 query soh, IN-list dos digitos da pagina atual.
+    """
+    if not items:
+        return [], []
+    digit_to_items: dict[str, list["AjusAndamentoQueue"]] = {}
+    for it in items:
+        d = _digits(it.cnj_number)
+        if d:
+            digit_to_items.setdefault(d, []).append(it)
+    if not digit_to_items:
+        return list(items), []
+    rows = (
+        db.query(AjusClassificationBlocklist.cnj_number)
+        .filter(
+            AjusClassificationBlocklist.cnj_number.in_(
+                list(digit_to_items.keys()),
+            ),
+        )
+        .all()
+    )
+    blocked_digits = {r[0] for r in rows}
+    allowed: list["AjusAndamentoQueue"] = []
+    blocked: list["AjusAndamentoQueue"] = []
+    for it in items:
+        d = _digits(it.cnj_number)
+        if d in blocked_digits:
+            blocked.append(it)
+        else:
+            allowed.append(it)
+    if blocked:
+        logger.info(
+            "AJUS dispatch: %d item(s) pulados por classificacao pendente "
+            "(cnjs=%s)", len(blocked),
+            sorted({_digits(i.cnj_number) for i in blocked}),
+        )
+    return allowed, blocked
+
+
 # ─── Pre-flight de anexo (causa mais comum de rejeicao AJUS) ──────────
 
 
@@ -868,6 +923,24 @@ class AjusQueueService:
                 "errored": [],
             }
 
+        # Filtra os bloqueados por classificacao pendente -- pulamos no
+        # dispatch sem mudar o status (continuam pendente, voltam a
+        # ser candidatos quando o operador subir um upload novo onde
+        # o CNJ ja' nao aparece).
+        original_count = len(pending)
+        pending, blocked_by_class = _split_blocked_by_classification(
+            self.db, pending,
+        )
+        if not pending:
+            return {
+                "candidates": original_count,
+                "success_count": 0,
+                "error_count": 0,
+                "success_ids": [],
+                "errored": [],
+                "blocked_classification_count": len(blocked_by_class),
+            }
+
         # Marca como enviando (lock soft) antes do POST
         for item in pending:
             item.status = AJUS_QUEUE_ENVIANDO
@@ -1014,6 +1087,7 @@ class AjusQueueService:
             "error_count": len(errored),
             "success_ids": success_ids,
             "errored": errored,
+            "blocked_classification_count": len(blocked_by_class),
         }
 
     # ── Dispatch pontual (1 item soh) ───────────────────────────────
@@ -1057,6 +1131,35 @@ class AjusQueueService:
                 f"Dispatch pontual permitido apenas em 'pendente' ou 'erro'. "
                 f"Status atual: {item.status}."
             )
+
+        # Pre-check do blocklist de classificacao pendente. Se bater,
+        # NAO mandamos pra AJUS -- devolvemos resposta clara com flag
+        # `blocked_classification` pra o caller (endpoint) traduzir
+        # em mensagem pro operador na UI.
+        cnj_digits = _digits(item.cnj_number)
+        if cnj_digits:
+            blocked_q = self.db.query(AjusClassificationBlocklist.id).filter(
+                AjusClassificationBlocklist.cnj_number == cnj_digits,
+            ).first()
+            if blocked_q is not None:
+                logger.info(
+                    "AJUS dispatch_one: item %d (cnj=%s) bloqueado por "
+                    "classificacao pendente -- disparo cancelado.",
+                    item.id, item.cnj_number,
+                )
+                return {
+                    "item_id": item.id,
+                    "status_final": item.status,
+                    "success": False,
+                    "msg": (
+                        "Bloqueado: processo com classificacao pendente no "
+                        "Legal One (esta no blocklist atual). Conclua a "
+                        "classificacao OU suba uma nova planilha de pendentes "
+                        "sem esse CNJ pra liberar o disparo."
+                    ),
+                    "cod_informacao_judicial": None,
+                    "blocked_classification": True,
+                }
 
         # Marca como enviando (idem batch — lock soft contra clique duplo).
         item.status = AJUS_QUEUE_ENVIANDO
@@ -1579,6 +1682,22 @@ class AjusQueueService:
         items_by_id = {i.id: i for i in items}
         pending = [items_by_id[i] for i in item_ids]
 
+        # Filtra bloqueados por classificacao pendente -- mesmo
+        # comportamento do batch automatico.
+        original_count = len(pending)
+        pending, blocked_by_class = _split_blocked_by_classification(
+            self.db, pending,
+        )
+        if not pending:
+            return {
+                "candidates": original_count,
+                "success_count": 0,
+                "error_count": 0,
+                "success_ids": [],
+                "errored": [],
+                "blocked_classification_count": len(blocked_by_class),
+            }
+
         # Marca como enviando (lock soft).
         for item in pending:
             item.status = AJUS_QUEUE_ENVIANDO
@@ -1701,4 +1820,5 @@ class AjusQueueService:
             "error_count": len(errored),
             "success_ids": success_ids,
             "errored": errored,
+            "blocked_classification_count": len(blocked_by_class),
         }

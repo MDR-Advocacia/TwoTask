@@ -693,6 +693,7 @@ export interface AjusAndamentoQueueItem {
   error_message: string | null;
   created_at: string;
   dispatched_at: string | null;
+  is_blocked_classification?: boolean;
 }
 
 export interface AjusAndamentoQueueListResponse {
@@ -706,6 +707,36 @@ export interface AjusDispatchBatchResponse {
   error_count: number;
   success_ids: number[];
   errored: { id: number; msg: string }[];
+  blocked_classification_count?: number;
+}
+
+// ─── Blocklist de classificacao pendente ───────────────────────────
+
+export interface AjusBlocklistItem {
+  id: number;
+  cnj_number: string;
+  cod_ajus: string | null;
+  materia: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
+export interface AjusBlocklistListResponse {
+  total: number;
+  items: AjusBlocklistItem[];
+}
+
+export interface AjusBlocklistUploadResponse {
+  added: number;
+  updated: number;
+  removed: number;
+  total_after: number;
+}
+
+export interface AjusBlocklistStatsResponse {
+  total_no_blocklist: number;
+  items_fila_bloqueados: number;
+  ultimo_upload_at: string | null;
 }
 
 // ─── Classificação AJUS (Chunk 1) ─────────────────────────────────────

@@ -70,6 +70,7 @@ import type {
 import { CodAndamentoFormDialog } from "@/components/ajus/CodAndamentoFormDialog";
 import { ClassificacaoTab } from "@/components/ajus/ClassificacaoTab";
 import { BulkUploadAndamentosDialog } from "@/components/ajus/BulkUploadAndamentosDialog";
+import { ClassificationBlocklistDialog } from "@/components/ajus/ClassificationBlocklistDialog";
 
 const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "__all__", label: "Todos os status" },
@@ -136,6 +137,7 @@ export default function AjusPage() {
 
   // ─── Bulk upload ───────────────────────────────────────────────────
   const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
+  const [blocklistDialogOpen, setBlocklistDialogOpen] = useState(false);
 
   // ─── Loaders ───────────────────────────────────────────────────────
   const loadAndamentos = useCallback(async () => {
@@ -717,6 +719,19 @@ export default function AjusPage() {
                   </Button>
                   <Button
                     size="sm"
+                    variant="outline"
+                    onClick={() => setBlocklistDialogOpen(true)}
+                    title={
+                      "Suba a planilha do L1 com processos de classificacao " +
+                      "pendente — substitui o blocklist atual e libera quem " +
+                      "sumiu da lista."
+                    }
+                  >
+                    <Ban className="mr-2 h-3.5 w-3.5" />
+                    Bloqueio classificacao
+                  </Button>
+                  <Button
+                    size="sm"
                     onClick={handleDispatchPending}
                     disabled={isDispatching || (statusCounts.pendente || 0) === 0}
                   >
@@ -816,10 +831,16 @@ export default function AjusPage() {
                       label: item.status,
                       className: "",
                     };
-                    const selectable = item.status === "pendente" || item.status === "erro";
+                    const isBlocked = !!item.is_blocked_classification;
+                    const selectable =
+                      (item.status === "pendente" || item.status === "erro") &&
+                      !isBlocked;
                     const isUploadingThis = uploadingItemId === item.id;
+                    const blockedTitle =
+                      "Bloqueado: processo com classificacao pendente no Legal One. " +
+                      "Suba uma nova planilha onde esse CNJ ja' nao apareca pra liberar.";
                     return (
-                      <TableRow key={item.id}>
+                      <TableRow key={item.id} className={isBlocked ? "bg-rose-50/30" : undefined}>
                         <TableCell>
                           <input
                             type="checkbox"
@@ -828,7 +849,9 @@ export default function AjusPage() {
                             onChange={() => toggleSelect(item.id)}
                             disabled={!selectable}
                             title={
-                              selectable
+                              isBlocked
+                                ? blockedTitle
+                                : selectable
                                 ? undefined
                                 : `Apenas pendente/erro podem ser selecionados (status: ${item.status})`
                             }
@@ -887,6 +910,16 @@ export default function AjusPage() {
                             {item.status === "pendente" && <Clock className="mr-1 h-3 w-3" />}
                             {badge.label}
                           </Badge>
+                          {isBlocked && (
+                            <Badge
+                              variant="outline"
+                              className="ml-1 bg-rose-50 text-rose-800 border-rose-300"
+                              title={blockedTitle}
+                            >
+                              <Ban className="mr-1 h-3 w-3" />
+                              Class. pendente
+                            </Badge>
+                          )}
                           {item.error_message && (
                             <div
                               className="mt-1 max-w-[260px] truncate text-xs text-destructive"
@@ -908,8 +941,12 @@ export default function AjusPage() {
                                 size="sm"
                                 variant="default"
                                 onClick={() => handleDispatchOne(item.id)}
-                                disabled={actionItemId === item.id}
-                                title="Dispara so' este item agora — debug 1 a 1, isolando do batch."
+                                disabled={actionItemId === item.id || isBlocked}
+                                title={
+                                  isBlocked
+                                    ? blockedTitle
+                                    : "Dispara so' este item agora — debug 1 a 1, isolando do batch."
+                                }
                               >
                                 <Send className="mr-1 h-3 w-3" />
                                 Disparar
@@ -920,7 +957,8 @@ export default function AjusPage() {
                                 size="sm"
                                 variant="outline"
                                 onClick={() => handleRetry(item.id)}
-                                disabled={actionItemId === item.id}
+                                disabled={actionItemId === item.id || isBlocked}
+                                title={isBlocked ? blockedTitle : undefined}
                               >
                                 <RotateCcw className="mr-1 h-3 w-3" />
                                 Retry
@@ -1129,6 +1167,12 @@ export default function AjusPage() {
         onOpenChange={setBulkDialogOpen}
         codigos={codigos}
         onSuccess={() => loadAndamentos()}
+      />
+
+      <ClassificationBlocklistDialog
+        open={blocklistDialogOpen}
+        onOpenChange={setBlocklistDialogOpen}
+        onUploaded={() => loadAndamentos()}
       />
     </div>
   );

@@ -15,6 +15,9 @@ import {
   AjusCodAndamento,
   AjusCodAndamentoCreatePayload,
   AjusDispatchBatchResponse,
+  AjusBlocklistListResponse,
+  AjusBlocklistUploadResponse,
+  AjusBlocklistStatsResponse,
   BatchExecution,
   LegalOnePositionFixControlResponse,
   LegalOnePositionFixStatus,
@@ -1699,3 +1702,50 @@ export async function deleteAdminNotice(id: number): Promise<void> {
     throw new Error(`HTTP ${res.status} ao apagar aviso`);
   }
 }
+
+
+// ─── Blocklist de classificacao pendente (XLSX upload) ──────────────
+
+export async function uploadAjusClassificationBlocklist(
+  file: File,
+): Promise<AjusBlocklistUploadResponse> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await apiFetch(
+    "/api/v1/ajus/classification-blocklist/upload",
+    { method: "POST", body: fd },
+  );
+  return expectJson<AjusBlocklistUploadResponse>(res);
+}
+
+export async function fetchAjusClassificationBlocklist(
+  filters: { cnj_number?: string; limit?: number; offset?: number } = {},
+): Promise<AjusBlocklistListResponse> {
+  const params = new URLSearchParams();
+  if (filters.cnj_number) params.set("cnj_number", filters.cnj_number);
+  if (typeof filters.limit === "number") params.set("limit", String(filters.limit));
+  if (typeof filters.offset === "number") params.set("offset", String(filters.offset));
+  const qs = params.toString();
+  const res = await apiFetch(
+    `/api/v1/ajus/classification-blocklist${qs ? `?${qs}` : ""}`,
+  );
+  return expectJson<AjusBlocklistListResponse>(res);
+}
+
+export async function fetchAjusClassificationBlocklistStats():
+  Promise<AjusBlocklistStatsResponse> {
+  const res = await apiFetch(
+    "/api/v1/ajus/classification-blocklist/stats",
+  );
+  return expectJson<AjusBlocklistStatsResponse>(res);
+}
+
+export async function clearAjusClassificationBlocklist():
+  Promise<AjusBlocklistUploadResponse> {
+  const res = await apiFetch(
+    "/api/v1/ajus/classification-blocklist",
+    { method: "DELETE" },
+  );
+  return expectJson<AjusBlocklistUploadResponse>(res);
+}
+
