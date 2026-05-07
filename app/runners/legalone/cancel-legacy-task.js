@@ -627,11 +627,68 @@ async function cancelTask(session, item, loginConfig) {
   };
 }
 
+// --login-only: abre browser, faz login OnePass, exporta cookies do
+// contexto autenticado pra um JSON e sai. Usado pelo service Python
+// HTTP (LegacyTaskHttpCancellationService) pra obter o `.ASPXAUTH`
+// inicial sem ter que reimplementar o fluxo de SSO (Thomson Reuters
+// OnePass + key selection) em Python. Output: { mode, capturedAt,
+// cookies: { name: value, ... } }. Exit 0 em sucesso, 1 em falha.
+async function runLoginOnlyMode(args) {
+  const outputPath = args.output;
+  if (!outputPath) {
+    throw new Error('Use --login-only --output <json>');
+  }
+
+  const username = requireEnvAny(['LEGALONE_WEB_USERNAME', 'LEGAL_ONE_WEB_USERNAME']);
+  const password = requireEnvAny(['LEGALONE_WEB_PASSWORD', 'LEGAL_ONE_WEB_PASSWORD']);
+  const keyLabel = requireEnvAny(['LEGALONE_WEB_KEY_LABEL', 'LEGAL_ONE_WEB_KEY_LABEL']);
+
+  const loginConfig = {
+    username,
+    password,
+    keyLabel,
+    returnUrl: 'https://mdradvocacia.novajus.com.br/home',
+  };
+
+  let session = null;
+  try {
+    session = await createLoggedInSession(loginConfig);
+    const cookies = await session.context.cookies();
+    const cookieMap = {};
+    for (const c of cookies) {
+      cookieMap[c.name] = c.value;
+    }
+    if (!cookieMap['.ASPXAUTH']) {
+      throw new Error(
+        'Login completou mas .ASPXAUTH nao foi setado — verifique credenciais/SSO.',
+      );
+    }
+    writeJsonFile(outputPath, {
+      mode: 'login-only',
+      capturedAt: new Date().toISOString(),
+      cookieCount: Object.keys(cookieMap).length,
+      cookies: cookieMap,
+    });
+    console.log(JSON.stringify({
+      status: 'ok',
+      cookieCount: Object.keys(cookieMap).length,
+      output: outputPath,
+    }));
+  } finally {
+    await closeSession(session);
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+
+  if (args['login-only']) {
+    return runLoginOnlyMode(args);
+  }
+
   const inputPath = args.input;
   if (!inputPath) {
-    throw new Error('Use --input <json>');
+    throw new Error('Use --input <json> (ou --login-only --output <json>)');
   }
 
   const items = readJsonFile(inputPath, []);
