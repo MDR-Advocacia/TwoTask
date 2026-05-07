@@ -274,24 +274,6 @@ export interface PrazoInicialIntakeSummary {
     | "rejeitado"
     | string
     | null;
-  // Contestacao ja apresentada (pin021) — flags sumarias pra badge
-  // na listagem (`existe`, `apresentada_por_mdr`, `generica`). O bloco
-  // completo com nome/OAB/data/parte representada/analise vai no
-  // detalhe (PrazoInicialContestacaoExistente).
-  contestacao_existe?: boolean;
-  contestacao_apresentada_por_mdr?: boolean | null;
-  contestacao_generica?: boolean | null;
-}
-
-export interface PrazoInicialContestacaoExistente {
-  existe: boolean;
-  apresentada_por_mdr: boolean | null;
-  apresentada_por_nome: string | null;
-  apresentada_por_oab: string | null;
-  parte_representada: string | null;
-  data_apresentacao: string | null;
-  generica: boolean | null;
-  analise_qualidade: string | null;
 }
 
 export interface PrazoInicialPatrocinio {
@@ -420,10 +402,6 @@ export interface PrazoInicialIntakeDetail extends PrazoInicialIntakeSummary {
   sugestoes: PrazoInicialSugestao[];
   pedidos: PrazoInicialPedido[];
   patrocinio: PrazoInicialPatrocinio | null;
-  // Contestacao ja apresentada (pin021) — sempre presente; quando
-  // `existe=false`, demais campos vem null. UI esconde o bloco
-  // inteiro nesses casos.
-  contestacao_existente: PrazoInicialContestacaoExistente | null;
 }
 
 export interface PrazoInicialIntakeListResponse {
@@ -491,7 +469,6 @@ export interface PrazoInicialIntakeFilters {
   // Origem do intake (pin016).
   source?: string;                  // CSV: "EXTERNAL_API,USER_UPLOAD"
   submitted_by_user_id?: string;    // CSV — atalho "Minha fila"
-  tipo_prazo?: string;              // CSV de tipos_prazo: "CONTESTAR,AUDIENCIA"
   pdf_extraction_failed?: boolean;  // true = só uploads com extração falha
   // Patrocinio (pin018)
   patrocinio_decisao?: string;          // CSV: "MDR_ADVOCACIA,OUTRO_ESCRITORIO,..."
@@ -693,7 +670,6 @@ export interface AjusAndamentoQueueItem {
   error_message: string | null;
   created_at: string;
   dispatched_at: string | null;
-  is_blocked_classification?: boolean;
 }
 
 export interface AjusAndamentoQueueListResponse {
@@ -707,36 +683,6 @@ export interface AjusDispatchBatchResponse {
   error_count: number;
   success_ids: number[];
   errored: { id: number; msg: string }[];
-  blocked_classification_count?: number;
-}
-
-// ─── Blocklist de classificacao pendente ───────────────────────────
-
-export interface AjusBlocklistItem {
-  id: number;
-  cnj_number: string;
-  cod_ajus: string | null;
-  materia: string | null;
-  first_seen_at: string;
-  last_seen_at: string;
-}
-
-export interface AjusBlocklistListResponse {
-  total: number;
-  items: AjusBlocklistItem[];
-}
-
-export interface AjusBlocklistUploadResponse {
-  added: number;
-  updated: number;
-  removed: number;
-  total_after: number;
-}
-
-export interface AjusBlocklistStatsResponse {
-  total_no_blocklist: number;
-  items_fila_bloqueados: number;
-  ultimo_upload_at: string | null;
 }
 
 // ─── Classificação AJUS (Chunk 1) ─────────────────────────────────────
@@ -801,6 +747,12 @@ export interface AjusClassifUploadResponse {
   created: number;
   updated: number;
   skipped: { cnj: string; motivo: string }[];
+  /**
+   * Itens hard-deleted pelo modo absoluto (sync_mode=true). Contem
+   * itens com origem='planilha' em status pendente/processando/erro
+   * que sumiram da nova planilha. Sucesso e intake_auto sao preservados.
+   */
+  deleted: { id: number; cnj: string; status_anterior: string }[];
 }
 
 // ─── Sessões AJUS (Chunk 2 — multi-conta) ─────────────────────────────
@@ -984,97 +936,4 @@ export interface PrazoInicialEnums {
   subtipos_julgamento: string[];
   priorities: string[];
   due_date_references: string[];
-}
-
-
-
-// ── Admin notices (banner de avisos pra usuarios online) ──
-
-export type AdminNoticeSeverity = "info" | "warning" | "danger";
-export type AdminNoticeStatus = "agendado" | "ativo" | "expirado";
-
-/** Subset do aviso visivel pra qualquer usuario (GET /admin/notices/active). */
-export interface AdminNoticeActive {
-  id: number;
-  title: string;
-  message: string;
-  severity: AdminNoticeSeverity;
-  starts_at: string | null;
-  ends_at: string | null;
-}
-
-/** Versao completa pro CRUD admin (inclui contadores + status calculado). */
-export interface AdminNotice {
-  id: number;
-  title: string;
-  message: string;
-  severity: AdminNoticeSeverity;
-  starts_at: string;
-  ends_at: string;
-  created_by_user_id: number | null;
-  created_at: string;
-  updated_at: string;
-  status: AdminNoticeStatus;
-  dismissed_count: number;
-}
-
-export interface AdminNoticeCreatePayload {
-  title: string;
-  message: string;
-  severity: AdminNoticeSeverity;
-  starts_at: string;
-  ends_at: string;
-}
-
-export type AdminNoticeUpdatePayload = Partial<AdminNoticeCreatePayload>;
-
-
-// ── Encaminhar devolucao + relatorio de patrocinio (Frentes 2 + 3) ──
-
-export interface EncaminharDevolucaoResponse {
-  intake_id: number;
-  intake_status: string;
-  ajus_queue_item_id: number | null;
-  dispatch_pending: boolean;
-}
-
-export interface PatrocinioRelatorioFilters {
-  since?: string | null;
-  until?: string | null;
-  office_id?: number | null;
-  limit?: number;
-  offset?: number;
-}
-
-export interface PatrocinioRelatorioItem {
-  intake_id: number;
-  cnj_number: string | null;
-  lawsuit_id: number | null;
-  office_id: number | null;
-  intake_status: string;
-  received_at: string | null;
-  decisao: string;
-  suspeita_devolucao: boolean;
-  natureza_acao: string | null;
-  motivo_suspeita: string | null;
-  outro_advogado_nome: string | null;
-  outro_advogado_oab: string | null;
-  outro_advogado_data_habilitacao: string | null;
-  outro_escritorio_nome: string | null;
-  polo_passivo_confirmado: boolean;
-  confianca: string | null;
-  fundamentacao: string | null;
-  review_status: string;
-  reviewed_by_email: string | null;
-  reviewed_by_name: string | null;
-  reviewed_at: string | null;
-  ajus_queue_status: string | null;
-  ajus_queue_id: number | null;
-}
-
-export interface PatrocinioRelatorioResponse {
-  total: number;
-  limit: number;
-  offset: number;
-  items: PatrocinioRelatorioItem[];
 }

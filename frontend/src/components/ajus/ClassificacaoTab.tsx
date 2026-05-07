@@ -170,6 +170,10 @@ export function ClassificacaoTab() {
 
   // ─── Upload ───────────────────────────────────────────────────────
   const [uploading, setUploading] = useState(false);
+  // Modo absoluto: planilha eh fonte de verdade. Apos upsert, apaga
+  // itens com origem='planilha' em status pendente/processando/erro
+  // que sumiram da nova planilha. Sucesso e intake_auto sao preservados.
+  const [syncMode, setSyncMode] = useState(true);
 
   // ─── Dispatch (rodar fila agora) ──────────────────────────────────
   const [dispatching, setDispatching] = useState(false);
@@ -533,18 +537,28 @@ export function ClassificacaoTab() {
   const handleUpload = async (file: File) => {
     setUploading(true);
     try {
-      const res = await uploadAjusClassifXlsx(file);
+      const res = await uploadAjusClassifXlsx(file, { syncMode });
       const lines: string[] = [];
       lines.push(`${res.created} novo(s)`);
       if (res.updated) lines.push(`${res.updated} atualizado(s)`);
+      if (res.deleted?.length) lines.push(`${res.deleted.length} apagado(s)`);
       if (res.skipped.length) lines.push(`${res.skipped.length} ignorado(s)`);
       toast({
-        title: "Planilha processada",
+        title: syncMode
+          ? "Planilha processada (modo absoluto)"
+          : "Planilha processada (incremental)",
         description: lines.join(" · "),
       });
       if (res.skipped.length) {
         // eslint-disable-next-line no-console
         console.warn("AJUS classif: linhas ignoradas:", res.skipped);
+      }
+      if (res.deleted?.length) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          "AJUS classif: itens apagados pelo modo absoluto:",
+          res.deleted,
+        );
       }
       await loadItems();
     } catch (e: unknown) {
@@ -851,10 +865,33 @@ export function ClassificacaoTab() {
                 <Download className="mr-2 h-3.5 w-3.5" />
                 Modelo XLSX
               </Button>
+              <label
+                className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none"
+                title={
+                  "Quando ligado: apos o upload, apaga itens (status "
+                  + "pendente/processando/erro com origem=planilha) que "
+                  + "sumiram da nova planilha. Sucesso e itens automaticos "
+                  + "(intake) sao preservados."
+                }
+              >
+                <input
+                  type="checkbox"
+                  className="h-3.5 w-3.5"
+                  checked={syncMode}
+                  onChange={(e) => setSyncMode(e.target.checked)}
+                  disabled={uploading}
+                />
+                Modo absoluto
+              </label>
               <Button
                 size="sm"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={uploading}
+                title={
+                  syncMode
+                    ? "Modo absoluto: itens que sumiram da planilha SERAO APAGADOS."
+                    : "Modo incremental: apenas insere/atualiza, nao apaga nada."
+                }
               >
                 {uploading ? (
                   <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />

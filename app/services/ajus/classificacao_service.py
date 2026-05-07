@@ -280,7 +280,7 @@ class AjusClassificacaoService:
     # ── Enqueue origem=planilha ─────────────────────────────────────
 
     def enqueue_from_xlsx_rows(
-        self, rows: Iterable[XlsxRow],
+        self, rows: Iterable[XlsxRow], *, sync_mode: bool = True,
     ) -> dict[str, Any]:
         """
         Processa N linhas da planilha. Cada linha:
@@ -293,12 +293,30 @@ class AjusClassificacaoService:
           - Se já existe em outro status (sucesso/processando/erro/cancelado):
             IGNORA pra preservar histórico (operador usa retry/cancel
             pra lidar caso a caso).
+
+        sync_mode (default=True): Modo "planilha absoluta". Apos o
+        upsert, faz HARD DELETE dos itens com origem='planilha' em
+        status pendente/processando/erro cujo CNJ NAO esta na nova
+        planilha. Itens com status='sucesso' sao preservados (historico).
+        Itens com origem='intake_auto' tambem sao preservados (vem de
+        outro fluxo). Operador pode setar sync_mode=False pra fazer
+        upload incremental sem sweep.
         """
+        # Normaliza tudo upfront pra ter um set de CNJs validos da nova
+        # planilha — usado tanto no upsert quanto no sweep de delete.
+        rows_list = list(rows)
+        cnjs_in_xlsx: set[str] = set()
+        for r in rows_list:
+            n = _normalize_cnj_digits(r.cnj_number)
+            if n:
+                cnjs_in_xlsx.add(n)
+
         created = 0
         updated = 0
         skipped: list[dict[str, Any]] = []
+        deleted: list[dict[str, Any]] = []
 
-        for row in rows:
+        for row in rows_list:
             cnj = _normalize_cnj_digits(row.cnj_number)
             if not cnj:
                 skipped.append(
@@ -354,11 +372,45 @@ class AjusClassificacaoService:
             existing.origem = AJUS_CLASSIF_ORIGEM_PLANILHA
             updated += 1
 
+        # ── Sweep absoluto ──────────────────────────────────────────
+        # Hard delete dos itens origem=planilha que NAO estao na nova
+        # planilha, exceto status=sucesso (historico). Itens
+        # origem=intake_auto sao ignorados — vem de outro fluxo.
+        if sync_mode:
+            stale_q = (
+                self.db.query(AjusClassificacaoQueue)
+                .filter(
+                    AjusClassificacaoQueue.origem == AJUS_CLASSIF_ORIGEM_PLANILHA,
+                    AjusClassificacaoQueue.status != AJUS_CLASSIF_SUCESSO,
+                )
+            )
+            if cnjs_in_xlsx:
+                stale_q = stale_q.filter(
+                    ~AjusClassificacaoQueue.cnj_number.in_(cnjs_in_xlsx)
+                )
+            stale_items = stale_q.all()
+            for s in stale_items:
+                deleted.append({
+                    "id": s.id,
+                    "cnj": s.cnj_number,
+                    "status_anterior": s.status,
+                })
+                self.db.delete(s)
+            if deleted:
+                logger.warning(
+                    "AJUS classif sync: %d itens removidos por nao "
+                    "constarem na nova planilha (sync_mode=True). "
+                    "Status anteriores: %s",
+                    len(deleted),
+                    sorted({d["status_anterior"] for d in deleted}),
+                )
+
         self.db.commit()
         return {
             "created": created,
             "updated": updated,
             "skipped": skipped,
+            "deleted": deleted,
         }
 
     # ── Queries ─────────────────────────────────────────────────────
@@ -562,7 +614,7 @@ class AjusClassificacaoService:
 
     # Limite de retries automaticos pra erros transitorios. Acima disso,
     # vira erro definitivo (operador resolve).
-    MAX_TRANSIENT_RETRIES = 15  # OTIM: 5 era pouco — sessoes degradam mas voltam a funcionar; dar mais paciencia evita erros definitivos prematuros
+    MAX_TRANSIENT_RETRIES = 5
 
     def mark_transient_error(
         self,

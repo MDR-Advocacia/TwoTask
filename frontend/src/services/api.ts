@@ -15,9 +15,6 @@ import {
   AjusCodAndamento,
   AjusCodAndamentoCreatePayload,
   AjusDispatchBatchResponse,
-  AjusBlocklistListResponse,
-  AjusBlocklistUploadResponse,
-  AjusBlocklistStatsResponse,
   BatchExecution,
   LegalOnePositionFixControlResponse,
   LegalOnePositionFixStatus,
@@ -25,13 +22,6 @@ import {
   PrazoInicialBatchListResponse,
   PrazoInicialBatchSummary,
   PrazoInicialClassifyPendingResponse,
-  AdminNotice,
-  AdminNoticeActive,
-  AdminNoticeCreatePayload,
-  AdminNoticeUpdatePayload,
-  EncaminharDevolucaoResponse,
-  PatrocinioRelatorioFilters,
-  PatrocinioRelatorioResponse,
   PrazoInicialEnums,
   PrazoInicialIntakeDetail,
   PrazoInicialIntakeFilters,
@@ -42,8 +32,6 @@ import {
   PrazoInicialUploadResponse,
   PrazoInicialLegacyTaskCancelQueueListResponse,
   PrazoInicialLegacyTaskCircuitBreakerResetResponse,
-  PrazoInicialLegacyTaskZombieListResponse,
-  PrazoInicialLegacyTaskZombieRecoverResponse,
   PrazoInicialLegacyTaskQueueFilters,
   PrazoInicialLegacyTaskQueueItemActionResponse,
   PrazoInicialLegacyTaskQueueMetrics,
@@ -238,9 +226,6 @@ export async function fetchPrazosIniciaisIntakes(
   }
   if (filters.submitted_by_user_id) {
     params.set("submitted_by_user_id", filters.submitted_by_user_id);
-  }
-  if (filters.tipo_prazo) {
-    params.set("tipo_prazo", filters.tipo_prazo);
   }
   if (typeof filters.pdf_extraction_failed === "boolean") {
     params.set("pdf_extraction_failed", String(filters.pdf_extraction_failed));
@@ -760,34 +745,6 @@ export async function resetPrazosIniciaisLegacyTaskCancelCircuitBreaker(): Promi
 }
 
 
-export async function fetchPrazosIniciaisLegacyTaskCancelZombies(
-  thresholdMinutes = 0,
-  limit = 50,
-): Promise<PrazoInicialLegacyTaskZombieListResponse> {
-  const params = new URLSearchParams();
-  if (thresholdMinutes > 0) params.set("threshold_minutes", String(thresholdMinutes));
-  params.set("limit", String(limit));
-  const response = await apiFetch(
-    `/api/v1/prazos-iniciais/legacy-task-cancel-queue/zombies?${params.toString()}`,
-  );
-  return expectJson<PrazoInicialLegacyTaskZombieListResponse>(response);
-}
-
-
-export async function recoverPrazosIniciaisLegacyTaskCancelZombies(
-  thresholdMinutes = 0,
-): Promise<PrazoInicialLegacyTaskZombieRecoverResponse> {
-  const params = new URLSearchParams();
-  if (thresholdMinutes > 0) params.set("threshold_minutes", String(thresholdMinutes));
-  const qs = params.toString();
-  const response = await apiFetch(
-    `/api/v1/prazos-iniciais/legacy-task-cancel-queue/recover-zombies${qs ? `?${qs}` : ""}`,
-    { method: "POST" },
-  );
-  return expectJson<PrazoInicialLegacyTaskZombieRecoverResponse>(response);
-}
-
-
 /**
  * Faz download do CSV da fila respeitando os mesmos filtros do GET.
  * Retorna o Blob pra o caller transformar em download via URL.createObjectURL.
@@ -1064,128 +1021,6 @@ export async function dispatchAjusAndamentosPending(
   return expectJson<AjusDispatchBatchResponse>(res);
 }
 
-export interface AjusBackfillNoPdfItem {
-  intake_id: number;
-  cnj_number: string;
-}
-
-export interface AjusBackfillResponse {
-  candidates: number;
-  enqueued: number;
-  skipped_already: number;
-  skipped_other: number;
-  intake_ids_enqueued: number[];
-  enqueued_without_pdf: AjusBackfillNoPdfItem[];
-  dry_run: boolean;
-  error?: string | null;
-}
-
-export interface AjusBackfillRequest {
-  statuses?: string[] | null;
-  from_date?: string | null;
-  to_date?: string | null;
-  dry_run?: boolean;
-  limit?: number | null;
-}
-
-/**
- * Backfill: enfileira na fila AJUS todos os intakes de prazos iniciais
- * ja' classificados que ainda nao tem item -- pra cobrir os processos
- * antigos anteriores ao auto-enqueue. Idempotente.
- *
- * Use `dry_run: true` pra obter o numero de candidatos antes de mandar
- * valendo. Intakes sem PDF entram na fila marcados pra anexo manual e
- * vem listados em `enqueued_without_pdf`.
- */
-export async function backfillAjusFromIntakes(
-  payload: AjusBackfillRequest = {},
-): Promise<AjusBackfillResponse> {
-  const res = await apiFetch(`/api/v1/ajus/andamentos/backfill-from-intakes`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  return expectJson<AjusBackfillResponse>(res);
-}
-
-
-/** Dispatch pontual: envia 1 item especifico da fila pro AJUS.
- *  Aceita item em status pendente ou erro. Util pra debug + retry pontual. */
-export async function dispatchAjusAndamento(
-  itemId: number,
-): Promise<{
-  item_id: number;
-  status_final: string;
-  success: boolean;
-  msg: string | null;
-  cod_informacao_judicial: string | null;
-}> {
-  const res = await apiFetch(
-    `/api/v1/ajus/andamentos/${itemId}/dispatch`,
-    { method: "POST" },
-  );
-  return expectJson(res);
-}
-
-/**
- * Faz download do PDF da habilitacao anexado ao item da fila e devolve
- * um Blob URL pra abrir em nova aba ou usar como href. Caller eh
- * responsavel por chamar URL.revokeObjectURL depois.
- *
- * Lança erro com status 410 se o item existe mas nao tem PDF.
- */
-export async function fetchAjusAndamentoPdfBlobUrl(
-  itemId: number,
-): Promise<string> {
-  const res = await apiFetch(`/api/v1/ajus/andamentos/${itemId}/pdf`);
-  if (!res.ok) {
-    let detail = `${res.status}`;
-    try {
-      const data = await res.json();
-      detail = data.detail || detail;
-    } catch {
-      /* ignore */
-    }
-    throw new Error(`Falha ao baixar PDF (HTTP ${res.status}): ${detail}`);
-  }
-  const blob = await res.blob();
-  return URL.createObjectURL(blob);
-}
-
-/**
- * Anexa um PDF a um item existente que estava sem anexo. Retorna o
- * item atualizado (com `has_pdf=true`). Falha 409 se item ja' tem PDF
- * ou esta em status nao elegivel; 413 se PDF ultrapassa 10MB.
- */
-export async function uploadAjusAndamentoPdf(
-  itemId: number,
-  file: File,
-): Promise<AjusAndamentoQueueItem> {
-  const fd = new FormData();
-  fd.append("file", file);
-  const res = await apiFetch(`/api/v1/ajus/andamentos/${itemId}/pdf`, {
-    method: "POST",
-    body: fd,
-  });
-  return expectJson<AjusAndamentoQueueItem>(res);
-}
-
-/**
- * Dispatcha em UMA request um conjunto de itens escolhidos pelo
- * operador (multi-select). Limite: 20 itens por chamada.
- */
-export async function dispatchSelectedAjusAndamentos(
-  itemIds: number[],
-): Promise<AjusDispatchBatchResponse> {
-  const res = await apiFetch(`/api/v1/ajus/andamentos/dispatch-selected`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ item_ids: itemIds }),
-  });
-  return expectJson<AjusDispatchBatchResponse>(res);
-}
-
-
 export async function cancelAjusAndamento(itemId: number) {
   const res = await apiFetch(
     `/api/v1/ajus/andamentos/${itemId}/cancel`,
@@ -1200,89 +1035,6 @@ export async function retryAjusAndamento(itemId: number) {
     { method: "POST" },
   );
   return expectJson(res);
-}
-
-// ─── Bulk upload de andamentos (arquivos com CNJ no nome OU lista CNJ) ─
-
-export interface AjusBulkVarsPayload {
-  cod_andamento_id: number;
-  situacao?: "A" | "C" | null;
-  data_evento?: string | null;          // YYYY-MM-DD
-  data_agendamento?: string | null;
-  data_fatal?: string | null;
-  hora_agendamento?: string | null;     // HH:MM
-  informacao_template_override?: string | null;
-}
-
-export interface AjusBulkSkipped {
-  cnj: string;
-  filename: string | null;
-  reason: string;
-}
-
-export interface AjusBulkResponse {
-  created: number;
-  /** Itens existentes que ganharam PDF (smart-merge do bulk-upload). */
-  updated?: number;
-  skipped: AjusBulkSkipped[];
-  item_ids: number[];
-  created_ids?: number[];
-  updated_ids?: number[];
-}
-
-/**
- * Upload em lote de PDFs com CNJ no nome do arquivo. Backend extrai
- * o CNJ via regex; arquivos sem CNJ no nome viram "skipped" no
- * retorno (operador re-envia depois). Cada arquivo vira 1 item da
- * fila com o PDF anexado e as variaveis comuns informadas.
- */
-export async function bulkUploadAjusAndamentos(
-  files: File[],
-  vars: AjusBulkVarsPayload,
-): Promise<AjusBulkResponse> {
-  const fd = new FormData();
-  for (const f of files) fd.append("files", f);
-  fd.append("cod_andamento_id", String(vars.cod_andamento_id));
-  if (vars.situacao) fd.append("situacao", vars.situacao);
-  if (vars.data_evento) fd.append("data_evento", vars.data_evento);
-  if (vars.data_agendamento) fd.append("data_agendamento", vars.data_agendamento);
-  if (vars.data_fatal) fd.append("data_fatal", vars.data_fatal);
-  if (vars.hora_agendamento) fd.append("hora_agendamento", vars.hora_agendamento);
-  if (vars.informacao_template_override) {
-    fd.append("informacao_template_override", vars.informacao_template_override);
-  }
-  const res = await apiFetch(`/api/v1/ajus/andamentos/bulk-upload`, {
-    method: "POST",
-    body: fd,
-  });
-  return expectJson<AjusBulkResponse>(res);
-}
-
-/**
- * Cria N andamentos de capa (sem anexo de PDF) a partir de uma lista
- * de CNJs. Util pra cancelamento massivo / aviso massivo onde nao ha
- * arquivo associado. Mesmas variaveis comuns do bulk-upload.
- */
-export async function bulkCnjAjusAndamentos(
-  cnjList: string[],
-  vars: AjusBulkVarsPayload,
-): Promise<AjusBulkResponse> {
-  const body = {
-    cnj_list: cnjList,
-    cod_andamento_id: vars.cod_andamento_id,
-    situacao: vars.situacao ?? null,
-    data_evento: vars.data_evento ?? null,
-    data_agendamento: vars.data_agendamento ?? null,
-    data_fatal: vars.data_fatal ?? null,
-    hora_agendamento: vars.hora_agendamento ?? null,
-    informacao_template_override: vars.informacao_template_override ?? null,
-  };
-  const res = await apiFetch(`/api/v1/ajus/andamentos/bulk-cnj`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  return expectJson<AjusBulkResponse>(res);
 }
 
 // ─── Classificação AJUS (Chunk 1) ────────────────────────────────────
@@ -1384,13 +1136,15 @@ export async function retryAjusClassifErrorsBulk(
 
 export async function uploadAjusClassifXlsx(
   file: File,
+  opts: { syncMode?: boolean } = {},
 ): Promise<AjusClassifUploadResponse> {
   const fd = new FormData();
   fd.append("file", file);
-  const res = await apiFetch(`/api/v1/ajus/classificacao/upload-xlsx`, {
-    method: "POST",
-    body: fd,
-  });
+  const syncMode = opts.syncMode ?? true; // default: planilha absoluta
+  const url =
+    `/api/v1/ajus/classificacao/upload-xlsx` +
+    `?sync_mode=${syncMode ? "true" : "false"}`;
+  const res = await apiFetch(url, { method: "POST", body: fd });
   return expectJson<AjusClassifUploadResponse>(res);
 }
 
@@ -1583,169 +1337,3 @@ export async function cancelAjusClassifPendentes(): Promise<AjusClassifCancelRes
   });
   return expectJson<AjusClassifCancelResponse>(res);
 }
-
-
-
-// ════════════════════════════════════════════════════════════════════
-// Patrocinio — encaminhar devolucao + relatorio (Frentes 2 + 3)
-// ════════════════════════════════════════════════════════════════════
-
-/**
- * Encaminha um intake existente pra fila de devolucao do AJUS.
- * Marca patrocinio como aprovado/devolucao + status DEVOLUCAO_PENDENTE
- * + dispatch_pending=True. Backend faz tudo numa transacao soh.
- */
-export async function encaminharIntakeParaDevolucao(
-  intakeId: number,
-  motivo?: string,
-): Promise<EncaminharDevolucaoResponse> {
-  const res = await apiFetch(
-    `/api/v1/prazos-iniciais/intakes/${intakeId}/encaminhar-devolucao`,
-    {
-      method: "POST",
-      body: JSON.stringify({ motivo: motivo || null }),
-    },
-  );
-  return expectJson<EncaminharDevolucaoResponse>(res);
-}
-
-/** Lista paginada do relatorio de devolucoes aprovadas. */
-export async function fetchPatrocinioRelatorio(
-  filters: PatrocinioRelatorioFilters = {},
-): Promise<PatrocinioRelatorioResponse> {
-  const params = new URLSearchParams();
-  if (filters.since) params.set("since", filters.since);
-  if (filters.until) params.set("until", filters.until);
-  if (filters.office_id != null) params.set("office_id", String(filters.office_id));
-  params.set("limit", String(filters.limit ?? 50));
-  params.set("offset", String(filters.offset ?? 0));
-  const res = await apiFetch(
-    `/api/v1/prazos-iniciais/patrocinio/relatorio?${params.toString()}`,
-  );
-  return expectJson<PatrocinioRelatorioResponse>(res);
-}
-
-/** Baixa o CSV do relatorio com os filtros atuais. Retorna Blob pra
- *  o caller fazer download via createObjectURL. */
-export async function downloadPatrocinioRelatorioCsv(
-  filters: PatrocinioRelatorioFilters = {},
-): Promise<Blob> {
-  const params = new URLSearchParams();
-  if (filters.since) params.set("since", filters.since);
-  if (filters.until) params.set("until", filters.until);
-  if (filters.office_id != null) params.set("office_id", String(filters.office_id));
-  const res = await apiFetch(
-    `/api/v1/prazos-iniciais/patrocinio/relatorio/export.csv?${params.toString()}`,
-  );
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status} ao baixar CSV do relatorio`);
-  }
-  return await res.blob();
-}
-
-
-// ════════════════════════════════════════════════════════════════════
-// Admin notices (banner de avisos)
-// ════════════════════════════════════════════════════════════════════
-
-/** Lista avisos ativos pendentes de dismiss pro usuario corrente.
- *  Chamado pelo AdminNoticeBar a cada 30s. Retorna array vazio em
- *  401 (sessao expirou) — o componente nem mostra nada nesse caso. */
-export async function fetchActiveAdminNotices(): Promise<AdminNoticeActive[]> {
-  const res = await apiFetch(`/api/v1/admin/notices/active`);
-  if (res.status === 401 || res.status === 403) return [];
-  return expectJson<AdminNoticeActive[]>(res);
-}
-
-/** Marca aviso como fechado pro usuario corrente (idempotente). */
-export async function dismissAdminNotice(noticeId: number): Promise<void> {
-  const res = await apiFetch(`/api/v1/admin/notices/${noticeId}/dismiss`, {
-    method: "POST",
-  });
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status} ao dispensar aviso`);
-  }
-}
-
-/** Lista TODOS os avisos (admin only — backend retorna 403 se nao). */
-export async function fetchAllAdminNotices(): Promise<AdminNotice[]> {
-  const res = await apiFetch(`/api/v1/admin/notices`);
-  return expectJson<AdminNotice[]>(res);
-}
-
-export async function createAdminNotice(
-  payload: AdminNoticeCreatePayload,
-): Promise<AdminNotice> {
-  const res = await apiFetch(`/api/v1/admin/notices`, {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-  return expectJson<AdminNotice>(res);
-}
-
-export async function updateAdminNotice(
-  id: number,
-  payload: AdminNoticeUpdatePayload,
-): Promise<AdminNotice> {
-  const res = await apiFetch(`/api/v1/admin/notices/${id}`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
-  });
-  return expectJson<AdminNotice>(res);
-}
-
-export async function deleteAdminNotice(id: number): Promise<void> {
-  const res = await apiFetch(`/api/v1/admin/notices/${id}`, {
-    method: "DELETE",
-  });
-  if (!res.ok && res.status !== 204) {
-    throw new Error(`HTTP ${res.status} ao apagar aviso`);
-  }
-}
-
-
-// ─── Blocklist de classificacao pendente (XLSX upload) ──────────────
-
-export async function uploadAjusClassificationBlocklist(
-  file: File,
-): Promise<AjusBlocklistUploadResponse> {
-  const fd = new FormData();
-  fd.append("file", file);
-  const res = await apiFetch(
-    "/api/v1/ajus/classification-blocklist/upload",
-    { method: "POST", body: fd },
-  );
-  return expectJson<AjusBlocklistUploadResponse>(res);
-}
-
-export async function fetchAjusClassificationBlocklist(
-  filters: { cnj_number?: string; limit?: number; offset?: number } = {},
-): Promise<AjusBlocklistListResponse> {
-  const params = new URLSearchParams();
-  if (filters.cnj_number) params.set("cnj_number", filters.cnj_number);
-  if (typeof filters.limit === "number") params.set("limit", String(filters.limit));
-  if (typeof filters.offset === "number") params.set("offset", String(filters.offset));
-  const qs = params.toString();
-  const res = await apiFetch(
-    `/api/v1/ajus/classification-blocklist${qs ? `?${qs}` : ""}`,
-  );
-  return expectJson<AjusBlocklistListResponse>(res);
-}
-
-export async function fetchAjusClassificationBlocklistStats():
-  Promise<AjusBlocklistStatsResponse> {
-  const res = await apiFetch(
-    "/api/v1/ajus/classification-blocklist/stats",
-  );
-  return expectJson<AjusBlocklistStatsResponse>(res);
-}
-
-export async function clearAjusClassificationBlocklist():
-  Promise<AjusBlocklistUploadResponse> {
-  const res = await apiFetch(
-    "/api/v1/ajus/classification-blocklist",
-    { method: "DELETE" },
-  );
-  return expectJson<AjusBlocklistUploadResponse>(res);
-}
-
