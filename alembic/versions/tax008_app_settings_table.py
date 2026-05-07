@@ -12,7 +12,7 @@ Seed inicial:
   - "taxonomy_active_version" = "v1" (preserva comportamento atual)
 
 Revision ID: tax008
-Revises: tax007
+Revises: pin022 (head pos-merge ajus009+pin021)
 """
 
 from typing import Sequence, Union
@@ -22,7 +22,10 @@ from alembic import op
 
 
 revision: str = "tax008"
-down_revision: Union[str, None] = "tax007"
+# Encadeada em pin022 (merge de pin021+ajus009) em vez de tax007 — caso
+# contrario criaria head paralelo a pin022 (ambos descenderiam de tax007
+# sem reconciliacao). Boot do Coolify falharia com MultipleHeads.
+down_revision: Union[str, None] = "pin022"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
