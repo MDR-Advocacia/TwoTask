@@ -1086,6 +1086,18 @@ class OverrideBulkForOfficeRequest(BaseModel):
     custom_description: str | None = None  # default opcional pra todos os items
 
 
+class OverrideMigratePayload(BaseModel):
+    """Payload do operador revisando um override v1 pra v2.
+
+    O modal de pendencias envia category/subcategory selecionadas via
+    ClassificationPicker (filtrado pelo polo_scope do escritorio).
+    Demais campos (custom_description, is_active, action) ja estao
+    preservados desde tax007."""
+
+    category: str
+    subcategory: str | None = None
+
+
 @router.get("/classification-overrides")
 def list_classification_overrides(
     office_external_id: Optional[int] = Query(None),
@@ -1114,6 +1126,9 @@ def list_classification_overrides(
             "custom_description": o.custom_description,
             "is_active": o.is_active,
             "created_at": o.created_at.isoformat() if o.created_at else None,
+            "taxonomy_version": getattr(o, "taxonomy_version", None) or "v1",
+            "legacy_label": getattr(o, "legacy_label", None),
+            "needs_taxonomy_review": bool(getattr(o, "needs_taxonomy_review", False)),
         }
         for o in overrides
     ]
@@ -1190,6 +1205,130 @@ def update_classification_override(
         override.custom_description = body.custom_description
     db.commit()
     return {"ok": True, "id": override.id, "is_active": override.is_active}
+
+
+@router.get("/classification-overrides/pending-review")
+def list_overrides_pending_review(
+    office_external_id: Optional[int] = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    _=Depends(auth_security.get_current_user),
+):
+    """Lista overrides v1 pendentes de revisao na taxonomy v2.
+
+    Paginacao obrigatoria (regra da casa). Retorna {total, items, limit,
+    offset}. Operador acessa esse endpoint do painel "Overrides
+    Pendentes de Revisao" em Admin/Templates."""
+    from app.models.office_classification import OfficeClassificationOverride
+
+    base = db.query(OfficeClassificationOverride).filter(
+        OfficeClassificationOverride.needs_taxonomy_review == True
+    )
+    if office_external_id is not None:
+        base = base.filter(
+            OfficeClassificationOverride.office_external_id == office_external_id
+        )
+
+    total = base.count()
+    rows = (
+        base.order_by(
+            OfficeClassificationOverride.office_external_id,
+            OfficeClassificationOverride.category,
+        )
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return {
+        "total": total,
+        "items": [
+            {
+                "id": o.id,
+                "office_external_id": o.office_external_id,
+                "category": o.category,
+                "subcategory": o.subcategory,
+                "action": o.action,
+                "custom_description": o.custom_description,
+                "is_active": o.is_active,
+                "created_at": o.created_at.isoformat() if o.created_at else None,
+                "taxonomy_version": getattr(o, "taxonomy_version", None) or "v1",
+                "legacy_label": getattr(o, "legacy_label", None),
+                "needs_taxonomy_review": bool(getattr(o, "needs_taxonomy_review", False)),
+            }
+            for o in rows
+        ],
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.post("/classification-overrides/{override_id}/migrate")
+def migrate_override_to_v2(
+    override_id: int,
+    body: OverrideMigratePayload,
+    db: Session = Depends(get_db),
+    _=Depends(auth_security.get_current_user),
+):
+    """Migra um override v1 pra v2 - operador re-aponta a classificacao na
+    arvore nova (filtrada pelo polo_scope do escritorio do override).
+
+    Demais campos (custom_description, is_active, action) sao preservados
+    como estavam. Atualiza category/subcategory pros valores selecionados,
+    marca taxonomy_version='v2' e zera needs_taxonomy_review."""
+    from app.models.office_classification import OfficeClassificationOverride
+    from app.services.classifier.taxonomy import (
+        validate_classification, repair_classification,
+    )
+    from app.models.legal_one import LegalOneOffice
+
+    override = db.query(OfficeClassificationOverride).filter_by(id=override_id).first()
+    if not override:
+        raise HTTPException(404, "Override nao encontrado.")
+
+    target_polo: Optional[str] = None
+    office = (
+        db.query(LegalOneOffice)
+        .filter(LegalOneOffice.external_id == override.office_external_id)
+        .first()
+    )
+    if office is not None:
+        ps = getattr(office, "polo_scope", None)
+        if ps in ("ativo", "passivo"):
+            target_polo = ps
+
+    cat_clean, sub_clean = repair_classification(
+        body.category,
+        body.subcategory or "-",
+        polo_scope=target_polo,
+        taxonomy_version="v2",
+    )
+    if not validate_classification(
+        cat_clean, sub_clean,
+        polo_scope=target_polo,
+        taxonomy_version="v2",
+    ):
+        raise HTTPException(
+            400,
+            f"(categoria='{body.category}', subcategoria='{body.subcategory}') nao existe na taxonomia v2 do polo '{target_polo or 'ambos'}'.",
+        )
+
+    override.category = cat_clean
+    override.subcategory = sub_clean if sub_clean != "-" else None
+    override.taxonomy_version = "v2"
+    override.needs_taxonomy_review = False
+    db.commit()
+    db.refresh(override)
+    return {
+        "id": override.id,
+        "office_external_id": override.office_external_id,
+        "category": override.category,
+        "subcategory": override.subcategory,
+        "action": override.action,
+        "is_active": override.is_active,
+        "taxonomy_version": override.taxonomy_version,
+        "needs_taxonomy_review": override.needs_taxonomy_review,
+    }
 
 
 # ATENÇÃO: ordem das rotas DELETE importa. O FastAPI avalia rotas na

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.dependencies import get_db
 from app.models.legal_one import LegalOneOffice
@@ -18,9 +18,20 @@ class OfficeResponse(BaseModel):
     name: str
     path: str
     external_id: int
+    # Polo do processo que esse escritorio atende (taxonomy v2).
+    # 'ativo' / 'passivo' / 'ambos'. Default 'ambos' (preserva
+    # comportamento atual). Migration: tax002.
+    polo_scope: str = "ambos"
 
     class Config:
         orm_mode = True
+
+
+class OfficePoloScopePayload(BaseModel):
+    """Payload do Admin de Escritorios pra setar/atualizar polo_scope."""
+
+    polo_scope: str = Field(..., pattern="^(ativo|passivo|ambos)$")
+
 
 @router.get("/offices", response_model=List[OfficeResponse], summary="Listar todos os escritórios ativos", tags=["Offices"])
 def get_all_offices(db: Session = Depends(get_db)):
@@ -29,6 +40,37 @@ def get_all_offices(db: Session = Depends(get_db)):
     """
     offices = db.query(LegalOneOffice).filter(LegalOneOffice.is_active == True).order_by(LegalOneOffice.path).all()
     return offices
+
+
+@router.patch(
+    "/offices/{external_id}/polo-scope",
+    response_model=OfficeResponse,
+    summary="Atualizar polo_scope do escritório",
+    tags=["Offices"],
+)
+def update_office_polo_scope(
+    external_id: int,
+    payload: OfficePoloScopePayload,
+    db: Session = Depends(get_db),
+):
+    """Define a qual polo do processo esse escritorio atende.
+
+    Determina qual arvore da taxonomy v2 (ativo / passivo) e oferecida no
+    modal de templates daquele escritorio e injetada no prompt do
+    classificador. 'ambos' = sem filtro. Templates ja existentes nao sao
+    afetados pelo PATCH; o operador re-aponta cada um pelo painel
+    "Templates Pendentes de Revisao" usando POST /task-templates/{id}/migrate."""
+    office = (
+        db.query(LegalOneOffice)
+        .filter(LegalOneOffice.external_id == external_id)
+        .first()
+    )
+    if office is None:
+        raise HTTPException(404, f"Escritorio external_id={external_id} nao encontrado.")
+    office.polo_scope = payload.polo_scope
+    db.commit()
+    db.refresh(office)
+    return office
 
 
 # ─── Índice de processos por escritório ─────────────────

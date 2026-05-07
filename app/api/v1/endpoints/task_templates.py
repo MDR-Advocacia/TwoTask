@@ -3,9 +3,11 @@ Endpoints CRUD para templates de tarefa (classificação × escritório → tare
 
 Rotas:
   GET    /                  → Lista templates (com filtros opcionais)
+  GET    /pending-review    → Lista templates v1 pendentes de revisao na v2
   GET    /{id}              → Detalhe de um template
   POST   /                  → Cria novo template
   PUT    /{id}              → Atualiza um template
+  POST   /{id}/migrate      → Migra um template v1 pra v2 (revisao do operador)
   DELETE /{id}              → Remove um template
   GET    /meta/categories   → Lista categorias/subcategorias disponíveis
 """
@@ -75,18 +77,36 @@ class TaskTemplateUpdate(BaseModel):
 class TaskTemplateResponse(TaskTemplateBase):
     id: int
     office_name: Optional[str] = None
+    office_polo_scope: Optional[str] = None
     task_subtype_name: Optional[str] = None
     task_type_name: Optional[str] = None
     responsible_user_name: Optional[str] = None
+    # Taxonomy v2 fields (tax003).
+    taxonomy_version: str = "v1"
+    legacy_label: Optional[str] = None
+    needs_taxonomy_review: bool = False
 
     class Config:
         orm_mode = True
+
+
+class TaskTemplateMigratePayload(BaseModel):
+    """Payload do operador revisando um template v1 pra v2.
+
+    O modal de edicao envia category/subcategory selecionadas via
+    ClassificationPicker (regra da casa: combobox searchable). Demais
+    campos do template ja estao preservados desde tax007 — operador
+    so esta re-apontando pra arvore nova."""
+
+    category: str = Field(..., min_length=1)
+    subcategory: Optional[str] = None
 
 
 # ─── Helpers ────────────────────────────────────
 
 def _to_response(tmpl: TaskTemplate) -> dict:
     office_name = None
+    office_polo_scope = None
     subtype_name = None
     type_name = None
     user_name = None
@@ -94,6 +114,7 @@ def _to_response(tmpl: TaskTemplate) -> dict:
     if tmpl.office:
         # Usa path (hierarquia completa) se disponível, senão name
         office_name = tmpl.office.path or tmpl.office.name
+        office_polo_scope = getattr(tmpl.office, "polo_scope", None)
     elif tmpl.office_external_id is None:
         office_name = "✦ Publicações sem processo"  # template global
     if tmpl.task_subtype:
@@ -110,6 +131,7 @@ def _to_response(tmpl: TaskTemplate) -> dict:
         "subcategory": tmpl.subcategory,
         "office_external_id": tmpl.office_external_id,
         "office_name": office_name,
+        "office_polo_scope": office_polo_scope,
         "task_subtype_external_id": tmpl.task_subtype_external_id,
         "task_subtype_name": subtype_name,
         "task_type_name": type_name,
@@ -124,6 +146,9 @@ def _to_response(tmpl: TaskTemplate) -> dict:
         "target_role": getattr(tmpl, "target_role", None) or "principal",
         "target_squad_id": getattr(tmpl, "target_squad_id", None),
         "target_squad_name": _support_squad_name_lookup(tmpl),
+        "taxonomy_version": getattr(tmpl, "taxonomy_version", None) or "v1",
+        "legacy_label": getattr(tmpl, "legacy_label", None),
+        "needs_taxonomy_review": bool(getattr(tmpl, "needs_taxonomy_review", False)),
     }
 
 
@@ -199,6 +224,44 @@ def list_templates(
         TaskTemplate.name,
     ).all()
     return [_to_response(t) for t in templates]
+
+
+@router.get("/pending-review")
+def list_pending_review(
+    office_external_id: Optional[int] = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """Lista templates v1 marcados como pendentes de revisao na taxonomia v2.
+
+    Paginacao obrigatoria pela regra da casa (ver CLAUDE.md). Retorna
+    `{ total, items }` no padrao do PublicationsPage / PrazosIniciaisPage.
+    Operador acessa essa lista do painel "Templates Pendentes de Revisao"
+    em Admin/Templates."""
+    base = db.query(TaskTemplate).filter(
+        TaskTemplate.needs_taxonomy_review == True
+    )
+    if office_external_id is not None:
+        base = base.filter(TaskTemplate.office_external_id == office_external_id)
+
+    total = base.count()
+    rows = (
+        base.order_by(
+            TaskTemplate.office_external_id.asc().nulls_first(),
+            TaskTemplate.category,
+            TaskTemplate.name,
+        )
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return {
+        "total": total,
+        "items": [_to_response(t) for t in rows],
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/{template_id}", response_model=TaskTemplateResponse)
@@ -289,6 +352,85 @@ def delete_template(template_id: int, db: Session = Depends(get_db)):
     return None
 
 
+@router.post("/{template_id}/migrate", response_model=TaskTemplateResponse)
+def migrate_template_to_v2(
+    template_id: int,
+    payload: TaskTemplateMigratePayload,
+    db: Session = Depends(get_db),
+):
+    """Migra um template v1 pra v2 — operador re-aponta a classificacao.
+
+    Fluxo: o painel "Templates Pendentes de Revisao" abre o modal de
+    edicao com banner amarelo mostrando `legacy_label`. Operador escolhe
+    a (categoria, subcategoria) na arvore v2 via ClassificationPicker
+    (filtrada pelo polo_scope do escritorio do template). Ao salvar,
+    o frontend chama esse endpoint, que:
+
+      - valida (categoria, subcategoria) contra a arvore v2 do polo
+        do escritorio (se nao for 'ambos');
+      - atualiza category/subcategory pros valores novos;
+      - marca taxonomy_version='v2', needs_taxonomy_review=False;
+      - mantem is_active e demais campos como estavam.
+
+    Demais alteracoes (responsavel, prazo, etc.) seguem usando o
+    endpoint PUT padrao — `migrate` cuida especificamente do re-apontamento
+    da classificacao."""
+    from app.services.classifier.taxonomy import (
+        validate_classification, repair_classification,
+    )
+
+    tmpl = db.query(TaskTemplate).filter(TaskTemplate.id == template_id).first()
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template não encontrado.")
+
+    # Determina o polo da arvore v2 a ser usada como referencia. Se o
+    # escritorio do template tem polo_scope='ativo'/'passivo', a arvore
+    # filtra por esse polo. Se 'ambos' ou template global, aceita
+    # qualquer cat v2 (operador escolhe livremente).
+    target_polo: Optional[str] = None
+    if tmpl.office_external_id is not None:
+        office = (
+            db.query(LegalOneOffice)
+            .filter(LegalOneOffice.external_id == tmpl.office_external_id)
+            .first()
+        )
+        if office is not None:
+            ps = getattr(office, "polo_scope", None)
+            if ps in ("ativo", "passivo"):
+                target_polo = ps
+
+    # Tenta reparar pares (cat, sub) com erro de digitacao/case usando
+    # o reparador da taxonomia v2. Se nao bater, valida_classification
+    # rejeita e devolve 400 com a lista de cats validas.
+    cat_clean, sub_clean = repair_classification(
+        payload.category,
+        payload.subcategory or "-",
+        polo_scope=target_polo,
+        taxonomy_version="v2",
+    )
+    if not validate_classification(
+        cat_clean, sub_clean,
+        polo_scope=target_polo,
+        taxonomy_version="v2",
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Combinacao (categoria='{payload.category}', subcategoria='{payload.subcategory}') "
+                f"nao existe na taxonomia v2 do polo '{target_polo or 'ambos'}'. "
+                "Confira a arvore via GET /task-templates/meta/categories?taxonomy_version=v2."
+            ),
+        )
+
+    tmpl.category = cat_clean
+    tmpl.subcategory = sub_clean if sub_clean != "-" else None
+    tmpl.taxonomy_version = "v2"
+    tmpl.needs_taxonomy_review = False
+    db.commit()
+    db.refresh(tmpl)
+    return _to_response(tmpl)
+
+
 @router.get("/meta/task-types")
 def list_task_types(db: Session = Depends(get_db)):
     """Lista tipos e subtipos de tarefa com seus external_ids (para uso no formulário de template)."""
@@ -332,27 +474,64 @@ def list_categories(
         None,
         description="Se informado, aplica os overrides (excluir / adicionar customizada) do escritório.",
     ),
+    polo_scope: Optional[str] = Query(
+        None,
+        pattern="^(ativo|passivo|ambos)$",
+        description="Filtra a arvore por polo (taxonomy v2). 'ativo'/'passivo' inclui tambem cats marcadas como 'ambos'.",
+    ),
+    taxonomy_version: Optional[str] = Query(
+        None,
+        pattern="^(v1|v2)$",
+        description="Filtra por versao da taxonomia. Default: sem filtro (retorna v1 + v2 misturado se ambas estiverem seedadas).",
+    ),
     db: Session = Depends(get_db),
 ):
     """Lista as categorias e subcategorias disponíveis.
 
     - Sem `office_external_id`: retorna a taxonomia base do classificador.
+      Quando `polo_scope`/`taxonomy_version` sao informados, a arvore e filtrada
+      no DB antes de aplicar overrides.
     - Com `office_external_id`: retorna a taxonomia **efetiva** do escritório,
-      ou seja, já com exclusões removidas e include_custom adicionados.
+      ou seja, já com exclusões removidas e include_custom adicionados. Se o
+      escritorio tem `polo_scope` configurado e o caller nao passou um polo
+      explicito, usa o polo do proprio escritorio (regra "arvore do polo do
+      escritorio responsavel" — fluxo principal da v2).
     """
     try:
-        from app.services.classifier.taxonomy import CLASSIFICATION_TREE  # noqa: WPS433
+        from app.services.classifier.taxonomy import _get_active_tree  # noqa: WPS433
     except Exception:
         return {"categories": []}
 
     try:
-        tree: dict[str, list[str]] = {k: list(v) for k, v in CLASSIFICATION_TREE.items()}
+        # Quando o caller nao passa polo_scope mas o escritorio tem um,
+        # usa o do escritorio. Mantem retro-compatibilidade pra callers
+        # que ainda nao foram migrados pra mandar polo_scope.
+        effective_polo = polo_scope
+        if effective_polo is None and office_external_id is not None:
+            office_row = (
+                db.query(LegalOneOffice)
+                .filter(LegalOneOffice.external_id == office_external_id)
+                .first()
+            )
+            if office_row is not None:
+                ps = getattr(office_row, "polo_scope", None)
+                if ps and ps != "ambos":
+                    effective_polo = ps
+
+        tree = {
+            k: list(v)
+            for k, v in _get_active_tree(
+                polo_scope=effective_polo, taxonomy_version=taxonomy_version
+            ).items()
+        }
 
         if office_external_id is not None:
             try:
                 from app.services.classifier.prompts import load_office_overrides  # noqa: WPS433
 
-                excluded, custom_additions = load_office_overrides(db, office_external_id)
+                excluded, custom_additions = load_office_overrides(
+                    db, office_external_id, taxonomy_version=taxonomy_version
+                )
 
                 # Exclusões: subcategory=None remove a categoria inteira
                 cats_to_remove: set[str] = set()
@@ -375,14 +554,16 @@ def list_categories(
                     if sub and sub not in tree[cat]:
                         tree[cat].append(sub)
             except Exception:
-                # Falha ao aplicar overrides: cai para a árvore base, sem quebrar a página.
-                tree = {k: list(v) for k, v in CLASSIFICATION_TREE.items()}
+                # Falha ao aplicar overrides: mantem a arvore base sem quebrar.
+                pass
 
         return {
             "categories": [
                 {"category": cat, "subcategories": list(subs) if subs else []}
                 for cat, subs in tree.items()
-            ]
+            ],
+            "polo_scope_applied": effective_polo,
+            "taxonomy_version_applied": taxonomy_version,
         }
     except Exception:
         return {"categories": []}
