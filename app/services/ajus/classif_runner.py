@@ -948,30 +948,32 @@ class AjusClassifRunner:
             for attempt in range(1, max_capa_retries + 1):
                 try:
                     self._open_process_by_cnj(item.cnj_number)
-                    self._update_process_cover(item)
-                    # Server-truth validation: o display do form continua
-                    # mostrando os valores tipados mesmo se o save foi
-                    # rejeitado/parcial server-side (caso classico: ExtJS
-                    # mantem form state apos falha silenciosa). Forcamos
-                    # reload + reabrir o processo pra que _read_field_*
-                    # leia a capa server-side de verdade. Sem isso,
-                    # _validate_process_cover passa em itens onde so UF/
-                    # Comarca persistiram e Materia/Risco nao gravaram.
-                    self._reset_workspace()
-                    self._open_process_by_cnj(item.cnj_number)
-                    # CRITICO: depois de reabrir o processo, o ExtJS dispara
-                    # ObjetoPedidoAcaoJudicialController.php?action=read pra
-                    # POPULAR o form. _validate_process_cover roda ANTES do
-                    # form ficar populado e ve "Selecione uma opção" em
-                    # tudo — gerando falso "save rejeitado" e gravando
-                    # erro no item que de fato foi salvo. Esperamos UF
-                    # casar com o valor ESPERADO (com timeout de 25s) —
-                    # garante que o populate do ExtJS terminou e o save
-                    # persistiu corretamente.
-                    self._wait_for_cover_populated(
-                        timeout_s=25, expected_uf=(item.uf or ""),
-                    )
-                    self._validate_process_cover(item)
+                    cover_result = self._update_process_cover(item) or {}
+                    if cover_result.get("save_confirmed"):
+                        # FAST-PATH: AJUS confirmou save via flash de toast
+                        # "Dados Atualizados com Sucesso!" sem popup de erro.
+                        # Pulamos reload+reopen+validate (custo ~60s) e
+                        # marcamos sucesso direto. Reduz tempo por item de
+                        # ~60-90s pra ~10s. Server-truth validation continua
+                        # ativa pra os casos onde o flash NAO aparecer.
+                        pass
+                    else:
+                        # SLOW-PATH (server-truth): o display do form
+                        # continua mostrando os valores tipados mesmo se
+                        # o save foi rejeitado/parcial server-side. Forcamos
+                        # reload + reabrir o processo pra que _read_field_*
+                        # leia a capa server-side de verdade. Sem isso,
+                        # _validate_process_cover passa em itens onde so
+                        # UF/Comarca persistiram e Materia/Risco nao gravaram.
+                        # Tambem aguardamos UF casar com o valor ESPERADO
+                        # (timeout 25s) pra garantir que o populate do ExtJS
+                        # terminou apos o XHR de read.
+                        self._reset_workspace()
+                        self._open_process_by_cnj(item.cnj_number)
+                        self._wait_for_cover_populated(
+                            timeout_s=25, expected_uf=(item.uf or ""),
+                        )
+                        self._validate_process_cover(item)
                     self.classif_service.mark_success(
                         item.id,
                         last_log=f"Classificado por account_id={self.account.id} em {datetime.now(timezone.utc).isoformat()}",
@@ -2079,7 +2081,7 @@ class AjusClassifRunner:
             f"Abortando ANTES do save pra nao salvar capa vazia."
         )
 
-    def _update_process_cover(self, item: AjusClassificacaoQueue) -> None:
+    def _update_process_cover(self, item: AjusClassificacaoQueue) -> dict:
         """
         Preenche os 5 campos da capa via _fill_field_with_verify
         (porte do Mirror `_update_process_fields` com verificacao).
@@ -2450,10 +2452,45 @@ class AjusClassifRunner:
             except Exception:
                 pass
 
+        # FAST-PATH: detectar flash "Dados Atualizados com Sucesso!".
+        # Se o AJUS mostrou esse toast E nao houve popup, o save de fato
+        # persistiu — o classify_item pode pular reload+reopen+validate
+        # e marcar sucesso direto. Isso baixa o tempo por item de ~60-90s
+        # pra ~10s. Server-truth validation fica como fallback (slow path)
+        # pros casos onde o flash nao aparece.
+        save_confirmed = False
+        try:
+            check_js = (
+                "() => {"
+                "  try {"
+                "    const all = (document.body && document.body.innerText) || '';"
+                "    if (all.includes('Dados Atualizados com Sucesso')) return true;"
+                "    const flashes = document.querySelectorAll('[class*=\"flash\"], [class*=\"messagebox_flash\"]');"
+                "    for (const el of flashes) {"
+                "      const t = (el.innerText || el.textContent || '').toLowerCase();"
+                "      if (t.includes('atualizad') && t.includes('sucesso')) return true;"
+                "    }"
+                "    return false;"
+                "  } catch (e) { return false; }"
+                "}"
+            )
+            save_confirmed = bool(self._page.evaluate(check_js))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("AJUS runner: check de flash sucesso falhou: %s", exc)
+
+        if save_confirmed:
+            logger.info(
+                "AJUS runner: FAST-PATH ativo (item %d cnj=%s) — flash "
+                "'Dados Atualizados com Sucesso!' detectado, sem popup, "
+                "pulando reload+validate.",
+                item.id, item.cnj_number,
+            )
+
         # Pequeno settle pra ExtJS terminar de processar a resposta
         # (pode disparar refresh do form, fechar modal, etc.) antes do
         # caller chamar _reset_workspace.
         self._settle(wait_ms=1500)
+        return {"save_confirmed": save_confirmed}
 
     def _detect_extjs_popup(self, *, all_request_urls=None) -> str:
         """
