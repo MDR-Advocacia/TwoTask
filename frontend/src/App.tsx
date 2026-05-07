@@ -18,6 +18,7 @@ import LoginPage from './pages/LoginPage';
 import CreateTaskFromSpreadsheetPage from './pages/CreateTaskFromSpreadsheetPage';
 import PublicationsPage from './pages/PublicationsPage';
 import TaskTemplatesPage from './pages/TaskTemplatesPage';
+import TemplateReviewPage from './pages/TemplateReviewPage';
 import AutomationsPage from './pages/AutomationsPage';
 import ProfilePage from './pages/ProfilePage';
 import BatchExecutionsPage from './pages/BatchExecutionsPage';
@@ -64,6 +65,10 @@ function AppContent() {
             <Route path="/publications/lookup" element={<LookupByCnjPage />} />
             <Route path="/publications/treatment" element={<PublicationTreatmentPage />} />
             <Route path="/publications/templates" element={<TaskTemplatesPage />} />
+            <Route
+              path="/publications/templates/review-pending"
+              element={<TemplateReviewPage />}
+            />
             <Route path="/automations" element={<AutomationsPage />} />
             <Route path="/batches" element={<BatchExecutionsPage />} />
             <Route path="/prazos-iniciais" element={<PrazosIniciaisPage />} />

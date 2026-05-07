@@ -10,8 +10,10 @@
  */
 
 import { useEffect, useRef, useState, useMemo } from "react";
+import { Link } from "react-router-dom";
 import {
   AlertCircle,
+  AlertTriangle,
   BookTemplate,
   Building2,
   Check,
@@ -274,6 +276,12 @@ const TaskTemplatesPage = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Contagem de templates pendentes de revisao na taxonomy v2 (tax007).
+  // Mostra badge no botao "Pendentes de Revisao" do header. Carregamento
+  // independente do `loadAll` pra nao atrasar render principal.
+  const [pendingReviewCount, setPendingReviewCount] = useState<number | null>(
+    null,
+  );
 
   // Filter state
   const [filterOffice, setFilterOffice] = useState("all");
@@ -1338,6 +1346,26 @@ const TaskTemplatesPage = () => {
 
   // ─── Render ────────────────────────────────────────────────────────────
 
+  // Carrega contagem de pendentes em background — endpoint paginado,
+  // limit=1 e suficiente pra ler `total`. Refresh manual dispara via
+  // botao "Atualizar" em conjunto com loadAll (TODO: integrar no
+  // loadAll na proxima iteracao).
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch("/api/v1/task-templates/pending-review?limit=1&offset=0")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (cancelled || !j) return;
+        setPendingReviewCount(typeof j.total === "number" ? j.total : 0);
+      })
+      .catch(() => {
+        // Falha silenciosa — botao aparece sem badge.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const priorityColor = (p: string) => {
     if (p === "High") return "destructive";
     if (p === "Low") return "outline";
@@ -1359,6 +1387,22 @@ const TaskTemplatesPage = () => {
           </p>
         </div>
         <div className="flex gap-2">
+          {pendingReviewCount !== null && pendingReviewCount > 0 && (
+            <Button
+              asChild
+              variant="outline"
+              size="sm"
+              className="border-amber-300 text-amber-900 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-200 dark:hover:bg-amber-950/30"
+            >
+              <Link to="/publications/templates/review-pending">
+                <AlertTriangle className="mr-2 h-4 w-4 text-amber-500" />
+                Pendentes de Revisão
+                <Badge variant="secondary" className="ml-2 bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200">
+                  {pendingReviewCount}
+                </Badge>
+              </Link>
+            </Button>
+          )}
           <Button variant="outline" size="sm" onClick={loadAll} disabled={loading}>
             <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
             Atualizar

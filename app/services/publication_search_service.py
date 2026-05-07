@@ -1118,9 +1118,15 @@ class PublicationSearchService:
                     if rec.linked_office_id
                     else TaskTemplate.office_external_id.is_(None)
                 )
+                # Taxonomy v2 (tax003/tax007): pula templates pendentes de
+                # revisao. Legacy v1 ficam dormentes ate o operador
+                # re-apontar pra cat/sub da v2 via POST
+                # /task-templates/{id}/migrate. is_active=True ainda
+                # respeita desativacao manual feita pelo operador.
                 templates = (
                     self.db.query(TaskTemplate)
                     .filter(TaskTemplate.is_active == True)
+                    .filter(TaskTemplate.needs_taxonomy_review == False)
                     .filter(TaskTemplate.category == clf_info["category"])
                     .filter(office_filter)
                     .filter(
@@ -1130,6 +1136,27 @@ class PublicationSearchService:
                     .order_by(TaskTemplate.subcategory.nullslast())
                     .all()
                 )
+                # Aviso de divergencia de polo: se o escritorio do template
+                # declara polo especifico (ativo/passivo) mas o polo inferido
+                # pela IA pra publicacao bate em outro, logamos. Indica que
+                # o template foi cadastrado no escritorio errado OU a IA
+                # classificou o polo errado — vale investigacao do operador.
+                rec_polo = getattr(rec, "polo", None)
+                if rec_polo in ("ativo", "passivo"):
+                    for t in templates:
+                        office_polo = (
+                            getattr(t.office, "polo_scope", None)
+                            if t.office else None
+                        )
+                        if (
+                            office_polo in ("ativo", "passivo")
+                            and office_polo != rec_polo
+                        ):
+                            logger.warning(
+                                "Template %s (escritorio polo=%s) casou com "
+                                "publicacao %s polo=%s — divergencia.",
+                                t.id, office_polo, rec.id, rec_polo,
+                            )
                 matching_templates.extend(templates)
 
             templates_by_record_id[rec.id] = matching_templates
