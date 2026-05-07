@@ -488,6 +488,105 @@ class PrazosIniciaisLegacyTaskQueueService:
             "result": result,
         }
 
+    # ── Recovery de items zumbis (PROCESSANDO sem update) ────────────────
+    # Cenario: worker pegou item, marcou PROCESSANDO, e nunca atualizou —
+    # subprocess Node travou, container reiniciou, exception silenciosa, etc.
+    # Sem recovery, esses items ficam visiveis pro usuario como "Processando"
+    # pra sempre — inflam o painel e nao sao mais elegiveis pro proximo tick
+    # (que so pega PENDENTE/FALHA).
+
+    def _zombie_threshold_minutes(self) -> int:
+        return max(
+            1,
+            int(settings.prazos_iniciais_legacy_task_zombie_threshold_minutes or 5),
+        )
+
+    def _zombie_query(self, threshold_minutes: Optional[int] = None):
+        threshold = threshold_minutes or self._zombie_threshold_minutes()
+        cutoff = self._utcnow() - timedelta(minutes=threshold)
+        return self.db.query(PrazoInicialLegacyTaskCancellationItem).filter(
+            PrazoInicialLegacyTaskCancellationItem.queue_status == QUEUE_STATUS_PROCESSING,
+            # last_attempt_at e' o timestamp em que entrou em PROCESSANDO.
+            # Se for None (raro, mas defensivo), usamos updated_at.
+            (
+                PrazoInicialLegacyTaskCancellationItem.last_attempt_at < cutoff
+            ) | (
+                (PrazoInicialLegacyTaskCancellationItem.last_attempt_at.is_(None))
+                & (PrazoInicialLegacyTaskCancellationItem.updated_at < cutoff)
+            ),
+        )
+
+    def count_zombies(self, threshold_minutes: Optional[int] = None) -> int:
+        return int(self._zombie_query(threshold_minutes).count() or 0)
+
+    def list_zombies(
+        self,
+        *,
+        threshold_minutes: Optional[int] = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        items = (
+            self._zombie_query(threshold_minutes)
+            .order_by(PrazoInicialLegacyTaskCancellationItem.last_attempt_at.asc().nullsfirst())
+            .limit(max(1, int(limit)))
+            .all()
+        )
+        return [self._item_to_dict(it) for it in items]
+
+    def recover_zombies(
+        self,
+        *,
+        threshold_minutes: Optional[int] = None,
+        commit: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Devolve pra PENDENTE todos os items que estao em PROCESSANDO ha mais
+        de `threshold_minutes` minutos sem update. Incrementa attempt_count
+        e grava `last_error="zombie_recovered (...)"` pra rastreabilidade.
+
+        Roda no inicio de cada tick do worker periodico (process_pending_items)
+        e pode ser triggered manualmente via endpoint /recover-zombies.
+
+        Retorna {"recovered_count": N, "threshold_minutes": M, "items": [...]}
+        """
+        threshold = threshold_minutes or self._zombie_threshold_minutes()
+        zombies = self._zombie_query(threshold).all()
+        recovered: list[dict[str, Any]] = []
+        for item in zombies:
+            stuck_seconds = None
+            ref_at = item.last_attempt_at or item.updated_at
+            if ref_at is not None:
+                stuck_seconds = int((self._utcnow() - ref_at).total_seconds())
+            item.queue_status = QUEUE_STATUS_PENDING
+            item.last_error = (
+                f"zombie_recovered (PROCESSANDO ha {stuck_seconds}s sem update — "
+                f"threshold={threshold}min). Worker tentara de novo no proximo tick."
+            ) if stuck_seconds is not None else (
+                f"zombie_recovered (PROCESSANDO sem update — threshold={threshold}min)."
+            )
+            item.last_reason = "zombie_recovered"
+            item.updated_at = self._utcnow()
+            recovered.append(self._item_to_dict(item))
+            logger.warning(
+                "legacy_task_queue.zombie_recovered",
+                extra={
+                    "event": "legacy_task_queue.zombie_recovered",
+                    "item_id": item.id,
+                    "intake_id": item.intake_id,
+                    "selected_task_id": item.selected_task_id,
+                    "stuck_seconds": stuck_seconds,
+                    "threshold_minutes": threshold,
+                    "attempt_count": item.attempt_count,
+                },
+            )
+        if commit and recovered:
+            self.db.commit()
+        return {
+            "recovered_count": len(recovered),
+            "threshold_minutes": threshold,
+            "items": recovered,
+        }
+
     def process_pending_items(
         self,
         *,
@@ -526,6 +625,31 @@ class PrazosIniciaisLegacyTaskQueueService:
                 "duration_ms": 0,
                 "tick_id": tick_id,
             }
+
+        # Recovery de zumbis ANTES de buscar elegiveis: items em PROCESSANDO
+        # ha muito tempo voltam pra PENDENTE e ficam disponiveis pro proprio
+        # tick em curso. Soh roda no worker periodico (intake_id is None) —
+        # chamadas pontuais pos-confirmacao nao mexem em items de outros intakes.
+        zombie_recovered_count = 0
+        if intake_id is None:
+            try:
+                zombie_summary = self.recover_zombies(commit=True)
+                zombie_recovered_count = int(zombie_summary.get("recovered_count", 0))
+                if zombie_recovered_count > 0:
+                    logger.info(
+                        "legacy_task_queue.tick.zombies_recovered",
+                        extra={
+                            "event": "legacy_task_queue.tick.zombies_recovered",
+                            "tick_id": tick_id,
+                            "recovered_count": zombie_recovered_count,
+                            "threshold_minutes": zombie_summary.get("threshold_minutes"),
+                        },
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "legacy_task_queue.tick.zombie_recovery_failed tick_id=%s err=%s",
+                    tick_id, exc,
+                )
 
         query = (
             self.db.query(PrazoInicialLegacyTaskCancellationItem)
@@ -650,6 +774,7 @@ class PrazosIniciaisLegacyTaskQueueService:
             "failure_count": failure_count,
             "duration_ms": duration_ms,
             "tick_id": tick_id,
+            "zombies_recovered_count": zombie_recovered_count,
         }
 
     # ── ações do operador (UI) ─────────────────────────────────────────
@@ -811,6 +936,12 @@ class PrazosIniciaisLegacyTaskQueueService:
             "counted_reasons": list(cb_snapshot.counted_reasons),
         }
 
+        # Zombie info: items em PROCESSANDO ha mais de N min sem update.
+        # Usado pelo painel pra mostrar "X zumbis detectados" e botao
+        # "recuperar manualmente" quando >0.
+        zombie_threshold = self._zombie_threshold_minutes()
+        zombie_count_now = self.count_zombies(zombie_threshold)
+
         return {
             "window_hours": hours,
             "window_start": window_start.isoformat(),
@@ -825,4 +956,6 @@ class PrazosIniciaisLegacyTaskQueueService:
             "rate_limit_seconds": float(
                 settings.prazos_iniciais_legacy_task_cancel_rate_limit_seconds or 0.0
             ),
+            "zombie_count": zombie_count_now,
+            "zombie_threshold_minutes": zombie_threshold,
         }

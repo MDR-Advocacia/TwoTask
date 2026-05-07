@@ -39,6 +39,8 @@ import {
   PrazoInicialUploadResponse,
   PrazoInicialLegacyTaskCancelQueueListResponse,
   PrazoInicialLegacyTaskCircuitBreakerResetResponse,
+  PrazoInicialLegacyTaskZombieListResponse,
+  PrazoInicialLegacyTaskZombieRecoverResponse,
   PrazoInicialLegacyTaskQueueFilters,
   PrazoInicialLegacyTaskQueueItemActionResponse,
   PrazoInicialLegacyTaskQueueMetrics,
@@ -752,6 +754,34 @@ export async function resetPrazosIniciaisLegacyTaskCancelCircuitBreaker(): Promi
     { method: "POST" },
   );
   return expectJson<PrazoInicialLegacyTaskCircuitBreakerResetResponse>(response);
+}
+
+
+export async function fetchPrazosIniciaisLegacyTaskCancelZombies(
+  thresholdMinutes = 0,
+  limit = 50,
+): Promise<PrazoInicialLegacyTaskZombieListResponse> {
+  const params = new URLSearchParams();
+  if (thresholdMinutes > 0) params.set("threshold_minutes", String(thresholdMinutes));
+  params.set("limit", String(limit));
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/legacy-task-cancel-queue/zombies?${params.toString()}`,
+  );
+  return expectJson<PrazoInicialLegacyTaskZombieListResponse>(response);
+}
+
+
+export async function recoverPrazosIniciaisLegacyTaskCancelZombies(
+  thresholdMinutes = 0,
+): Promise<PrazoInicialLegacyTaskZombieRecoverResponse> {
+  const params = new URLSearchParams();
+  if (thresholdMinutes > 0) params.set("threshold_minutes", String(thresholdMinutes));
+  const qs = params.toString();
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/legacy-task-cancel-queue/recover-zombies${qs ? `?${qs}` : ""}`,
+    { method: "POST" },
+  );
+  return expectJson<PrazoInicialLegacyTaskZombieRecoverResponse>(response);
 }
 
 

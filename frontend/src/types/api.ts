@@ -834,6 +834,23 @@ export interface PrazoInicialLegacyTaskQueueMetrics {
   circuit_breaker: PrazoInicialLegacyTaskCircuitBreakerSnapshot;
   rate_limit_seconds: number;
   last_tick: PrazoInicialLegacyTaskLastTickState;
+  // Zumbis: items em PROCESSANDO ha mais de N min sem update.
+  // O worker periodico recupera automaticamente, mas a UI mostra o
+  // contador atual pra dar visibilidade. zombie_threshold_minutes vem
+  // de config.prazos_iniciais_legacy_task_zombie_threshold_minutes.
+  zombie_count: number;
+  zombie_threshold_minutes: number;
+}
+
+export interface PrazoInicialLegacyTaskZombieListResponse {
+  threshold_minutes: number;
+  items: PrazoInicialLegacyTaskCancelQueueItem[];
+}
+
+export interface PrazoInicialLegacyTaskZombieRecoverResponse {
+  recovered_count: number;
+  threshold_minutes: number;
+  items: PrazoInicialLegacyTaskCancelQueueItem[];
 }
 
 export interface PrazoInicialLegacyTaskQueueItemActionResponse {

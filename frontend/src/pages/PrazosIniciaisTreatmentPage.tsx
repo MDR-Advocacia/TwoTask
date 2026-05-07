@@ -6,15 +6,21 @@ import {
   Ban,
   ChevronLeft,
   ChevronRight,
+  Clock,
   Download,
   ExternalLink,
   Eraser,
+  HelpCircle,
+  Info,
   Loader2,
+  PlayCircle,
+  PlusSquare,
   RefreshCw,
   RotateCcw,
   Rocket,
   ShieldAlert,
   ShieldCheck,
+  Skull,
   Unlock,
   Workflow,
   Zap,
@@ -41,7 +47,9 @@ import {
   downloadPrazosIniciaisLegacyTaskCancelQueueCsv,
   fetchPrazosIniciaisLegacyTaskCancelQueue,
   fetchPrazosIniciaisLegacyTaskCancelQueueMetrics,
+  fetchPrazosIniciaisLegacyTaskCancelZombies,
   processPrazosIniciaisLegacyTaskCancelQueue,
+  recoverPrazosIniciaisLegacyTaskCancelZombies,
   reprocessPrazosIniciaisLegacyTaskCancelItem,
   resetPrazosIniciaisLegacyTaskCancelCircuitBreaker,
 } from "@/services/api";
@@ -50,6 +58,7 @@ import type {
   PrazoInicialLegacyTaskCancelQueueStatus,
   PrazoInicialLegacyTaskQueueFilters,
   PrazoInicialLegacyTaskQueueMetrics,
+  PrazoInicialLegacyTaskZombieListResponse,
 } from "@/types/api";
 
 const STATUS_OPTIONS: { value: string; label: string }[] = [
@@ -163,6 +172,24 @@ function formatLatencyMs(ms: number | null | undefined): string {
   return `${(ms / 1000).toFixed(1)} s`;
 }
 
+/**
+ * "Ha X min" — relativa ao now atual. Usada no bloco "Em execucao agora"
+ * pra mostrar quanto tempo cada item esta travado em PROCESSANDO. Vermelho
+ * quando passa do threshold de zumbi (config: zombie_threshold_minutes).
+ */
+function formatRelativeAge(iso: string | null | undefined, nowMs: number): string {
+  if (!iso) return "—";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "—";
+  const ms = Math.max(0, nowMs - then);
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return `há ${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `há ${min}min ${sec % 60}s`;
+  const h = Math.floor(min / 60);
+  return `há ${h}h ${min % 60}min`;
+}
+
 export default function PrazosIniciaisTreatmentPage() {
   const { toast } = useToast();
   const [items, setItems] = useState<PrazoInicialLegacyTaskCancelQueueItem[]>([]);
@@ -179,6 +206,12 @@ export default function PrazosIniciaisTreatmentPage() {
   const [metrics, setMetrics] = useState<PrazoInicialLegacyTaskQueueMetrics | null>(null);
   const [isCsvDownloading, setIsCsvDownloading] = useState(false);
   const [isResettingCircuitBreaker, setIsResettingCircuitBreaker] = useState(false);
+  // Zumbis: items em PROCESSANDO ha mais que zombie_threshold_minutes sem update.
+  // Lista carregada do endpoint /zombies pra mostrar no bloco "Em execucao agora".
+  // nowMs serve pra calcular "ha X min" das idades — atualizado via interval.
+  const [zombies, setZombies] = useState<PrazoInicialLegacyTaskZombieListResponse | null>(null);
+  const [isRecoveringZombies, setIsRecoveringZombies] = useState(false);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
   // Paginacao da fila tecnica — backend pagina por offset/limit e
   // devolve `total` absoluto (independente do recorte) pra UI mostrar
   // "Pagina X de Y". Default 25 itens (alinhado com prazos iniciais).
@@ -264,13 +297,15 @@ export default function PrazosIniciaisTreatmentPage() {
   const loadData = async (showToast = false) => {
     try {
       const filters = buildFilters();
-      const [payload, metricsPayload] = await Promise.all([
+      const [payload, metricsPayload, zombiesPayload] = await Promise.all([
         fetchPrazosIniciaisLegacyTaskCancelQueue(filters),
         fetchPrazosIniciaisLegacyTaskCancelQueueMetrics(24).catch(() => null),
+        fetchPrazosIniciaisLegacyTaskCancelZombies(0, 20).catch(() => null),
       ]);
       setItems(payload.items);
       setTotal(payload.total);
       setMetrics(metricsPayload);
+      setZombies(zombiesPayload);
       setError(null);
       if (showToast) {
         const pendingCount = payload.items.filter((item) => item.queue_status === "PENDENTE").length;
@@ -329,7 +364,11 @@ export default function PrazosIniciaisTreatmentPage() {
       const completed = fromTotals("CONCLUIDO");
       const failed = fromTotals("FALHA");
       const cancelled = fromTotals("CANCELADO");
-      const actionable = pending + processing + failed;
+      // actionable = "items que precisam de atencao do operador". PROCESSANDO
+      // NAO entra: ou eh genuinamente em curso (worker resolve sozinho) ou eh
+      // zumbi (worker recupera no proximo tick). Soh PENDENTE+FALHA exigem
+      // intervencao/espera consciente.
+      const actionable = pending + failed;
       const denom = pending + processing + completed + failed + cancelled;
       const progress = denom > 0 ? Math.round((completed / denom) * 100) : 0;
       return { pending, processing, completed, failed, cancelled, actionable, progress, source: "global" as const };
@@ -339,7 +378,7 @@ export default function PrazosIniciaisTreatmentPage() {
     const completed = items.filter((item) => item.queue_status === "CONCLUIDO").length;
     const failed = items.filter((item) => item.queue_status === "FALHA").length;
     const cancelled = items.filter((item) => item.queue_status === "CANCELADO").length;
-    const actionable = pending + processing + failed;
+    const actionable = pending + failed;
     const denom = items.length;
     const progress = denom > 0 ? Math.round((completed / denom) * 100) : 0;
     return { pending, processing, completed, failed, cancelled, actionable, progress, source: "visible" as const };
@@ -349,6 +388,39 @@ export default function PrazosIniciaisTreatmentPage() {
     () => items.filter((item) => item.queue_status === "FALHA").slice(0, 6),
     [items],
   );
+
+  // Atualiza nowMs a cada 1s — usado pelo bloco "Em execucao agora" pra
+  // calcular idade relativa de cada item. Sem isso o "ha X min" so atualizaria
+  // no proximo loadData (a cada 5s).
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const handleRecoverZombies = async () => {
+    setIsRecoveringZombies(true);
+    try {
+      const result = await recoverPrazosIniciaisLegacyTaskCancelZombies();
+      toast({
+        title: result.recovered_count > 0
+          ? `${result.recovered_count} zumbi(s) recuperado(s)`
+          : "Nenhum zumbi pra recuperar",
+        description: result.recovered_count > 0
+          ? `Items em PROCESSANDO ha mais de ${result.threshold_minutes}min foram devolvidos pra PENDENTE. O worker tenta de novo no proximo tick.`
+          : `Nao havia items presos em PROCESSANDO ha mais de ${result.threshold_minutes}min.`,
+      });
+      await loadData();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Falha ao recuperar zumbis.";
+      toast({
+        title: "Falha ao recuperar zumbis",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsRecoveringZombies(false);
+    }
+  };
 
   const handleProcessQueue = async () => {
     try {
@@ -481,17 +553,55 @@ export default function PrazosIniciaisTreatmentPage() {
     }
   };
 
-  // Os cards de "status" mostram totais globais do sistema (via metrics).
-  // "Itens no filtro" fica separado pra o operador diferenciar o recorte
-  // atual do estado geral da fila.
+  // Cards de status com descricao explicita do que cada um significa.
+  // Ordem: estados ATIVOS primeiro (Esperando worker, Em execucao, Falhando),
+  // depois TERMINAIS (Concluidos, Pulados pelo operador), e por ultimo o
+  // recorte do filtro atual.
   const totalsSuffix = summary.source === "global" ? " (global)" : " (visível)";
-  const summaryCards = [
-    { title: "Itens no filtro", value: total },
-    { title: `Pendentes${totalsSuffix}`, value: summary.pending },
-    { title: `Processando${totalsSuffix}`, value: summary.processing },
-    { title: `Concluídos${totalsSuffix}`, value: summary.completed },
-    { title: `Falhas${totalsSuffix}`, value: summary.failed },
-    { title: `Cancelados${totalsSuffix}`, value: summary.cancelled },
+  const zombieCount = metrics?.zombie_count ?? 0;
+  const zombieThreshold = metrics?.zombie_threshold_minutes ?? 5;
+  const summaryCards: Array<{
+    title: string;
+    value: number;
+    hint: string;
+    badge?: { label: string; tone: "warning" | "info" } | null;
+    accent?: "danger" | "warning" | null;
+  }> = [
+    {
+      title: `Esperando worker${totalsSuffix}`,
+      value: summary.pending,
+      hint: "Items na fila aguardando o worker periódico pegar e enviar pro RPA. Worker roda a cada 60s.",
+    },
+    {
+      title: `Em execução agora${totalsSuffix}`,
+      value: summary.processing,
+      hint: `Items que o worker pegou e está processando. Items presos aqui há mais de ${zombieThreshold}min são marcados como zumbis e voltam pra "Esperando" no próximo tick.`,
+      badge: zombieCount > 0
+        ? { label: `${zombieCount} zumbi${zombieCount > 1 ? "s" : ""}`, tone: "warning" as const }
+        : null,
+      accent: zombieCount > 0 ? "warning" as const : null,
+    },
+    {
+      title: `Falhando${totalsSuffix}`,
+      value: summary.failed,
+      hint: "Items que esgotaram as tentativas e estão aguardando intervenção manual. Use 'Reprocessar item' (botão na linha) pra tentar de novo, ou 'Pular item' pra remover da fila.",
+      accent: summary.failed > 0 ? "danger" as const : null,
+    },
+    {
+      title: `Concluídos${totalsSuffix}`,
+      value: summary.completed,
+      hint: "Items finalizados com sucesso (RPA cancelou OU pre-check API confirmou estado terminal OU task não encontrada no L1).",
+    },
+    {
+      title: `Pulados pelo operador${totalsSuffix}`,
+      value: summary.cancelled,
+      hint: "Items que você cancelou manualmente — não serão reprocessados pelo worker.",
+    },
+    {
+      title: "Aparecendo nesta visão",
+      value: total,
+      hint: "Total que bate com os filtros ativos abaixo (não muda os contadores acima — eles sempre mostram o total real do sistema).",
+    },
   ];
 
   const cb = metrics?.circuit_breaker;
@@ -519,13 +629,29 @@ export default function PrazosIniciaisTreatmentPage() {
               <Workflow className="h-6 w-6" />
               Tratamento Web Agendamentos Iniciais
             </h1>
-            <Badge className={summary.actionable > 0 ? "bg-amber-100 text-amber-800" : "bg-green-100 text-green-800"}>
-              {summary.actionable > 0 ? `${summary.actionable} aguardando tratamento` : "Fila estabilizada"}
+            <Badge
+              className={summary.actionable > 0 ? "bg-amber-100 text-amber-800" : "bg-green-100 text-green-800"}
+              title="Soma de items que precisam de atenção: PENDENTE (esperando worker) + FALHANDO (esgotaram tentativas). Não inclui PROCESSANDO — esses ou são em curso ou são zumbis (recuperados no próximo tick)."
+            >
+              {summary.actionable > 0
+                ? `${summary.actionable} item(s) precisam de atenção`
+                : "Fila estabilizada — nada esperando"}
             </Badge>
+            {zombieCount > 0 ? (
+              <Badge
+                className="gap-1 bg-amber-100 text-amber-800"
+                title={`Items presos em PROCESSANDO há mais de ${zombieThreshold}min sem atualizar. O worker recupera automaticamente no próximo tick — ou clique em "Recuperar zumbis" pra antecipar.`}
+              >
+                <Skull className="h-3.5 w-3.5" />
+                {zombieCount} zumbi{zombieCount > 1 ? "s" : ""}
+              </Badge>
+            ) : null}
             {cbBadge}
           </div>
           <p className="text-muted-foreground">
-            Monitora o cancelamento da task legada de Agendar Prazos depois que o operador confirma os agendamentos iniciais do processo.
+            Quando você confirma um agendamento, esse painel cuida de cancelar a task legada
+            "Agendar Prazos" no Legal One automaticamente. Se algo travar, é aqui que você
+            vê e decide.
           </p>
         </div>
 
@@ -535,29 +661,52 @@ export default function PrazosIniciaisTreatmentPage() {
             variant="default"
             onClick={handleDispatchAll}
             disabled={isLoading || isDispatchingAll}
-            title="Sobe a habilitacao no GED + enfileira cancelamento da legada para TODOS os intakes com dispatch_pending=true (ate 100 por chamada)."
+            title="CRIA novos items na fila a partir de intakes com dispatch_pending=true. Sobe habilitação no GED + enfileira cancelamento da legada (até 100 intakes por clique). NÃO toca em items que já estão na fila."
           >
             {isDispatchingAll ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             ) : (
-              <Zap className="mr-2 h-4 w-4" />
+              <PlusSquare className="mr-2 h-4 w-4" />
             )}
-            Disparar todos pendentes
+            Reenfileirar intakes pendentes
           </Button>
-          <Button size="sm" variant="outline" onClick={handleProcessQueue} disabled={isLoading || isSubmitting}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleProcessQueue}
+            disabled={isLoading || isSubmitting}
+            title="EXECUTA o worker AGORA, processando até 20 items que já estão na fila (status PENDENTE ou FALHA com tentativas restantes). Atalho pra não esperar o tick automático de 60s."
+          >
             {isSubmitting ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             ) : (
-              <Rocket className="mr-2 h-4 w-4" />
+              <PlayCircle className="mr-2 h-4 w-4" />
             )}
-            Processar pendentes
+            Forçar worker agora (até 20)
           </Button>
+          {zombieCount > 0 ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleRecoverZombies}
+              disabled={isRecoveringZombies}
+              className="border-amber-300 text-amber-800 hover:bg-amber-50"
+              title={`Devolve pra PENDENTE todos os items presos em PROCESSANDO há mais de ${zombieThreshold}min. Atalho — o worker faz isso automaticamente no próximo tick.`}
+            >
+              {isRecoveringZombies ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Skull className="mr-2 h-4 w-4" />
+              )}
+              Recuperar {zombieCount} zumbi{zombieCount > 1 ? "s" : ""}
+            </Button>
+          ) : null}
           <Button
             variant="outline"
             size="sm"
             onClick={handleDownloadCsv}
             disabled={isCsvDownloading}
-            title="Exporta os itens com os filtros atuais (até 5.000 linhas)"
+            title="Baixa os items que aparecem nesta visão (respeita os filtros ativos), até 5.000 linhas, em CSV."
           >
             {isCsvDownloading ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -573,6 +722,7 @@ export default function PrazosIniciaisTreatmentPage() {
               loadData(true);
             }}
             disabled={isLoading || isSubmitting}
+            title="Recarrega manualmente todos os dados do painel. (O painel já se atualiza sozinho a cada 5s.)"
           >
             <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
             Atualizar
@@ -623,17 +773,74 @@ export default function PrazosIniciaisTreatmentPage() {
       ) : null}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {summaryCards.map((card) => (
-          <Card key={card.title} className="border-0 shadow-sm">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">{card.title}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-3xl font-semibold">{card.value}</div>
-            </CardContent>
-          </Card>
-        ))}
+        {summaryCards.map((card) => {
+          const accentBorder =
+            card.accent === "danger"
+              ? "border-l-4 border-l-red-500"
+              : card.accent === "warning"
+                ? "border-l-4 border-l-amber-500"
+                : "border-0";
+          return (
+            <Card key={card.title} className={`shadow-sm ${accentBorder}`}>
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between gap-2">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">
+                    {card.title}
+                  </CardTitle>
+                  {card.badge ? (
+                    <Badge
+                      className={
+                        card.badge.tone === "warning"
+                          ? "bg-amber-100 text-amber-800"
+                          : "bg-blue-100 text-blue-800"
+                      }
+                    >
+                      {card.badge.label}
+                    </Badge>
+                  ) : null}
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="text-3xl font-semibold">{card.value}</div>
+                <div className="mt-2 flex items-start gap-1.5 text-xs text-muted-foreground">
+                  <HelpCircle className="mt-0.5 h-3 w-3 flex-shrink-0" />
+                  <span>{card.hint}</span>
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })}
       </div>
+
+      {/* Glossário inline — colapsável visualmente como um card "info" */}
+      <Card className="border-0 bg-blue-50/50 shadow-sm">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-sm font-medium text-blue-900">
+            <Info className="h-4 w-4" />
+            Como esse painel funciona
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-1.5 text-xs text-blue-900/80">
+          <p>
+            <strong>Reenfileirar intakes pendentes</strong> = pega intakes confirmados e
+            <strong> cria items novos</strong> na fila técnica. Útil quando o disparo automático
+            atrasou ou falhou.
+          </p>
+          <p>
+            <strong>Forçar worker agora</strong> = manda o worker <strong>executar items que já
+            estão na fila</strong> (até 20). Atalho pro tick automático de 60s.
+          </p>
+          <p>
+            <strong>Zumbis</strong> = items presos em PROCESSANDO há mais de {zombieThreshold}min sem
+            atualizar (worker travou, RPA timeoutou, container reiniciou no meio). O próximo tick
+            recupera automaticamente — ou clique em "Recuperar zumbis" pra antecipar.
+          </p>
+          <p>
+            <strong>"Item precisa de atenção"</strong> = está em PENDENTE ou FALHANDO. PROCESSANDO
+            não conta — é em curso (ou vai virar zumbi e ser recuperado).
+          </p>
+        </CardContent>
+      </Card>
 
       {metrics ? (
         <Card className="border-0 shadow-sm">
@@ -725,11 +932,75 @@ export default function PrazosIniciaisTreatmentPage() {
         </Card>
       ) : null}
 
+      {/* Bloco "Em execução agora" — lista PROCESSANDO ativos com idade.
+          So renderiza se ha algo (vazio = todos OK, sem ruido visual). */}
+      {zombies && zombies.items.length > 0 ? (
+        <Card className="border-0 shadow-sm">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Skull className="h-5 w-5 text-amber-600" />
+              Em execução agora ({zombies.items.length} zumbi{zombies.items.length > 1 ? "s" : ""} detectado{zombies.items.length > 1 ? "s" : ""})
+            </CardTitle>
+            <CardDescription>
+              Items que entraram em PROCESSANDO há mais de {zombies.threshold_minutes}min e não receberam
+              update — provavelmente o worker/RPA travou ou o container reiniciou. O próximo tick
+              automático os devolve pra PENDENTE; use "Recuperar zumbis" pra antecipar.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>CNJ</TableHead>
+                  <TableHead>Intake</TableHead>
+                  <TableHead>Task L1</TableHead>
+                  <TableHead>Travado</TableHead>
+                  <TableHead>Tentativas</TableHead>
+                  <TableHead>Último erro</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {zombies.items.map((item) => {
+                  const ref = item.last_attempt_at || item.updated_at;
+                  return (
+                    <TableRow key={item.id}>
+                      <TableCell className="font-mono text-xs">{formatCnj(item.cnj_number)}</TableCell>
+                      <TableCell>
+                        <Link
+                          to={`/prazos-iniciais?intake=${item.intake_id}`}
+                          className="text-primary hover:underline"
+                        >
+                          #{item.intake_id}
+                        </Link>
+                      </TableCell>
+                      <TableCell>{item.selected_task_id ?? "-"}</TableCell>
+                      <TableCell>
+                        <span className="inline-flex items-center gap-1 text-amber-800">
+                          <Clock className="h-3.5 w-3.5" />
+                          {formatRelativeAge(ref, nowMs)}
+                        </span>
+                      </TableCell>
+                      <TableCell>{item.attempt_count}</TableCell>
+                      <TableCell className="max-w-md truncate text-xs text-muted-foreground" title={item.last_error || ""}>
+                        {item.last_error || "—"}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      ) : null}
+
       <Card className="border-0 shadow-sm">
         <CardHeader>
           <CardTitle>Andamento da fila</CardTitle>
           <CardDescription>
-            A API já tenta processar em background ao confirmar o agendamento, e esse painel ajuda a acompanhar os casos que sobraram na fila técnica.
+            Lista técnica de todos os items na fila — use os filtros pra navegar. Cada
+            linha é um intake confirmado aguardando ou já tendo sido cancelado no L1. Ações
+            por linha: <strong>Reprocessar</strong> (volta pra PENDENTE e força nova tentativa)
+            · <strong>Pular</strong> (marca como CANCELADO, worker não tenta mais).
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">

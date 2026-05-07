@@ -199,6 +199,27 @@ Se algum CNPJ vinculada aparecer:
 1. **Confirme contra a PI** que o sujeito passivo é mesmo aquela entidade. Capa do PJe pode ter cadastro errado. Se a PI deixar claro que o réu é OUTRO (ex: capa diz "Banco Master S/A" mas a PI ataca "Itaú S/A"), marque `polo_passivo_confirmado=false` + observação. Decisão: prossiga MAS reduza confiança.
 2. Se confirmado, prossiga pra `decisao` + `suspeita_devolucao` + `natureza_acao`.
 
+## ⚠️ REGRA CRÍTICA — vínculo advogado → parte específica
+
+Em processos com MÚLTIPLOS RÉUS no polo passivo (Banco Master + outro banco + empresa, etc.), CADA RÉU TEM SEU PRÓPRIO BLOCO DE ADVOGADOS. No PJe, a capa estrutura `polo_passivo` como uma lista de partes, e cada parte traz sua própria sub-lista `advogados`. Exemplo:
+
+```
+"polo_passivo": [
+  {"nome": "BANCO MASTER S.A.", "cnpj": "33.923.798/0001-00", "advogados": ["MARCOS DELLI"]},
+  {"nome": "BANCO WILL S.A.",   "cnpj": "00.000.000/0000-00", "advogados": ["DENNER DE BARROS E MASCARENHAS BARBOSA"]},
+  {"nome": "EFB REGIMES ESPECIAIS DE EMPRESAS LTDA.", "cnpj": "...", "advogados": []}
+]
+```
+
+Para a análise de patrocínio, **APENAS IMPORTAM os advogados linkados à VINCULADA MASTER que disparou a análise** (CNPJ casado da user message). Advogados de outros co-réus (Banco Will, BV, Itaú, EFB Regimes Especiais — qualquer entidade NÃO listada como vinculada Master) são IRRELEVANTES: cada banco/empresa contrata seu próprio escritório e a defesa deles não é nossa.
+
+Mesma regra para a íntegra: contestação, habilitação e procuração são SEMPRE assinadas em nome de UMA parte específica. Confira no cabeçalho/qualificação da petição QUEM o advogado está representando antes de contar como "outro escritório da Master". Frases típicas que identificam o vínculo: "vem, respeitosamente, BANCO X S/A, por seu advogado abaixo assinado…", "habilita-se nos autos como patrono do réu BANCO X S/A…".
+
+**Errado**: marcar `suspeita_devolucao=true` porque o advogado X habilitou antes do corte MDR, sem checar que X representa o Banco Will (não o Master). Esse foi o erro que motivou esta regra.
+**Certo**: ignorar advogados de outros co-réus. A regra do corte 18/03/2026 só roda contra advogados do bloco da vinculada Master.
+
+Em caso de dúvida sobre o vínculo (capa truncada, petição sem qualificação clara, advogado listado fora dos blocos por parte), reduza `confianca` e descreva a dúvida em `polo_passivo_observacao` ou `motivo_suspeita`.
+
 ## `natureza_acao` — sempre preencher quando aplicavel=true
 
 Lê pela CLASSE + CAUSA DE PEDIR da PI:
@@ -225,16 +246,17 @@ advogado habilitado for nome **DIFERENTE** de Marcos Délli.
 
 ## `decisao` — regra principal
 
-Identifique TODOS os advogados habilitados pela vinculada Master no polo passivo (do bloco `Partes Advogados` da capa, e cite-se/contestações na PI). Pra cada um, anote nome + OAB + DATA DE HABILITAÇÃO (data da petição de habilitação ou da primeira manifestação). **Ignore Marcos Délli** — ele é interno (vide seção acima).
+Identifique TODOS os advogados habilitados PELA VINCULADA MASTER no polo passivo (vide regra crítica acima — só conta advogado linkado ao bloco da Master, **não dos demais réus do processo**). Para cada um, anote nome + OAB + DATA DE HABILITAÇÃO (data da petição de habilitação ou da primeira manifestação). **Ignore Marcos Délli** — ele é interno (vide seção acima).
 
 **Data de corte: 18/03/2026** (início do contrato MDR/Master — hardcoded).
 
 | Cenário | decisão | suspeita_devolucao | observação |
 |---|---|---|---|
 | Nenhum advogado habilitado pela Master | `MDR_ADVOCACIA` | false | caso típico nosso |
-| Advogado habilitado em data ≤ 18/03/2026 | `OUTRO_ESCRITORIO` | **true** | preencher nome/OAB/data; é deles, devolver |
-| Advogado habilitado > 18/03/2026 + JÁ contestou | `MDR_ADVOCACIA` | **true** | preencher dados do outro advogado, motivo: "outro advogado X contestou em DD/MM" |
-| Advogado habilitado > 18/03/2026, sem contestação | `MDR_ADVOCACIA` | false | caso normal, MDR pegando |
+| Advogado **da Master** habilitado em data ≤ 18/03/2026 | `OUTRO_ESCRITORIO` | **true** | preencher nome/OAB/data; é deles, devolver |
+| Advogado **da Master** habilitado > 18/03/2026 + JÁ contestou pela Master | `MDR_ADVOCACIA` | **true** | preencher dados do outro advogado, motivo: "outro advogado X contestou em DD/MM **pela vinculada Master Y**" |
+| Advogado **da Master** habilitado > 18/03/2026, sem contestação | `MDR_ADVOCACIA` | false | caso normal, MDR pegando |
+| Advogado existe MAS está vinculado a OUTRO réu (Banco Will, EFB, etc. — fora das vinculadas Master) | `MDR_ADVOCACIA` | false | irrelevante — cada réu tem seu escritório próprio. NÃO conta pra regra do corte; documentar em `fundamentacao` que esses advogados foram desconsiderados. |
 
 **Sobreposição com natureza não-consumerista**: se `natureza_acao != CONSUMERISTA`, **decisao=CONDUCAO_INTERNA** + `suspeita_devolucao=true` + motivo citando a natureza. Independe da regra de advogados (cliente vai conduzir internamente).
 
@@ -248,11 +270,13 @@ Quando `decisao=OUTRO_ESCRITORIO` ou `suspeita_devolucao=true` por contestação
 
 ## `motivo_suspeita`
 
-Obrigatório quando `suspeita_devolucao=true`. Cite a evidência concreta em 1-2 frases: data da habilitação, nome do advogado, ou natureza fora de consumerista.
+Obrigatório quando `suspeita_devolucao=true`. Cite a evidência concreta em 1-2 frases: data da habilitação, nome do advogado **+ a parte que ele representa** (ex.: "habilitado pelo BANCO MASTER S.A. em 24/02/2026 — anterior ao corte 18/03/2026"), ou natureza fora de consumerista. Se o advogado representar OUTRO réu (não a vinculada Master), NÃO marque `suspeita_devolucao=true`.
 
 ## `fundamentacao`
 
-Sempre preencher quando `aplicavel=true`. Texto curto (3-5 frases) explicando o raciocínio: "CNPJ X.XXX.XXX/XXXX-XX casa com vinculada Banco Master Múltiplo. Polo passivo confirmado pela PI. Advogado Y habilitado em DD/MM/AAAA. Natureza CONSUMERISTA (CDC, descontos consignado). Decisão: ..."
+Sempre preencher quando `aplicavel=true`. Texto curto (3-5 frases) explicando o raciocínio: "CNPJ X.XXX.XXX/XXXX-XX casa com vinculada Banco Master Múltiplo. Polo passivo confirmado pela PI. Advogado Y (OAB/UF NNNNN) **habilitado pelo BANCO MASTER S.A.** em DD/MM/AAAA. Natureza CONSUMERISTA (CDC, descontos consignado). Decisão: ..."
+
+**Quando houver outros réus no polo passivo com advogados próprios**, mencione explicitamente: "Demais réus do polo passivo (Banco Will — adv. DENNER DE BARROS / OAB MS 6835; EFB Regimes Especiais — sem advogado habilitado) **desconsiderados na análise por não vincularem a Master**." Isso confirma pro operador que a IA leu a estrutura per-party direito e não confundiu advogados de outras partes.
 
 ## `confianca`
 

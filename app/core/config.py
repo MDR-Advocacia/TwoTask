@@ -145,6 +145,14 @@ class Settings(BaseSettings):
     # contam porque sinalizam problemas de dado, não de conexão.
     prazos_iniciais_legacy_task_circuit_breaker_threshold: int = 3
     prazos_iniciais_legacy_task_circuit_breaker_cooldown_minutes: int = 10
+    # Threshold pra detectar items "zumbis": entraram em PROCESSANDO mas nunca
+    # sairam (worker crashou no meio do tick, RPA travou, container reiniciou
+    # com item em flight). Apos N minutos no estado PROCESSANDO, o tick do
+    # worker devolve pra PENDENTE e incrementa attempt_count. Sem isso, items
+    # zumbis ficam pra sempre como PROCESSANDO, inflam o painel e nao saem da
+    # fila. Default 5 minutos (rate_limit=2s + RPA tipico ~20-30s, entao 5min
+    # cobre RPAs lentos sem travar zumbis reais).
+    prazos_iniciais_legacy_task_zombie_threshold_minutes: int = 5
 
     # ── Disparo periódico do tratamento web (Onda 3 #6) ─────────────────
     # Worker que varre intakes com `dispatch_pending=True` e dispara

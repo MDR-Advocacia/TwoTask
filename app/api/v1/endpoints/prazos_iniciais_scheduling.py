@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core import auth as auth_security
+from app.core.config import settings
 from app.core.dependencies import get_api_client, get_db
 from app.services.legal_one_client import LegalOneApiClient, LegalOneGedUploadError
 from app.db.session import SessionLocal
@@ -441,6 +442,52 @@ def legacy_task_cancel_queue_metrics(
     payload = service.aggregate_metrics(hours=hours)
     payload["last_tick"] = get_last_tick_state()
     return payload
+
+
+@router.get(
+    "/legacy-task-cancel-queue/zombies",
+    summary="Lista items 'zumbis' (em PROCESSANDO ha mais de N minutos sem update).",
+)
+def list_legacy_task_cancel_zombies(
+    threshold_minutes: int = Query(default=0, ge=0, le=1440),
+    limit: int = Query(default=50, ge=1, le=500),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    """
+    Mostra items zumbis pro painel exibir o bloco "Em execucao agora" com
+    indicador de quanto tempo cada item esta travado. Use threshold=0 pra
+    aceitar o default configurado em settings.
+    """
+    service = PrazosIniciaisLegacyTaskQueueService(db)
+    threshold = threshold_minutes if threshold_minutes > 0 else None
+    return {
+        "threshold_minutes": (
+            threshold if threshold is not None
+            else int(settings.prazos_iniciais_legacy_task_zombie_threshold_minutes or 5)
+        ),
+        "items": service.list_zombies(threshold_minutes=threshold, limit=limit),
+    }
+
+
+@router.post(
+    "/legacy-task-cancel-queue/recover-zombies",
+    summary="Devolve pra PENDENTE todos items zumbis (>N min em PROCESSANDO).",
+)
+def recover_legacy_task_cancel_zombies(
+    threshold_minutes: int = Query(default=0, ge=0, le=1440),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    """
+    Trigger manual do recovery — alternativa pro operador quando o tick
+    automatico do worker esta lento ou desabilitado. Tambem util pra acelerar
+    a limpeza apos um deploy que matou processos no meio.
+    """
+    service = PrazosIniciaisLegacyTaskQueueService(db)
+    threshold = threshold_minutes if threshold_minutes > 0 else None
+    summary = service.recover_zombies(threshold_minutes=threshold)
+    return summary
 
 
 @router.post(
