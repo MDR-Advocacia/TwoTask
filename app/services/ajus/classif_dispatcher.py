@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 #     fecha cedo o suficiente pra que o bleed nao acumule a ponto de
 #     quebrar.
 # Browser eh recriado a cada batch (with AjusClassifRunner __exit__).
-DEFAULT_BATCH_PER_ACCOUNT = 5  # OTIM: reduzido de 10 — recicla browser mais cedo, evita state-bleed que custa 25s/falha
+DEFAULT_BATCH_PER_ACCOUNT = 10  # OTIM: 5 era muito — overhead de browser-open (30s) por batch reduziu throughput
 
 
 @dataclass

@@ -896,7 +896,7 @@ class AjusClassifRunner:
         # 3. Settle + workspace ready
         self._settle(wait_ms=2000)
         try:
-            self._wait_for_workspace_ready(timeout_ms=15_000)  # OTIM: era 45s — fast-fail libera browser pra proxima tentativa
+            self._wait_for_workspace_ready(timeout_ms=30_000)  # OTIM: era 45s, depois 15s — 15s era agressivo demais e quebrava sessoes saudaveis
         except Exception as exc:
             logger.warning(
                 "AJUS runner: workspace nao ficou ready apos reset: %s. "
@@ -1612,7 +1612,7 @@ class AjusClassifRunner:
           6. Settle 2s.
         """
         # Etapa 1: workspace ready
-        self._wait_for_workspace_ready(timeout_ms=15_000)  # OTIM: era 45s — fast-fail libera browser pra proxima tentativa
+        self._wait_for_workspace_ready(timeout_ms=30_000)  # OTIM: era 45s, depois 15s — 15s era agressivo demais e quebrava sessoes saudaveis
 
         # Etapa 2 + 3: input + digita
         search_input = self._find_process_search_input()
