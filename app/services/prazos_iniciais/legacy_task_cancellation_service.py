@@ -656,6 +656,11 @@ class LegacyTaskCancellationService:
             }
 
         current_status_id = self._to_int(selected_task.get("statusId"))
+        # Status terminais no L1 — task em qualquer um deles ja' nao precisa
+        # mais ser tocada (cancelar uma task Cumprida da' erro de UI; a
+        # decisao de negocio de "essa task nao deve ficar pendente" foi
+        # alcancada de qualquer jeito). 1=Cumprido, 2=Nao cumprido, 3=Cancelado.
+        TERMINAL_STATUS_IDS = {1, 2, 3}
         if current_status_id == int(target_status_id):
             return {
                 "success": True,
@@ -673,6 +678,41 @@ class LegacyTaskCancellationService:
                 "runner_response": {
                     "verifiedStatusId": current_status_id,
                     "verifiedStatusText": target_status_text,
+                },
+                "runner_error": None,
+                "process_exit_code": 0,
+                "status_file_path": None,
+                "log_file_path": None,
+                "error_log_file_path": None,
+                "artifacts_dir": None,
+                "edit_url": urls["edit_url"],
+                "details_url": urls["details_url"],
+            }
+        if current_status_id in TERMINAL_STATUS_IDS:
+            # Task em estado terminal mas != target (ex.: cumprida ao inves
+            # de cancelada). Mesmo assim nao tentamos cancelar — RPA bateria
+            # em UI invalida. Marcamos COMPLETED com reason proprio pra
+            # observabilidade.
+            logger.info(
+                "legacy_task_cancellation.skip_terminal task_id=%s current=%s target=%s",
+                resolved_task_id, current_status_id, target_status_id,
+            )
+            return {
+                "success": True,
+                "reason": "already_in_terminal_state",
+                "cnj_number": normalized_cnj,
+                "lawsuit_id": resolved_lawsuit_id,
+                "task_id": resolved_task_id,
+                "candidate_count": resolution.get("candidate_count"),
+                "selected_task": selected_task,
+                "current_status_id": current_status_id,
+                "target_status_id": int(target_status_id),
+                "target_status_text": target_status_text,
+                "runner_state": "completed",
+                "runner_item_status": "already_in_terminal_state",
+                "runner_response": {
+                    "verifiedStatusId": current_status_id,
+                    "verifiedStatusText": "(terminal)",
                 },
                 "runner_error": None,
                 "process_exit_code": 0,
@@ -767,13 +807,21 @@ class LegacyTaskCancellationService:
                 else "cancelled"
             )
         else:
-            # Se a API nos disse que nao bateu o status, registra isso
-            # como o erro real (pra UI mostrar em vez do erro do runner).
+            # Quando a API confirma divergencia, ANEXAMOS a nota da API
+            # ao erro original do runner (em vez de sobrescrever — antes
+            # de 2026-05-06 sobrescrevia e perdia a causa raiz, ex.:
+            # "page.click: Timeout 5000ms exceeded ... #LookupCampo
+            # .lookup-show", que e o que precisamos pra diagnosticar
+            # bug de UI/widget-loading).
             if api_says_not_target:
-                runner_error = (
+                api_msg = (
                     f"API L1 confirma statusId={api_verified_status} "
                     f"(esperado {target_status_id}). Save nao persistiu."
                 )
+                if runner_error:
+                    runner_error = f"{runner_error} | {api_msg}"
+                else:
+                    runner_error = api_msg
             reason = self._classify_runner_error(
                 runner_state=runner_state,
                 runner_item_status=runner_item_status,
