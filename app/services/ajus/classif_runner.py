@@ -896,7 +896,7 @@ class AjusClassifRunner:
         # 3. Settle + workspace ready
         self._settle(wait_ms=2000)
         try:
-            self._wait_for_workspace_ready(timeout_ms=45_000)
+            self._wait_for_workspace_ready(timeout_ms=15_000)  # OTIM: era 45s — fast-fail libera browser pra proxima tentativa
         except Exception as exc:
             logger.warning(
                 "AJUS runner: workspace nao ficou ready apos reset: %s. "
@@ -943,7 +943,13 @@ class AjusClassifRunner:
         # max_capa_retries vezes — costuma ser timing/race no save do
         # ExtJS, e re-tentar do zero (com reset_workspace entre tries)
         # resolve sem precisar reclassificar manualmente.
-        max_capa_retries = 3
+        # OTIMIZACAO: max_capa_retries reduzido de 3 -> 1.
+        # Cada retry interno gasta ~1-2 min (open + update + reset +
+        # reopen + validate). Com 1 tentativa, falha vira retry
+        # transitorio que reentra na fila — outra conta pega o item
+        # mais rapido (paralelizacao 3 contas) do que retry serial
+        # na mesma sessao degradada.
+        max_capa_retries = 1
         try:
             for attempt in range(1, max_capa_retries + 1):
                 try:
@@ -1606,7 +1612,7 @@ class AjusClassifRunner:
           6. Settle 2s.
         """
         # Etapa 1: workspace ready
-        self._wait_for_workspace_ready(timeout_ms=45_000)
+        self._wait_for_workspace_ready(timeout_ms=15_000)  # OTIM: era 45s — fast-fail libera browser pra proxima tentativa
 
         # Etapa 2 + 3: input + digita
         search_input = self._find_process_search_input()
@@ -2317,7 +2323,7 @@ class AjusClassifRunner:
             # 3-5s; precisamos pollar o DOM em intervalo apertado pra
             # capturar enquanto esta visivel.
             popup_msg = ""
-            popup_deadline = time.monotonic() + 6
+            popup_deadline = time.monotonic() + 2  # OTIM: era 6s — popup AJUS aparece em <1s ou nao aparece
             while time.monotonic() < popup_deadline:
                 self._page.wait_for_timeout(200)
                 msg = self._detect_extjs_popup(
