@@ -43,6 +43,7 @@ from app.models.ajus import (
     AJUS_QUEUE_PENDENTE,
     AJUS_QUEUE_SUCESSO,
     AjusAndamentoQueue,
+    AjusClassificationBlocklist,
     AjusCodAndamento,
 )
 from app.models.prazo_inicial import PrazoInicialIntake

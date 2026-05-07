@@ -41,6 +41,7 @@ from app.models.ajus import (
     AJUS_QUEUE_STATUSES,
     AjusAndamentoQueue,
     AjusClassificacaoQueue,
+    AjusClassificationBlocklist,
     AjusCodAndamento,
     AjusSessionAccount,
 )
@@ -126,6 +127,10 @@ class AndamentoQueueOut(BaseModel):
     error_message: Optional[str]
     created_at: str
     dispatched_at: Optional[str]
+    # Marca o item como bloqueado por classificacao pendente (CNJ esta no
+    # ajus_classification_blocklist). UI usa pra desabilitar acoes de
+    # disparo / mostrar badge "Class. pendente".
+    is_blocked_classification: bool = False
 
 
 class AndamentoQueueListResponse(BaseModel):
@@ -195,8 +200,13 @@ class BackfillCompletedResponse(BaseModel):
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _queue_to_out(item: AjusAndamentoQueue) -> AndamentoQueueOut:
+def _queue_to_out(
+    item: AjusAndamentoQueue,
+    blocked_cnj_digits: Optional[set[str]] = None,
+) -> AndamentoQueueOut:
     cod = item.cod_andamento
+    digits = "".join(c for c in (item.cnj_number or "") if c.isdigit())
+    is_blocked = bool(blocked_cnj_digits) and digits in (blocked_cnj_digits or set())
     return AndamentoQueueOut(
         id=item.id,
         intake_id=item.intake_id,
@@ -218,6 +228,7 @@ def _queue_to_out(item: AjusAndamentoQueue) -> AndamentoQueueOut:
         dispatched_at=(
             item.dispatched_at.isoformat() if item.dispatched_at else None
         ),
+        is_blocked_classification=is_blocked,
     )
 
 
@@ -371,9 +382,26 @@ def list_andamentos(
         .limit(limit)
         .all()
     )
+    # Pre-computa CNJs bloqueados por classificacao pendente (1 query soh
+    # com IN-list dos digitos da pagina atual). Frontend usa pra renderizar
+    # badge e desabilitar botoes de disparo nos items afetados.
+    from app.models.ajus import AjusClassificationBlocklist
+    digit_set: set[str] = set()
+    for it in items:
+        d = "".join(c for c in (it.cnj_number or "") if c.isdigit())
+        if d:
+            digit_set.add(d)
+    blocked_digits: set[str] = set()
+    if digit_set:
+        rows = (
+            db.query(AjusClassificationBlocklist.cnj_number)
+            .filter(AjusClassificationBlocklist.cnj_number.in_(digit_set))
+            .all()
+        )
+        blocked_digits = {r[0] for r in rows}
     return AndamentoQueueListResponse(
         total=total,
-        items=[_queue_to_out(i) for i in items],
+        items=[_queue_to_out(i, blocked_digits) for i in items],
     )
 
 
@@ -1827,4 +1855,164 @@ def retry_classif_bulk(
         item_ids=payload.item_ids,
     )
     return ClassifRetryBulkOut(**result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Blocklist de classificacao pendente — upload XLSX, listagem, stats
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class BlocklistItemOut(BaseModel):
+    id: int
+    cnj_number: str
+    cod_ajus: Optional[str] = None
+    materia: Optional[str] = None
+    first_seen_at: str
+    last_seen_at: str
+
+
+class BlocklistListResponse(BaseModel):
+    total: int
+    items: list[BlocklistItemOut]
+
+
+class BlocklistUploadResponse(BaseModel):
+    """Resumo do upload — quantos foram add/update/remove + total final."""
+    added: int
+    updated: int
+    removed: int
+    total_after: int
+
+
+class BlocklistStatsResponse(BaseModel):
+    total_no_blocklist: int
+    items_fila_bloqueados: int
+    ultimo_upload_at: Optional[str] = None
+
+
+def _blocklist_to_out(row: AjusClassificationBlocklist) -> BlocklistItemOut:
+    return BlocklistItemOut(
+        id=row.id,
+        cnj_number=row.cnj_number,
+        cod_ajus=row.cod_ajus,
+        materia=row.materia,
+        first_seen_at=row.first_seen_at.isoformat() if row.first_seen_at else "",
+        last_seen_at=row.last_seen_at.isoformat() if row.last_seen_at else "",
+    )
+
+
+@router.post(
+    "/classification-blocklist/upload",
+    response_model=BlocklistUploadResponse,
+    summary=(
+        "Sobe planilha XLSX com CNJs de classificacao pendente e SUBSTITUI "
+        "o blocklist atual. CNJs que sumirem do upload voltam a poder ser "
+        "disparados; CNJs novos passam a ser pulados no dispatch."
+    ),
+)
+async def upload_classification_blocklist(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    from app.services.ajus.classification_blocklist_service import (
+        AjusClassificationBlocklistService,
+        BlocklistParseError,
+        parse_xlsx,
+    )
+
+    if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(
+            status_code=400,
+            detail="Arquivo deve ser .xlsx (ou .xlsm).",
+        )
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Arquivo vazio.")
+    try:
+        parsed = parse_xlsx(content)
+    except BlocklistParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    service = AjusClassificationBlocklistService(db)
+    result = service.replace_blocklist(parsed)
+    logger.info(
+        "Blocklist upload: file=%s parsed=%d %s",
+        file.filename, len(parsed), result,
+    )
+    return BlocklistUploadResponse(**result)
+
+
+@router.get(
+    "/classification-blocklist",
+    response_model=BlocklistListResponse,
+    summary="Lista o blocklist atual com paginacao + filtro opcional por CNJ.",
+)
+def list_classification_blocklist(
+    cnj_number: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    from app.services.ajus.classification_blocklist_service import (
+        AjusClassificationBlocklistService,
+    )
+
+    service = AjusClassificationBlocklistService(db)
+    total, rows = service.list_all(
+        limit=limit, offset=offset, cnj_filter=cnj_number,
+    )
+    return BlocklistListResponse(
+        total=total,
+        items=[_blocklist_to_out(r) for r in rows],
+    )
+
+
+@router.get(
+    "/classification-blocklist/stats",
+    response_model=BlocklistStatsResponse,
+    summary=(
+        "Stats agregados do blocklist: total no blocklist, items da fila "
+        "atualmente bloqueados, e timestamp do ultimo upload."
+    ),
+)
+def stats_classification_blocklist(
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    from app.services.ajus.classification_blocklist_service import (
+        AjusClassificationBlocklistService,
+    )
+
+    service = AjusClassificationBlocklistService(db)
+    s = service.stats()
+    return BlocklistStatsResponse(
+        total_no_blocklist=s["total_no_blocklist"],
+        items_fila_bloqueados=s["items_fila_bloqueados"],
+        ultimo_upload_at=(
+            s["ultimo_upload_at"].isoformat()
+            if s["ultimo_upload_at"] else None
+        ),
+    )
+
+
+@router.delete(
+    "/classification-blocklist",
+    response_model=BlocklistUploadResponse,
+    summary="Apaga TODO o blocklist (escape hatch — nao usar em rotina).",
+)
+def clear_classification_blocklist(
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    from app.services.ajus.classification_blocklist_service import (
+        AjusClassificationBlocklistService,
+    )
+
+    service = AjusClassificationBlocklistService(db)
+    n = service.clear()
+    return BlocklistUploadResponse(
+        added=0, updated=0, removed=n, total_after=0,
+    )
 

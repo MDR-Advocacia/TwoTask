@@ -450,3 +450,39 @@ class AjusSessionAccount(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+class AjusClassificationBlocklist(Base):
+    """
+    CNJs com classificacao pendente no Legal One — bloqueia o disparo
+    do andamento AJUS enquanto a classificacao nao for concluida.
+
+    Operador sobe uma planilha XLSX (com a coluna "Numeros Processo"
+    OU detectada por regex de CNJ) gerada do Legal One. O upload
+    SUBSTITUI o conteudo dessa tabela atomicamente:
+      - CNJs novos -> inseridos com first_seen_at = now.
+      - CNJs ja' presentes -> last_seen_at atualizado.
+      - CNJs que nao aparecem mais no upload -> deletados (= classificacao
+        concluida, libera disparo).
+
+    Dispatch consulta essa tabela por `cnj_number`. Se bater, item da
+    fila e' pulado SEM mudar de status (continua `pendente`/`erro`).
+    Volta a ser candidato no proximo dispatch quando o CNJ sumir do
+    blocklist.
+    """
+
+    __tablename__ = "ajus_classification_blocklist"
+
+    id = Column(Integer, primary_key=True)
+    # CNJ so' digitos (20 chars). UNIQUE garante idempotencia do replace.
+    cnj_number = Column(String(20), nullable=False, unique=True, index=True)
+    # Metadados opcionais vindos da planilha — debug/UI, nao sao usados
+    # no dispatch (so' o cnj_number conta).
+    cod_ajus = Column(String(32), nullable=True)
+    materia = Column(String(255), nullable=True)
+    first_seen_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+    last_seen_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
