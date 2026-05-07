@@ -75,6 +75,13 @@ class Settings(BaseSettings):
     # "creationDate" = data em que o L1 disponibilizou a publicação (recomendado)
     # "date"         = data efetiva da publicação no diário (pode perder entradas tardias)
     publication_capture_date_field: str = "creationDate"
+    # Modo batch do scheduler: 1 chamada L1 + fan-out por escritório.
+    # Quando False (legado), itera office por office fazendo 1 fetch L1
+    # por escritório — desperdiça paginação (L1 devolve tudo do período
+    # independente do filtro de escritório, que é client-side) e satura
+    # rate limit em rodadas multi-banco. Default ON desde 2026-05-07;
+    # se voltar a falhar, setar False no Coolify pra rollback rápido.
+    publication_scheduler_batch_mode: bool = True
 
     # Classifier Engine
     anthropic_api_key: str | None = None

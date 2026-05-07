@@ -576,8 +576,153 @@ class ScheduledAutomationService:
             internal_to_external,
         )
 
-        total_offices = len(office_ids)
-        for idx, office_id in enumerate(office_ids, start=1):
+        # Pré-computa janela e backoff por office, separando os ativos
+        # dos pulados (em backoff). Se TODOS estão pulados, sai sem
+        # tocar no L1. Comum aos dois modos (batch e legado).
+        active: List[tuple[int, datetime, datetime]] = []
+        for office_id in office_ids:
+            if self._should_skip_office(office_id, now):
+                logger.info("Office %s pulado (em backoff).", office_id)
+                skipped.append(office_id)
+                continue
+            cursor = self._get_or_create_cursor(office_id)
+            df, dt = self._compute_window(
+                cursor,
+                now,
+                initial_lookback_days=initial_lookback_days,
+                overlap_hours=overlap_hours,
+            )
+            active.append((office_id, df, dt))
+
+        if not active:
+            logger.info("Nenhum escritório ativo nesta rodada (todos em backoff/pulados).")
+            return {
+                "records_found": 0,
+                "offices_ok": ok,
+                "offices_failed": failed,
+                "offices_skipped": skipped,
+            }
+
+        # ── BATCH MODE: 1 fetch L1 + fan-out ──────────────────────────
+        # Substitui o loop legado de "1 fetch por escritório" (saturava
+        # rate limit do L1 em rodadas multi-banco). O L1 devolve TODAS as
+        # publicações do período independente de filtro de escritório
+        # (filtro fino é client-side em Python), então em vez de paginar
+        # N vezes a mesma janela, paginamos 1 vez a UNIÃO das janelas
+        # (cobre cursores divergentes) e cada office filtra seu subset em
+        # memória. Cada office continua tendo 1 PublicationSearch row
+        # (UI Histórico de Buscas), seu cursor próprio e seu retry/backoff.
+        from app.core.config import settings as _settings
+
+        if _settings.publication_scheduler_batch_mode:
+            union_from = min(df for _, df, _ in active)
+            union_to = max(dt for _, _, dt in active)
+            total_active = len(active)
+
+            if run_id is not None:
+                self._update_progress(
+                    run_id,
+                    phase="pull_publications",
+                    current=0,
+                    total=total_active,
+                    message=(
+                        f"Buscando publicações L1 (1 chamada cobrindo "
+                        f"{union_from:%Y-%m-%d %H:%M}..{union_to:%Y-%m-%d %H:%M})"
+                    ),
+                )
+
+            try:
+                publications = search_service.fetch_publications_for_window(
+                    date_from=union_from.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    date_to=union_to.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                )
+                logger.info(
+                    "Batch L1 fetch: %s publicações no período união (%s..%s) — fan-out p/ %s escritórios.",
+                    len(publications), union_from, union_to, total_active,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # L1 caiu — todos os offices ativos viram FALHA nesta rodada.
+                # Logamos UMA stack trace; cada office só recebe o resumo.
+                logger.exception(
+                    "Falha no fetch L1 batch: marcando %s escritórios como falha.",
+                    total_active,
+                )
+                err_msg = f"L1 batch fetch failed: {exc}"
+                for office_id, df, dt in active:
+                    self._record_attempt_failure(office_id, df, dt, err_msg, automation_id)
+                    failed.append(office_id)
+                if run_id is not None:
+                    self._update_progress(
+                        run_id,
+                        phase="pull_publications",
+                        current=total_active,
+                        total=total_active,
+                        message=f"Falha L1 fetch — {total_active} escritórios marcados como falha",
+                    )
+                return {
+                    "records_found": 0,
+                    "offices_ok": ok,
+                    "offices_failed": failed,
+                    "offices_skipped": skipped,
+                }
+
+            # Fan-out: cada office processa o subset que é dele.
+            for idx, (office_id, date_from, date_to) in enumerate(active, start=1):
+                if run_id is not None:
+                    ext = internal_to_external.get(office_id, office_id)
+                    self._update_progress(
+                        run_id,
+                        phase="pull_publications",
+                        current=idx - 1,
+                        total=total_active,
+                        message=f"Distribuindo p/ escritório {idx}/{total_active} (L1 id={ext})",
+                    )
+
+                try:
+                    result = search_service.create_and_run_search(
+                        date_from=date_from.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        date_to=date_to.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        responsible_office_id=internal_to_external.get(office_id, office_id),
+                        auto_classify=False,
+                        requested_by="scheduler",
+                        prefetched_publications=publications,
+                    )
+                    records_found = int(result.get("total_new", 0) or result.get("total_found", 0) or 0)
+                    total_found += records_found
+                    self._record_attempt_success(office_id, date_from, date_to, records_found, automation_id)
+                    ok.append(office_id)
+                    if run_id is not None:
+                        self._update_progress(
+                            run_id,
+                            current=idx,
+                            total=total_active,
+                            message=f"Escritório {idx}/{total_active}: +{records_found} publicações (total {total_found})",
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("Falha ao processar publicações do escritório %s", office_id)
+                    self._record_attempt_failure(office_id, date_from, date_to, str(exc), automation_id)
+                    failed.append(office_id)
+                    if run_id is not None:
+                        self._update_progress(
+                            run_id,
+                            current=idx,
+                            total=total_active,
+                            message=f"Escritório {idx}/{total_active}: falhou",
+                        )
+
+            return {
+                "records_found": total_found,
+                "offices_ok": ok,
+                "offices_failed": failed,
+                "offices_skipped": skipped,
+            }
+
+        # ── LEGACY MODE (feature flag OFF) ────────────────────────────
+        # Mantido pra rollback caso o batch mode dê problema. Seta
+        # `PUBLICATION_SCHEDULER_BATCH_MODE=false` no Coolify e restart.
+        # Remover após 1 semana de batch mode estável.
+        total_offices = len(active)
+        for idx, (office_id, date_from, date_to) in enumerate(active, start=1):
             if run_id is not None:
                 ext = internal_to_external.get(office_id, office_id)
                 self._update_progress(
@@ -587,25 +732,6 @@ class ScheduledAutomationService:
                     total=total_offices,
                     message=f"Buscando escritório {idx}/{total_offices} (L1 id={ext})",
                 )
-
-            if self._should_skip_office(office_id, now):
-                logger.info("Office %s pulado (em backoff).", office_id)
-                skipped.append(office_id)
-                if run_id is not None:
-                    self._update_progress(
-                        run_id,
-                        current=idx,
-                        message=f"Escritório {idx}/{total_offices}: pulado (backoff)",
-                    )
-                continue
-
-            cursor = self._get_or_create_cursor(office_id)
-            date_from, date_to = self._compute_window(
-                cursor,
-                now,
-                initial_lookback_days=initial_lookback_days,
-                overlap_hours=overlap_hours,
-            )
 
             try:
                 result = search_service.create_and_run_search(

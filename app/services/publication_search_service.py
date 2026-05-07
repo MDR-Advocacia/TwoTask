@@ -250,6 +250,26 @@ class PublicationSearchService:
     # Disparo de busca
     # ──────────────────────────────────────────────
 
+    def fetch_publications_for_window(
+        self,
+        date_from: str,
+        date_to: Optional[str] = None,
+        origin_type: str = "OfficialJournalsCrawler",
+    ) -> list[dict]:
+        """
+        Faz a chamada paginada ao Legal One pra trazer todas as publicações
+        do período. Usado pelo scheduler em modo batch (1 fetch + fan-out)
+        pra evitar paginar o L1 N vezes (uma por escritório).
+
+        O resultado pode ser passado como `prefetched_publications` em
+        chamadas subsequentes a `create_and_run_search`.
+        """
+        return self.client.fetch_all_publications(
+            date_from=date_from,
+            date_to=date_to,
+            origin_type=origin_type,
+        )
+
     def create_and_run_search(
         self,
         date_from: str,
@@ -260,6 +280,7 @@ class PublicationSearchService:
         auto_classify: bool = False,
         requested_by: Optional[str] = None,
         only_unlinked: bool = False,
+        prefetched_publications: Optional[list[dict]] = None,
     ) -> dict[str, Any]:
         """
         Cria um registro de busca, executa, enriquece e persiste resultados.
@@ -267,6 +288,11 @@ class PublicationSearchService:
         Aceita ambos `responsible_office_id` (int legado, single) e
         `responsible_office_ids` (list[int], multi). Internamente
         unifica em `_office_ids: list[int]` (vazia = sem filtro).
+
+        `prefetched_publications`: quando passado (modo batch do scheduler),
+        pula a chamada L1 e usa essa lista. CADA chamada faz uma cópia
+        rasa dos dicts pra evitar contaminação entre offices (linha ~370
+        muta `_responsible_office_id` no dict).
         """
         # Normaliza pra list[int]. Filtra zeros/duplicados.
         _office_ids: list[int] = []
@@ -292,18 +318,32 @@ class PublicationSearchService:
         self.db.refresh(search)
 
         try:
-            # 1) Busca TODAS as publicações (paginação automática)
-            self._update_search_progress(search, "FETCH", "Buscando publicações na API Legal One...", 5)
-            publications = self.client.fetch_all_publications(
-                date_from=date_from,
-                date_to=date_to,
-                origin_type=origin_type,
-            )
-            self._update_search_progress(
-                search, "FETCH",
-                f"{len(publications)} publicações encontradas na API",
-                15,
-            )
+            # 1) Busca TODAS as publicações (paginação automática) ou usa
+            # lista pré-fetched do scheduler (modo batch — 1 chamada L1
+            # compartilhada entre offices da rodada).
+            if prefetched_publications is not None:
+                # Cópia rasa por publicação: o pré-filtro mais abaixo muta
+                # `_responsible_office_id` no dict, então cada office
+                # precisa do seu próprio dicionário pra não contaminar os
+                # outros calls da rodada.
+                publications = [dict(p) for p in prefetched_publications]
+                self._update_search_progress(
+                    search, "FETCH",
+                    f"{len(publications)} publicações recebidas do scheduler (sem chamada L1)",
+                    15,
+                )
+            else:
+                self._update_search_progress(search, "FETCH", "Buscando publicações na API Legal One...", 5)
+                publications = self.client.fetch_all_publications(
+                    date_from=date_from,
+                    date_to=date_to,
+                    origin_type=origin_type,
+                )
+                self._update_search_progress(
+                    search, "FETCH",
+                    f"{len(publications)} publicações encontradas na API",
+                    15,
+                )
 
             # 1.5) Pré-filtro por escritório (otimização):
             # Usa o índice persistente (office_lawsuit_index). Quando há

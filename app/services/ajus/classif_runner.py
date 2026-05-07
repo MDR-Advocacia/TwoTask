@@ -896,7 +896,7 @@ class AjusClassifRunner:
         # 3. Settle + workspace ready
         self._settle(wait_ms=2000)
         try:
-            self._wait_for_workspace_ready(timeout_ms=30_000)  # OTIM: era 45s, depois 15s — 15s era agressivo demais e quebrava sessoes saudaveis
+            self._wait_for_workspace_ready(timeout_ms=45_000)
         except Exception as exc:
             logger.warning(
                 "AJUS runner: workspace nao ficou ready apos reset: %s. "
@@ -943,43 +943,35 @@ class AjusClassifRunner:
         # max_capa_retries vezes — costuma ser timing/race no save do
         # ExtJS, e re-tentar do zero (com reset_workspace entre tries)
         # resolve sem precisar reclassificar manualmente.
-        # OTIMIZACAO: max_capa_retries reduzido de 3 -> 1.
-        # Cada retry interno gasta ~1-2 min (open + update + reset +
-        # reopen + validate). Com 1 tentativa, falha vira retry
-        # transitorio que reentra na fila — outra conta pega o item
-        # mais rapido (paralelizacao 3 contas) do que retry serial
-        # na mesma sessao degradada.
-        max_capa_retries = 1
+        max_capa_retries = 3
         try:
             for attempt in range(1, max_capa_retries + 1):
                 try:
                     self._open_process_by_cnj(item.cnj_number)
-                    cover_result = self._update_process_cover(item) or {}
-                    if cover_result.get("save_confirmed"):
-                        # FAST-PATH: AJUS confirmou save via flash de toast
-                        # "Dados Atualizados com Sucesso!" sem popup de erro.
-                        # Pulamos reload+reopen+validate (custo ~60s) e
-                        # marcamos sucesso direto. Reduz tempo por item de
-                        # ~60-90s pra ~10s. Server-truth validation continua
-                        # ativa pra os casos onde o flash NAO aparecer.
-                        pass
-                    else:
-                        # SLOW-PATH (server-truth): o display do form
-                        # continua mostrando os valores tipados mesmo se
-                        # o save foi rejeitado/parcial server-side. Forcamos
-                        # reload + reabrir o processo pra que _read_field_*
-                        # leia a capa server-side de verdade. Sem isso,
-                        # _validate_process_cover passa em itens onde so
-                        # UF/Comarca persistiram e Materia/Risco nao gravaram.
-                        # Tambem aguardamos UF casar com o valor ESPERADO
-                        # (timeout 25s) pra garantir que o populate do ExtJS
-                        # terminou apos o XHR de read.
-                        self._reset_workspace()
-                        self._open_process_by_cnj(item.cnj_number)
-                        self._wait_for_cover_populated(
-                            timeout_s=25, expected_uf=(item.uf or ""),
-                        )
-                        self._validate_process_cover(item)
+                    self._update_process_cover(item)
+                    # Server-truth validation: o display do form continua
+                    # mostrando os valores tipados mesmo se o save foi
+                    # rejeitado/parcial server-side (caso classico: ExtJS
+                    # mantem form state apos falha silenciosa). Forcamos
+                    # reload + reabrir o processo pra que _read_field_*
+                    # leia a capa server-side de verdade. Sem isso,
+                    # _validate_process_cover passa em itens onde so UF/
+                    # Comarca persistiram e Materia/Risco nao gravaram.
+                    self._reset_workspace()
+                    self._open_process_by_cnj(item.cnj_number)
+                    # CRITICO: depois de reabrir o processo, o ExtJS dispara
+                    # ObjetoPedidoAcaoJudicialController.php?action=read pra
+                    # POPULAR o form. _validate_process_cover roda ANTES do
+                    # form ficar populado e ve "Selecione uma opção" em
+                    # tudo — gerando falso "save rejeitado" e gravando
+                    # erro no item que de fato foi salvo. Esperamos UF
+                    # casar com o valor ESPERADO (com timeout de 25s) —
+                    # garante que o populate do ExtJS terminou e o save
+                    # persistiu corretamente.
+                    self._wait_for_cover_populated(
+                        timeout_s=25, expected_uf=(item.uf or ""),
+                    )
+                    self._validate_process_cover(item)
                     self.classif_service.mark_success(
                         item.id,
                         last_log=f"Classificado por account_id={self.account.id} em {datetime.now(timezone.utc).isoformat()}",
@@ -1612,7 +1604,7 @@ class AjusClassifRunner:
           6. Settle 2s.
         """
         # Etapa 1: workspace ready
-        self._wait_for_workspace_ready(timeout_ms=30_000)  # OTIM: era 45s, depois 15s — 15s era agressivo demais e quebrava sessoes saudaveis
+        self._wait_for_workspace_ready(timeout_ms=45_000)
 
         # Etapa 2 + 3: input + digita
         search_input = self._find_process_search_input()
@@ -2087,7 +2079,7 @@ class AjusClassifRunner:
             f"Abortando ANTES do save pra nao salvar capa vazia."
         )
 
-    def _update_process_cover(self, item: AjusClassificacaoQueue) -> dict:
+    def _update_process_cover(self, item: AjusClassificacaoQueue) -> None:
         """
         Preenche os 5 campos da capa via _fill_field_with_verify
         (porte do Mirror `_update_process_fields` com verificacao).
@@ -2263,11 +2255,54 @@ class AjusClassifRunner:
         except Exception:
             pass
 
-        # OTIMIZACAO: bloco de DEBUG (HIDDEN dump + estado dos 5 campos)
-        # removido — custava ~3-5s por item em JS evaluate, era so pra
-        # diagnostico durante a depuracao do save parcial. Hoje o flow
-        # confia no fast-path (flash de sucesso) ou cai no slow-path
-        # (server-truth via reload), nao precisa do dump pre-save.
+        # DEBUG: leitura direta dos 5 campos da capa via mesmo metodo
+        # do validate (_read_field_display_value), ANTES do click no
+        # save. Se algum estiver em placeholder mesmo apos
+        # _fill_field_with_verify ter dito que firmou, eh porque algo
+        # entre o ultimo fill e o save zera os campos (provavel
+        # dependencia ExtJS resetando filhos quando outro campo muda).
+        try:
+            # DEBUG: dump dos hidden inputs do form pra descobrir o NAME
+            # real do campo Natureza (vamos achar o codNatureza ou similar).
+            try:
+                hidden_dump = self._page.evaluate(
+                    "() => {"
+                    "  const inps = Array.from(document.querySelectorAll('input[name]'));"
+                    "  return inps.filter(i => {"
+                    "    const n = (i.name || '').toLowerCase();"
+                    "    return n.startsWith('cod') || n.startsWith('id') || n.includes('natureza');"
+                    "  }).slice(0, 40).map(i => i.name + '=' + (i.value || '')).join(' | ');"
+                    "}"
+                )
+                logger.info(
+                    "AJUS runner: HIDDEN inputs (cod/id/natureza) item %d: %s",
+                    item.id, str(hidden_dump)[:1500],
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("hidden dump falhou: %s", exc)
+
+            pre_save_state = {
+                "UF": self._read_field_display_value(portal.PROCESS_UF_SELECTOR),
+                "Comarca": self._read_field_display_value(portal.PROCESS_COMARCA_SELECTOR),
+                "Materia": self._read_field_display_value(portal.PROCESS_MATTER_SELECTOR),
+                "Justica": self._read_field_display_value(portal.PROCESS_JUSTICE_FEE_SELECTOR),
+                "Risco": self._read_field_display_value(portal.PROCESS_RISK_SELECTOR),
+                "Natureza": self._read_field_display_value(portal.PROCESS_NATUREZA_SELECTOR),
+            }
+            empties = [
+                k for k, v in pre_save_state.items()
+                if not v or self._placeholder_or_empty(v)
+            ]
+            logger.info(
+                "AJUS runner: estado dos 5 campos da CAPA ANTES do click "
+                "save (item %d cnj=%s): %s | em placeholder: %s",
+                item.id, item.cnj_number, pre_save_state,
+                empties or "(nenhum)",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "AJUS runner: falha lendo capa pre-save: %s", exc,
+            )
 
         try:
             # Salvar — agora com seguranca de que TODOS os campos firmaram.
@@ -2279,21 +2314,8 @@ class AjusClassifRunner:
             # AJUS usa um popup "flash" que aparece e some sozinho em
             # 3-5s; precisamos pollar o DOM em intervalo apertado pra
             # capturar enquanto esta visivel.
-            # OTIMIZACAO: check rapido pra flash de sucesso ANTES do polling
-            # de popup. Se flash ja apareceu, save deu certo → skipa polling.
-            try:
-                quick_check = self._page.evaluate(
-                    "() => (document.body && document.body.innerText || '').includes('Dados Atualizados com Sucesso')"
-                )
-                if bool(quick_check):
-                    popup_msg = ""
-                    popup_deadline = time.monotonic() - 1  # forca skip do loop
-                else:
-                    popup_msg = ""
-                    popup_deadline = time.monotonic() + 2
-            except Exception:
-                popup_msg = ""
-                popup_deadline = time.monotonic() + 2
+            popup_msg = ""
+            popup_deadline = time.monotonic() + 6
             while time.monotonic() < popup_deadline:
                 self._page.wait_for_timeout(200)
                 msg = self._detect_extjs_popup(
@@ -2317,15 +2339,17 @@ class AjusClassifRunner:
                 raise AjusRunnerError(
                     f"ExtJS bloqueou save com popup: {popup_msg[:300]}"
                 )
-            # Se nao detectou popup mas viu flash_evidence nas requests,
-            # dumpa innerText do body pra debug — o popup pode ter
-            # sumido antes mas precisamos saber o que era.
+            # Mesmo se nao detectou popup E sem flash_evidence em requests
+            # (imagens podem estar cacheadas em retries posteriores),
+            # rodamos o dump pra capturar erros PERMANENTES via texto do
+            # DOM. Custo ~50ms — vale a pena pra evitar reenfileirar 12x
+            # itens que vao falhar ate esgotar retries.
             flash_seen = any(
                 ("messagebox_flash" in (u or "").lower())
                 or ("/warning.png" in (u or "").lower())
                 for u in all_requests
             )
-            if flash_seen:
+            if True:  # ampliado: roda sempre (era 'if flash_seen:')
                 # Dump TARGETED: pega apenas elementos visiveis com classes
                 # tipicas de flash/alert/messagebox/notification + texto.
                 # Ignora navegacao, header, etc.
@@ -2393,6 +2417,44 @@ class AjusClassifRunner:
                 except Exception:
                     pass
 
+                # ⚠️  DETECCAO DE ERRO PERMANENTE  ⚠️
+                # Alguns flashes indicam que o save NUNCA vai funcionar
+                # nesse processo (dados ausentes no AJUS — Foro, Autor,
+                # etc.). Reenfileirar como transiente desperdica retries
+                # e prende a conta em loop. Aqui detectamos e levantamos
+                # erro PERMANENTE com mensagem clara pro operador.
+                permanent_patterns = (
+                    ("preenchimento obrigat", "campo obrigatorio nao preenchido no processo (corrigir manualmente no AJUS)"),
+                    ("preciso no minimo 1 autor", "processo sem Autor cadastrado no AJUS (cadastrar Autor antes de classificar)"),
+                    ("preciso no minimo 1 reu", "processo sem Reu cadastrado no AJUS (cadastrar Reu antes de classificar)"),
+                    ("foro:", "Foro nao preenchido no processo (preencher manualmente no AJUS)"),
+                )
+                combined_dump = (
+                    (str(targeted or "") + " " + str(by_bg or ""))
+                    .lower()
+                    .replace("ó", "o").replace("á", "a").replace("é", "e")
+                    .replace("ê", "e").replace("ã", "a").replace("í", "i")
+                    .replace("ú", "u").replace("ç", "c")
+                )
+                for needle, friendly in permanent_patterns:
+                    if needle in combined_dump:
+                        # Extrai pequena amostra do flash pra log
+                        sample = (str(targeted or str(by_bg or ""))[:200])
+                        logger.error(
+                            "AJUS runner: flash com erro PERMANENTE detectado "
+                            "(needle=%r) — item nao sera reenfileirado. "
+                            "Amostra: %r",
+                            needle, sample,
+                        )
+                        # AjusPermanentError eh uma string-marker que o
+                        # _is_transient_error nao casa, garantindo que o
+                        # service marque como erro definitivo (nao volte
+                        # pra pendente).
+                        raise AjusRunnerError(
+                            f"AJUS flash bloqueou save permanentemente: {friendly}. "
+                            f"Detalhe: {sample}"
+                        )
+
             # Aguarda ate captar a primeira POST response do ajax.handler
             # OU timeout de 25s. Polling de 200ms mantem responsividade
             # sem queimar CPU. Saves geralmente respondem em <3s.
@@ -2428,45 +2490,10 @@ class AjusClassifRunner:
             except Exception:
                 pass
 
-        # FAST-PATH: detectar flash "Dados Atualizados com Sucesso!".
-        # Se o AJUS mostrou esse toast E nao houve popup, o save de fato
-        # persistiu — o classify_item pode pular reload+reopen+validate
-        # e marcar sucesso direto. Isso baixa o tempo por item de ~60-90s
-        # pra ~10s. Server-truth validation fica como fallback (slow path)
-        # pros casos onde o flash nao aparece.
-        save_confirmed = False
-        try:
-            check_js = (
-                "() => {"
-                "  try {"
-                "    const all = (document.body && document.body.innerText) || '';"
-                "    if (all.includes('Dados Atualizados com Sucesso')) return true;"
-                "    const flashes = document.querySelectorAll('[class*=\"flash\"], [class*=\"messagebox_flash\"]');"
-                "    for (const el of flashes) {"
-                "      const t = (el.innerText || el.textContent || '').toLowerCase();"
-                "      if (t.includes('atualizad') && t.includes('sucesso')) return true;"
-                "    }"
-                "    return false;"
-                "  } catch (e) { return false; }"
-                "}"
-            )
-            save_confirmed = bool(self._page.evaluate(check_js))
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("AJUS runner: check de flash sucesso falhou: %s", exc)
-
-        if save_confirmed:
-            logger.info(
-                "AJUS runner: FAST-PATH ativo (item %d cnj=%s) — flash "
-                "'Dados Atualizados com Sucesso!' detectado, sem popup, "
-                "pulando reload+validate.",
-                item.id, item.cnj_number,
-            )
-
         # Pequeno settle pra ExtJS terminar de processar a resposta
         # (pode disparar refresh do form, fechar modal, etc.) antes do
         # caller chamar _reset_workspace.
         self._settle(wait_ms=1500)
-        return {"save_confirmed": save_confirmed}
 
     def _detect_extjs_popup(self, *, all_request_urls=None) -> str:
         """
