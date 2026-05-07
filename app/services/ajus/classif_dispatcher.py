@@ -45,7 +45,17 @@ logger = logging.getLogger(__name__)
 
 
 # Tamanho default do batch por conta. Configurável via param.
-DEFAULT_BATCH_PER_ACCOUNT = 5
+#
+# 10 itens por batch eh o sweet spot:
+#   - 5 (anterior) acumulava state-bleed do ExtJS — combobox falhava,
+#     workspace timeout, save bloqueado por popup (refs orfas).
+#   - 1 (extremo) zerava bleed mas disparava IP-auth do AJUS a cada
+#     item (cada novo browser = fingerprint novo = pede codigo de IP).
+#   - 10 mantem o browser aberto pra evitar IP-auth excessivo, mas
+#     fecha cedo o suficiente pra que o bleed nao acumule a ponto de
+#     quebrar.
+# Browser eh recriado a cada batch (with AjusClassifRunner __exit__).
+DEFAULT_BATCH_PER_ACCOUNT = 10
 
 
 @dataclass

@@ -103,12 +103,31 @@ _TRANSIENT_ERROR_PATTERNS = (
     "nao consegui localizar",  # outros locators
     "playwright timeout",
     "navigation timeout",
+    "timeout 30000ms exceeded",
+    "timeout 45000ms exceeded",
+    "locator.click",
+    "locator.fill",
+    "locator.evaluate",
     "page.goto",
     "element is not visible",
     "context manager",
     "closed browser",
     "target closed",
     "session expired",
+    # Save parcial / popup bloqueando — geralmente proxima tentativa
+    # consegue completar (Natureza vem do CRM como 69 ja persistido,
+    # ou o setValue do combobox firma na 2a vez).
+    "capa nao ficou com os valores esperados",
+    "capa nao validou",
+    "encontrado 'selecione",  # display em placeholder pos-save
+    "encontrado 'nao classif",
+    "encontrado 'nao definido",
+    "extjs bloqueou save com popup",
+    # Bug colateral: mark_processing chamado 2x quando fallback de
+    # comarca rola dentro do mesmo classify_item. Re-execucao resolve
+    # porque na proxima rodada o item volta pra pendente.
+    "so itens pendentes podem ser marcados como processando",
+    "só itens pendentes podem ser marcados como processando",
 )
 
 
