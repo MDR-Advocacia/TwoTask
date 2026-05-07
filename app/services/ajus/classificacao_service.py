@@ -562,7 +562,7 @@ class AjusClassificacaoService:
 
     # Limite de retries automaticos pra erros transitorios. Acima disso,
     # vira erro definitivo (operador resolve).
-    MAX_TRANSIENT_RETRIES = 5
+    MAX_TRANSIENT_RETRIES = 15  # OTIM: 5 era pouco — sessoes degradam mas voltam a funcionar; dar mais paciencia evita erros definitivos prematuros
 
     def mark_transient_error(
         self,
