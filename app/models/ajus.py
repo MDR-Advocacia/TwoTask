@@ -338,6 +338,12 @@ class AjusClassificacaoQueue(Base):
     last_log = Column(Text, nullable=True)
     executed_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Contador de retries automaticos pra erros transitorios (timeout
+    # de workspace, combobox que nao abriu, busca rapida que sumiu).
+    # Ver `mark_transient_error` no service: incrementa e devolve item
+    # pra `pendente`; ao atingir limite, vira `erro` definitivo.
+    retry_count = Column(Integer, nullable=False, default=0, server_default="0")
+
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )

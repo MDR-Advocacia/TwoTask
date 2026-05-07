@@ -560,6 +560,66 @@ class AjusClassificacaoService:
         self.db.refresh(item)
         return item
 
+    # Limite de retries automaticos pra erros transitorios. Acima disso,
+    # vira erro definitivo (operador resolve).
+    MAX_TRANSIENT_RETRIES = 5
+
+    def mark_transient_error(
+        self,
+        item_id: int,
+        *,
+        error_message: str,
+        last_log: Optional[str] = None,
+    ) -> AjusClassificacaoQueue:
+        """
+        Marca um erro TRANSITORIO. Se retry_count < MAX_TRANSIENT_RETRIES,
+        devolve o item pra `pendente` (zera dispatched_by_account_id pro
+        proximo dispatch poder pegar) e incrementa retry_count. Acima do
+        limite, vira erro definitivo.
+
+        Use pra timing-issues que retentar normalmente resolve:
+          - workspace timeout
+          - combobox ExtJS nao respondeu
+          - busca rapida nao apareceu
+          - campo dependente nao ficou visivel
+
+        NAO usar pra falhas server-side definitivas (capa nao validou
+        apos save, processo nao cadastrado, etc.) — essas devem ir
+        direto pra `erro` ou `nao_encontrado`.
+        """
+        item = self.get(item_id)
+        new_count = (item.retry_count or 0) + 1
+        if new_count >= self.MAX_TRANSIENT_RETRIES:
+            item.status = AJUS_CLASSIF_ERRO
+            item.error_message = (
+                f"[retry {new_count}/{self.MAX_TRANSIENT_RETRIES} - "
+                f"limite atingido] {error_message}"
+            )[:4000]
+            logger.warning(
+                "AJUS classif: item %d atingiu limite de retries "
+                "transitorios (%d). Marcando erro definitivo.",
+                item_id, self.MAX_TRANSIENT_RETRIES,
+            )
+        else:
+            item.status = AJUS_CLASSIF_PENDENTE
+            item.dispatched_by_account_id = None
+            item.executed_at = None
+            item.error_message = (
+                f"[retry {new_count}/{self.MAX_TRANSIENT_RETRIES}] "
+                f"{error_message}"
+            )[:4000]
+            logger.info(
+                "AJUS classif: item %d reenfileirado (retry %d/%d): %s",
+                item_id, new_count, self.MAX_TRANSIENT_RETRIES,
+                error_message[:200],
+            )
+        item.retry_count = new_count
+        if last_log is not None:
+            item.last_log = last_log
+        self.db.commit()
+        self.db.refresh(item)
+        return item
+
     def mark_not_found(
         self,
         item_id: int,

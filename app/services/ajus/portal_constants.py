@@ -105,6 +105,15 @@ PROCESS_RISK_SELECTOR = (
     "xpath=//input[@name='codProbabilidadePerda']"
     "/following-sibling::input[@type='text']"
 )
+# Natureza: campo *obrigatorio* que o save valida server-side. Se vazio,
+# bloqueia toda a transacao com popup "Natureza: preenchimento
+# obrigatorio". MDR define valor fixo "Civel" pra todos os processos.
+# Usa fallback de label porque o name do hidden ExtJS nao foi confirmado
+# (provavelmente codNatureza, mas a busca por label eh mais robusta).
+PROCESS_NATUREZA_SELECTOR = (
+    "xpath=(//label[contains(normalize-space(.), 'Natureza')]"
+    "/following::input[@type='text' and not(@type='hidden')][1])[1]"
+)
 PROCESS_SAVE_SELECTOR = "button.disk_edit"
 
 # ─── Fallbacks (porte do Mirror) ──────────────────────────────────────
