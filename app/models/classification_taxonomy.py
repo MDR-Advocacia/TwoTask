@@ -51,6 +51,13 @@ class ClassificationCategory(Base):
     polo_scope = Column(
         String(16), nullable=False, default="ambos", server_default="ambos",
     )
+    # Versao da taxonomia: 'v1' (legacy, seedada por tax001) ou 'v2'
+    # (nova, seedada por tax006). Engine de proposta de tarefa, UI de
+    # templates e prompt do classificador filtram por essa coluna em
+    # conjunto com o toggle global em app_settings. Migration: tax005.
+    taxonomy_version = Column(
+        String(8), nullable=False, default="v1", server_default="v1",
+    )
 
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
@@ -91,6 +98,12 @@ class ClassificationSubcategory(Base):
     display_order = Column(Integer, nullable=False, default=0, server_default="0")
     is_active = Column(
         Boolean, nullable=False, default=True, server_default="true",
+    )
+    # Versao da taxonomia (v1 / v2). Migration: tax005. Subcategorias
+    # herdam o polo da categoria-pai via JOIN; nao precisam de coluna
+    # propria de polo_scope.
+    taxonomy_version = Column(
+        String(8), nullable=False, default="v1", server_default="v1",
     )
 
     created_at = Column(
