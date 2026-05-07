@@ -937,3 +937,133 @@ export interface PrazoInicialEnums {
   priorities: string[];
   due_date_references: string[];
 }
+
+// ════════════════════════════════════════════════════════════════
+// Types restaurados 2026-05-07 (truncados em ae93514).
+// ════════════════════════════════════════════════════════════════
+
+export type AdminNoticeSeverity = "info" | "warning" | "danger";
+
+export type AdminNoticeStatus = "agendado" | "ativo" | "expirado";
+
+/** Subset do aviso visivel pra qualquer usuario (GET /admin/notices/active). */
+export interface AdminNoticeActive {
+  id: number;
+  title: string;
+  message: string;
+  severity: AdminNoticeSeverity;
+  starts_at: string | null;
+  ends_at: string | null;
+}
+
+/** Versao completa pro CRUD admin (inclui contadores + status calculado). */
+export interface AdminNotice {
+  id: number;
+  title: string;
+  message: string;
+  severity: AdminNoticeSeverity;
+  starts_at: string;
+  ends_at: string;
+  created_by_user_id: number | null;
+  created_at: string;
+  updated_at: string;
+  status: AdminNoticeStatus;
+  dismissed_count: number;
+}
+
+export interface AdminNoticeCreatePayload {
+  title: string;
+  message: string;
+  severity: AdminNoticeSeverity;
+  starts_at: string;
+  ends_at: string;
+}
+
+export type AdminNoticeUpdatePayload = Partial<AdminNoticeCreatePayload>;
+
+export interface AjusBlocklistItem {
+  id: number;
+  cnj_number: string;
+  cod_ajus: string | null;
+  materia: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
+export interface AjusBlocklistListResponse {
+  total: number;
+  items: AjusBlocklistItem[];
+}
+
+export interface AjusBlocklistStatsResponse {
+  total_no_blocklist: number;
+  items_fila_bloqueados: number;
+  ultimo_upload_at: string | null;
+}
+
+export interface AjusBlocklistUploadResponse {
+  added: number;
+  updated: number;
+  removed: number;
+  total_after: number;
+}
+
+export interface EncaminharDevolucaoResponse {
+  intake_id: number;
+  intake_status: string;
+  ajus_queue_item_id: number | null;
+  dispatch_pending: boolean;
+}
+
+export interface PatrocinioRelatorioFilters {
+  since?: string | null;
+  until?: string | null;
+  office_id?: number | null;
+  limit?: number;
+  offset?: number;
+}
+
+export interface PatrocinioRelatorioItem {
+  intake_id: number;
+  cnj_number: string | null;
+  lawsuit_id: number | null;
+  office_id: number | null;
+  intake_status: string;
+  received_at: string | null;
+  decisao: string;
+  suspeita_devolucao: boolean;
+  natureza_acao: string | null;
+  motivo_suspeita: string | null;
+  outro_advogado_nome: string | null;
+  outro_advogado_oab: string | null;
+  outro_advogado_data_habilitacao: string | null;
+  outro_escritorio_nome: string | null;
+  polo_passivo_confirmado: boolean;
+  confianca: string | null;
+  fundamentacao: string | null;
+  review_status: string;
+  reviewed_by_email: string | null;
+  reviewed_by_name: string | null;
+  reviewed_at: string | null;
+  ajus_queue_status: string | null;
+  ajus_queue_id: number | null;
+}
+
+export interface PatrocinioRelatorioResponse {
+  total: number;
+  limit: number;
+  offset: number;
+  items: PatrocinioRelatorioItem[];
+}
+
+export interface PrazoInicialContestacaoExistente {
+  existe: boolean;
+  apresentada_por_mdr: boolean | null;
+  apresentada_por_nome: string | null;
+  apresentada_por_oab: string | null;
+  parte_representada: string | null;
+  data_apresentacao: string | null;
+  generica: boolean | null;
+  analise_qualidade: string | null;
+}
+
