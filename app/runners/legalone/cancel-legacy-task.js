@@ -310,21 +310,47 @@ async function closeSession(session) {
 }
 
 async function dismissCookieBanner(page) {
-  // Banner Thomson Reuters intercepta cliques. Tenta fechar antes de
-  // procurar o form. No-op se nao tiver o banner.
+  // Banner Thomson Reuters (body > div.cookie-policy). Estrategia dupla:
+  //   1) Tenta clicar #cookie-policy-accept (id estavel, observado 2026-05-06).
+  //   2) Independente do click ter funcionado, INJETA CSS que mata
+  //      div.cookie-policy + pointer-events. Mesmo padrao do
+  //      dismissPendoOverlay — garante que o banner nao volte a
+  //      interferir mesmo que o L1 re-renderize.
+  // Idempotente. No-op se nao tiver banner.
   try {
     for (const frame of page.frames()) {
       const accept = await frame
-        .$('text=/Aceito esta pol[ií]tica/i')
+        .$('#cookie-policy-accept, text=/Aceito esta pol[ií]tica/i')
         .catch(() => null);
       if (accept) {
         await accept.click({ timeout: 2000 }).catch(() => {});
         await page.waitForTimeout(250);
-        return true;
+        break;
       }
     }
   } catch (_) {}
-  return false;
+  // CSS-kill defensivo (sempre roda, mesmo se click acima rodou). Evita
+  // que o banner volte a interceptar pointer-events em frames ou em
+  // re-render apos navegacao dentro do mesmo run.
+  try {
+    await page.evaluate(() => {
+      const STYLE_ID = '__rpa_kill_cookie_banner__';
+      if (!document.getElementById(STYLE_ID)) {
+        const style = document.createElement('style');
+        style.id = STYLE_ID;
+        style.textContent =
+          'body > div.cookie-policy, div.cookie-policy { display: none !important; pointer-events: none !important; visibility: hidden !important; }';
+        document.head.appendChild(style);
+      }
+      document.querySelectorAll('div.cookie-policy').forEach((el) => {
+        el.style.display = 'none';
+        el.style.pointerEvents = 'none';
+      });
+    });
+  } catch (_) {
+    // page pode nao estar pronta ainda — no-op.
+  }
+  return true;
 }
 
 async function dismissPendoOverlay(page) {
@@ -460,21 +486,36 @@ async function submitCancellationViaBatchModal(page, item, loginConfig) {
   );
 
   // 5) Modal monta — aguarda body > div.modal ficar visivel + perder
-  // a classe widget-loading no .toolbar-modal-content
+  // a classe widget-loading no .toolbar-modal-content + #LookupCampo
+  // de fato montar dentro dele.
+  //
+  // CONFIRMADO 2026-05-06 (reprod ao vivo no Chrome via JS .click()):
+  // o modal abre rapido (1s) mas o conteudo interno (lookup customizado
+  // "Campo") fica em `.toolbar-modal-content widget-loading` por tempo
+  // indeterminado — em 30s+ as vezes nao saiu. Antes tinha .catch(()=>{})
+  // silencioso engolindo o timeout de 10s e seguindo direto pro click do
+  // #LookupCampo .lookup-show, que obviamente nao existia ainda — bati
+  // em "page.click: Timeout 5000ms" e marcava FAILED. Fix: timeout 30s
+  // SEM catch + waitForSelector explicito do .lookup-show antes de clicar.
   await page.waitForSelector('body > div.modal', {
     state: 'visible',
     timeout: 15000,
   });
-  await page
-    .waitForFunction(
-      () => {
-        const content = document.querySelector('.toolbar-modal-content');
-        return content && !content.classList.contains('widget-loading');
-      },
-      null,
-      { timeout: 10000 },
-    )
-    .catch(() => {});
+  await page.waitForFunction(
+    () => {
+      const content = document.querySelector('.toolbar-modal-content');
+      return content && !content.classList.contains('widget-loading');
+    },
+    null,
+    { timeout: 30000 },
+  );
+  // Espera o lookup "Campo" de fato existir no DOM antes de tentar clicar.
+  // waitForFunction acima diz "loading saiu", mas o widget customizado
+  // pode levar mais alguns ms pra montar os elementos internos.
+  await page.waitForSelector('#LookupCampo .lookup-show', {
+    state: 'visible',
+    timeout: 15000,
+  });
 
   //   5a) Campo = Status. Lookup customizado: NAO funciona via
   //   autocomplete sintetico (testado). Usar o botao .lookup-show
@@ -503,6 +544,12 @@ async function submitCancellationViaBatchModal(page, item, loginConfig) {
   //   5c) Para = Cancelado. Mesmo padrao: .lookup-show -> tr[data-val-id="3"].
   //   Status IDs: Pendente=0, Cumprido=1, Nao cumprido=2, Cancelado=3,
   //   Iniciado=4, Reagendado=5.
+  // Espera o .lookup-show do StatusLote estar visible — mesmo motivo
+  // do #LookupCampo (widget pode demorar ms a mais pra montar interno).
+  await page.waitForSelector('#LookupStatusLote .lookup-show', {
+    state: 'visible',
+    timeout: 10000,
+  });
   await page.click('#LookupStatusLote .lookup-show', { timeout: 5000 });
   await page.click(
     `.lookup-dropdown.lookup-inside-modal:visible tr[data-val-id="${item.targetStatusId}"]`,

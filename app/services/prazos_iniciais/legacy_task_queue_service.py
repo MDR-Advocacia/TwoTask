@@ -244,6 +244,89 @@ class PrazosIniciaisLegacyTaskQueueService:
             until=until,
         ).count()
 
+    # Status IDs terminais no L1: task ja nao precisa ser tocada.
+    # 1=Cumprido, 2=Nao cumprido, 3=Cancelado.
+    _L1_TERMINAL_STATUS_IDS = {1, 2, 3}
+
+    def _pre_check_terminal_status(
+        self,
+        item: PrazoInicialLegacyTaskCancellationItem,
+    ) -> Optional[dict[str, Any]]:
+        """
+        Consulta a API L1 pra ver se item.selected_task_id ja esta em
+        estado terminal antes de invocar o RPA. Retorna dict com `reason`
+        e `current_status_id` se for o caso (caller deve pular RPA e
+        marcar COMPLETED). Retorna None se nao deu pra concluir e o
+        fluxo deve seguir pro RPA.
+        """
+        if not item.selected_task_id:
+            return None
+        # Lazy import — evita acoplar o init do modulo a validacao do
+        # LegalOneApiClient (env vars).
+        try:
+            from app.services.legal_one_client import LegalOneApiClient
+            import requests as _requests
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "legacy_task_queue.pre_check.import_failed item_id=%s err=%s",
+                item.id, exc,
+            )
+            return None
+        try:
+            client = LegalOneApiClient()
+        except Exception as exc:  # noqa: BLE001
+            # Sem credenciais ou config — nao bloqueia o fluxo, deixa
+            # cair no RPA (que tem suas proprias creds).
+            logger.warning(
+                "legacy_task_queue.pre_check.client_init_failed item_id=%s err=%s",
+                item.id, exc,
+            )
+            return None
+        try:
+            task = client.get_task_by_id(int(item.selected_task_id))
+        except _requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if status == 404:
+                # Task nao existe mais no L1 — terminal sem acao.
+                return {
+                    "success": True,
+                    "reason": "task_not_found",
+                    "task_id": item.selected_task_id,
+                    "current_status_id": None,
+                    "skipped_rpa": True,
+                    "pre_check_via": "api_l1_get_task",
+                }
+            logger.warning(
+                "legacy_task_queue.pre_check.http_error item_id=%s status=%s",
+                item.id, status,
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "legacy_task_queue.pre_check.api_error item_id=%s err=%s",
+                item.id, exc,
+            )
+            return None
+        try:
+            current_status_id = int(task.get("statusId"))
+        except (TypeError, ValueError):
+            return None
+        if current_status_id not in self._L1_TERMINAL_STATUS_IDS:
+            return None
+        reason = (
+            "already_cancelled"
+            if current_status_id == 3
+            else "already_in_terminal_state"
+        )
+        return {
+            "success": True,
+            "reason": reason,
+            "task_id": item.selected_task_id,
+            "current_status_id": current_status_id,
+            "skipped_rpa": True,
+            "pre_check_via": "api_l1_get_task",
+        }
+
     def process_item(
         self,
         item: PrazoInicialLegacyTaskCancellationItem,
@@ -278,6 +361,47 @@ class PrazosIniciaisLegacyTaskQueueService:
                 "attempt_count": item.attempt_count,
             },
         )
+
+        # Pre-check API L1: se a task ja esta em estado terminal (cumprida,
+        # nao cumprida, cancelada), nao vale a pena invocar o RPA — ele
+        # falharia em UI weirdness ("nao posso cancelar tarefa cumprida")
+        # ou cancelaria outra task pendente do mesmo processo por engano.
+        # Esse skip economiza 5-10s de subprocess Node + login Playwright
+        # por item ja resolvido, e nao polui o painel de "Falhas".
+        skip_via_pre_check = self._pre_check_terminal_status(item)
+        if skip_via_pre_check is not None:
+            duration_ms = int((time.monotonic() - tick_start) * 1000)
+            logger.info(
+                "legacy_task_queue.process_item.skip_terminal_via_api",
+                extra={
+                    "event": "legacy_task_queue.process_item.skip_terminal_via_api",
+                    "item_id": item_id,
+                    "intake_id": intake_id,
+                    "cnj_number": cnj_number,
+                    "lawsuit_id": lawsuit_id,
+                    "selected_task_id": item.selected_task_id,
+                    "current_status_id": skip_via_pre_check.get("current_status_id"),
+                    "reason": skip_via_pre_check.get("reason"),
+                    "duration_ms": duration_ms,
+                },
+            )
+            item.queue_status = QUEUE_STATUS_COMPLETED
+            item.last_reason = skip_via_pre_check.get("reason")
+            item.last_result = skip_via_pre_check
+            current_sid = skip_via_pre_check.get("current_status_id")
+            if current_sid == 3:
+                # Ja cancelada externamente — marca cancelled_task_id pro mesmo task.
+                item.cancelled_task_id = item.selected_task_id
+            item.completed_at = self._utcnow()
+            item.last_error = None
+            item.updated_at = self._utcnow()
+            if commit:
+                self.db.commit()
+                self.db.refresh(item)
+            return {
+                "item": self._item_to_dict(item),
+                "result": skip_via_pre_check,
+            }
 
         try:
             result = self.cancellation_service.cancel_task(
