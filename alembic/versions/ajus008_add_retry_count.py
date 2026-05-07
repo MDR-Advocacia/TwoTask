@@ -35,16 +35,19 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "ajus_classificacao_queue",
-        sa.Column(
-            "retry_count",
-            sa.Integer(),
-            nullable=False,
-            server_default="0",
-        ),
+    # Idempotente: a coluna pode ja existir no DB (foi aplicada via
+    # ALTER TABLE manual durante a depuracao do fluxo classif). Nesse
+    # caso, o boot do container so registra a versao no alembic sem
+    # tentar recriar (evita "DuplicateColumn" e mantem a fila intacta).
+    op.execute(
+        "ALTER TABLE ajus_classificacao_queue "
+        "ADD COLUMN IF NOT EXISTS retry_count integer "
+        "NOT NULL DEFAULT 0"
     )
 
 
 def downgrade() -> None:
-    op.drop_column("ajus_classificacao_queue", "retry_count")
+    op.execute(
+        "ALTER TABLE ajus_classificacao_queue "
+        "DROP COLUMN IF EXISTS retry_count"
+    )
