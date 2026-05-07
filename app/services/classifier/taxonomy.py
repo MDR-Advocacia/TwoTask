@@ -8,54 +8,98 @@ TTL=60s — `_get_active_tree()` resolve.
 
 Pra editar a taxonomia em prod: use a UI Admin (tab Taxonomia) que
 opera via classification_categories/classification_subcategories.
+
+Versionamento (tax005, tax006, 2026-05-07):
+  - Cada cat/sub no DB tem `taxonomy_version` ('v1' | 'v2') e cat tem
+    `polo_scope` ('ativo' | 'passivo' | 'ambos').
+  - Funções de consulta aceitam `polo_scope` e `taxonomy_version` pra
+    filtrar a arvore retornada.
+  - Default = 'v1' sem filtro de polo: preserva comportamento pre-v2.
+  - `get_active_taxonomy_version()` le `TAXONOMY_ACTIVE_VERSION` do env
+    (provisional ate o toggle global em app_settings — fase 11).
 """
 
 import logging
+import os
 import re
 import threading
 import time
 import unicodedata
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 _CACHE_TTL_SECONDS = 60.0
-_TREE_CACHE: dict[str, list[str]] | None = None
-_TREE_CACHE_AT: float = 0.0
+# Cache indexado por (polo_scope, taxonomy_version). Ambos None = sem filtro.
+_TREE_CACHE: dict[tuple[Optional[str], Optional[str]], dict[str, list[str]]] = {}
+_TREE_CACHE_AT: dict[tuple[Optional[str], Optional[str]], float] = {}
 _TREE_CACHE_LOCK = threading.Lock()
+
+
+def get_active_taxonomy_version() -> str:
+    """Versao da taxonomia ativa globalmente. Lida do env por enquanto;
+    a fase 11 substitui pela leitura do app_settings com toggle UI.
+    Default 'v1' preserva comportamento atual (apos tax006 seedar a v2,
+    a v1 continua sendo usada ate alguem virar a chave)."""
+    return (os.getenv("TAXONOMY_ACTIVE_VERSION") or "v1").strip().lower()
 
 
 def invalidate_taxonomy_cache() -> None:
     """Força o próximo `_get_active_tree` a recarregar do DB. Usado pelo
     endpoint de mutação (criar/editar/inativar categoria) pra que a
     mudança apareça imediatamente em vez de esperar o TTL."""
-    global _TREE_CACHE, _TREE_CACHE_AT
     with _TREE_CACHE_LOCK:
-        _TREE_CACHE = None
-        _TREE_CACHE_AT = 0.0
+        _TREE_CACHE.clear()
+        _TREE_CACHE_AT.clear()
 
 
-def _load_tree_from_db() -> dict[str, list[str]] | None:
+def _load_tree_from_db(
+    polo_scope: Optional[str] = None,
+    taxonomy_version: Optional[str] = None,
+) -> dict[str, list[str]] | None:
     """Lê classification_categories/subcategories e monta o dict legacy.
-    Retorna None se DB vazio ou erro (caller faz fallback)."""
+    Retorna None se DB vazio ou erro (caller faz fallback).
+
+    Filtros:
+      - polo_scope: 'ativo' | 'passivo' | 'ambos' | None (sem filtro).
+        'ambos' inclui cats marcadas como 'ambos' (legacy v1).
+      - taxonomy_version: 'v1' | 'v2' | None (sem filtro)."""
     try:
         from app.db.session import SessionLocal
         from app.models.classification_taxonomy import (
             ClassificationCategory, ClassificationSubcategory,
         )
         with SessionLocal() as db:
-            cats = (
+            q = (
                 db.query(ClassificationCategory)
                 .filter(ClassificationCategory.is_active.is_(True))
-                .order_by(ClassificationCategory.display_order, ClassificationCategory.name)
-                .all()
             )
+            if polo_scope is not None:
+                # Quando o caller pede 'ativo'/'passivo', tambem aceita
+                # cats marcadas como 'ambos' (legacy v1 vale pros dois).
+                if polo_scope in ("ativo", "passivo"):
+                    q = q.filter(
+                        ClassificationCategory.polo_scope.in_([polo_scope, "ambos"])
+                    )
+                else:
+                    q = q.filter(ClassificationCategory.polo_scope == polo_scope)
+            if taxonomy_version is not None:
+                q = q.filter(
+                    ClassificationCategory.taxonomy_version == taxonomy_version
+                )
+            cats = q.order_by(
+                ClassificationCategory.display_order, ClassificationCategory.name
+            ).all()
             if not cats:
                 return None
             tree: dict[str, list[str]] = {}
             for c in cats:
                 subs = [
                     s.name for s in c.subcategories
-                    if s.is_active
+                    if s.is_active and (
+                        taxonomy_version is None
+                        or s.taxonomy_version == taxonomy_version
+                    )
                 ]
                 tree[c.name] = subs
             return tree
@@ -64,23 +108,40 @@ def _load_tree_from_db() -> dict[str, list[str]] | None:
         return None
 
 
-def _get_active_tree() -> dict[str, list[str]]:
-    """Retorna a árvore vigente. Tenta cache → DB → fallback hardcoded."""
-    global _TREE_CACHE, _TREE_CACHE_AT
+def _get_active_tree(
+    polo_scope: Optional[str] = None,
+    taxonomy_version: Optional[str] = None,
+) -> dict[str, list[str]]:
+    """Retorna a árvore vigente. Tenta cache → DB → fallback hardcoded.
+    Cache e indexado por (polo_scope, taxonomy_version) — multiplas
+    arvores podem coexistir em memoria com TTL independente.
+
+    Default sem filtros: caller herda toda a arvore (v1 + v2 misturadas
+    se a v2 ja tiver sido seedada). Pra preservar comportamento do
+    classificador antes da fase 11, callers que queiram so v1 devem
+    passar `taxonomy_version='v1'` explicitamente."""
+    key = (polo_scope, taxonomy_version)
     now = time.monotonic()
-    if _TREE_CACHE is not None and (now - _TREE_CACHE_AT) < _CACHE_TTL_SECONDS:
-        return _TREE_CACHE
+    cached_at = _TREE_CACHE_AT.get(key, 0.0)
+    if key in _TREE_CACHE and (now - cached_at) < _CACHE_TTL_SECONDS:
+        return _TREE_CACHE[key]
     with _TREE_CACHE_LOCK:
         # Double-check após pegar lock
-        if _TREE_CACHE is not None and (now - _TREE_CACHE_AT) < _CACHE_TTL_SECONDS:
-            return _TREE_CACHE
-        from_db = _load_tree_from_db()
+        cached_at = _TREE_CACHE_AT.get(key, 0.0)
+        if key in _TREE_CACHE and (now - cached_at) < _CACHE_TTL_SECONDS:
+            return _TREE_CACHE[key]
+        from_db = _load_tree_from_db(polo_scope=polo_scope, taxonomy_version=taxonomy_version)
         if from_db is not None:
-            _TREE_CACHE = from_db
+            _TREE_CACHE[key] = from_db
         else:
-            _TREE_CACHE = {k: list(v) for k, v in CLASSIFICATION_TREE.items()}
-        _TREE_CACHE_AT = now
-        return _TREE_CACHE
+            # Fallback hardcoded so faz sentido pra v1 sem filtro de polo.
+            # Pra v2 sem dados no DB, retorna dict vazio (caller decide).
+            if (taxonomy_version in (None, "v1")) and polo_scope in (None, "ambos"):
+                _TREE_CACHE[key] = {k: list(v) for k, v in CLASSIFICATION_TREE.items()}
+            else:
+                _TREE_CACHE[key] = {}
+        _TREE_CACHE_AT[key] = now
+        return _TREE_CACHE[key]
 
 
 CLASSIFICATION_TREE: dict[str, list[str]] = {
@@ -176,17 +237,27 @@ def _normalize_label(value: str | None) -> str:
     return " ".join(text.split())
 
 
-def _find_category_by_normalized(label: str) -> str | None:
+def _find_category_by_normalized(
+    label: str,
+    polo_scope: Optional[str] = None,
+    taxonomy_version: Optional[str] = None,
+) -> str | None:
     norm = _normalize_label(label)
-    for category in _get_active_tree():
+    for category in _get_active_tree(polo_scope=polo_scope, taxonomy_version=taxonomy_version):
         if _normalize_label(category) == norm:
             return category
     return None
 
 
-def _find_subcategory_by_normalized(category: str, label: str) -> str | None:
+def _find_subcategory_by_normalized(
+    category: str,
+    label: str,
+    polo_scope: Optional[str] = None,
+    taxonomy_version: Optional[str] = None,
+) -> str | None:
     norm = _normalize_label(label)
-    for subcategory in _get_active_tree().get(category, []):
+    tree = _get_active_tree(polo_scope=polo_scope, taxonomy_version=taxonomy_version)
+    for subcategory in tree.get(category, []):
         if _normalize_label(subcategory) == norm:
             return subcategory
     return None
@@ -210,6 +281,8 @@ _PAIR_ALIASES: dict[tuple[str, str], tuple[str, str]] = {
 def build_taxonomy_text(
     excluded: set[tuple[str, str | None]] | None = None,
     custom_additions: list[dict[str, str]] | None = None,
+    polo_scope: Optional[str] = None,
+    taxonomy_version: Optional[str] = None,
 ) -> str:
     """
     Gera representação textual da taxonomia para uso em prompts.
@@ -219,9 +292,17 @@ def build_taxonomy_text(
                   Se subcategory=None, exclui a categoria inteira.
         custom_additions: lista de dicts com "category" e opcionalmente "subcategory"
                           para adicionar à taxonomia.
+        polo_scope: filtra por polo ('ativo' / 'passivo' / 'ambos' / None).
+                    'ativo'/'passivo' inclui tambem cats marcadas como 'ambos'.
+        taxonomy_version: filtra por versao ('v1' / 'v2' / None).
     """
     # Cópia da árvore base (do DB com cache, ou fallback hardcoded)
-    tree = {k: list(v) for k, v in _get_active_tree().items()}
+    tree = {
+        k: list(v)
+        for k, v in _get_active_tree(
+            polo_scope=polo_scope, taxonomy_version=taxonomy_version
+        ).items()
+    }
 
     # Aplica exclusões
     if excluded:
@@ -259,16 +340,32 @@ def build_taxonomy_text(
     return "\n".join(lines)
 
 
-def get_all_valid_categories() -> set[str]:
-    return set(_get_active_tree().keys())
+def get_all_valid_categories(
+    polo_scope: Optional[str] = None,
+    taxonomy_version: Optional[str] = None,
+) -> set[str]:
+    return set(
+        _get_active_tree(polo_scope=polo_scope, taxonomy_version=taxonomy_version).keys()
+    )
 
 
-def get_valid_subcategories(category: str) -> set[str]:
-    subs = _get_active_tree().get(category, [])
+def get_valid_subcategories(
+    category: str,
+    polo_scope: Optional[str] = None,
+    taxonomy_version: Optional[str] = None,
+) -> set[str]:
+    subs = _get_active_tree(
+        polo_scope=polo_scope, taxonomy_version=taxonomy_version
+    ).get(category, [])
     return set(subs) if subs else {"-"}
 
 
-def repair_classification(category: str, subcategory: str) -> tuple[str, str]:
+def repair_classification(
+    category: str,
+    subcategory: str,
+    polo_scope: Optional[str] = None,
+    taxonomy_version: Optional[str] = None,
+) -> tuple[str, str]:
     """
     Tenta corrigir pares (category, subcategory) comuns emitidos errado pelo
     modelo:
@@ -281,7 +378,7 @@ def repair_classification(category: str, subcategory: str) -> tuple[str, str]:
     """
     cat = (category or "").strip()
     sub = (subcategory or "").strip()
-    tree = _get_active_tree()
+    tree = _get_active_tree(polo_scope=polo_scope, taxonomy_version=taxonomy_version)
 
     pair_alias = _PAIR_ALIASES.get((_normalize_label(cat), _normalize_label(sub)))
     if pair_alias:
@@ -292,12 +389,16 @@ def repair_classification(category: str, subcategory: str) -> tuple[str, str]:
     if aliased_cat:
         cat = aliased_cat
     else:
-        cat = _find_category_by_normalized(cat) or cat
+        cat = _find_category_by_normalized(
+            cat, polo_scope=polo_scope, taxonomy_version=taxonomy_version
+        ) or cat
 
     if cat in tree:
         if not tree[cat]:
             return cat, "-"
-        sub = _find_subcategory_by_normalized(cat, sub) or sub
+        sub = _find_subcategory_by_normalized(
+            cat, sub, polo_scope=polo_scope, taxonomy_version=taxonomy_version
+        ) or sub
 
     if cat in tree:
         subs = tree[cat]
@@ -328,8 +429,13 @@ def repair_classification(category: str, subcategory: str) -> tuple[str, str]:
     return cat, sub
 
 
-def validate_classification(category: str, subcategory: str) -> bool:
-    tree = _get_active_tree()
+def validate_classification(
+    category: str,
+    subcategory: str,
+    polo_scope: Optional[str] = None,
+    taxonomy_version: Optional[str] = None,
+) -> bool:
+    tree = _get_active_tree(polo_scope=polo_scope, taxonomy_version=taxonomy_version)
     if category not in tree:
         return False
     subs = tree[category]

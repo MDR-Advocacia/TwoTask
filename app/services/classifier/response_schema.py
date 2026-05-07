@@ -60,6 +60,11 @@ _VALID_POLOS = {"ativo", "passivo", "ambos"}
 _VALID_CONFIANCA = {"alta", "media", "baixa"}
 _VALID_PRAZO_TIPO = {"util", "corrido"}
 _AUDIENCIA_CATEGORY = "Audiência Agendada"
+# Sistemas que costumam aparecer em publicacoes de pesquisa patrimonial
+# e bloqueio. Campo opcional `sistema_mencionado` (taxonomy v2): IA
+# preenche quando o texto cita um deles. Mantido como enum fechado pra
+# evitar inflar a arvore principal com uma cat por sistema.
+_VALID_SISTEMAS = {"SISBAJUD", "RENAJUD", "INFOJUD", "SNIPER", "CCS", "CNIB", "OUTRO"}
 
 
 @dataclass
@@ -78,6 +83,10 @@ class CleanClassification:
     confianca: Optional[str]
     justificativa: str
     natureza_processo: Optional[str]
+    # Campo opcional da taxonomy v2. Indica qual sistema de pesquisa/
+    # bloqueio patrimonial o texto cita (SISBAJUD, RENAJUD, INFOJUD,
+    # SNIPER, CCS, CNIB, OUTRO). Null quando nao aplicavel ou ausente.
+    sistema_mencionado: Optional[str] = None
     warnings: list[str] = field(default_factory=list)
 
 
@@ -222,6 +231,23 @@ def validate_response(payload: Any) -> CleanClassification:
 
     natureza_processo = _coerce_str(payload.get("natureza_processo"))
 
+    # sistema_mencionado (taxonomy v2): aceita uppercase fechado.
+    # Tolerante a variacoes (lowercase, com acento) — normaliza pra
+    # uppercase e descarta com warning se nao bater no enum.
+    sistema_raw = _coerce_str(payload.get("sistema_mencionado"))
+    sistema_mencionado: Optional[str]
+    if sistema_raw:
+        candidate = sistema_raw.upper().strip()
+        if candidate in _VALID_SISTEMAS:
+            sistema_mencionado = candidate
+        else:
+            warnings.append(
+                f"sistema_mencionado='{sistema_raw}' fora do enum — descartado"
+            )
+            sistema_mencionado = None
+    else:
+        sistema_mencionado = None
+
     return CleanClassification(
         categoria=categoria,
         subcategoria=subcategoria,
@@ -235,5 +261,6 @@ def validate_response(payload: Any) -> CleanClassification:
         confianca=confianca,
         justificativa=justificativa,
         natureza_processo=natureza_processo,
+        sistema_mencionado=sistema_mencionado,
         warnings=warnings,
     )

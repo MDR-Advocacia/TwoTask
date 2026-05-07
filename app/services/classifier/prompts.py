@@ -5,6 +5,11 @@ Templates de prompt para o agente classificador de publicações judiciais.
 from typing import Optional
 from .taxonomy import build_taxonomy_text
 
+# SYSTEM_PROMPT default usa explicitamente taxonomy_version='v1' pra
+# preservar comportamento pre-v2: depois da tax006 seedar a v2 no DB,
+# `build_taxonomy_text()` sem args retornaria v1+v2 misturado, o que
+# confundiria a IA. `build_system_prompt_for_office` reconstroi a parte
+# de taxonomia quando o caller passa polo_scope/taxonomy_version.
 SYSTEM_PROMPT = f"""Você é um classificador especializado em publicações judiciais brasileiras.
 
 Sua tarefa é analisar o texto de uma publicação judicial e classificá-la nas categorias
@@ -16,7 +21,7 @@ uma publicação que contém tanto uma sentença quanto uma designação de audi
 DUAS classificações. Quando houver múltiplas classificações, retorne um array JSON.
 
 # TAXONOMIA DE CLASSIFICAÇÕES
-{build_taxonomy_text()}
+{build_taxonomy_text(taxonomy_version="v1")}
 
 # POLO DA PUBLICAÇÃO
 
@@ -424,25 +429,77 @@ def build_feedback_examples(db, office_external_id: Optional[int] = None, limit:
     return "\n".join(lines)
 
 
+SISTEMA_MENCIONADO_ADDENDUM = """
+
+# SISTEMA DE PESQUISA / BLOQUEIO PATRIMONIAL
+
+Quando o texto da publicacao mencionar EXPLICITAMENTE um sistema de
+pesquisa patrimonial ou bloqueio (SISBAJUD, RENAJUD, INFOJUD, SNIPER,
+CCS — Cadastro de Clientes do Sistema Financeiro, CNIB — Central Nacional
+de Indisponibilidade de Bens), preencha o campo `sistema_mencionado` com
+o nome do sistema em UPPERCASE. Se for outro sistema (DETRAN local,
+JUCESP, etc.), use "OUTRO". Caso contrario, deixe `sistema_mencionado`
+como null.
+
+Exemplos:
+  - "Determino o bloqueio via SISBAJUD..."  -> sistema_mencionado: "SISBAJUD"
+  - "Defiro pesquisa pelo RENAJUD..."        -> sistema_mencionado: "RENAJUD"
+  - "Sentenca julgo procedente..."           -> sistema_mencionado: null
+
+Esse campo NAO substitui a categoria/subcategoria — e um campo extra
+opcional. Categoria continua sendo "Pesquisa Patrimonial e Bloqueio"
+(taxonomy v2 ativo) ou "Cumprimento de Sentenca / Execucao" (passivo)
+ou similar. `sistema_mencionado` apenas registra qual sistema o
+operador encontrara mencionado no texto.
+"""
+
+
 def build_system_prompt_for_office(
     excluded: set[tuple[str, str | None]] | None = None,
     custom_additions: list[dict[str, str]] | None = None,
     is_unlinked: bool = False,
     feedback_examples: str = "",
+    polo_scope: Optional[str] = None,
+    taxonomy_version: Optional[str] = None,
 ) -> str:
     """
     Gera um system prompt customizado com taxonomia filtrada para o escritório.
-    Se excluded/custom_additions forem None, retorna o prompt padrão (SYSTEM_PROMPT).
+    Se excluded/custom_additions forem None E polo_scope/taxonomy_version forem
+    None, retorna o prompt padrão (SYSTEM_PROMPT, com taxonomia v1).
     Se is_unlinked=True, adiciona instrução para detectar natureza do processo.
     Se feedback_examples não-vazio, injeta exemplos de correções anteriores.
+
+    Quando taxonomy_version='v2' (caller na fase pos-toggle), o addendum
+    SISTEMA_MENCIONADO e injetado e a arvore e filtrada por polo_scope.
     """
     base = SYSTEM_PROMPT
-    if excluded or custom_additions:
-        custom_taxonomy = build_taxonomy_text(excluded=excluded, custom_additions=custom_additions)
-        base = SYSTEM_PROMPT.replace(build_taxonomy_text(), custom_taxonomy)
+    needs_rebuild = (
+        excluded
+        or custom_additions
+        or polo_scope is not None
+        or (taxonomy_version is not None and taxonomy_version != "v1")
+    )
+    if needs_rebuild:
+        custom_taxonomy = build_taxonomy_text(
+            excluded=excluded,
+            custom_additions=custom_additions,
+            polo_scope=polo_scope,
+            taxonomy_version=taxonomy_version,
+        )
+        # SYSTEM_PROMPT capturou build_taxonomy_text(taxonomy_version='v1')
+        # no import. Replace usa exatamente esse texto pra trocar pelo
+        # novo (filtrado). Se a v1 mudar no DB entre o import e agora, o
+        # replace falha silenciosamente e o prompt fica com v1 — caso
+        # raro porque cache TTL=60s e taxonomy.invalidate_taxonomy_cache()
+        # so e chamado por mutacoes admin.
+        v1_taxonomy = build_taxonomy_text(taxonomy_version="v1")
+        base = SYSTEM_PROMPT.replace(v1_taxonomy, custom_taxonomy)
 
     if is_unlinked:
         base += NATUREZA_PROCESSO_ADDENDUM
+
+    if taxonomy_version == "v2":
+        base += SISTEMA_MENCIONADO_ADDENDUM
 
     if feedback_examples:
         base += feedback_examples
@@ -450,26 +507,38 @@ def build_system_prompt_for_office(
     return base
 
 
-def load_office_overrides(db, office_external_id: int) -> tuple[
+def load_office_overrides(
+    db,
+    office_external_id: int,
+    taxonomy_version: Optional[str] = None,
+) -> tuple[
     set[tuple[str, str | None]],
     list[dict[str, str]],
 ]:
     """
     Carrega os overrides de classificação de um escritório do banco de dados.
 
+    SEMPRE exclui registros com `needs_taxonomy_review=True` — overrides v1
+    pendentes de revisao nao devem afetar o prompt da IA. Quando
+    taxonomy_version e passado, filtra adicionalmente por essa versao.
+
     Returns:
         Tuple de (excluded_set, custom_additions_list)
     """
     from app.models.office_classification import OfficeClassificationOverride
 
-    overrides = (
+    q = (
         db.query(OfficeClassificationOverride)
         .filter(
             OfficeClassificationOverride.office_external_id == office_external_id,
             OfficeClassificationOverride.is_active == True,
+            OfficeClassificationOverride.needs_taxonomy_review == False,
         )
-        .all()
     )
+    if taxonomy_version is not None:
+        q = q.filter(OfficeClassificationOverride.taxonomy_version == taxonomy_version)
+
+    overrides = q.all()
 
     excluded: set[tuple[str, str | None]] = set()
     custom_additions: list[dict[str, str]] = []
