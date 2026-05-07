@@ -2263,54 +2263,11 @@ class AjusClassifRunner:
         except Exception:
             pass
 
-        # DEBUG: leitura direta dos 5 campos da capa via mesmo metodo
-        # do validate (_read_field_display_value), ANTES do click no
-        # save. Se algum estiver em placeholder mesmo apos
-        # _fill_field_with_verify ter dito que firmou, eh porque algo
-        # entre o ultimo fill e o save zera os campos (provavel
-        # dependencia ExtJS resetando filhos quando outro campo muda).
-        try:
-            # DEBUG: dump dos hidden inputs do form pra descobrir o NAME
-            # real do campo Natureza (vamos achar o codNatureza ou similar).
-            try:
-                hidden_dump = self._page.evaluate(
-                    "() => {"
-                    "  const inps = Array.from(document.querySelectorAll('input[name]'));"
-                    "  return inps.filter(i => {"
-                    "    const n = (i.name || '').toLowerCase();"
-                    "    return n.startsWith('cod') || n.startsWith('id') || n.includes('natureza');"
-                    "  }).slice(0, 40).map(i => i.name + '=' + (i.value || '')).join(' | ');"
-                    "}"
-                )
-                logger.info(
-                    "AJUS runner: HIDDEN inputs (cod/id/natureza) item %d: %s",
-                    item.id, str(hidden_dump)[:1500],
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("hidden dump falhou: %s", exc)
-
-            pre_save_state = {
-                "UF": self._read_field_display_value(portal.PROCESS_UF_SELECTOR),
-                "Comarca": self._read_field_display_value(portal.PROCESS_COMARCA_SELECTOR),
-                "Materia": self._read_field_display_value(portal.PROCESS_MATTER_SELECTOR),
-                "Justica": self._read_field_display_value(portal.PROCESS_JUSTICE_FEE_SELECTOR),
-                "Risco": self._read_field_display_value(portal.PROCESS_RISK_SELECTOR),
-                "Natureza": self._read_field_display_value(portal.PROCESS_NATUREZA_SELECTOR),
-            }
-            empties = [
-                k for k, v in pre_save_state.items()
-                if not v or self._placeholder_or_empty(v)
-            ]
-            logger.info(
-                "AJUS runner: estado dos 5 campos da CAPA ANTES do click "
-                "save (item %d cnj=%s): %s | em placeholder: %s",
-                item.id, item.cnj_number, pre_save_state,
-                empties or "(nenhum)",
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "AJUS runner: falha lendo capa pre-save: %s", exc,
-            )
+        # OTIMIZACAO: bloco de DEBUG (HIDDEN dump + estado dos 5 campos)
+        # removido — custava ~3-5s por item em JS evaluate, era so pra
+        # diagnostico durante a depuracao do save parcial. Hoje o flow
+        # confia no fast-path (flash de sucesso) ou cai no slow-path
+        # (server-truth via reload), nao precisa do dump pre-save.
 
         try:
             # Salvar — agora com seguranca de que TODOS os campos firmaram.
@@ -2322,8 +2279,21 @@ class AjusClassifRunner:
             # AJUS usa um popup "flash" que aparece e some sozinho em
             # 3-5s; precisamos pollar o DOM em intervalo apertado pra
             # capturar enquanto esta visivel.
-            popup_msg = ""
-            popup_deadline = time.monotonic() + 2  # OTIM: era 6s — popup AJUS aparece em <1s ou nao aparece
+            # OTIMIZACAO: check rapido pra flash de sucesso ANTES do polling
+            # de popup. Se flash ja apareceu, save deu certo → skipa polling.
+            try:
+                quick_check = self._page.evaluate(
+                    "() => (document.body && document.body.innerText || '').includes('Dados Atualizados com Sucesso')"
+                )
+                if bool(quick_check):
+                    popup_msg = ""
+                    popup_deadline = time.monotonic() - 1  # forca skip do loop
+                else:
+                    popup_msg = ""
+                    popup_deadline = time.monotonic() + 2
+            except Exception:
+                popup_msg = ""
+                popup_deadline = time.monotonic() + 2
             while time.monotonic() < popup_deadline:
                 self._page.wait_for_timeout(200)
                 msg = self._detect_extjs_popup(
