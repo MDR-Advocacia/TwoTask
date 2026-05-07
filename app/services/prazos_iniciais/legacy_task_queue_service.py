@@ -54,15 +54,49 @@ QUEUE_NOOP_REASONS = {
 MANUAL_CANCEL_REASON = "manually_cancelled"
 
 
+def _resolve_cancellation_service() -> Any:
+    """
+    Factory: instancia o service certo baseado em
+    `settings.prazos_iniciais_legacy_task_cancellation_strategy`.
+
+    Default 'http' (POST direto, ~250ms/task, sem widget-loading bug).
+    'playwright' mantem o subprocess Node clickflow legado pra rollback
+    rapido (basta flipar a flag no Coolify).
+
+    Importacao do http service e' lazy pra (a) evitar ciclo com este
+    arquivo e (b) nao puxar `requests` em testes que mockam o
+    cancellation_service via parametro do construtor.
+    """
+    strategy = (
+        getattr(settings, "prazos_iniciais_legacy_task_cancellation_strategy", "http")
+        or "http"
+    ).lower()
+    if strategy == "playwright":
+        return LegacyTaskCancellationService()
+    if strategy != "http":
+        logger.warning(
+            "legacy_task_queue: estrategia '%s' desconhecida — usando 'http'.",
+            strategy,
+        )
+    from app.services.prazos_iniciais.legacy_task_http_cancellation_service import (
+        LegacyTaskHttpCancellationService,
+    )
+    return LegacyTaskHttpCancellationService()
+
+
 class PrazosIniciaisLegacyTaskQueueService:
     def __init__(
         self,
         db: Session,
         *,
-        cancellation_service: Optional[LegacyTaskCancellationService] = None,
+        cancellation_service: Optional[Any] = None,
     ):
         self.db = db
-        self.cancellation_service = cancellation_service or LegacyTaskCancellationService()
+        self.cancellation_service = (
+            cancellation_service
+            if cancellation_service is not None
+            else _resolve_cancellation_service()
+        )
 
     @staticmethod
     def _utcnow() -> datetime:
@@ -97,26 +131,33 @@ class PrazosIniciaisLegacyTaskQueueService:
         commit: bool = True,
         legacy_task_type_external_id: int = DEFAULT_LEGACY_TASK_TYPE_EXTERNAL_ID,
         legacy_task_subtype_external_id: int = DEFAULT_LEGACY_TASK_SUBTYPE_EXTERNAL_ID,
-        force_queue: bool = False,
+        force_queue: bool = False,  # legado, mantido por compat (agora redundante)
     ) -> Optional[PrazoInicialLegacyTaskCancellationItem]:
         """
-        Garante que um intake AGENDADO tenha um item pendente na fila de
-        cancelamento da task legada.
+        Garante que um intake tenha um item pendente na fila de
+        cancelamento da task legada "Agendar Prazos".
 
-        Se o intake sair de AGENDADO, um item ainda não concluído é cancelado.
+        Politica nova (Pin0XX, 2026-05-07): enfileira assim que o intake
+        tem identificador de processo (lawsuit_id ou cnj_number),
+        independente do status. A intuicao: a chegada da publicacao ja
+        torna a tarefa antiga obsoleta — nao importa se o operador vai
+        agendar, devolver ou rejeitar. **Uma vez enfileirado, segue ate
+        cancelar — nao reverte se o intake mudar de status posterior.**
+
+        Excecao: fluxo de DEVOLUCAO (Pin019) cancela manualmente o item
+        criado aqui no momento da transicao pra DEVOLUCAO_PENDENTE (em
+        scheduling_service) — operador exclui no L1 manualmente.
+
+        O parametro `force_queue` e' mantido por compat com call sites
+        antigos mas e' redundante na nova politica (a regra `should_queue`
+        nao depende mais do status do intake).
         """
         now = self._utcnow()
         item = intake.legacy_task_cancellation_item
-        should_queue = (
-            (force_queue or intake.status == INTAKE_STATUS_SCHEDULED)
-            and (intake.lawsuit_id is not None or bool(intake.cnj_number))
-        )
+        # Sem identificador de processo, nao tem o que cancelar no L1.
+        should_queue = bool(intake.lawsuit_id) or bool(intake.cnj_number)
 
         if not should_queue:
-            if item is not None and item.queue_status != QUEUE_STATUS_COMPLETED:
-                item.queue_status = QUEUE_STATUS_CANCELLED
-                item.updated_at = now
-                item.last_reason = "intake_not_eligible"
             if commit:
                 self.db.commit()
             return item
@@ -137,7 +178,12 @@ class PrazosIniciaisLegacyTaskQueueService:
             self.db.add(item)
             intake.legacy_task_cancellation_item = item
         else:
-            previous_status = item.queue_status
+            # Item ja existe. Atualiza dados (lawsuit_id pode ter sido
+            # resolvido depois da criacao do item, p.ex.) mas NAO reverte
+            # status terminal — operador pode ter cancelado manualmente
+            # (CANCELLED) ou worker concluiu (COMPLETED). Esses dois nao
+            # voltam pra PENDING; quem quiser reprocessar usa a UI
+            # ("Reprocessar" reseta attempt_count via reprocess_item).
             config_changed = (
                 item.legacy_task_type_external_id != legacy_task_type_external_id
                 or item.legacy_task_subtype_external_id != legacy_task_subtype_external_id
@@ -147,8 +193,13 @@ class PrazosIniciaisLegacyTaskQueueService:
             item.office_id = intake.office_id
             item.legacy_task_type_external_id = legacy_task_type_external_id
             item.legacy_task_subtype_external_id = legacy_task_subtype_external_id
-            if previous_status in {QUEUE_STATUS_CANCELLED, QUEUE_STATUS_FAILED} or config_changed:
+            if item.queue_status == QUEUE_STATUS_FAILED or config_changed:
+                # Reset pra dar nova chance. Inclui FAILED (re-sync da
+                # uma chance "automatica" em vez de exigir clique manual)
+                # e config_changed (mudanca de tipo/subtipo invalida
+                # tentativa anterior porque vai bater em outra task L1).
                 item.queue_status = QUEUE_STATUS_PENDING
+                item.attempt_count = 0
                 item.completed_at = None
                 item.last_error = None
                 item.last_result = None
@@ -835,6 +886,46 @@ class PrazosIniciaisLegacyTaskQueueService:
             },
         )
         return self._item_to_dict(item)
+
+    def cancel_item_for_intake(
+        self,
+        intake: PrazoInicialIntake,
+        *,
+        reason: str = "intake_devolucao",
+        commit: bool = True,
+    ) -> Optional[PrazoInicialLegacyTaskCancellationItem]:
+        """
+        Cancela o item da fila vinculado a este intake (se existir e
+        nao estiver em estado terminal).
+
+        Usado pelo fluxo de DEVOLUCAO (Pin019): a politica nova
+        enfileira na criacao do intake, mas devolucao requer exclusao
+        manual no L1 — entao no momento que o intake vira
+        DEVOLUCAO_PENDENTE, o item correspondente da queue sai do
+        balde de cancelamento automatico.
+
+        Idempotente: se ja esta em CANCELLED ou COMPLETED, no-op.
+        """
+        item = intake.legacy_task_cancellation_item
+        if item is None:
+            return None
+        if item.queue_status in {QUEUE_STATUS_CANCELLED, QUEUE_STATUS_COMPLETED}:
+            return item
+        item.queue_status = QUEUE_STATUS_CANCELLED
+        item.last_reason = reason
+        item.updated_at = self._utcnow()
+        if commit:
+            self.db.commit()
+        logger.info(
+            "legacy_task_queue.cancel_item_for_intake",
+            extra={
+                "event": "legacy_task_queue.cancel_item_for_intake",
+                "item_id": item.id,
+                "intake_id": item.intake_id,
+                "reason": reason,
+            },
+        )
+        return item
 
     # ── métricas para /metrics e exports ───────────────────────────────
 

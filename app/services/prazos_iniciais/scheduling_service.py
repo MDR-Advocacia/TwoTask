@@ -1239,6 +1239,22 @@ class PrazosIniciaisSchedulingService:
         intake.dispatched_at = None
         intake.dispatch_error_message = None
 
+        # Pin019 + Pin0XX: devolucao = exclusao manual no L1, sistema
+        # nao cancela. Como a politica nova (2026-05-07) enfileira o
+        # cancel ja na criacao do intake, aqui precisamos cancelar o
+        # item correspondente da queue pra ele nao virar uma operacao
+        # automatica indesejada. Idempotente — no-op se ja terminal.
+        try:
+            self.queue_service.cancel_item_for_intake(
+                intake, reason="intake_devolucao", commit=False,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Falha não-fatal ao cancelar item da fila legacy pro "
+                "intake %d na transicao pra DEVOLUCAO_PENDENTE.",
+                intake.id,
+            )
+
         # Anexa nota de auditoria em metadata_json (preserva o resto).
         if motivo:
             meta = dict(intake.metadata_json or {})

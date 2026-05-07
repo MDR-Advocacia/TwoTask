@@ -240,6 +240,44 @@ class IntakeService:
                 intake.id,
             )
 
+        # ── Enfileiramento da legacy task na criação (Pin0XX) ──
+        # Politica nova (2026-05-07): assim que o intake chega ao sistema,
+        # a tarefa antiga "Verificar Prazos e Habilitação - Banco Master"
+        # ja entra na fila de cancelamento, independente do status
+        # posterior do intake. A intuicao: a chegada da publicacao por
+        # si so torna a tarefa antiga obsoleta — nao importa se o
+        # operador vai agendar, devolver ou rejeitar.
+        #
+        # Nessa etapa o `lawsuit_id` ainda nao foi resolvido (o intake
+        # acabou de ser criado), mas o `cancellation_service` resolve
+        # via CNJ -> search_lawsuit_by_cnj. A chamada existente em
+        # `_resolve_intake_target_lawsuit` (post-resolucao) continua
+        # rodando — vai atualizar o item ja criado aqui com o lawsuit_id
+        # resolvido (sync_item_from_intake e' idempotente, faz UPSERT).
+        #
+        # Excecao: fluxo de DEVOLUCAO (Pin019) cancela esse item no
+        # scheduling_service no momento da transicao pra DEVOLUCAO_PENDENTE.
+        try:
+            from app.services.prazos_iniciais.legacy_task_queue_service import (
+                PrazosIniciaisLegacyTaskQueueService,
+            )
+            cancel_queue = PrazosIniciaisLegacyTaskQueueService(self.db)
+            cancel_queue.sync_item_from_intake(intake)
+            logger.info(
+                "Legacy cancel queue: intake %d enfileirado na criacao "
+                "(cnj=%s).",
+                intake.id, normalized_cnj,
+            )
+        except Exception:  # noqa: BLE001
+            # Falha aqui nao pode interromper a ingestao — outros pontos
+            # do pipeline (resolucao do lawsuit_id, agendamento) tambem
+            # chamam sync_item_from_intake e vao recuperar.
+            logger.exception(
+                "Legacy cancel queue: falha não-fatal ao enfileirar "
+                "intake %d na criacao (seguindo).",
+                intake.id,
+            )
+
         return IntakeCreationResult(intake=intake, already_existed=False)
 
     # ─── Reingest (atualizacao incremental do mesmo external_id) ──────
