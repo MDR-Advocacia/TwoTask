@@ -88,39 +88,44 @@ git push origin main
 - Não inventar etapas extras (ex.: `git pull` antes do push, validação
   de diff, etc.) a não ser que o usuário peça.
 
-## ⚠️ MIGRATION NOVA — SEMPRE CONFERIR HISTÓRICO ANTES ⚠️
+## ⚠️ WORKTREE INTERNA — NUNCA EDITAR DENTRO DA `.claude/worktrees/` ⚠️
 
-**Antes de criar QUALQUER migration alembic, é OBRIGATÓRIO** rodar:
+**O usuário commita SEMPRE do checkout principal**
+(`C:\Users\jonil\OneDrive\Desktop\Projetos HUB\OneTask - Solo\onetask`),
+NÃO de qualquer worktree em `.claude/worktrees/<nome>/`. Se o ambiente
+do agente foi inicializado com worktree (system prompt mostra
+"Worktree path: …\.claude\worktrees\<nome>"), os `Edit`/`Write`
+default do agente caem dentro da worktree e o `git add -A` do bloco
+PowerShell entregue ao usuário NÃO PEGA NADA — porque ele roda no
+checkout principal, que está limpo. JÁ FALHOU múltiplas vezes; o
+usuário só descobre depois de pushar e ver "tudo certinho" sem a
+mudança real.
+
+**REGRA OBRIGATÓRIA — antes de entregar bloco PowerShell, espelhar
+todo arquivo modificado do worktree pro checkout principal**:
 
 ```bash
-docker exec onetask-api-1 sh -c "cd /app && alembic heads"
+WT="<system-prompt-worktree-path>"
+MAIN="C:/Users/jonil/OneDrive/Desktop/Projetos HUB/OneTask - Solo/onetask"
+for f in <lista de arquivos modificados nessa sessão>; do
+  cp -f "$WT/$f" "$MAIN/$f"
+  # bater wc -l do destino com o source pra confirmar a copia integra
+done
 ```
 
-E **olhar o(s) head(s) atual(is)** pra usar como `down_revision` na nova
-migration. Se `heads` retornar mais de uma linha, ANTES de criar a sua,
-crie uma migration de `merge_heads` (vazia, com `revises = ('h1', 'h2')`)
-pra unificar — senão o alembic explode no boot com `MultipleHeads` ou
-`Ambiguous walk` e o Coolify falha o deploy.
+Validar SEMPRE com `wc -l` em ambos os lados (se diferir, alguma cópia
+falhou silenciosa — ver guard de truncamento abaixo).
 
-**Padrão de IDs da casa:**
+Sintomas de que esqueci dessa trava:
+- Usuário roda o bloco e o `git diff --cached` aparece vazio.
+- `git status` no checkout principal mostra "working tree clean" antes
+  do commit, mesmo eu tendo "editado" arquivos.
+- Push sobe um commit vazio ou só um merge.
 
-- `ajus*` — features do módulo AJUS (próximos: `ajus009`, `ajus010`, …)
-- `pin*` — features de Prazos Iniciais (próximos: `pin021`, `pin022`, …)
-- `pubX` / `taxX` / `usrX` / `cX` / `notX` — outros módulos seguem
-  numeração própria.
-
-**Quando duas branches mexem em alembic ao mesmo tempo:**
-
-- Cada branch deve criar sua migration em cima do head que existia QUANDO
-  a branch foi cortada. Isso vai gerar 2 heads quando ambas mergearem
-  pra `feat`/`main`.
-- A pessoa que mergear primeiro fica com a chain limpa.
-- A segunda DEVE criar **antes do commit final** uma migration
-  `<modulo>NNN_merge_heads_<a>_and_<b>.py` que une as duas pontas, OU
-  re-encadear a sua migration via `down_revision = "<head_unico_atual>"`.
-
-Já travamos o boot do Coolify com `MultipleHeads` mais de uma vez —
-checar `alembic heads` ANTES de commitar evita o problema.
+**NÃO confundir worktree interna (`.claude/worktrees/<nome>`, gerada
+pelo Claude Code automaticamente) com branches de feature do projeto
+(`feat/prazos-iniciais`, etc.) — branches são commits no mesmo
+checkout, worktree é uma cópia separada do filesystem.**
 
 ## ⚠️ EDIT/WRITE EM ARQUIVO GRANDE — TRUNCAMENTO RECORRENTE ⚠️
 
