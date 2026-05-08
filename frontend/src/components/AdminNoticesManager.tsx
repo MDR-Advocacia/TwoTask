@@ -87,9 +87,14 @@ interface FormState {
 }
 
 function blankForm(): FormState {
-  // Default: aviso comeca em 5 min e termina em 1h. Operador editara'.
+  // Default: aviso ja' fica ativo imediatamente (starts_at = agora - 1min,
+  // pra cobrir o gap ate' o proximo poll do front e evitar que o operador
+  // pense que o sistema esta' lento). Termina em 1h. Pra agendar pro
+  // futuro o operador edita o campo Inicio. (Antes era +5min, mas isso
+  // dava sensacao de "demorou muito pra aparecer" pq todo aviso saia
+  // agendado por padrao.)
   const now = new Date();
-  const start = new Date(now.getTime() + 5 * 60 * 1000);
+  const start = new Date(now.getTime() - 60 * 1000);
   const end = new Date(now.getTime() + 60 * 60 * 1000);
   return {
     title: "",
@@ -312,7 +317,8 @@ export function AdminNoticesManager() {
                   onChange={(e) => setForm({ ...form, starts_at: e.target.value })}
                 />
                 <p className="text-[10px] text-muted-foreground mt-0.5">
-                  Aviso so' aparece a partir desse momento.
+                  Por padrão começa agora. Edite pra agendar pro futuro
+                  (aviso fica como "agendado" até o horário marcado).
                 </p>
               </div>
               <div>
