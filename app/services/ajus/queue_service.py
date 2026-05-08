@@ -373,6 +373,10 @@ def _build_arquivos_for_item(
     Retorna o `arquivos` payload pro AJUS pra um item da fila.
 
     Decide se o item TEM que ter PDF anexado:
+      - Devolucao automatica (cod_andamento.is_devolucao=True): NAO
+        exige PDF -- fluxo entra via POST /intake/devolucao sem
+        habilitacao (intake minimo, so' CNJ + motivo). Retorna lista
+        vazia direto pro payload AJUS.
       - Sim, se item.pdf_path esta setado (cópia AJUS gravada).
       - Sim, se o intake associado tem habilitacao_pdf_path ou pdf_path
         (fallback retroativo).
@@ -387,6 +391,15 @@ def _build_arquivos_for_item(
             anexo ultrapassa 10MB (limite AJUS por arquivo). A
             mensagem ja' vem em PT-BR pronta pra error_message do item.
     """
+    cod = item.cod_andamento
+    if cod is not None and getattr(cod, "is_devolucao", False):
+        logger.info(
+            "AJUS %s: item %d (cnj=%s) e' DEVOLUCAO (cod=%s) -- pulando "
+            "exigencia de PDF (fluxo sem habilitacao).",
+            label, item.id, item.cnj_number, cod.codigo,
+        )
+        return []
+
     intake_has_source = False
     intake_obj = None
     if item.intake_id:

@@ -115,6 +115,7 @@ class AndamentoQueueOut(BaseModel):
     cod_andamento_id: int
     cod_andamento_codigo: Optional[str] = None
     cod_andamento_label: Optional[str] = None
+    cod_andamento_is_devolucao: bool = False
     situacao: str
     data_evento: date
     data_agendamento: date
@@ -214,6 +215,7 @@ def _queue_to_out(
         cod_andamento_id=item.cod_andamento_id,
         cod_andamento_codigo=cod.codigo if cod else None,
         cod_andamento_label=cod.label if cod else None,
+        cod_andamento_is_devolucao=bool(cod.is_devolucao) if cod else False,
         situacao=item.situacao,
         data_evento=item.data_evento,
         data_agendamento=item.data_agendamento,
