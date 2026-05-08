@@ -86,6 +86,10 @@ interface CoverageResponse {
   };
   taxonomy: {
     active_version: string;
+    /** Versao da taxonomia exibida na tela (sempre v2 quando seedada;
+     *  v1 so como fallback). Diferente de active_version, que governa
+     *  o que a IA emite. */
+    tree_version_shown?: string;
     template_driven_mode: boolean;
   };
   tree: CategoryNode[];
@@ -350,8 +354,9 @@ export function OfficeTemplateTree({
             <span
               className="ml-auto text-xs text-muted-foreground cursor-help"
               title={
-                `Polo: ${data.office.polo_scope}\n` +
-                `Taxonomia: ${data.taxonomy.active_version}\n` +
+                `Polo do escritório: ${data.office.polo_scope}\n` +
+                `Lista exibida: ${data.taxonomy.tree_version_shown || data.taxonomy.active_version}\n` +
+                `IA emitindo: ${data.taxonomy.active_version}\n` +
                 (data.taxonomy.template_driven_mode
                   ? "IA só vê categorias com template configurado"
                   : "IA vê a árvore completa")

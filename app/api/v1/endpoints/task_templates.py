@@ -304,13 +304,30 @@ def get_office_coverage(
     active_version = get_active_taxonomy_version()
 
     # Carrega arvore SEM filtro template-driven (operador precisa ver
-    # cats sem template pra adicionar). Usa polo do escritorio + version
-    # ativa.
+    # cats sem template pra adicionar).
+    #
+    # IMPORTANTE: a UI de templates SEMPRE prioriza v2 (a "atual"), mesmo
+    # que o toggle global `taxonomy_active_version` esteja em 'v1'. O
+    # toggle governa o que a IA emite — mas o operador esta CONFIGURANDO
+    # templates, e templates novos sao sempre v2. Mostrar v1 aqui faria
+    # com que templates v2 ja migrados aparecessem como "perdidos"
+    # (apontariam pra cats que nao existem na arvore v1 exibida).
+    #
+    # Se a v2 ainda nao esta seedada (DB sem cats v2), cai em v1 — ai
+    # nao tem como mostrar diferente mesmo.
+    polo_filter = polo if polo in ("ativo", "passivo") else None
     tree_dict = _get_active_tree(
-        polo_scope=polo if polo in ("ativo", "passivo") else None,
-        taxonomy_version=active_version,
-        # NAO passa office_external_id — sem filtro template-driven
+        polo_scope=polo_filter,
+        taxonomy_version="v2",
     )
+    used_version = "v2"
+    if not tree_dict:
+        # v2 nao seedada — fallback pra v1.
+        tree_dict = _get_active_tree(
+            polo_scope=polo_filter,
+            taxonomy_version="v1",
+        )
+        used_version = "v1"
 
     # Carrega todos os templates do escritorio (ativos + pendentes,
     # globais incluidos) com 1 query e mapeia por (cat, sub).
@@ -391,6 +408,7 @@ def get_office_coverage(
         },
         "taxonomy": {
             "active_version": active_version,
+            "tree_version_shown": used_version,
             "template_driven_mode": is_template_driven_taxonomy_active(),
         },
         "tree": tree_payload,
