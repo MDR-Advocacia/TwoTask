@@ -33,3 +33,4 @@ from .classification_taxonomy import (
     ClassificationCategory,
     ClassificationSubcategory,
 )
+from .user_feedback import UserFeedback
