@@ -516,6 +516,83 @@ async def retry_batch_errors(
     }
 
 
+@router.post("/classify-batch/{batch_id}/reclassify-all")
+async def reclassify_full_batch(
+    batch_id: int,
+    db: Session = Depends(get_db),
+    classifier: PublicationBatchClassifier = Depends(_get_batch_classifier),
+    current_user=Depends(auth_security.get_current_user),
+):
+    """Reclassifica TODOS os records de um batch — incluindo os que ja
+    foram classificados com sucesso. Util quando o prompt foi atualizado
+    e o operador quer reaplicar a classificacao em todo o lote com o
+    prompt novo (versao 2026-05-08: persona advogado + filosofia
+    'enquadrar antes de Para Analise').
+
+    Diferente de retry_batch_errors (que pega so os que falharam),
+    este endpoint zera category/subcategory/polo/classifications dos
+    records e re-submete TODOS no lote. O batch original nao e
+    apagado — fica como historico.
+
+    Custo: cada record vira 1 chamada Anthropic. Lote de 516 = 516
+    chamadas. Operador deve confirmar antes via UI."""
+    from app.models.publication_search import PublicationRecord, RECORD_STATUS_NEW
+
+    batch = classifier.get_batch(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch não encontrado.")
+    if not batch.record_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="Batch sem record_ids — nada a reclassificar.",
+        )
+
+    record_ids = list(batch.record_ids)
+    records = (
+        db.query(PublicationRecord)
+        .filter(PublicationRecord.id.in_(record_ids))
+        .all()
+    )
+    if not records:
+        raise HTTPException(
+            status_code=400,
+            detail="Nenhum record encontrado pelos IDs do batch (foram removidos?).",
+        )
+
+    # Reseta a classificacao atual: zera cat/sub/polo/classifications
+    # array. Status volta pra NEW pra que collect_pending_records
+    # consiga pegar (apesar de submit_batch nao depender disso —
+    # passa direto a lista).
+    for r in records:
+        r.category = None
+        r.subcategory = None
+        r.polo = None
+        r.classifications = None
+        r.status = RECORD_STATUS_NEW
+    db.commit()
+
+    try:
+        email = current_user.email if hasattr(current_user, "email") else None
+        new_batch = await classifier.submit_batch(
+            records=records, requested_by_email=email
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao enviar reclassify-all batch: {exc}",
+        )
+
+    return {
+        "message": (
+            f"Novo batch criado com {len(records)} registros "
+            f"(reclassificacao completa do lote {batch_id})."
+        ),
+        "original_batch_id": batch_id,
+        "total_records": len(records),
+        "new_batch": classifier.batch_to_dict(new_batch),
+    }
+
+
 @router.get("/classify-batch/{batch_id}/errors")
 def get_batch_errors(
     batch_id: int,
