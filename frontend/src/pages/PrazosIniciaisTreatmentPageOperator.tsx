@@ -118,13 +118,36 @@ export default function PrazosIniciaisTreatmentPageOperator() {
   acaoEmCursoRef.current = acaoEmCurso;
 
   // ── Carga + auto-refresh ───────────────────────────────────────────
+  // 3 chamadas em paralelo:
+  //  - "fila geral" (limit=50, sem filtro): traz os mais recentes
+  //    cronologicamente — alimenta "Em execucao agora" e "Ultimos
+  //    cancelados".
+  //  - "falhas" (limit=50, queue_status=FALHA): traz items em FALHA
+  //    independente de quao antigos sao. Sem essa chamada, FALHAs
+  //    antigas (IDs baixos) ficam invisiveis pq ORDER BY id DESC do
+  //    backend coloca os CONCLUIDO recentes na frente. Antes desse fix
+  //    (2026-05-08), 35+ items presos na fila ficavam fora do dashboard.
+  //  - metrics (totais agregados, contadores das ultimas 24h).
+  // O setState dedupa por id (FALHA pode aparecer nas duas listas).
   const carregarDados = async () => {
     try {
-      const [payload, metricsPayload] = await Promise.all([
+      const [payloadGeral, payloadFalhas, metricsPayload] = await Promise.all([
         fetchPrazosIniciaisLegacyTaskCancelQueue({ limit: 50, offset: 0 }),
+        fetchPrazosIniciaisLegacyTaskCancelQueue({
+          limit: 50,
+          offset: 0,
+          queue_status: "FALHA",
+        }).catch(() => ({ items: [] as PrazoInicialLegacyTaskCancelQueueItem[] })),
         fetchPrazosIniciaisLegacyTaskCancelQueueMetrics(24).catch(() => null),
       ]);
-      setItems(payload.items);
+      const seen = new Set<number>();
+      const merged: PrazoInicialLegacyTaskCancelQueueItem[] = [];
+      for (const it of [...payloadGeral.items, ...payloadFalhas.items]) {
+        if (seen.has(it.id)) continue;
+        seen.add(it.id);
+        merged.push(it);
+      }
+      setItems(merged);
       setMetrics(metricsPayload);
       setErro(null);
       setAgoraMs(Date.now());
