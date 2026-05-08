@@ -279,7 +279,30 @@ export function OfficeTemplateTree({
         </div>
       </div>
 
-      {/* Resumo */}
+      {/* Banner pre-config: polo do escritorio nao foi definido ainda.
+          Operador medio nao tem acesso ao Admin pra setar polo, entao
+          mostra um aviso amigavel pra ele saber pedir pra o admin. */}
+      {data && data.office.polo_scope === "ambos" && (
+        <Card className="border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700/50">
+          <CardContent className="pt-4 pb-4 flex gap-3">
+            <AlertTriangle className="h-5 w-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+            <div className="text-sm space-y-1">
+              <div className="font-medium text-amber-900 dark:text-amber-200">
+                Configuração de polo deste escritório está pendente
+              </div>
+              <p className="text-amber-800 dark:text-amber-200/80">
+                A árvore abaixo está mostrando todas as categorias (ativo + passivo).
+                Peça pra um administrador definir o polo deste escritório
+                (passivo / ativo) — assim a lista fica mais enxuta.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Resumo: contagens visiveis. Detalhes tecnicos (polo, taxonomia,
+          modo enxuto) ficam num tooltip discreto pra nao confundir
+          operador medio. */}
       {data && (
         <Card>
           <CardContent className="pt-4 pb-3 flex flex-wrap gap-3 items-center">
@@ -294,17 +317,20 @@ export function OfficeTemplateTree({
             {data.summary.pending_review_total > 0 && (
               <Badge variant="outline" className="border-amber-300 text-amber-800 dark:border-amber-700 dark:text-amber-300">
                 <AlertTriangle className="h-3 w-3 mr-1" />
-                {data.summary.pending_review_total} pendente(s) de migração
+                {data.summary.pending_review_total} precisa(m) atualizar
               </Badge>
             )}
-            <span className="ml-auto text-xs text-muted-foreground">
-              Polo: <strong>{data.office.polo_scope}</strong> · Taxonomia:{" "}
-              <strong>{data.taxonomy.active_version}</strong>
-              {data.taxonomy.template_driven_mode && (
-                <span className="ml-2 italic">
-                  · IA só vê cats com template
-                </span>
-              )}
+            <span
+              className="ml-auto text-xs text-muted-foreground cursor-help"
+              title={
+                `Polo: ${data.office.polo_scope}\n` +
+                `Taxonomia: ${data.taxonomy.active_version}\n` +
+                (data.taxonomy.template_driven_mode
+                  ? "IA só vê categorias com template configurado"
+                  : "IA vê a árvore completa")
+              }
+            >
+              ℹ️ detalhes técnicos
             </span>
           </CardContent>
         </Card>
@@ -553,7 +579,8 @@ function SubRow({
               </div>
             </div>
           ))}
-          {/* Pendentes (legacy v1 esperando migracao) */}
+          {/* Templates legacy precisando atualizar classificacao.
+              Linguagem natural — "atualizar" em vez de "migrar pra v2". */}
           {pendings.map((t) => (
             <div
               key={t.id}
@@ -563,13 +590,13 @@ function SubRow({
                 variant="outline"
                 className="text-xs border-amber-300 text-amber-800 dark:border-amber-700 dark:text-amber-300"
               >
-                pendente
+                precisa atualizar
               </Badge>
               <span className="truncate text-muted-foreground">
                 {t.name}
                 {t.legacy_label && (
                   <span className="ml-1 italic">
-                    (antes: {t.legacy_label})
+                    (classificação antiga: {t.legacy_label})
                   </span>
                 )}
               </span>
@@ -582,12 +609,12 @@ function SubRow({
                   onClick={() => onMigrateTemplate(t)}
                   disabled={busyTemplateId === t.id}
                 >
-                  Migrar pra v2
+                  Atualizar classificação
                 </Button>
               </div>
             </div>
           ))}
-          {/* Sem template e sem pendente: mostra "+ adicionar" */}
+          {/* Sem template e sem pendente: mostra "+ adicionar" em destaque. */}
           {!hasTemplate && !hasPending && (
             <div className="mt-1">
               <Button
@@ -602,19 +629,19 @@ function SubRow({
               </Button>
             </div>
           )}
-          {/* Tem template, mas operador pode querer mais 1 (multi-tarefa) */}
+          {/* Ja tem template — link discreto pra operador avancado que
+              quer adicionar uma SEGUNDA tarefa pra mesma classificacao
+              (caso raro: multi-tarefa). Default: estagiario nao precisa
+              ver isso em destaque. */}
           {hasTemplate && (
             <div className="mt-1">
-              <Button
+              <button
                 type="button"
-                variant="ghost"
-                size="sm"
-                className="h-6 px-2 text-xs text-muted-foreground"
                 onClick={onAddTemplate}
+                className="text-[11px] text-muted-foreground/70 hover:text-foreground hover:underline"
               >
-                <Plus className="h-3 w-3 mr-1" />
-                adicionar mais um
-              </Button>
+                + criar uma segunda tarefa pra esta classificação
+              </button>
             </div>
           )}
         </div>

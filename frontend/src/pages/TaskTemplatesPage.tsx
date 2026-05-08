@@ -81,6 +81,13 @@ import {
 } from "@/components/ClassificationPickerDialog";
 import { OfficeTemplatesView } from "@/components/OfficeTemplatesView";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { useAuth } from "@/hooks/useAuth";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
 
 const API = "/api/v1/task-templates";
 
@@ -3028,25 +3035,37 @@ const TaskTemplatesPageLegacy = () => {
 };
 
 const TaskTemplatesPage = () => {
+  // Tab "Auditoria" so aparece pra admin: tela legacy mostra v1+v2
+  // misturadas e tem todos os templates de todos os escritorios — util
+  // pra debug/auditoria, confunde operador medio.
+  const { isAdmin } = useAuth();
+
   return (
     <Tabs defaultValue="by-office" className="space-y-4">
-      <TabsList className="grid w-full max-w-2xl grid-cols-2">
+      <TabsList
+        className={`grid w-full max-w-2xl ${
+          isAdmin ? "grid-cols-2" : "grid-cols-1"
+        }`}
+      >
         <TabsTrigger value="by-office">Por escritório</TabsTrigger>
-        <TabsTrigger value="audit">Auditoria — todos os templates</TabsTrigger>
+        {isAdmin && (
+          <TabsTrigger value="audit">Auditoria (admin)</TabsTrigger>
+        )}
       </TabsList>
       <TabsContent value="by-office" className="mt-4">
         {/* ErrorBoundary impede tela branca: se OfficeTemplatesView quebrar,
-            mostra mensagem com stack em vez de apagar a pagina inteira.
-            Operador pode trocar pra tab Auditoria sem perder o trabalho. */}
+            mostra mensagem com stack em vez de apagar a pagina inteira. */}
         <ErrorBoundary scope="templates-by-office">
           <OfficeTemplatesView />
         </ErrorBoundary>
       </TabsContent>
-      <TabsContent value="audit" className="mt-4">
-        <ErrorBoundary scope="templates-audit-legacy">
-          <TaskTemplatesPageLegacy />
-        </ErrorBoundary>
-      </TabsContent>
+      {isAdmin && (
+        <TabsContent value="audit" className="mt-4">
+          <ErrorBoundary scope="templates-audit-legacy">
+            <TaskTemplatesPageLegacy />
+          </ErrorBoundary>
+        </TabsContent>
+      )}
     </Tabs>
   );
 };

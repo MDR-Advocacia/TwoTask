@@ -201,21 +201,21 @@ export function TemplateReviewModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-xl">
         <DialogHeader>
-          <DialogTitle>Revisar classificação do template</DialogTitle>
+          <DialogTitle>Atualizar classificação do template</DialogTitle>
           <DialogDescription>
-            Re-aponte para a classificação correspondente na taxonomia
-            nova. Demais campos do template (responsável, prazo, descrição)
-            permanecem como estavam — você pode editá-los depois pelo
-            modal regular.
+            Esse template usa uma classificação antiga. Escolha a categoria
+            equivalente na lista atual. Os outros campos (responsável,
+            prazo, descrição) permanecem como estavam — você pode editá-los
+            depois pelo botão "editar".
           </DialogDescription>
         </DialogHeader>
 
-        {/* Banner amarelo: legacy_label */}
+        {/* Banner amarelo: classificacao antiga */}
         <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700/50 p-3 flex gap-3">
           <AlertTriangle className="h-5 w-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
           <div className="text-sm space-y-1">
             <div className="font-medium text-amber-900 dark:text-amber-200">
-              Classificação legada (taxonomia v1)
+              Classificação antiga deste template
             </div>
             <div className="text-amber-800 dark:text-amber-200/80">
               <span className="font-mono text-xs">
@@ -253,12 +253,12 @@ export function TemplateReviewModal({
               categories={categoriesActive}
               onChange={setSelected}
               polo={lockedPolo}
-              label="Nova classificação (taxonomia v2)"
+              label="Nova classificação"
               required
               placeholder={
                 loading
-                  ? "Carregando árvore..."
-                  : `Selecione na árvore do polo ${lockedPolo}`
+                  ? "Carregando lista..."
+                  : "Selecione a classificação correspondente"
               }
               disabled={loading}
             />
@@ -280,7 +280,7 @@ export function TemplateReviewModal({
                   categories={categoriesByPolo.ativo}
                   onChange={setSelected}
                   polo="ativo"
-                  label="Nova classificação (taxonomia v2)"
+                  label="Nova classificação"
                   required
                   disabled={loading}
                 />
@@ -291,7 +291,7 @@ export function TemplateReviewModal({
                   categories={categoriesByPolo.passivo}
                   onChange={setSelected}
                   polo="passivo"
-                  label="Nova classificação (taxonomia v2)"
+                  label="Nova classificação"
                   required
                   disabled={loading}
                 />
@@ -314,7 +314,7 @@ export function TemplateReviewModal({
             onClick={handleMigrate}
             disabled={submitting || loading || !selected}
           >
-            {submitting ? "Migrando..." : "Salvar e Migrar"}
+            {submitting ? "Atualizando..." : "Atualizar"}
           </Button>
         </DialogFooter>
       </DialogContent>
