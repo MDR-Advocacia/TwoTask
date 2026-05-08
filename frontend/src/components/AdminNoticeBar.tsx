@@ -71,7 +71,19 @@ export function AdminNoticeBar() {
     // Carrega imediatamente + a cada 30s.
     load();
     const id = setInterval(load, POLL_INTERVAL_MS);
-    return () => clearInterval(id);
+    // Refresh imediato quando a aba volta a ficar visivel (admin que
+    // acabou de criar aviso em outra aba ve' o banner sem esperar 30s)
+    // e quando a janela reganha foco (alt-tab voltando do navegador).
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") load();
+    };
+    window.addEventListener("focus", load);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("focus", load);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [isAuthenticated, load]);
 
   const handleDismiss = async (noticeId: number) => {
@@ -104,10 +116,17 @@ export function AdminNoticeBar() {
         return (
           <div
             key={n.id}
-            className={`border-b px-4 py-2.5 ${style.container}`}
+            className={`border-b px-4 py-2.5 sm:px-6 ${style.container}`}
             role="alert"
           >
-            <div className="mx-auto flex max-w-screen-2xl items-start gap-3">
+            {/*
+              Banner full-width — sem max-w/mx-auto. O conteudo se
+              estica de borda a borda com padding consistente em
+              qualquer monitor (1366/1920/2560+), evitando a "ilha
+              centralizada" desalinhada da sidebar quando a tela
+              passa de 1536px.
+            */}
+            <div className="flex items-start gap-3">
               <Icon className={`mt-0.5 h-5 w-5 shrink-0 ${style.icon}`} />
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-semibold">{n.title}</div>
