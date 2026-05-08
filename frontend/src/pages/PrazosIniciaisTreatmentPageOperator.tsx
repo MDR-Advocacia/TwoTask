@@ -336,7 +336,7 @@ export default function PrazosIniciaisTreatmentPageOperator() {
   // ── Render ─────────────────────────────────────────────────────────
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6 px-4 py-8">
+    <div className="mx-auto max-w-7xl space-y-5 px-6 py-6">
       {/* Header */}
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
@@ -391,7 +391,7 @@ export default function PrazosIniciaisTreatmentPageOperator() {
               contagens.processando > 0
                 ? `${contagens.processando} em execução`
                 : contagens.pendentes > 0
-                  ? "esperando worker"
+                  ? "esperando processar"
                   : "fila vazia"
             }
             cor={contagens.naFila > 0 ? "blue" : "neutral"}
@@ -429,7 +429,7 @@ export default function PrazosIniciaisTreatmentPageOperator() {
       ) : null}
 
       {/* Hero ação + cards live */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-3">
         <div className="lg:col-span-2">
           {estado === "carregando" ? (
             <CardCarregando />
@@ -589,17 +589,17 @@ function CardVazio({
 }) {
   return (
     <Card className="border-green-200">
-      <CardContent className="flex flex-col items-center gap-4 py-12 text-center">
-        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-green-100">
-          <CheckCircle2 className="h-8 w-8 text-green-600" />
+      <CardContent className="flex flex-col items-center gap-3 py-8 text-center">
+        <div className="flex h-14 w-14 items-center justify-center rounded-full bg-green-100">
+          <CheckCircle2 className="h-7 w-7 text-green-600" />
         </div>
         <div>
-          <h2 className="text-xl font-semibold">Tudo em ordem</h2>
+          <h2 className="text-lg font-semibold">Tudo em ordem</h2>
           <p className="mt-1 text-sm text-muted-foreground">
             Nenhum processo aguardando agora. A fila se atualiza sozinha.
           </p>
         </div>
-        <Button variant="outline" onClick={onBuscarNovos} disabled={buscando}>
+        <Button variant="outline" size="sm" onClick={onBuscarNovos} disabled={buscando}>
           {buscando ? (
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
           ) : (
@@ -629,13 +629,13 @@ function CardPendentes({
 }) {
   return (
     <Card className="border-blue-200">
-      <CardContent className="flex flex-col items-center gap-5 py-10 text-center">
-        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-blue-100">
-          <Inbox className="h-8 w-8 text-blue-600" />
+      <CardContent className="flex flex-col items-center gap-4 py-7 text-center">
+        <div className="flex h-14 w-14 items-center justify-center rounded-full bg-blue-100">
+          <Inbox className="h-7 w-7 text-blue-600" />
         </div>
         <div>
           <div className="flex items-baseline justify-center gap-2">
-            <span className="text-6xl font-bold leading-none text-blue-700">
+            <span className="text-5xl font-bold leading-none text-blue-700">
               {formatNumero(quantidade)}
             </span>
             <span className="text-lg font-medium text-muted-foreground">
@@ -643,16 +643,15 @@ function CardPendentes({
             </span>
           </div>
           {eta ? (
-            <p className="mt-2 text-sm text-muted-foreground">
+            <p className="mt-1.5 text-sm text-muted-foreground">
               No ritmo atual, {eta}.
             </p>
           ) : null}
+          <p className="mt-1 max-w-md text-sm text-muted-foreground">
+            O sistema processa sozinho a cada 1 minuto. Se quiser que rode agora, clique abaixo.
+          </p>
         </div>
-        <p className="max-w-md text-sm text-muted-foreground">
-          O sistema processa sozinho a cada 1 minuto. Se quiser que rode agora, clique
-          abaixo.
-        </p>
-        <div className="flex flex-col items-center gap-2">
+        <div className="flex flex-col items-center gap-1.5">
           <Button
             size="lg"
             className="h-12 px-8 text-base font-semibold shadow-sm"
@@ -688,12 +687,12 @@ function CardPendentes({
 function CardProcessando({ emExecucao }: { emExecucao: number }) {
   return (
     <Card className="border-amber-200 bg-amber-50/30">
-      <CardContent className="flex flex-col items-center gap-4 py-10 text-center">
-        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-amber-100">
-          <Loader2 className="h-8 w-8 animate-spin text-amber-600" />
+      <CardContent className="flex flex-col items-center gap-3 py-7 text-center">
+        <div className="flex h-14 w-14 items-center justify-center rounded-full bg-amber-100">
+          <Loader2 className="h-7 w-7 animate-spin text-amber-600" />
         </div>
         <div>
-          <h2 className="text-xl font-semibold text-amber-900">
+          <h2 className="text-lg font-semibold text-amber-900">
             Processando {emExecucao > 0 ? `${formatNumero(emExecucao)} processo${emExecucao === 1 ? "" : "s"}` : "agora"}…
           </h2>
           <p className="mt-1 max-w-md text-sm text-amber-900/70">
@@ -723,13 +722,13 @@ function CardFalhas({
 
   return (
     <Card className="border-red-200">
-      <CardContent className="space-y-5 py-8">
+      <CardContent className="space-y-4 py-6">
         <div className="flex flex-col items-center gap-2 text-center">
-          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-red-100">
-            <AlertTriangle className="h-8 w-8 text-red-600" />
+          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-red-100">
+            <AlertTriangle className="h-7 w-7 text-red-600" />
           </div>
           <div className="flex items-baseline justify-center gap-2">
-            <span className="text-6xl font-bold leading-none text-red-700">
+            <span className="text-5xl font-bold leading-none text-red-700">
               {formatNumero(itensFalha.length)}
             </span>
             <span className="text-lg font-medium text-muted-foreground">
