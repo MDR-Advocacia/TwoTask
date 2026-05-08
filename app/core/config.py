@@ -160,17 +160,12 @@ class Settings(BaseSettings):
     # fila. Default 5 minutos (rate_limit=2s + RPA tipico ~20-30s, entao 5min
     # cobre RPAs lentos sem travar zumbis reais).
     prazos_iniciais_legacy_task_zombie_threshold_minutes: int = 5
-    # Estrategia de cancelamento. "http" usa POST direto no endpoint
-    # ModalEnvolvimentoEmLote (~250ms/task, sem widget-loading bug — ver
-    # 2026-05-07 testes 1..2.4 + Teste A). Login continua via Playwright
-    # Node em modo --login-only (cookie cacheado em memoria), mas o cancel
-    # em si nunca clica em UI. "playwright" mantem o fluxo subprocess
-    # clickflow legado pra rollback rapido. Default "http".
-    prazos_iniciais_legacy_task_cancellation_strategy: str = "http"
-    # TTL do cookie .ASPXAUTH cacheado em memoria do worker. Cookie real
-    # do L1 dura ~horas, mas usar janela menor reduz o risco de POSTs
-    # gastarem antes de detectar 403 e re-logarem. Re-login custa
-    # ~5-10s (subprocess Node em modo --login-only).
+    # TTL do cookie .ASPXAUTH cacheado em arquivo (volume /app/data,
+    # compartilhado entre os 4 workers Uvicorn via filelock). Cookie real
+    # do L1 dura ~horas; usar janela menor reduz o risco de POSTs gastarem
+    # antes de detectar 403 e re-logarem. Re-login custa ~1 min
+    # (subprocess Node em modo --login-only) e e' serializado entre
+    # workers — so 1 loga, os outros 3 leem do arquivo.
     prazos_iniciais_legacy_task_session_ttl_minutes: int = 30
 
     # ── Disparo periódico do tratamento web (Onda 3 #6) ─────────────────

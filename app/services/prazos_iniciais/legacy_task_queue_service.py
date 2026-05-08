@@ -19,10 +19,9 @@ from app.models.prazo_inicial_legacy_task_queue import (
     QUEUE_STATUS_PROCESSING,
     PrazoInicialLegacyTaskCancellationItem,
 )
-from app.services.prazos_iniciais.legacy_task_cancellation_service import (
+from app.services.prazos_iniciais.legacy_task_helpers import (
     DEFAULT_LEGACY_TASK_SUBTYPE_EXTERNAL_ID,
     DEFAULT_LEGACY_TASK_TYPE_EXTERNAL_ID,
-    LegacyTaskCancellationService,
 )
 from app.services.prazos_iniciais.legacy_task_circuit_breaker import (
     INFRASTRUCTURE_FAILURE_REASONS,
@@ -56,28 +55,13 @@ MANUAL_CANCEL_REASON = "manually_cancelled"
 
 def _resolve_cancellation_service() -> Any:
     """
-    Factory: instancia o service certo baseado em
-    `settings.prazos_iniciais_legacy_task_cancellation_strategy`.
+    Factory do cancellation service. A pivotagem 2026-05-08 removeu a
+    estrategia "playwright" (clickflow via subprocess Node) — agora e'
+    sempre HTTP direto (POST em ModalEnvolvimentoEmLote, ~250ms/task).
 
-    Default 'http' (POST direto, ~250ms/task, sem widget-loading bug).
-    'playwright' mantem o subprocess Node clickflow legado pra rollback
-    rapido (basta flipar a flag no Coolify).
-
-    Importacao do http service e' lazy pra (a) evitar ciclo com este
-    arquivo e (b) nao puxar `requests` em testes que mockam o
-    cancellation_service via parametro do construtor.
+    Import lazy pra evitar puxar `requests` + `filelock` em testes que
+    mockam o cancellation_service via parametro do construtor.
     """
-    strategy = (
-        getattr(settings, "prazos_iniciais_legacy_task_cancellation_strategy", "http")
-        or "http"
-    ).lower()
-    if strategy == "playwright":
-        return LegacyTaskCancellationService()
-    if strategy != "http":
-        logger.warning(
-            "legacy_task_queue: estrategia '%s' desconhecida — usando 'http'.",
-            strategy,
-        )
     from app.services.prazos_iniciais.legacy_task_http_cancellation_service import (
         LegacyTaskHttpCancellationService,
     )

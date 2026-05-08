@@ -36,7 +36,7 @@ from app.services.squad_assistant_resolver import (
     resolve_target,
 )
 from app.services.prazos_iniciais import storage as pdf_storage
-from app.services.prazos_iniciais.legacy_task_cancellation_service import (
+from app.services.prazos_iniciais.legacy_task_helpers import (
     DEFAULT_LEGACY_TASK_SUBTYPE_EXTERNAL_ID,
     DEFAULT_LEGACY_TASK_TYPE_EXTERNAL_ID,
 )

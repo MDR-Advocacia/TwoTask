@@ -18,7 +18,7 @@ from app.services.legal_one_client import LegalOneApiClient, LegalOneGedUploadEr
 from app.db.session import SessionLocal
 from app.models.legal_one import LegalOneUser
 from app.models.prazo_inicial import PrazoInicialIntake
-from app.services.prazos_iniciais.legacy_task_cancellation_service import (
+from app.services.prazos_iniciais.legacy_task_helpers import (
     DEFAULT_LEGACY_TASK_SUBTYPE_EXTERNAL_ID,
     DEFAULT_LEGACY_TASK_TYPE_EXTERNAL_ID,
 )

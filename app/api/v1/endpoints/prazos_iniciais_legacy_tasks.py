@@ -7,13 +7,15 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.core import auth as auth_security
 from app.models.legal_one import LegalOneUser
-from app.services.prazos_iniciais.legacy_task_cancellation_service import (
+from app.services.prazos_iniciais.legacy_task_helpers import (
     DEFAULT_CANCELLED_STATUS_ID,
     DEFAULT_CANCELLED_STATUS_TEXT,
     DEFAULT_LEGACY_TASK_CANDIDATE_STATUS_IDS,
     DEFAULT_LEGACY_TASK_SUBTYPE_EXTERNAL_ID,
     DEFAULT_LEGACY_TASK_TYPE_EXTERNAL_ID,
-    LegacyTaskCancellationService,
+)
+from app.services.prazos_iniciais.legacy_task_http_cancellation_service import (
+    LegacyTaskHttpCancellationService,
 )
 
 router = APIRouter(prefix="/prazos-iniciais", tags=["Prazos Iniciais"])
@@ -81,7 +83,11 @@ def cancel_legacy_agendar_prazos_task(
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
     try:
-        service = LegacyTaskCancellationService()
+        # Pivotagem 2026-05-08: cancelamento agora e' 100% HTTP direto
+        # (POST em ModalEnvolvimentoEmLote). Subprocess Node sobrevive
+        # apenas pra fazer login OnePass (cookie cacheado em arquivo
+        # compartilhado entre os 4 workers Uvicorn).
+        service = LegacyTaskHttpCancellationService()
         result = service.cancel_task(
             cnj_number=body.cnj_number,
             lawsuit_id=body.lawsuit_id,

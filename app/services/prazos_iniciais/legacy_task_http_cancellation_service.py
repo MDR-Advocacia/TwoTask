@@ -1,7 +1,7 @@
 """
 Cancelamento da legacy task "Agendar Prazos" via HTTP direto.
 
-Substitui o subprocess Node + clickflow (LegacyTaskCancellationService)
+Substitui o subprocess Node + clickflow (LegacyTaskHelper (legacy_task_helpers))
 por um POST direto no endpoint `ModalEnvolvimentoEmLote` do Legal One web.
 
 Descobertas validadas em produção (2026-05-07):
@@ -21,12 +21,13 @@ Login `.ASPXAUTH` continua via Playwright Node em modo `--login-only`
 (single APScheduler max_instances=1, single container Coolify). TTL
 configuravel; refresh sob demanda quando POST retorna 403.
 
-Interface compativel com `LegacyTaskCancellationService.cancel_task()`:
+Interface compativel com `LegacyTaskHelper (legacy_task_helpers).cancel_task()`:
   - mesma assinatura
   - mesmo formato de retorno (dict com success/reason/runner_state/etc.)
   - mesmas categorias de erro pro circuit breaker
-Permite plugar no `PrazosIniciaisLegacyTaskQueueService` via factory
-(settings.prazos_iniciais_legacy_task_cancellation_strategy).
+Plugado no `PrazosIniciaisLegacyTaskQueueService` via factory direta —
+desde 2026-05-08 a estrategia "playwright" (clickflow) foi removida e
+agora e' sempre HTTP.
 """
 
 from __future__ import annotations
@@ -34,26 +35,31 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import subprocess
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import quote
 
 import requests
 from filelock import FileLock, Timeout as FileLockTimeout
 
 from app.core.config import settings
 from app.services.legal_one_client import LegalOneApiClient
-from app.services.prazos_iniciais.legacy_task_cancellation_service import (
+from app.services.prazos_iniciais.legacy_task_helpers import (
     DEFAULT_CANCELLED_STATUS_ID,
     DEFAULT_CANCELLED_STATUS_TEXT,
     DEFAULT_LEGACY_TASK_CANDIDATE_STATUS_IDS,
     DEFAULT_LEGACY_TASK_SUBTYPE_EXTERNAL_ID,
     DEFAULT_LEGACY_TASK_TYPE_EXTERNAL_ID,
     DEFAULT_LEGAL_ONE_WEB_BASE_URL,
-    LegacyTaskCancellationService,
+    LegacyTaskResolver,
+    build_task_urls,
+    resolve_node_binary,
+    resolve_output_root,
+    resolve_runner_script,
+    resolve_web_credentials,
+    web_base_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,20 +102,20 @@ _SESSION_LOCK_PATH = Path("/app/data/legacy_task_http_session.lock")
 class LegacyTaskHttpCancellationService:
     """
     Cancela a legacy task via POST HTTP. Drop-in para
-    `LegacyTaskCancellationService` no `PrazosIniciaisLegacyTaskQueueService`.
+    `LegacyTaskHelper (legacy_task_helpers)` no `PrazosIniciaisLegacyTaskQueueService`.
     """
 
     def __init__(
         self,
         *,
         client: Optional[LegalOneApiClient] = None,
-        legacy_helper: Optional[LegacyTaskCancellationService] = None,
+        resolver: Optional[LegacyTaskResolver] = None,
     ):
         self.client = client or LegalOneApiClient()
-        # Reusa o service legado APENAS para os helpers de resolucao
-        # (CNJ -> lawsuit_id -> task selection) e as funcoes de
-        # credenciais/runner — duplicar essa logica daria divergencia.
-        self._legacy = legacy_helper or LegacyTaskCancellationService(client=self.client)
+        # Resolver — encapsula o fluxo CNJ -> lawsuit_id -> task selection
+        # via API L1 REST. Helpers de paths/credenciais sao funcoes
+        # module-level no `legacy_task_helpers`.
+        self._resolver = resolver or LegacyTaskResolver(client=self.client)
         self._http = requests.Session()
         self.logger = logging.getLogger(__name__)
 
@@ -127,18 +133,12 @@ class LegacyTaskHttpCancellationService:
             return None
 
     def _web_base_url(self) -> str:
-        return (
-            os.getenv("LEGAL_ONE_WEB_URL")
-            or os.getenv("LEGALONE_WEB_URL")
-            or DEFAULT_LEGAL_ONE_WEB_BASE_URL
-        ).rstrip("/")
+        return web_base_url()
 
     def _build_task_urls(
         self, task_id: int, lawsuit_id: Optional[int] = None
     ) -> dict[str, str]:
-        # Espelha LegacyTaskCancellationService._build_task_urls — mesmo
-        # output pra retorno consistente entre os dois services.
-        return self._legacy._build_task_urls(task_id, lawsuit_id=lawsuit_id)
+        return build_task_urls(task_id, lawsuit_id=lawsuit_id)
 
     # ── Sessao HTTP ───────────────────────────────────────────────────
 
@@ -240,7 +240,7 @@ class LegacyTaskHttpCancellationService:
 
     def _resolve_login_paths(self) -> Path:
         run_dir = (
-            self._legacy._resolve_output_root()
+            resolve_output_root()
             / "login-only"
             / self._utcnow().strftime("%Y%m%d-%H%M%S-%f")
         )
@@ -251,17 +251,17 @@ class LegacyTaskHttpCancellationService:
         """
         Invoca `cancel-legacy-task.js --login-only --output <path>` pra
         obter o cookie .ASPXAUTH (e companhia) sem depender do clickflow.
-        Re-usa todo o fluxo OnePass/Thomson Reuters/key selection que ja
-        passou pelo crivo de SSO/2FA do legacy runner.
+        Re-usa o fluxo OnePass/Thomson Reuters/key selection do JS — o
+        unico residuo do Playwright que sobrevive na pivotagem HTTP.
         """
-        runner_script = self._legacy._resolve_runner_script()
+        runner_script = resolve_runner_script()
         if not runner_script.exists():
             raise RuntimeError(
                 f"Runner Playwright nao encontrado em {runner_script}"
             )
 
-        node_binary = self._legacy._resolve_node_binary()
-        credentials = self._legacy._resolve_credentials()
+        node_binary = resolve_node_binary()
+        credentials = resolve_web_credentials()
 
         run_dir = self._resolve_login_paths()
         output_path = run_dir / "cookies.json"
@@ -459,7 +459,7 @@ class LegacyTaskHttpCancellationService:
             category="runner_error",
         )
 
-    # ── Interface publica (compat com LegacyTaskCancellationService) ──
+    # ── Interface publica (compat com LegacyTaskHelper (legacy_task_helpers)) ──
 
     def cancel_task(
         self,
@@ -477,9 +477,9 @@ class LegacyTaskHttpCancellationService:
         candidate_status_ids = list(
             candidate_status_ids or DEFAULT_LEGACY_TASK_CANDIDATE_STATUS_IDS
         )
-        # Resolucao reusa o legado — mesmo fluxo CNJ -> lawsuit_id ->
-        # task_id, mesmas branches de "task_not_found", "lawsuit_not_found".
-        resolution = self._legacy._resolve_target_task(
+        # Resolucao via API L1 REST (CNJ -> lawsuit_id -> task_id).
+        # Branches possiveis: task_selected, task_not_found, lawsuit_not_found.
+        resolution = self._resolver.resolve_target_task(
             cnj_number=cnj_number,
             lawsuit_id=lawsuit_id,
             task_id=task_id,
@@ -526,6 +526,11 @@ class LegacyTaskHttpCancellationService:
         current_status_id = self._to_int(selected_task.get("statusId"))
         TERMINAL_STATUS_IDS = {1, 2, 3}
         if current_status_id == int(target_status_id):
+            logger.info(
+                "legacy_task_http.skip_already_target task_id=%s status=%s "
+                "(memory pre-check; ja' cancelada — sem POST)",
+                resolved_task_id, current_status_id,
+            )
             return self._build_skip_payload(
                 reason="already_in_target_status",
                 normalized_cnj=normalized_cnj,
@@ -541,7 +546,8 @@ class LegacyTaskHttpCancellationService:
             )
         if current_status_id in TERMINAL_STATUS_IDS:
             logger.info(
-                "legacy_task_http.skip_terminal task_id=%s current=%s target=%s",
+                "legacy_task_http.skip_terminal task_id=%s current=%s target=%s "
+                "(memory pre-check; estado terminal != target — sem POST)",
                 resolved_task_id, current_status_id, target_status_id,
             )
             return self._build_skip_payload(
@@ -591,23 +597,50 @@ class LegacyTaskHttpCancellationService:
         # Verificacao autoritativa via API L1 — fonte da verdade. O 200
         # do POST significa "fila aceita", nao "executado" (Teste 2.1
         # provou: StatusId invalido tambem retorna 200 silencioso).
+        #
+        # Retry curto: o L1 web aceita o POST instantaneamente, mas o
+        # backend deles processa de forma assincrona — observado em
+        # producao (2026-05-08) levando ~5-10s pra `statusId` refletir o
+        # cancelamento na API REST. Verify imediato = falso negativo
+        # (`statusId=0 ainda Pendente`) -> item marcado FAILED -> tick
+        # seguinte detecta terminal e marca COMPLETED, mas o painel
+        # pisca uma falha falsa por ~1 min. Com retry curto, declaramos
+        # falha so' apos confirmar mesmo.
         api_verified_status: Optional[int] = None
-        try:
-            task_after = self.client.get_task_by_id(int(resolved_task_id))
-            api_verified_status = self._to_int(task_after.get("statusId"))
-            logger.info(
-                "legacy_task_queue.cancel_task.api_verify task_id=%s "
-                "api_statusId=%s target=%s runner_reports=%s",
-                resolved_task_id,
-                api_verified_status,
-                target_status_id,
-                runner_item_status,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "legacy_task_queue.cancel_task.api_verify_failed task_id=%s err=%s",
-                resolved_task_id, exc,
-            )
+        VERIFY_RETRIES = 3
+        VERIFY_SLEEP_S = 2.0
+        for attempt in range(VERIFY_RETRIES):
+            try:
+                task_after = self.client.get_task_by_id(int(resolved_task_id))
+                api_verified_status = self._to_int(task_after.get("statusId"))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "legacy_task_queue.cancel_task.api_verify_failed "
+                    "task_id=%s attempt=%s err=%s",
+                    resolved_task_id, attempt + 1, exc,
+                )
+                api_verified_status = None
+                break  # erro de rede/auth da API L1 — nao vale tentar de novo
+
+            if api_verified_status == int(target_status_id):
+                # Confirmou — para imediatamente.
+                break
+            # Ainda nao confirmou. Se runner falhou, nao adianta esperar
+            # (POST nao foi aceito).
+            if runner_state == "error":
+                break
+            # Mais uma tentativa? Espera e re-busca.
+            if attempt < VERIFY_RETRIES - 1:
+                time.sleep(VERIFY_SLEEP_S)
+
+        logger.info(
+            "legacy_task_queue.cancel_task.api_verify task_id=%s "
+            "api_statusId=%s target=%s runner_reports=%s",
+            resolved_task_id,
+            api_verified_status,
+            target_status_id,
+            runner_item_status,
+        )
 
         api_confirms_target = (
             api_verified_status is not None
