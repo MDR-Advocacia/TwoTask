@@ -881,6 +881,13 @@ export default function AjusPage() {
                               <FileText className="h-3.5 w-3.5" />
                               <Eye className="h-3 w-3" />
                             </button>
+                          ) : item.cod_andamento_is_devolucao ? (
+                            <span
+                              className="text-xs text-muted-foreground"
+                              title="Devolução não exige PDF"
+                            >
+                              —
+                            </span>
                           ) : selectable ? (
                             <button
                               type="button"

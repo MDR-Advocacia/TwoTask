@@ -696,6 +696,7 @@ export interface AjusAndamentoQueueItem {
   cod_andamento_id: number;
   cod_andamento_codigo: string | null;
   cod_andamento_label: string | null;
+  cod_andamento_is_devolucao: boolean;
   situacao: "A" | "C";
   data_evento: string;          // YYYY-MM-DD
   data_agendamento: string;
