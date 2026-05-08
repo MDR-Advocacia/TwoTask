@@ -2460,13 +2460,19 @@ async def submit_pending_classification(
 )
 def list_classification_batches(
     limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
 ):
     classifier = PrazosIniciaisBatchClassifier(db=db)
-    batches = classifier.list_batches(limit=limit)
+    # total real do banco (count separado), pra o paginador do frontend
+    # exibir "Pagina X de Y · N-M de T" corretamente. Antes desse fix
+    # (2026-05-08), total = len(batches) era so' o tamanho da pagina —
+    # impossibilitava pagiacao no UI.
+    total = classifier.count_batches()
+    batches = classifier.list_batches(limit=limit, offset=offset)
     return BatchListResponse(
-        total=len(batches),
+        total=total,
         items=[BatchSummary(**classifier.batch_to_dict(b)) for b in batches],
     )
 
