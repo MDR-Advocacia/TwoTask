@@ -113,6 +113,36 @@ class PublicationBatchClassifier:
             query = query.filter(PublicationRecord.linked_lawsuit_id.is_(None))
         query = query.order_by(PublicationRecord.id)
 
+        # Anti-duplicacao: tira records que JA estao em batch ativo
+        # (submetido / em processamento / pronto pra aplicar). Sem isso,
+        # se o scheduler dispara antes do batch anterior terminar a
+        # Anthropic, o collect pega os mesmos records e cria batch
+        # duplicado — gasta 2x token e duplica errors.
+        # Bug raiz observado em 2026-05-08: lotes #29 e #30 com 516
+        # records identicos com 1 minuto de diferenca.
+        active_record_ids: set[int] = set()
+        active_batches = (
+            self.db.query(PublicationBatchClassification.record_ids)
+            .filter(
+                PublicationBatchClassification.status.in_([
+                    PUB_BATCH_STATUS_SUBMITTED,
+                    PUB_BATCH_STATUS_IN_PROGRESS,
+                    PUB_BATCH_STATUS_READY,
+                ])
+            )
+            .all()
+        )
+        for row in active_batches:
+            if row[0]:
+                active_record_ids.update(row[0])
+        if active_record_ids:
+            query = query.filter(~PublicationRecord.id.in_(active_record_ids))
+            logger.info(
+                "collect_pending_records: %d records ja em batch ativo "
+                "foram excluidos da fila",
+                len(active_record_ids),
+            )
+
         all_records = query.all()
 
         # Deduplicação: uma publicação por (processo, dia)

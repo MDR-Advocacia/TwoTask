@@ -1472,6 +1472,38 @@ const PublicationsPage = () => {
     }
   };
 
+  // Reclassifica TODOS os records do lote (incluindo os que ja deram
+  // sucesso). Usa quando o prompt foi atualizado e operador quer
+  // reaplicar a classificacao com a logica nova. Custo proporcional
+  // ao tamanho do lote — exige confirmacao explicita.
+  const handleReclassifyFullBatch = async (batchId: number, totalRecords: number) => {
+    const confirmed = window.confirm(
+      `Reclassificar TODOS os ${totalRecords} registros do lote #${batchId}?\n\n` +
+      `Isso vai criar um novo batch e gastar ~${totalRecords} chamadas Anthropic. ` +
+      `O lote original fica preservado como histórico. Continuar?`
+    );
+    if (!confirmed) return;
+    setRetryingBatchId(batchId);
+    try {
+      const res = await apiFetch(`${API}/classify-batch/${batchId}/reclassify-all`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || "Falha ao reclassificar lote");
+      }
+      const result = await res.json();
+      toast({
+        title: "Reclassificação iniciada",
+        description: `Novo batch #${result.new_batch?.id} criado com ${result.total_records} registros.`,
+      });
+      loadBatches();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast({ title: "Erro", description: msg, variant: "destructive" });
+    } finally {
+      setRetryingBatchId(null);
+    }
+  };
+
   // ─── Rebuild proposals ───────────────────────────────────────────────
   const [rebuildingProposals, setRebuildingProposals] = useState(false);
 
@@ -2952,6 +2984,18 @@ const PublicationsPage = () => {
                                   )}
                                   title="Ver detalhes dos erros">
                                   <Eye className="h-3 w-3" />
+                                </Button>
+                              )}
+                              {b.status === "APLICADO" && b.total_records > 0 && (
+                                <Button size="sm" variant="outline"
+                                  className="h-6 px-2 text-[10px] text-blue-700 border-blue-300 hover:bg-blue-50"
+                                  disabled={retryingBatchId === b.id}
+                                  onClick={() => handleReclassifyFullBatch(b.id, b.total_records)}
+                                  title="Reclassifica TODOS os registros do lote (inclui sucesso) — usa quando o prompt foi atualizado">
+                                  {retryingBatchId === b.id
+                                    ? <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                                    : <RotateCcw className="mr-1 h-3 w-3" />}
+                                  Reclassificar lote ({b.total_records})
                                 </Button>
                               )}
                             </div>
