@@ -116,7 +116,7 @@ export function AdminNoticeBar() {
         return (
           <div
             key={n.id}
-            className={`border-b px-4 py-2.5 sm:px-6 ${style.container}`}
+            className={`border-b px-5 py-4 sm:px-8 sm:py-5 ${style.container}`}
             role="alert"
           >
             {/*
@@ -124,15 +124,17 @@ export function AdminNoticeBar() {
               estica de borda a borda com padding consistente em
               qualquer monitor (1366/1920/2560+), evitando a "ilha
               centralizada" desalinhada da sidebar quando a tela
-              passa de 1536px.
+              passa de 1536px. Padding vertical generoso (py-4/py-5)
+              + texto maior (base/sm) pra notificacao se destacar
+              em monitores grandes — em modal pequeno ainda cabe.
             */}
-            <div className="flex items-start gap-3">
-              <Icon className={`mt-0.5 h-5 w-5 shrink-0 ${style.icon}`} />
+            <div className="flex items-start gap-3.5">
+              <Icon className={`mt-0.5 h-6 w-6 shrink-0 ${style.icon}`} />
               <div className="flex-1 min-w-0">
-                <div className="text-sm font-semibold">{n.title}</div>
-                <div className="text-xs whitespace-pre-wrap">{n.message}</div>
+                <div className="text-base font-semibold leading-tight">{n.title}</div>
+                <div className="text-sm whitespace-pre-wrap mt-1">{n.message}</div>
                 {n.ends_at ? (
-                  <div className="text-[10px] mt-0.5 opacity-70">
+                  <div className="text-xs mt-1 opacity-70">
                     Ate {new Date(n.ends_at).toLocaleString("pt-BR", {
                       timeZone: "America/Fortaleza",
                       dateStyle: "short",
@@ -145,10 +147,10 @@ export function AdminNoticeBar() {
                 type="button"
                 onClick={() => handleDismiss(n.id)}
                 disabled={isDismissing}
-                className="shrink-0 rounded-md p-1 hover:bg-black/5 disabled:opacity-50"
+                className="shrink-0 rounded-md p-1.5 hover:bg-black/5 disabled:opacity-50"
                 title="Dispensar este aviso (nao volta a aparecer pra voce)"
               >
-                <X className="h-4 w-4" />
+                <X className="h-5 w-5" />
               </button>
             </div>
           </div>
