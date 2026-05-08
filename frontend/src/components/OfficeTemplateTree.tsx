@@ -250,7 +250,56 @@ export function OfficeTemplateTree({
         title: "Template removido",
         description: `${t.name} — pode ser reativado por um administrador na aba "Auditoria".`,
       });
-      await load();
+      // Update otimista: remove o template da arvore localmente sem
+      // refetch. `await load()` resetava o `expanded` (recolhia
+      // categorias abertas manualmente) e re-renderizava a arvore
+      // inteira, jogando o operador pro topo da pagina a cada
+      // remocao. Atualizar so o no afetado mantem scroll e expansao.
+      setData((prev) => {
+        if (!prev) return prev;
+        const newTree = prev.tree.map((cat) => ({
+          ...cat,
+          category_only_templates: cat.category_only_templates.filter(
+            (x) => x.id !== t.id,
+          ),
+          category_only_pending: cat.category_only_pending.filter(
+            (x) => x.id !== t.id,
+          ),
+          subcategories: cat.subcategories.map((s) => ({
+            ...s,
+            templates: s.templates.filter((x) => x.id !== t.id),
+            pending_templates: s.pending_templates.filter(
+              (x) => x.id !== t.id,
+            ),
+          })),
+        }));
+        // Recalcula contagens do summary pra os badges no header
+        // refletirem a remocao (cats com/sem template, pendentes).
+        let catsWith = 0;
+        let pendingTotal = 0;
+        for (const c of newTree) {
+          const hasTmpl =
+            c.category_only_templates.length > 0 ||
+            c.subcategories.some((s) => s.templates.length > 0);
+          if (hasTmpl) catsWith += 1;
+          pendingTotal +=
+            c.category_only_pending.length +
+            c.subcategories.reduce(
+              (acc, s) => acc + s.pending_templates.length,
+              0,
+            );
+        }
+        return {
+          ...prev,
+          tree: newTree,
+          summary: {
+            ...prev.summary,
+            categories_with_template: catsWith,
+            categories_without_template: newTree.length - catsWith,
+            pending_review_total: pendingTotal,
+          },
+        };
+      });
     } catch (err: any) {
       toast({
         title: "Erro ao remover",

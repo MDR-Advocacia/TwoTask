@@ -367,7 +367,7 @@ export function TemplateInlineModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto overflow-x-hidden">
         <DialogHeader>
           <DialogTitle>
             {mode === "create" ? "Adicionar template" : "Editar template"}
@@ -558,8 +558,13 @@ export function TemplateInlineModal({
                     </div>
                   </div>
 
-                  {/* Prazo + Referência + Prioridade */}
-                  <div className="grid grid-cols-3 gap-3">
+                  {/* Prazo + Referência + Prioridade.
+                      `[&>*]:min-w-0` impede que select com label longo
+                      (ex.: "Data atual (quando criar a tarefa)") expanda
+                      a coluna alem do 1fr e estoure o modal. Sem isso a
+                      tela ganha scrollbar horizontal e o ultimo campo
+                      (Prioridade) some pra fora. */}
+                  <div className="grid grid-cols-3 gap-3 [&>*]:min-w-0">
                     <div className="grid gap-1.5">
                       <Label className="text-xs">Prazo (dias úteis)</Label>
                       <Input
