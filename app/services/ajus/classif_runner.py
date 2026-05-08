@@ -2126,78 +2126,121 @@ class AjusClassifRunner:
         save_js = """
         ([codMateria, codJustica, codRisco, codNatureza]) => new Promise((resolve) => {
           try {
-            // 1. Localizar form principal (xtype=form que contem
-            //    input[name="codAcaoJudicial"] do processo aberto)
-            const target = document.querySelector(
-              'input[name="codAcaoJudicial"]:not([type="hidden"])'
-            ) || document.querySelector('input[name="codAcaoJudicial"]');
-            if (!target) {
-              resolve({ok: false, reason: 'form-target-nao-achado'});
+            const Ext = window.Ext;
+            if (!Ext || !Ext.ComponentMgr) {
+              resolve({ok: false, reason: 'sem-ext'});
               return;
             }
-            let form = null;
-            const all = (window.Ext && window.Ext.ComponentMgr && window.Ext.ComponentMgr.all && window.Ext.ComponentMgr.all.items) || [];
-            for (let i = 0; i < all.length; i++) {
-              const c = all[i];
-              try {
-                if (c && c.xtype === 'form' && c.el && c.el.dom && c.el.dom.contains(target)) {
-                  form = c; break;
-                }
-              } catch (e) {}
-            }
-            if (!form || !form.getForm) {
-              resolve({ok: false, reason: 'form-cmp-nao-achado'});
-              return;
-            }
-            // 2. getValues do form
-            const values = form.getForm().getValues();
-            if (!values || !values.codAcaoJudicial) {
-              resolve({ok: false, reason: 'form-values-vazio'});
-              return;
-            }
-            // 3. Drop 4 chaves do grid
-            const dropKeys = ['ativo', 'codCorrespondente',
-                              'codTipoProcessoAcaoJudicial', 'numeroProcesso'];
-            for (const k of dropKeys) { delete values[k]; }
-            // 4. Add 13 chaves de housekeeping
-            values.action = 'update';
-            values.complementos = '{}';
-            values.listaCorrespondentesAcaoJudicial = '[]';
-            values.listaInfracaoTransitoTipoEfeitoSuspensivo = '';
-            values.listaInfracaoTransitoTipoExame = '';
-            values.listaInfracaoTransitoTipoInfracaoTransito = '';
-            values.listaInfracaoTransitoVeiculos = '';
-            values.listaParcelasAcaoTrabalhista = '';
-            values.listaVeiculos = '';
-            values.recadastrarParcelas = 'false';
-            values.recadastrarParcelasEmprestimo = 'false';
-            if (values.observacao === undefined || values.observacao === null) {
-              values.observacao = '';
-            }
-            // 5. Override 4 codes (UF/Comarca ficam server-side)
-            values.codClassificacaoAcaoJudicial = String(codMateria);
-            values.codTipoResultadoFinal = String(codJustica);
-            values.codProbabilidadePerda = String(codRisco);
-            values.codNatureza = String(codNatureza);
-            // 6. POST direto
-            const xhr = new XMLHttpRequest();
-            xhr.open('POST', '/ajax.handler.php?id=numberid.41', true);
-            xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
-            xhr.setRequestHeader('X-Requested-With', 'Ext.basex');
-            xhr.timeout = 30000;
-            xhr.onload = () => {
-              const body = (xhr.responseText || '').replace(/^[\uFEFF\u200B]+/, '').trim();
-              let parsed = null;
-              try { parsed = JSON.parse(body); } catch (e) {}
-              resolve({
-                ok: true, status: xhr.status, body: body.slice(0, 600),
-                parsed: parsed,
-                codAcaoJudicial: values.codAcaoJudicial,
-              });
+            const findForm = () => {
+              const all = (Ext.ComponentMgr.all && Ext.ComponentMgr.all.items) || [];
+              const candidates = [];
+              for (let i = 0; i < all.length; i++) {
+                const c = all[i];
+                try {
+                  // Filtro relaxado: qualquer cmp com getForm que devolve
+                  // codAcaoJudicial populado. xtype pode variar entre
+                  // form/formpanel/customizado em Ext 3.x.
+                  if (!c || typeof c.getForm !== 'function') continue;
+                  let v = null;
+                  try { v = c.getForm().getValues(); } catch (e0) { continue; }
+                  if (!v || !v.codAcaoJudicial || v.codAcaoJudicial === '0') continue;
+                  let inWindow = false;
+                  try {
+                    inWindow = !!(c.el && c.el.dom && c.el.dom.closest && c.el.dom.closest('.x-window:not(.x-window-noborder)'));
+                  } catch (e1) {}
+                  candidates.push({c: c, v: v, inWindow: inWindow, xtype: c.xtype || '(sem-xtype)'});
+                } catch (e2) {}
+              }
+              if (!candidates.length) return null;
+              const inWin = candidates.filter(x => x.inWindow);
+              return (inWin[0] || candidates[0]);
             };
-            xhr.onerror = () => resolve({ok: false, reason: 'xhr-network-error'});
-            xhr.ontimeout = () => resolve({ok: false, reason: 'xhr-timeout-30s'});
-            xhr.send(new URLSearchParams(values).toString());
+            const diagnose = () => {
+              try {
+                const all = (Ext.ComponentMgr.all && Ext.ComponentMgr.all.items) || [];
+                const summary = {
+                  total_cmps: all.length,
+                  com_getForm: 0,
+                  cmps_form_xtype: 0,
+                  com_codAJ_populado: 0,
+                  exemplos: [],
+                };
+                for (let i = 0; i < all.length; i++) {
+                  const c = all[i];
+                  if (!c) continue;
+                  if (c.xtype === 'form') summary.cmps_form_xtype++;
+                  if (typeof c.getForm === 'function') {
+                    summary.com_getForm++;
+                    try {
+                      const v = c.getForm().getValues();
+                      if (v && v.codAcaoJudicial && v.codAcaoJudicial !== '0') {
+                        summary.com_codAJ_populado++;
+                        if (summary.exemplos.length < 3) {
+                          summary.exemplos.push({
+                            id: c.id, xtype: c.xtype || '(sem)',
+                            codAJ: v.codAcaoJudicial,
+                            keys: Object.keys(v).length,
+                          });
+                        }
+                      }
+                    } catch (e) {}
+                  }
+                }
+                return summary;
+              } catch (e) { return {error: String(e)}; }
+            };
+            const proceed = (picked) => {
+              const values = picked.v;
+              if (!values || !values.codAcaoJudicial) {
+                resolve({ok: false, reason: 'form-values-vazio'});
+                return;
+              }
+              const dropKeys = ['ativo','codCorrespondente','codTipoProcessoAcaoJudicial','numeroProcesso'];
+              for (let i = 0; i < dropKeys.length; i++) { delete values[dropKeys[i]]; }
+              values.action = 'update';
+              values.complementos = '{}';
+              values.listaCorrespondentesAcaoJudicial = '[]';
+              values.listaInfracaoTransitoTipoEfeitoSuspensivo = '';
+              values.listaInfracaoTransitoTipoExame = '';
+              values.listaInfracaoTransitoTipoInfracaoTransito = '';
+              values.listaInfracaoTransitoVeiculos = '';
+              values.listaParcelasAcaoTrabalhista = '';
+              values.listaVeiculos = '';
+              values.recadastrarParcelas = 'false';
+              values.recadastrarParcelasEmprestimo = 'false';
+              if (values.observacao === undefined || values.observacao === null) {
+                values.observacao = '';
+              }
+              values.codClassificacaoAcaoJudicial = String(codMateria);
+              values.codTipoResultadoFinal = String(codJustica);
+              values.codProbabilidadePerda = String(codRisco);
+              values.codNatureza = String(codNatureza);
+              const xhr = new XMLHttpRequest();
+              xhr.open('POST', '/ajax.handler.php?id=numberid.41', true);
+              xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
+              xhr.setRequestHeader('X-Requested-With', 'Ext.basex');
+              xhr.timeout = 30000;
+              xhr.onload = () => {
+                const body = (xhr.responseText || '').trim();
+                let parsed = null;
+                try { parsed = JSON.parse(body); } catch (e3) {}
+                resolve({ok: true, status: xhr.status, body: body.slice(0, 600), parsed: parsed, codAcaoJudicial: values.codAcaoJudicial});
+              };
+              xhr.onerror = () => resolve({ok: false, reason: 'xhr-network-error'});
+              xhr.ontimeout = () => resolve({ok: false, reason: 'xhr-timeout-30s'});
+              xhr.send(new URLSearchParams(values).toString());
+            };
+            const start = Date.now();
+            const tryFind = () => {
+              const picked = findForm();
+              if (picked) { proceed(picked); return; }
+              if (Date.now() - start > 12000) {
+                resolve({ok: false, reason: 'form-cmp-nao-achado-12s', diagnose: diagnose()});
+                return;
+              }
+              setTimeout(tryFind, 400);
+            };
+            tryFind();
           } catch (e) {
             resolve({ok: false, reason: 'js-exception:' + String(e).slice(0, 300)});
           }
@@ -2215,6 +2258,13 @@ class AjusClassifRunner:
 
         if not result or not result.get("ok"):
             reason = (result or {}).get("reason", "(sem reason)")
+            diag = (result or {}).get("diagnose")
+            if diag:
+                logger.warning(
+                    "AJUS runner: form nao achado p/ item %d (cnj=%s) — "
+                    "DIAGNOSE: %r",
+                    item.id, item.cnj_number, diag,
+                )
             raise AjusRunnerError(
                 f"Save XHR nao saiu (item {item.id} cnj={item.cnj_number}): "
                 f"{reason}"

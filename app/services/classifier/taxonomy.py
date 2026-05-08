@@ -588,13 +588,54 @@ def repair_classification(
             if sub in subs:
                 return parent, sub
 
+    # Fallback final pra cat valida + sub invalida.
+    #
+    # REGRA RIGIDA (alinhada com user em 2026-05-08):
+    #   - INVENTAR NAO EXISTE. Sub que nao bate com a lista da cat
+    #     NUNCA vira "qualquer sub razoavel". Vira sub "Para Análise"
+    #     da propria cat (se existir) ou cai pra cat residual global
+    #     "Para Análise" do polo.
+    #   - Sub residual e identificada por nome contendo "Para Análise"
+    #     (case-insensitive, com/sem acento). NAO usa "Não definido"
+    #     etc — sao subs especificas, nao residuais.
+    #   - Se a cat valida nao tem sub "Para Análise" interna E nao
+    #     existe cat residual na arvore, retorna o par original sem
+    #     consertar — vai falhar no validate, e o caller vira
+    #     "Para Análise" via outro caminho ou marca como erro pra
+    #     operador revisar. Nao mascaramos com sub aleatoria.
     if cat in tree:
         subs = tree[cat]
-        if subs and sub in ("-", "", "Para Análise", "Para análise"):
+        if not subs:
+            # Categoria-only (sem subs): sub correta e '-'.
+            return cat, "-"
+        # Sub invalida: tenta sub "Para Análise" interna da cat.
+        if sub not in subs:
             for s in subs:
-                if "Para Análise" in s or "Não definid" in s or "Não especificad" in s:
+                norm_s = _normalize_label(s)
+                if "para analise" in norm_s:
                     return cat, s
-            return cat, subs[-1]
+            # Cat nao tem "Para Análise" interna: cai pra cat residual
+            # global do polo (se existir).
+            for residual_cat, residual_subs in tree.items():
+                if "para analise" in _normalize_label(residual_cat):
+                    # Cat residual e' tipicamente sem subs (subs=[])
+                    return residual_cat, "-" if not residual_subs else residual_subs[0]
+            # Sem cat residual na arvore: retorna par original.
+            # Validate vai rejeitar, caller decide. NAO inventamos.
+            return cat, sub
+
+    # Fallback FINAL: cat invalida (nao bateu nem com aliases nem com
+    # busca normalizada) — cai em cat residual da arvore. Antes esse
+    # caso retornava par original que vinha da IA, virava
+    # "Classificacao invalida" e ficava sem proposta de tarefa. Decisao
+    # com user 2026-05-08: garantia de zero "Classificacao invalida"
+    # saindo do repair. Se a arvore nao tem cat residual ("Para Análise"
+    # / "Para Análise — Recuperação de Crédito" / "Para análise"),
+    # retorna par original como ultimo recurso (cenario raro: arvore
+    # sem catch-all configurado).
+    for residual_cat, residual_subs in tree.items():
+        if "para analise" in _normalize_label(residual_cat):
+            return residual_cat, "-" if not residual_subs else residual_subs[0]
 
     return cat, sub
 
