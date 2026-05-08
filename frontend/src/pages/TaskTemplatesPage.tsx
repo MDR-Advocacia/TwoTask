@@ -80,6 +80,7 @@ import {
   type ExistingClassification,
 } from "@/components/ClassificationPickerDialog";
 import { OfficeTemplatesView } from "@/components/OfficeTemplatesView";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 const API = "/api/v1/task-templates";
 
@@ -3034,10 +3035,17 @@ const TaskTemplatesPage = () => {
         <TabsTrigger value="audit">Auditoria — todos os templates</TabsTrigger>
       </TabsList>
       <TabsContent value="by-office" className="mt-4">
-        <OfficeTemplatesView />
+        {/* ErrorBoundary impede tela branca: se OfficeTemplatesView quebrar,
+            mostra mensagem com stack em vez de apagar a pagina inteira.
+            Operador pode trocar pra tab Auditoria sem perder o trabalho. */}
+        <ErrorBoundary scope="templates-by-office">
+          <OfficeTemplatesView />
+        </ErrorBoundary>
       </TabsContent>
       <TabsContent value="audit" className="mt-4">
-        <TaskTemplatesPageLegacy />
+        <ErrorBoundary scope="templates-audit-legacy">
+          <TaskTemplatesPageLegacy />
+        </ErrorBoundary>
       </TabsContent>
     </Tabs>
   );

@@ -293,14 +293,18 @@ export function TemplateInlineModal({
                 Responsável <span className="text-muted-foreground">(opcional)</span>
               </Label>
               <UserSelector
-                value={responsibleId}
+                // UserSelector espera value como string (external_id em string)
+                // — aqui convertemos number<->string nas bordas pra alinhar tipos.
+                value={responsibleId !== null ? String(responsibleId) : null}
                 users={users.map((u) => ({
                   id: u.external_id,
                   external_id: u.external_id,
                   name: u.name,
                   squads: [],
                 }))}
-                onChange={(id) => setResponsibleId(id)}
+                onChange={(strId) =>
+                  setResponsibleId(strId !== null ? Number(strId) : null)
+                }
                 placeholder="Selecione o responsável (opcional)"
               />
               <p className="text-xs text-muted-foreground">
