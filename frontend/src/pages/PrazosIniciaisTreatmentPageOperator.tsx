@@ -336,7 +336,7 @@ export default function PrazosIniciaisTreatmentPageOperator() {
   // ── Render ─────────────────────────────────────────────────────────
 
   return (
-    <div className="mx-auto max-w-7xl space-y-5 px-6 py-6">
+    <div className="space-y-5 px-6 py-6 lg:px-8">
       {/* Header */}
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
