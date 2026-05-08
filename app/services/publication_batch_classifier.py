@@ -304,7 +304,17 @@ class PublicationBatchClassifier:
                         office_external_id=oid,
                     )
             except Exception as exc:
-                logger.warning("Falha ao carregar overrides do escritório %s: %s", oid, exc)
+                # Log de ERRO (nao warning) com stack trace pra rastrear
+                # falha real. Antes era warning silencioso e o build
+                # caia no fallback global (sem filtro template-driven),
+                # causando IA classificar em cats sem template do
+                # escritorio — bug observado em 2026-05-08.
+                logger.error(
+                    "build_office_prompt.failed oid=%s erro=%s — "
+                    "office_prompts NAO foi populado, fallback vai usar "
+                    "prompt sem filtro template-driven se nao reconstruir",
+                    oid, exc, exc_info=True,
+                )
         # Prompt base para publicações sem escritório
         fb_global = _feedback_for(0)
         office_prompts[(0, False)] = build_system_prompt_for_office(
@@ -330,7 +340,37 @@ class PublicationBatchClassifier:
             is_unlinked = rec.linked_lawsuit_id is None
             oid = rec.linked_office_id or 0
             cache_key = (oid, is_unlinked)
-            prompt = office_prompts.get(cache_key) or office_prompts.get((0, is_unlinked), SYSTEM_PROMPT)
+            prompt = office_prompts.get(cache_key)
+            if prompt is None and oid:
+                # Cache miss pra escritorio especifico (build_system_prompt
+                # falhou la em cima OU oid nao estava em office_ids). Em
+                # vez de cair no fallback global (sem filtro template-driven
+                # — bug raiz que vazava cats sem template do escritorio
+                # pra IA), RECONSTROI o prompt aqui mesmo passando oid.
+                # Custo: build extra por record do escritorio sem cache,
+                # mas garante que IA recebe arvore enxuta correta.
+                logger.warning(
+                    "office_prompt.cache_miss oid=%s unlinked=%s — "
+                    "reconstruindo prompt sob demanda",
+                    oid, is_unlinked,
+                )
+                try:
+                    prompt = build_system_prompt_for_office(
+                        is_unlinked=is_unlinked,
+                        office_external_id=oid,
+                    )
+                    office_prompts[cache_key] = prompt  # cacheia pra proxima
+                except Exception as exc:
+                    logger.error(
+                        "office_prompt.rebuild_failed oid=%s erro=%s — "
+                        "caindo no fallback global SEM filtro de templates",
+                        oid, exc, exc_info=True,
+                    )
+                    prompt = office_prompts.get((0, is_unlinked), SYSTEM_PROMPT)
+            elif prompt is None:
+                # oid=0 (publicacao sem escritorio): fallback global e' OK,
+                # nao tem como filtrar por templates de escritorio.
+                prompt = office_prompts.get((0, is_unlinked), SYSTEM_PROMPT)
 
             user_msg = build_user_message(rec.linked_lawsuit_cnj or "", text)
             batch_requests.append(

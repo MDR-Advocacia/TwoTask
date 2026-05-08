@@ -1144,6 +1144,74 @@ class PublicationSearchService:
                     .order_by(TaskTemplate.subcategory.nullslast())
                     .all()
                 )
+                # Diagnostico: se ZERO templates casarem mesmo a publicacao
+                # tendo cat valida, loga o estado de cada filtro pra ajudar
+                # a entender onde travou. Ative com env DEBUG_TEMPLATE_MATCH=1
+                # ou deixe sempre — tem custo de 4 queries extras so quando
+                # o caso "sem template" acontece. Sem essa visibilidade
+                # nao da pra distinguir "operador nao criou template"
+                # de "template existe mas filtro excluiu" (caso comum
+                # de cat/sub com encoding diferente, needs_taxonomy_review,
+                # is_active=false, office_external_id nao bate).
+                if not templates:
+                    try:
+                        # Quantos com cat que bate, sem outros filtros
+                        n_cat_only = (
+                            self.db.query(TaskTemplate)
+                            .filter(TaskTemplate.category == clf_info["category"])
+                            .count()
+                        )
+                        # Adiciona office_filter
+                        n_with_office = (
+                            self.db.query(TaskTemplate)
+                            .filter(TaskTemplate.category == clf_info["category"])
+                            .filter(office_filter)
+                            .count()
+                        )
+                        # Adiciona subcategory match
+                        n_with_sub = (
+                            self.db.query(TaskTemplate)
+                            .filter(TaskTemplate.category == clf_info["category"])
+                            .filter(office_filter)
+                            .filter(
+                                (TaskTemplate.subcategory == clf_info["subcategory"])
+                                | (TaskTemplate.subcategory.is_(None))
+                            )
+                            .count()
+                        )
+                        # Adiciona is_active=True
+                        n_active = (
+                            self.db.query(TaskTemplate)
+                            .filter(TaskTemplate.category == clf_info["category"])
+                            .filter(office_filter)
+                            .filter(
+                                (TaskTemplate.subcategory == clf_info["subcategory"])
+                                | (TaskTemplate.subcategory.is_(None))
+                            )
+                            .filter(TaskTemplate.is_active == True)
+                            .count()
+                        )
+                        logger.warning(
+                            "match_template.miss rec=%s cat=%r sub=%r "
+                            "office=%s lawsuit=%s polo=%r | "
+                            "templates: cat-only=%d +office=%d +sub=%d "
+                            "+active=%d (final=0; filtro needs_review=False "
+                            "removeu %d)",
+                            rec.id,
+                            clf_info.get("category"),
+                            clf_info.get("subcategory"),
+                            rec.linked_office_id,
+                            rec.linked_lawsuit_id,
+                            getattr(rec, "polo", None),
+                            n_cat_only,
+                            n_with_office,
+                            n_with_sub,
+                            n_active,
+                            n_active,  # final=0 + sobreviventes ate active = quantos foram excluidos pelo needs_review
+                        )
+                    except Exception as exc:
+                        logger.debug("match_template diagnostico falhou: %s", exc)
+
                 # Aviso de divergencia de polo: se o escritorio do template
                 # declara polo especifico (ativo/passivo) mas o polo inferido
                 # pela IA pra publicacao bate em outro, logamos. Indica que
