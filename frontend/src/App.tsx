@@ -8,6 +8,7 @@ import { useState, useEffect, useContext } from 'react';
 import ProtectedRoute from './components/ProtectedRoute';
 import { ChangePasswordDialog } from './components/ChangePasswordDialog';
 import AdminNoticeBar from './components/AdminNoticeBar';
+import FeedbackButton from './components/FeedbackButton';
 
 // Páginas
 import AdminPage from './pages/AdminPage';
@@ -95,6 +96,14 @@ function AppContent() {
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Router>
+
+      {/*
+        Botao flutuante de feedback (canto inferior direito). Persiste
+        em todas as paginas autenticadas. Componente decide internamente
+        se renderiza (esconde no /login). Fora do <Router> proposital —
+        nao depende de rota, deve flutuar sempre.
+      */}
+      <FeedbackButton />
 
       <Toaster />
 

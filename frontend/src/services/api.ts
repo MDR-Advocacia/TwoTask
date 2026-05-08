@@ -1663,3 +1663,65 @@ export async function dispatchAjusAndamento(
   );
   return expectJson(res);
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// Feedback dos usuarios (botao flutuante + painel admin)
+// ──────────────────────────────────────────────────────────────────────
+
+import type {
+  UserFeedback,
+  UserFeedbackCreatePayload,
+  UserFeedbackListResponse,
+  UserFeedbackStats,
+  UserFeedbackUpdatePayload,
+} from "@/types/api";
+
+/** Envia feedback livre da app (qualquer JWT). page_url e user_agent
+ *  sao capturados pelo componente direto de window.location e
+ *  navigator antes de chamar — backend so persiste. */
+export async function createUserFeedback(
+  payload: UserFeedbackCreatePayload,
+): Promise<{ ok: boolean; id: number }> {
+  const res = await apiFetch(`/api/v1/feedback`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return expectJson(res);
+}
+
+/** Lista feedbacks (admin only) com paginacao + filtros opcionais. */
+export async function listUserFeedback(args: {
+  limit?: number;
+  offset?: number;
+  status?: string;
+  category?: string;
+}): Promise<UserFeedbackListResponse> {
+  const params = new URLSearchParams();
+  if (args.limit != null) params.set("limit", String(args.limit));
+  if (args.offset != null) params.set("offset", String(args.offset));
+  if (args.status) params.set("status", args.status);
+  if (args.category) params.set("category", args.category);
+  const qs = params.toString();
+  const url = `/api/v1/admin/feedback${qs ? `?${qs}` : ""}`;
+  const res = await apiFetch(url);
+  return expectJson<UserFeedbackListResponse>(res);
+}
+
+/** Contadores por status/categoria pra header da aba admin. */
+export async function fetchUserFeedbackStats(): Promise<UserFeedbackStats> {
+  const res = await apiFetch(`/api/v1/admin/feedback/stats`);
+  return expectJson<UserFeedbackStats>(res);
+}
+
+/** Atualiza status e/ou nota interna de um feedback (admin). */
+export async function updateUserFeedback(
+  feedbackId: number,
+  payload: UserFeedbackUpdatePayload,
+): Promise<UserFeedback> {
+  const res = await apiFetch(`/api/v1/admin/feedback/${feedbackId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+  return expectJson<UserFeedback>(res);
+}
+

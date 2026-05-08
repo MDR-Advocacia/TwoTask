@@ -1067,3 +1067,59 @@ export interface PrazoInicialContestacaoExistente {
   analise_qualidade: string | null;
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Feedback dos usuarios (botao flutuante + painel admin)
+// ──────────────────────────────────────────────────────────────────────
+
+export type UserFeedbackCategory =
+  | "bug"
+  | "sugestao"
+  | "duvida"
+  | "elogio"
+  | "outro";
+
+export type UserFeedbackStatus = "novo" | "lido" | "arquivado";
+
+export interface UserFeedback {
+  id: number;
+  user_id: number;
+  user_name: string | null;
+  user_email: string | null;
+  category: UserFeedbackCategory;
+  message: string;
+  page_url: string | null;
+  user_agent: string | null;
+  status: UserFeedbackStatus;
+  admin_note: string | null;
+  reviewed_by_user_id: number | null;
+  reviewed_by_name: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserFeedbackListResponse {
+  total: number;
+  items: UserFeedback[];
+}
+
+export interface UserFeedbackStats {
+  total: number;
+  novo: number;
+  lido: number;
+  arquivado: number;
+  by_category: Record<string, number>;
+}
+
+export interface UserFeedbackCreatePayload {
+  category: UserFeedbackCategory;
+  message: string;
+  page_url?: string | null;
+  user_agent?: string | null;
+}
+
+export interface UserFeedbackUpdatePayload {
+  status?: UserFeedbackStatus;
+  admin_note?: string | null;
+}
+
