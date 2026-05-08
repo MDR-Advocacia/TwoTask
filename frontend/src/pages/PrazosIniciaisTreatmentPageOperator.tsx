@@ -1,25 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
+  Activity,
   AlertTriangle,
   ArrowRight,
   CheckCircle2,
+  Clock,
   Inbox,
   Loader2,
   Play,
   RefreshCw,
   Search,
+  TrendingUp,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
+import { Card, CardContent } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 import {
   dispatchPrazoInicialPendingBatch,
@@ -34,22 +30,27 @@ import type {
 } from "@/types/api";
 
 /**
- * Versao "operador" da tela Tratamento Web. Foco: 1 acao por vez,
- * vocabulario simples, zero jargao tecnico. A versao admin/debug
- * com filtros, metricas, zumbis e tabela completa esta' em
- * `/prazos-iniciais/treatment/detalhes` (PrazosIniciaisTreatmentPage).
+ * Tela "operador" do Tratamento Web. Dashboard com:
+ *  - Banner de saude (verde/amarelo/vermelho com frase resumida)
+ *  - 4 KPIs (na fila, 24h, total, tempo medio)
+ *  - Hero card de acao (Processar agora)
+ *  - Live: items em execucao agora + ultimos cancelados (com tempo relativo)
+ *
+ * A versao admin/debug com filtros, metricas, zumbis, tabela completa e
+ * controles avancados esta' em /prazos-iniciais/treatment/detalhes.
  */
 
-// ── Reasons em portugues operacional (sem jargao tecnico) ──────────────
+// ── Helpers ────────────────────────────────────────────────────────────
+
 function reasonHumano(reason: string | null | undefined): string {
   if (!reason) return "Não foi possível processar agora.";
   const labels: Record<string, string> = {
-    auth_failure: "O Legal One não autenticou. Vou tentar de novo em breve.",
-    timeout: "O Legal One está demorando. Vou tentar de novo em breve.",
+    auth_failure: "Legal One não autenticou. Vou tentar de novo em breve.",
+    timeout: "Legal One está demorando. Vou tentar de novo em breve.",
     layout_drift: "A tela do Legal One mudou. Avise o coordenador.",
     runner_error: "Erro inesperado. O sistema vai tentar de novo automaticamente.",
     verification_failed: "O cancelamento não persistiu. Vou tentar de novo.",
-    task_not_found: "Tarefa não encontrada no Legal One (talvez já tenha sido apagada).",
+    task_not_found: "Tarefa não encontrada (talvez já apagada).",
     lawsuit_not_found: "Processo não cadastrado no Legal One.",
     exception: "Erro inesperado. Avise o coordenador se continuar.",
   };
@@ -63,33 +64,62 @@ function formatCnj(value: string | null | undefined): string {
   return `${digits.slice(0, 7)}-${digits.slice(7, 9)}.${digits.slice(9, 13)}.${digits.slice(13, 14)}.${digits.slice(14, 16)}.${digits.slice(16)}`;
 }
 
-// ── Tipo de estado visual ──────────────────────────────────────────────
+function tempoRelativo(iso: string | null | undefined, agoraMs: number): string {
+  if (!iso) return "";
+  const ts = new Date(iso).getTime();
+  if (Number.isNaN(ts)) return "";
+  const diffSec = Math.max(0, Math.floor((agoraMs - ts) / 1000));
+  if (diffSec < 60) return `há ${diffSec}s`;
+  if (diffSec < 3600) return `há ${Math.floor(diffSec / 60)} min`;
+  if (diffSec < 86400) return `há ${Math.floor(diffSec / 3600)}h`;
+  return `há ${Math.floor(diffSec / 86400)}d`;
+}
+
+function formatLatencia(ms: number | null | undefined): string {
+  if (ms == null || Number.isNaN(ms)) return "—";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)} s`;
+  return `${Math.round(s / 60)} min`;
+}
+
+function formatNumero(n: number): string {
+  return n.toLocaleString("pt-BR");
+}
+
+function formatEta(pendentes: number, avgLatencyMs: number | null | undefined): string {
+  if (!pendentes || avgLatencyMs == null || avgLatencyMs <= 0) return "";
+  const totalSec = (pendentes * avgLatencyMs) / 1000;
+  if (totalSec < 60) return `~${Math.ceil(totalSec)}s pra esvaziar a fila`;
+  if (totalSec < 3600) return `~${Math.ceil(totalSec / 60)} min pra esvaziar a fila`;
+  return `~${Math.round(totalSec / 3600)}h pra esvaziar a fila`;
+}
+
 type Estado = "carregando" | "vazio" | "pendentes" | "processando" | "falhas";
+type Saude = "ok" | "atencao" | "problema";
 
 const POLL_INTERVAL_MS = 5000;
 
 export default function PrazosIniciaisTreatmentPageOperator() {
   const { toast } = useToast();
 
-  // Estado de dados
   const [items, setItems] = useState<PrazoInicialLegacyTaskCancelQueueItem[]>([]);
   const [metrics, setMetrics] = useState<PrazoInicialLegacyTaskQueueMetrics | null>(null);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
+  const [agoraMs, setAgoraMs] = useState<number>(Date.now());
+  const [pulseRefresh, setPulseRefresh] = useState(false);
 
-  // Estado de acoes em andamento (so 1 acao por vez pra nao confundir)
   const [acaoEmCurso, setAcaoEmCurso] = useState<
     null | "buscando" | "processando" | "tentando_de_novo"
   >(null);
 
-  // Pra evitar polling racing com a propria acao do operador
   const acaoEmCursoRef = useRef(acaoEmCurso);
   acaoEmCursoRef.current = acaoEmCurso;
 
-  // ── Carga inicial + auto-refresh ───────────────────────────────────
+  // ── Carga + auto-refresh ───────────────────────────────────────────
   const carregarDados = async () => {
     try {
-      // Pega 25 items mais recentes — suficiente pra exibir top falhas/pending.
       const [payload, metricsPayload] = await Promise.all([
         fetchPrazosIniciaisLegacyTaskCancelQueue({ limit: 50, offset: 0 }),
         fetchPrazosIniciaisLegacyTaskCancelQueueMetrics(24).catch(() => null),
@@ -97,6 +127,9 @@ export default function PrazosIniciaisTreatmentPageOperator() {
       setItems(payload.items);
       setMetrics(metricsPayload);
       setErro(null);
+      setAgoraMs(Date.now());
+      setPulseRefresh(true);
+      setTimeout(() => setPulseRefresh(false), 800);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Erro ao carregar a página.";
       setErro(msg);
@@ -108,51 +141,126 @@ export default function PrazosIniciaisTreatmentPageOperator() {
   useEffect(() => {
     carregarDados();
     const intervalId = setInterval(() => {
-      // Pula refresh enquanto operador esta executando uma acao —
-      // evita race com optimistic update.
       if (acaoEmCursoRef.current) return;
       carregarDados();
     }, POLL_INTERVAL_MS);
-    return () => clearInterval(intervalId);
+    const tickerId = setInterval(() => setAgoraMs(Date.now()), 1000);
+    return () => {
+      clearInterval(intervalId);
+      clearInterval(tickerId);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Contadores derivados (do /metrics, fonte da verdade global) ────
+  // ── Contadores ─────────────────────────────────────────────────────
   const contagens = useMemo(() => {
     const totals = metrics?.totals_by_status ?? {};
     const pendentes = (totals.PENDENTE ?? 0) + (totals.FALHA ?? 0);
     const processando = totals.PROCESSANDO ?? 0;
-    const concluidos = totals.CONCLUIDO ?? 0;
-    const falhas = totals.FALHA ?? 0;
-    const cancelados = totals.CANCELADO ?? 0;
-    const totalGeral = pendentes + processando + concluidos + cancelados;
-    const progresso = totalGeral > 0 ? Math.round((concluidos / totalGeral) * 100) : 0;
-    return { pendentes, processando, concluidos, falhas, cancelados, totalGeral, progresso };
+    const cancelados24h = metrics?.completed_in_window ?? 0;
+    const falhas24h = metrics?.failures_in_window ?? 0;
+    const canceladosTotais = totals.CONCLUIDO ?? 0;
+    const falhasAtuais = totals.FALHA ?? 0;
+    const naFila = pendentes + processando;
+    const avgLatencyMs = metrics?.avg_latency_ms_in_window ?? null;
+    const eta = formatEta(pendentes, avgLatencyMs);
+    return {
+      pendentes,
+      processando,
+      cancelados24h,
+      falhas24h,
+      canceladosTotais,
+      falhasAtuais,
+      naFila,
+      avgLatencyMs,
+      eta,
+    };
   }, [metrics]);
 
-  // ── Listas derivadas ───────────────────────────────────────────────
   const itensFalha = useMemo(
     () => items.filter((it) => it.queue_status === "FALHA"),
+    [items],
+  );
+  const itensProcessando = useMemo(
+    () => items.filter((it) => it.queue_status === "PROCESSANDO"),
     [items],
   );
   const ultimosConcluidos = useMemo(
     () =>
       items
-        .filter((it) => it.queue_status === "CONCLUIDO")
-        .slice(0, 3),
+        .filter((it) => it.queue_status === "CONCLUIDO" && it.completed_at)
+        .sort((a, b) => (b.completed_at ?? "").localeCompare(a.completed_at ?? ""))
+        .slice(0, 8),
     [items],
   );
 
-  // ── Estado visual da tela ──────────────────────────────────────────
+  // ── Saude do sistema (verde/amarelo/vermelho) ──────────────────────
+  const saude: { nivel: Saude; mensagem: string } = useMemo(() => {
+    const cb = metrics?.circuit_breaker;
+    if (cb?.tripped) {
+      return {
+        nivel: "problema",
+        mensagem:
+          "Sistema travado por causa de erros consecutivos. Vai tentar de novo em alguns minutos.",
+      };
+    }
+    if (contagens.falhasAtuais > 5) {
+      return {
+        nivel: "atencao",
+        mensagem: `${contagens.falhasAtuais} processos com falha agora — vale ficar de olho.`,
+      };
+    }
+    if (contagens.falhas24h > 0 && contagens.falhas24h > contagens.cancelados24h * 0.2) {
+      return {
+        nivel: "atencao",
+        mensagem: `Taxa de falha alta nas últimas 24h: ${contagens.falhas24h} falhas em ${contagens.cancelados24h + contagens.falhas24h} processados.`,
+      };
+    }
+    if (contagens.naFila === 0 && contagens.cancelados24h === 0) {
+      return {
+        nivel: "ok",
+        mensagem: "Sem atividade nas últimas 24h. Aguardando novos processos.",
+      };
+    }
+    if (contagens.naFila === 0) {
+      return {
+        nivel: "ok",
+        mensagem: `Tudo em dia — ${formatNumero(contagens.cancelados24h)} cancelados nas últimas 24h sem problema.`,
+      };
+    }
+    const partes = [
+      `${formatNumero(contagens.naFila)} processo${contagens.naFila === 1 ? "" : "s"} na fila`,
+    ];
+    if (contagens.avgLatencyMs != null) {
+      partes.push(`média de ${formatLatencia(contagens.avgLatencyMs)} cada`);
+    }
+    if (contagens.eta) {
+      partes.push(contagens.eta);
+    }
+    return {
+      nivel: "ok",
+      mensagem: `Funcionando bem — ${partes.join(" · ")}.`,
+    };
+  }, [metrics, contagens]);
+
+  // ── Estado da hero card ────────────────────────────────────────────
   const estado: Estado = carregando
     ? "carregando"
-    : acaoEmCurso === "processando" || acaoEmCurso === "tentando_de_novo" || contagens.processando > 0
+    : acaoEmCurso === "processando" || acaoEmCurso === "tentando_de_novo"
       ? "processando"
-      : contagens.falhas > 0
-        ? "falhas"
-        : contagens.pendentes > 0
-          ? "pendentes"
-          : "vazio";
+      : contagens.processando > 0 && contagens.pendentes === 0
+        ? "processando"
+        : contagens.falhasAtuais > 0
+          ? "falhas"
+          : contagens.pendentes > 0
+            ? "pendentes"
+            : "vazio";
+
+  // Ultima execucao do worker
+  const ultimoTickRelativo = useMemo(() => {
+    const finishedAt = metrics?.last_tick?.finished_at;
+    return finishedAt ? tempoRelativo(finishedAt, agoraMs) : "";
+  }, [metrics, agoraMs]);
 
   // ── Acoes ──────────────────────────────────────────────────────────
   const handleBuscarNovos = async () => {
@@ -168,7 +276,7 @@ export default function PrazosIniciaisTreatmentPageOperator() {
       } else {
         toast({
           title: `${novos} processo${novos === 1 ? "" : "s"} adicionado${novos === 1 ? "" : "s"} à fila`,
-          description: "O sistema já vai começar a processar. Aguarde alguns segundos.",
+          description: "O sistema já vai começar a processar.",
         });
       }
       await carregarDados();
@@ -201,8 +309,6 @@ export default function PrazosIniciaisTreatmentPageOperator() {
     if (itensFalha.length === 0) return;
     setAcaoEmCurso("tentando_de_novo");
     try {
-      // Itera em sequencia pra nao estourar o L1 (cada reprocess re-enfileira
-      // pro proximo tick do worker; o worker em si serializa).
       let sucesso = 0;
       let falha = 0;
       for (const item of itensFalha) {
@@ -217,8 +323,8 @@ export default function PrazosIniciaisTreatmentPageOperator() {
         title: `${sucesso} processo${sucesso === 1 ? "" : "s"} re-agendado${sucesso === 1 ? "" : "s"}`,
         description:
           falha > 0
-            ? `${falha} não foi possível re-agendar agora. A página atualiza em alguns segundos.`
-            : "O sistema vai tentar de novo automaticamente. A página atualiza em alguns segundos.",
+            ? `${falha} não foi possível re-agendar agora.`
+            : "O sistema vai tentar de novo automaticamente.",
         variant: falha > 0 ? "destructive" : undefined,
       });
       await carregarDados();
@@ -230,63 +336,137 @@ export default function PrazosIniciaisTreatmentPageOperator() {
   // ── Render ─────────────────────────────────────────────────────────
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 py-6">
-      <header>
-        <h1 className="text-2xl font-bold tracking-tight">Tratamento Web</h1>
-        <p className="text-sm text-muted-foreground">
-          Esse painel cancela tarefas antigas no Legal One assim que processos novos chegam.
-        </p>
+    <div className="mx-auto max-w-6xl space-y-6 px-4 py-8">
+      {/* Header */}
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Tratamento Web</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Cancela tarefas antigas no Legal One assim que processos novos chegam.
+          </p>
+        </div>
+        <div className="flex items-center gap-4 text-xs text-muted-foreground">
+          {ultimoTickRelativo ? (
+            <span className="inline-flex items-center gap-1.5">
+              <Activity className="h-3.5 w-3.5" />
+              Última execução: {ultimoTickRelativo}
+            </span>
+          ) : null}
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              className={`inline-block h-2 w-2 rounded-full bg-green-500 ${pulseRefresh ? "animate-ping" : "animate-pulse"}`}
+            />
+            Atualiza a cada 5s
+          </span>
+        </div>
       </header>
 
       {erro ? (
         <Card className="border-red-200 bg-red-50">
-          <CardContent className="pt-6">
-            <p className="text-sm text-red-900">
-              <AlertTriangle className="mr-2 inline-block h-4 w-4" />
-              Não consegui carregar a página: {erro}
-            </p>
-            <p className="mt-2 text-xs text-red-900/80">
-              Tente atualizar daqui a alguns segundos. Se continuar, avise o coordenador.
-            </p>
+          <CardContent className="flex items-start gap-3 pt-6">
+            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-red-700" />
+            <div>
+              <p className="text-sm font-medium text-red-900">
+                Não consegui carregar a página: {erro}
+              </p>
+              <p className="mt-1 text-xs text-red-900/80">
+                Tente atualizar daqui a alguns segundos. Se continuar, avise o coordenador.
+              </p>
+            </div>
           </CardContent>
         </Card>
       ) : null}
 
-      {/* Card principal — muda conforme o estado */}
-      {estado === "carregando" ? (
-        <CardCarregando />
-      ) : estado === "vazio" ? (
-        <CardVazio
-          onBuscarNovos={handleBuscarNovos}
-          buscando={acaoEmCurso === "buscando"}
-        />
-      ) : estado === "pendentes" ? (
-        <CardPendentes
-          quantidade={contagens.pendentes}
-          ultimosConcluidos={ultimosConcluidos}
-          onProcessarAgora={handleProcessarAgora}
-          processando={acaoEmCurso === "processando"}
-          onBuscarNovos={handleBuscarNovos}
-          buscando={acaoEmCurso === "buscando"}
-        />
-      ) : estado === "processando" ? (
-        <CardProcessando
-          processando={contagens.processando}
-          concluidos={contagens.concluidos}
-          totalGeral={contagens.totalGeral}
-          progresso={contagens.progresso}
-        />
-      ) : (
-        <CardFalhas
-          itensFalha={itensFalha}
-          onTentarTodasDeNovo={handleTentarTodasDeNovo}
-          tentando={acaoEmCurso === "tentando_de_novo"}
-          onBuscarNovos={handleBuscarNovos}
-          buscando={acaoEmCurso === "buscando"}
-        />
-      )}
+      {/* Banner de saúde */}
+      {!carregando ? <BannerSaude saude={saude} /> : null}
 
-      <div className="flex justify-end">
+      {/* KPIs */}
+      {!carregando ? (
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <Kpi
+            icone={<Inbox className="h-5 w-5" />}
+            label="Na fila agora"
+            valor={formatNumero(contagens.naFila)}
+            sublinha={
+              contagens.processando > 0
+                ? `${contagens.processando} em execução`
+                : contagens.pendentes > 0
+                  ? "esperando worker"
+                  : "fila vazia"
+            }
+            cor={contagens.naFila > 0 ? "blue" : "neutral"}
+          />
+          <Kpi
+            icone={<TrendingUp className="h-5 w-5" />}
+            label="Cancelados (24h)"
+            valor={formatNumero(contagens.cancelados24h)}
+            sublinha={
+              contagens.falhas24h > 0
+                ? `${contagens.falhas24h} falha${contagens.falhas24h === 1 ? "" : "s"}`
+                : "0 falhas"
+            }
+            cor={contagens.falhas24h > 0 ? "amber" : "green"}
+          />
+          <Kpi
+            icone={<CheckCircle2 className="h-5 w-5" />}
+            label="Total cancelados"
+            valor={formatNumero(contagens.canceladosTotais)}
+            sublinha="acumulado"
+            cor="neutral"
+          />
+          <Kpi
+            icone={<Clock className="h-5 w-5" />}
+            label="Tempo médio"
+            valor={formatLatencia(contagens.avgLatencyMs)}
+            sublinha={
+              metrics?.latency_samples_in_window
+                ? `${metrics.latency_samples_in_window} amostra${metrics.latency_samples_in_window === 1 ? "" : "s"} (24h)`
+                : "sem amostras (24h)"
+            }
+            cor="neutral"
+          />
+        </div>
+      ) : null}
+
+      {/* Hero ação + cards live */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <div className="lg:col-span-2">
+          {estado === "carregando" ? (
+            <CardCarregando />
+          ) : estado === "vazio" ? (
+            <CardVazio
+              onBuscarNovos={handleBuscarNovos}
+              buscando={acaoEmCurso === "buscando"}
+            />
+          ) : estado === "pendentes" ? (
+            <CardPendentes
+              quantidade={contagens.pendentes}
+              eta={contagens.eta}
+              onProcessarAgora={handleProcessarAgora}
+              processando={acaoEmCurso === "processando"}
+              onBuscarNovos={handleBuscarNovos}
+              buscando={acaoEmCurso === "buscando"}
+            />
+          ) : estado === "processando" ? (
+            <CardProcessando emExecucao={contagens.processando} />
+          ) : (
+            <CardFalhas
+              itensFalha={itensFalha}
+              onTentarTodasDeNovo={handleTentarTodasDeNovo}
+              tentando={acaoEmCurso === "tentando_de_novo"}
+              onBuscarNovos={handleBuscarNovos}
+              buscando={acaoEmCurso === "buscando"}
+            />
+          )}
+        </div>
+
+        <aside className="space-y-4">
+          <CardAgoraMesmo itens={itensProcessando} agoraMs={agoraMs} />
+          <CardUltimosCancelados itens={ultimosConcluidos} agoraMs={agoraMs} />
+        </aside>
+      </div>
+
+      <div className="flex items-center justify-end pt-2">
         <Link
           to="/prazos-iniciais/treatment/detalhes"
           className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
@@ -299,13 +479,101 @@ export default function PrazosIniciaisTreatmentPageOperator() {
   );
 }
 
-// ── Sub-componentes por estado ──────────────────────────────────────────
+// ── Sub-componentes ────────────────────────────────────────────────────
+
+function BannerSaude({ saude }: { saude: { nivel: Saude; mensagem: string } }) {
+  const cores = {
+    ok: {
+      card: "border-green-200 bg-green-50",
+      icone: "bg-green-600 text-white",
+      texto: "text-green-900",
+      label: "Funcionando bem",
+      Icon: CheckCircle2,
+    },
+    atencao: {
+      card: "border-amber-200 bg-amber-50",
+      icone: "bg-amber-500 text-white",
+      texto: "text-amber-900",
+      label: "Atenção",
+      Icon: AlertTriangle,
+    },
+    problema: {
+      card: "border-red-200 bg-red-50",
+      icone: "bg-red-600 text-white",
+      texto: "text-red-900",
+      label: "Sistema travado",
+      Icon: AlertTriangle,
+    },
+  }[saude.nivel];
+
+  const Icon = cores.Icon;
+
+  return (
+    <Card className={`border ${cores.card}`}>
+      <CardContent className="flex items-center gap-4 py-4">
+        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${cores.icone}`}>
+          <Icon className="h-5 w-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className={`text-sm font-semibold ${cores.texto}`}>{cores.label}</div>
+          <div className={`text-sm ${cores.texto}/80`}>{saude.mensagem}</div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function Kpi({
+  icone,
+  label,
+  valor,
+  sublinha,
+  cor,
+}: {
+  icone: React.ReactNode;
+  label: string;
+  valor: string;
+  sublinha: string;
+  cor: "blue" | "green" | "amber" | "red" | "neutral";
+}) {
+  const corValor = {
+    blue: "text-blue-700",
+    green: "text-green-700",
+    amber: "text-amber-700",
+    red: "text-red-700",
+    neutral: "text-foreground",
+  }[cor];
+  const corIcone = {
+    blue: "text-blue-600 bg-blue-100",
+    green: "text-green-600 bg-green-100",
+    amber: "text-amber-600 bg-amber-100",
+    red: "text-red-600 bg-red-100",
+    neutral: "text-muted-foreground bg-muted",
+  }[cor];
+
+  return (
+    <Card>
+      <CardContent className="space-y-2 p-4">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            {label}
+          </span>
+          <span className={`flex h-8 w-8 items-center justify-center rounded-md ${corIcone}`}>
+            {icone}
+          </span>
+        </div>
+        <div className={`text-3xl font-bold tabular-nums ${corValor}`}>{valor}</div>
+        <div className="text-xs text-muted-foreground">{sublinha}</div>
+      </CardContent>
+    </Card>
+  );
+}
 
 function CardCarregando() {
   return (
     <Card>
-      <CardContent className="flex items-center justify-center py-16 text-muted-foreground">
-        <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+      <CardContent className="flex items-center justify-center py-24 text-muted-foreground">
+        <Loader2 className="mr-3 h-6 w-6 animate-spin" />
         Carregando…
       </CardContent>
     </Card>
@@ -320,18 +588,18 @@ function CardVazio({
   buscando: boolean;
 }) {
   return (
-    <Card className="border-green-200 bg-green-50/40">
-      <CardHeader className="text-center">
-        <div className="mx-auto mb-2 flex h-14 w-14 items-center justify-center rounded-full bg-green-100">
-          <CheckCircle2 className="h-8 w-8 text-green-700" />
+    <Card className="border-green-200">
+      <CardContent className="flex flex-col items-center gap-4 py-12 text-center">
+        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-green-100">
+          <CheckCircle2 className="h-8 w-8 text-green-600" />
         </div>
-        <CardTitle className="text-lg">Tudo em ordem</CardTitle>
-        <CardDescription>
-          Nenhum processo aguardando agora. A fila se atualiza sozinha.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex justify-center">
-        <Button variant="outline" size="sm" onClick={onBuscarNovos} disabled={buscando}>
+        <div>
+          <h2 className="text-xl font-semibold">Tudo em ordem</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Nenhum processo aguardando agora. A fila se atualiza sozinha.
+          </p>
+        </div>
+        <Button variant="outline" onClick={onBuscarNovos} disabled={buscando}>
           {buscando ? (
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
           ) : (
@@ -346,49 +614,64 @@ function CardVazio({
 
 function CardPendentes({
   quantidade,
-  ultimosConcluidos,
+  eta,
   onProcessarAgora,
   processando,
   onBuscarNovos,
   buscando,
 }: {
   quantidade: number;
-  ultimosConcluidos: PrazoInicialLegacyTaskCancelQueueItem[];
+  eta: string;
   onProcessarAgora: () => void;
   processando: boolean;
   onBuscarNovos: () => void;
   buscando: boolean;
 }) {
   return (
-    <Card className="border-blue-200 bg-blue-50/40">
-      <CardHeader>
-        <div className="flex items-start gap-3">
-          <div className="mt-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-100">
-            <Inbox className="h-5 w-5 text-blue-700" />
-          </div>
-          <div>
-            <CardTitle className="text-lg">
-              {quantidade} processo{quantidade === 1 ? "" : "s"} esperando
-            </CardTitle>
-            <CardDescription>
-              Cada um tem uma tarefa antiga "Verificar Prazos e Habilitação" pra cancelar
-              no Legal One. O sistema faz isso sozinho a cada 1 minuto. Se quiser que rode
-              agora, clique abaixo.
-            </CardDescription>
-          </div>
+    <Card className="border-blue-200">
+      <CardContent className="flex flex-col items-center gap-5 py-10 text-center">
+        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-blue-100">
+          <Inbox className="h-8 w-8 text-blue-600" />
         </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <Button size="lg" onClick={onProcessarAgora} disabled={processando || buscando}>
+        <div>
+          <div className="flex items-baseline justify-center gap-2">
+            <span className="text-6xl font-bold leading-none text-blue-700">
+              {formatNumero(quantidade)}
+            </span>
+            <span className="text-lg font-medium text-muted-foreground">
+              processo{quantidade === 1 ? "" : "s"} esperando
+            </span>
+          </div>
+          {eta ? (
+            <p className="mt-2 text-sm text-muted-foreground">
+              No ritmo atual, {eta}.
+            </p>
+          ) : null}
+        </div>
+        <p className="max-w-md text-sm text-muted-foreground">
+          O sistema processa sozinho a cada 1 minuto. Se quiser que rode agora, clique
+          abaixo.
+        </p>
+        <div className="flex flex-col items-center gap-2">
+          <Button
+            size="lg"
+            className="h-12 px-8 text-base font-semibold shadow-sm"
+            onClick={onProcessarAgora}
+            disabled={processando || buscando}
+          >
             {processando ? (
               <Loader2 className="mr-2 h-5 w-5 animate-spin" />
             ) : (
-              <Play className="mr-2 h-5 w-5" />
+              <Play className="mr-2 h-5 w-5 fill-current" />
             )}
             Processar agora
           </Button>
-          <Button variant="outline" size="sm" onClick={onBuscarNovos} disabled={processando || buscando}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onBuscarNovos}
+            disabled={processando || buscando}
+          >
             {buscando ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             ) : (
@@ -397,61 +680,26 @@ function CardPendentes({
             Buscar processos novos
           </Button>
         </div>
-
-        {ultimosConcluidos.length > 0 ? (
-          <div className="border-t border-blue-200 pt-4">
-            <p className="mb-2 text-xs font-medium text-muted-foreground">
-              Últimos processados:
-            </p>
-            <ul className="space-y-1 text-sm">
-              {ultimosConcluidos.map((item) => (
-                <li key={item.id} className="flex items-center gap-2">
-                  <CheckCircle2 className="h-4 w-4 shrink-0 text-green-600" />
-                  <span className="font-mono text-xs">{formatCnj(item.cnj_number)}</span>
-                  <span className="text-muted-foreground">cancelado</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
       </CardContent>
     </Card>
   );
 }
 
-function CardProcessando({
-  processando,
-  concluidos,
-  totalGeral,
-  progresso,
-}: {
-  processando: number;
-  concluidos: number;
-  totalGeral: number;
-  progresso: number;
-}) {
+function CardProcessando({ emExecucao }: { emExecucao: number }) {
   return (
-    <Card className="border-amber-200 bg-amber-50/40">
-      <CardHeader>
-        <div className="flex items-start gap-3">
-          <div className="mt-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100">
-            <Loader2 className="h-5 w-5 animate-spin text-amber-700" />
-          </div>
-          <div>
-            <CardTitle className="text-lg">
-              Processando {processando > 0 ? `${processando} processo${processando === 1 ? "" : "s"}` : "agora"}…
-            </CardTitle>
-            <CardDescription>
-              Pode fechar essa aba — o trabalho continua rodando no servidor. A página atualiza sozinha.
-            </CardDescription>
-          </div>
+    <Card className="border-amber-200 bg-amber-50/30">
+      <CardContent className="flex flex-col items-center gap-4 py-10 text-center">
+        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-amber-100">
+          <Loader2 className="h-8 w-8 animate-spin text-amber-600" />
         </div>
-      </CardHeader>
-      <CardContent>
-        <Progress value={progresso} className="h-3" />
-        <p className="mt-2 text-xs text-muted-foreground">
-          {concluidos} de {totalGeral} concluídos ({progresso}%)
-        </p>
+        <div>
+          <h2 className="text-xl font-semibold text-amber-900">
+            Processando {emExecucao > 0 ? `${formatNumero(emExecucao)} processo${emExecucao === 1 ? "" : "s"}` : "agora"}…
+          </h2>
+          <p className="mt-1 max-w-md text-sm text-amber-900/70">
+            Pode fechar essa aba — o trabalho continua rodando no servidor.
+          </p>
+        </div>
       </CardContent>
     </Card>
   );
@@ -470,50 +718,58 @@ function CardFalhas({
   onBuscarNovos: () => void;
   buscando: boolean;
 }) {
-  // Limita a 8 falhas pra nao explodir a UI; resto fica em "ver detalhes
-  // tecnicos" se o operador quiser inspecionar item-a-item.
-  const visiveis = itensFalha.slice(0, 8);
+  const visiveis = itensFalha.slice(0, 6);
   const restantes = itensFalha.length - visiveis.length;
 
   return (
-    <Card className="border-red-200 bg-red-50/40">
-      <CardHeader>
-        <div className="flex items-start gap-3">
-          <div className="mt-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-100">
-            <AlertTriangle className="h-5 w-5 text-red-700" />
+    <Card className="border-red-200">
+      <CardContent className="space-y-5 py-8">
+        <div className="flex flex-col items-center gap-2 text-center">
+          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-red-100">
+            <AlertTriangle className="h-8 w-8 text-red-600" />
           </div>
-          <div>
-            <CardTitle className="text-lg">
-              {itensFalha.length} processo{itensFalha.length === 1 ? "" : "s"} falharam
-            </CardTitle>
-            <CardDescription>
-              O sistema já vai tentar de novo sozinho. Se continuar dando erro depois de
-              algumas tentativas, fale com o coordenador.
-            </CardDescription>
+          <div className="flex items-baseline justify-center gap-2">
+            <span className="text-6xl font-bold leading-none text-red-700">
+              {formatNumero(itensFalha.length)}
+            </span>
+            <span className="text-lg font-medium text-muted-foreground">
+              processo{itensFalha.length === 1 ? "" : "s"} com falha
+            </span>
           </div>
+          <p className="max-w-md text-sm text-muted-foreground">
+            O sistema já vai tentar de novo sozinho. Se continuar dando erro, fale com o
+            coordenador.
+          </p>
         </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <ul className="space-y-2">
+
+        <ul className="mx-auto max-w-2xl space-y-2 rounded-md border bg-muted/30 p-3">
           {visiveis.map((item) => (
             <li key={item.id} className="flex items-start gap-2 text-sm">
-              <span className="mt-0.5 text-red-600">•</span>
+              <span className="mt-1 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-red-500" />
               <div className="min-w-0 flex-1">
-                <span className="font-mono text-xs">{formatCnj(item.cnj_number)}</span>
-                <span className="ml-2 text-muted-foreground">— {reasonHumano(item.last_reason)}</span>
+                <span className="font-mono text-xs font-medium">
+                  {formatCnj(item.cnj_number)}
+                </span>
+                <span className="ml-2 text-muted-foreground">
+                  — {reasonHumano(item.last_reason)}
+                </span>
               </div>
             </li>
           ))}
+          {restantes > 0 ? (
+            <li className="pt-1 text-xs italic text-muted-foreground">
+              …e mais {restantes}.
+            </li>
+          ) : null}
         </ul>
 
-        {restantes > 0 ? (
-          <p className="text-xs text-muted-foreground">
-            …e mais {restantes} (clique em "ver detalhes técnicos" no fim da página).
-          </p>
-        ) : null}
-
-        <div className="flex flex-wrap items-center gap-2 border-t border-red-200 pt-4">
-          <Button size="lg" onClick={onTentarTodasDeNovo} disabled={tentando || buscando}>
+        <div className="flex flex-col items-center gap-2">
+          <Button
+            size="lg"
+            className="h-12 px-8 text-base font-semibold shadow-sm"
+            onClick={onTentarTodasDeNovo}
+            disabled={tentando || buscando}
+          >
             {tentando ? (
               <Loader2 className="mr-2 h-5 w-5 animate-spin" />
             ) : (
@@ -521,7 +777,12 @@ function CardFalhas({
             )}
             Tentar todas de novo
           </Button>
-          <Button variant="outline" size="sm" onClick={onBuscarNovos} disabled={tentando || buscando}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onBuscarNovos}
+            disabled={tentando || buscando}
+          >
             {buscando ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             ) : (
@@ -535,3 +796,88 @@ function CardFalhas({
   );
 }
 
+function CardAgoraMesmo({
+  itens,
+  agoraMs,
+}: {
+  itens: PrazoInicialLegacyTaskCancelQueueItem[];
+  agoraMs: number;
+}) {
+  return (
+    <Card>
+      <CardContent className="space-y-3 pt-6">
+        <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <Activity className="h-3.5 w-3.5" />
+          Agora mesmo
+        </div>
+        {itens.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Nenhum processo em execução.</p>
+        ) : (
+          <>
+            <p className="text-sm">
+              <span className="font-semibold text-amber-700">{itens.length}</span>
+              <span className="ml-1 text-muted-foreground">
+                em execução
+              </span>
+            </p>
+            <ul className="space-y-2">
+              {itens.slice(0, 5).map((item) => (
+                <li key={item.id} className="flex items-start gap-2 text-sm">
+                  <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-amber-600" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-mono text-xs">
+                      {formatCnj(item.cnj_number)}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      iniciado {tempoRelativo(item.last_attempt_at, agoraMs) || "agora"}
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function CardUltimosCancelados({
+  itens,
+  agoraMs,
+}: {
+  itens: PrazoInicialLegacyTaskCancelQueueItem[];
+  agoraMs: number;
+}) {
+  return (
+    <Card>
+      <CardContent className="space-y-3 pt-6">
+        <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <CheckCircle2 className="h-3.5 w-3.5" />
+          Últimos cancelados
+        </div>
+        {itens.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            Nenhum cancelamento recente nessa janela.
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {itens.map((item) => (
+              <li key={item.id} className="flex items-start gap-2 text-sm">
+                <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-green-600" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-mono text-xs">
+                    {formatCnj(item.cnj_number)}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {tempoRelativo(item.completed_at, agoraMs) || "agora"}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
