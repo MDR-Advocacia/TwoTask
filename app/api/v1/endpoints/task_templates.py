@@ -331,12 +331,19 @@ def get_office_coverage(
 
     # Carrega todos os templates do escritorio (ativos + pendentes,
     # globais incluidos) com 1 query e mapeia por (cat, sub).
+    #
+    # Filtra is_active=True: templates desativados pelo botao "remover"
+    # da arvore nao podem continuar aparecendo na cobertura — senao a UI
+    # parece ignorar a remocao (ja que o desativado volta no proximo
+    # refetch). Reativacao continua possivel via aba Auditoria, que tem
+    # o seu proprio listing dedicado.
     tmpl_rows = (
         db.query(TaskTemplate)
         .filter(
             (TaskTemplate.office_external_id == office_external_id)
             | (TaskTemplate.office_external_id.is_(None))
         )
+        .filter(TaskTemplate.is_active.is_(True))
         .all()
     )
     # Agrupa por (cat, sub) → list of templates
