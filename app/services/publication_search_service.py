@@ -932,12 +932,20 @@ class PublicationSearchService:
                         custom or None,
                         is_unlinked=is_unlinked,
                         feedback_examples=_feedback_for(oid),
+                        # Modo arvore enxuta (fase 13): quando o setting
+                        # template_driven_taxonomy esta on, build_taxonomy_text
+                        # filtra a arvore pra so incluir cats com template
+                        # ativo do escritorio (ou global). Pra publicacoes
+                        # sem escritorio (oid=None) nao passamos office —
+                        # caem na arvore global completa.
+                        office_external_id=oid,
                     )
                 except Exception as exc:
                     logger.warning("Falha ao carregar overrides do escritório %s: %s", oid, exc)
                     office_prompts[cache_key] = build_system_prompt_for_office(
                         is_unlinked=is_unlinked,
                         feedback_examples=_feedback_for(oid),
+                        office_external_id=oid,
                     )
             return office_prompts[cache_key]
 

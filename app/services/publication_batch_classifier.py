@@ -261,12 +261,18 @@ class PublicationBatchClassifier:
                 excluded, custom = load_office_overrides(self.db, oid)
                 fb = _feedback_for(oid)
                 for unlinked in (False, True):
-                    if excluded or custom or unlinked or fb:
-                        office_prompts[(oid, unlinked)] = build_system_prompt_for_office(
-                            excluded or None, custom or None,
-                            is_unlinked=unlinked,
-                            feedback_examples=fb,
-                        )
+                    # Modo arvore enxuta (fase 13): sempre passamos oid
+                    # pra build_system_prompt_for_office filtrar a arvore
+                    # pelos templates do escritorio. Mesmo sem overrides
+                    # explicitos, o filtro template-driven entra em acao
+                    # quando o setting esta ativo (default true desde
+                    # tax009).
+                    office_prompts[(oid, unlinked)] = build_system_prompt_for_office(
+                        excluded or None, custom or None,
+                        is_unlinked=unlinked,
+                        feedback_examples=fb,
+                        office_external_id=oid,
+                    )
             except Exception as exc:
                 logger.warning("Falha ao carregar overrides do escritório %s: %s", oid, exc)
         # Prompt base para publicações sem escritório

@@ -461,16 +461,22 @@ def build_system_prompt_for_office(
     feedback_examples: str = "",
     polo_scope: Optional[str] = None,
     taxonomy_version: Optional[str] = None,
+    office_external_id: Optional[int] = None,
 ) -> str:
     """
     Gera um system prompt customizado com taxonomia filtrada para o escritório.
-    Se excluded/custom_additions forem None E polo_scope/taxonomy_version forem
-    None, retorna o prompt padrão (SYSTEM_PROMPT, com taxonomia v1).
-    Se is_unlinked=True, adiciona instrução para detectar natureza do processo.
-    Se feedback_examples não-vazio, injeta exemplos de correções anteriores.
+    Se excluded/custom_additions forem None E polo_scope/taxonomy_version E
+    office_external_id forem None, retorna o prompt padrão (SYSTEM_PROMPT,
+    com taxonomia v1). Se is_unlinked=True, adiciona instrução para detectar
+    natureza do processo. Se feedback_examples não-vazio, injeta exemplos
+    de correções anteriores.
 
     Quando taxonomy_version='v2' (caller na fase pos-toggle), o addendum
     SISTEMA_MENCIONADO e injetado e a arvore e filtrada por polo_scope.
+
+    Quando office_external_id e passado E o setting template_driven_taxonomy
+    esta ativo (default desde tax009), a arvore vem ja filtrada por
+    templates do escritorio + globais (modo arvore enxuta da fase 13).
     """
     base = SYSTEM_PROMPT
     needs_rebuild = (
@@ -478,6 +484,7 @@ def build_system_prompt_for_office(
         or custom_additions
         or polo_scope is not None
         or (taxonomy_version is not None and taxonomy_version != "v1")
+        or office_external_id is not None
     )
     if needs_rebuild:
         custom_taxonomy = build_taxonomy_text(
@@ -485,6 +492,7 @@ def build_system_prompt_for_office(
             custom_additions=custom_additions,
             polo_scope=polo_scope,
             taxonomy_version=taxonomy_version,
+            office_external_id=office_external_id,
         )
         # SYSTEM_PROMPT capturou build_taxonomy_text(taxonomy_version='v1')
         # no import. Replace usa exatamente esse texto pra trocar pelo

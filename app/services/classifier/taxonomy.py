@@ -30,10 +30,46 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _CACHE_TTL_SECONDS = 60.0
-# Cache indexado por (polo_scope, taxonomy_version). Ambos None = sem filtro.
-_TREE_CACHE: dict[tuple[Optional[str], Optional[str]], dict[str, list[str]]] = {}
-_TREE_CACHE_AT: dict[tuple[Optional[str], Optional[str]], float] = {}
+# Cache indexado por (polo_scope, taxonomy_version, office_external_id).
+# Quando alguma posicao e None, significa "sem filtro nesse eixo".
+_CacheKey = tuple[Optional[str], Optional[str], Optional[int]]
+_TREE_CACHE: dict[_CacheKey, dict[str, list[str]]] = {}
+_TREE_CACHE_AT: dict[_CacheKey, float] = {}
 _TREE_CACHE_LOCK = threading.Lock()
+
+# Regex pra whitelist de categorias residuais "Para Analise" — sempre
+# entram na arvore mesmo no modo enxuto (template-driven), pra garantir
+# que a IA tem catch-all quando a publicacao nao casa com nenhuma cat
+# que tenha template configurado pro escritorio.
+_RESIDUAL_CAT_RE = re.compile(r"para\s+an[\u00e1a]lise", re.IGNORECASE)
+
+
+def is_template_driven_taxonomy_active() -> bool:
+    """Le o setting global `template_driven_taxonomy` (default True).
+
+    Quando True (default), a arvore aplicavel a um escritorio so inclui
+    categorias que tem AO MENOS UM template ativo desse escritorio (ou
+    global, com office_external_id=NULL). Granularidade GROSSA: a
+    presenca de qualquer template na cat libera a categoria inteira
+    (todas as suas subcategorias) pra IA — assim o operador nao perde
+    visibilidade quando aparece uma sub sem template.
+
+    Categorias residuais ("Para Analise") sempre entram na arvore via
+    whitelist, mesmo que nao tenham template — necessario pra a IA ter
+    catch-all quando a publicacao nao casa com nenhuma cat permitida.
+
+    Setting pode ser desligado pelo admin caso queira voltar pra arvore
+    completa (modo legacy). Migration tax009 seedeia true."""
+    try:
+        from app.services.app_settings import get_setting
+        v = (get_setting("template_driven_taxonomy") or "true").strip().lower()
+        return v in ("true", "1", "yes", "on")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Taxonomy: falha lendo template_driven_taxonomy, assumindo True: %s",
+            exc,
+        )
+        return True
 
 
 def get_active_taxonomy_version() -> str:
@@ -70,9 +106,54 @@ def invalidate_taxonomy_cache() -> None:
         _TREE_CACHE_AT.clear()
 
 
+def invalidate_taxonomy_cache_for_office(office_external_id: Optional[int]) -> None:
+    """Invalida apenas as entradas de cache que envolvem o escritorio
+    informado (ou globais, com office=None). Chamado pelos endpoints
+    CRUD de task_templates pra que a arvore enxuta reflita imediatamente
+    a criacao/edicao/desativacao de um template, sem esperar TTL."""
+    with _TREE_CACHE_LOCK:
+        keys_to_drop = [
+            k for k in _TREE_CACHE.keys()
+            if k[2] == office_external_id or k[2] is None
+        ]
+        for k in keys_to_drop:
+            _TREE_CACHE.pop(k, None)
+            _TREE_CACHE_AT.pop(k, None)
+
+
+def _load_template_allowed_cats(
+    db,
+    office_external_id: int,
+    taxonomy_version: Optional[str] = None,
+) -> set[str]:
+    """Set de category names que tem AO MENOS UM template ativo pro
+    escritorio X ou global (office IS NULL), nao pendente de revisao.
+
+    Granularidade grossa (decisao com user, fase 13): a presenca de
+    qualquer template na cat libera a cat INTEIRA — todas as subs
+    aparecem na arvore. Sub-level filtering ficaria muito restritivo
+    e tiraria visibilidade do operador quando aparece sub nao prevista.
+    """
+    from app.models.task_template import TaskTemplate
+    q = (
+        db.query(TaskTemplate.category)
+        .distinct()
+        .filter(TaskTemplate.is_active.is_(True))
+        .filter(TaskTemplate.needs_taxonomy_review.is_(False))
+        .filter(
+            (TaskTemplate.office_external_id == office_external_id)
+            | (TaskTemplate.office_external_id.is_(None))
+        )
+    )
+    if taxonomy_version is not None:
+        q = q.filter(TaskTemplate.taxonomy_version == taxonomy_version)
+    return {row[0] for row in q.all() if row[0]}
+
+
 def _load_tree_from_db(
     polo_scope: Optional[str] = None,
     taxonomy_version: Optional[str] = None,
+    office_external_id: Optional[int] = None,
 ) -> dict[str, list[str]] | None:
     """Lê classification_categories/subcategories e monta o dict legacy.
     Retorna None se DB vazio ou erro (caller faz fallback).
@@ -80,7 +161,12 @@ def _load_tree_from_db(
     Filtros:
       - polo_scope: 'ativo' | 'passivo' | 'ambos' | None (sem filtro).
         'ambos' inclui cats marcadas como 'ambos' (legacy v1).
-      - taxonomy_version: 'v1' | 'v2' | None (sem filtro)."""
+      - taxonomy_version: 'v1' | 'v2' | None (sem filtro).
+      - office_external_id: quando passado E o setting
+        `template_driven_taxonomy` esta ativo, filtra a arvore
+        pra so incluir categorias com pelo menos um template ativo
+        do escritorio (ou global). Cats residuais "Para Analise"
+        sempre entram via whitelist."""
     try:
         from app.db.session import SessionLocal
         from app.models.classification_taxonomy import (
@@ -119,6 +205,23 @@ def _load_tree_from_db(
                     )
                 ]
                 tree[c.name] = subs
+
+            # Filtro template-driven (modo arvore enxuta): so inclui
+            # cats que tem template OU casam com a whitelist residual.
+            if (
+                office_external_id is not None
+                and is_template_driven_taxonomy_active()
+            ):
+                allowed = _load_template_allowed_cats(
+                    db,
+                    office_external_id=office_external_id,
+                    taxonomy_version=taxonomy_version,
+                )
+                tree = {
+                    cat: subs
+                    for cat, subs in tree.items()
+                    if cat in allowed or _RESIDUAL_CAT_RE.search(cat)
+                }
             return tree
     except Exception as exc:  # noqa: BLE001
         logger.warning("Taxonomy: falha lendo DB, caindo em fallback hardcoded: %s", exc)
@@ -128,16 +231,22 @@ def _load_tree_from_db(
 def _get_active_tree(
     polo_scope: Optional[str] = None,
     taxonomy_version: Optional[str] = None,
+    office_external_id: Optional[int] = None,
 ) -> dict[str, list[str]]:
     """Retorna a árvore vigente. Tenta cache → DB → fallback hardcoded.
-    Cache e indexado por (polo_scope, taxonomy_version) — multiplas
-    arvores podem coexistir em memoria com TTL independente.
+    Cache e indexado por (polo_scope, taxonomy_version, office_external_id)
+    — multiplas arvores podem coexistir em memoria com TTL independente.
 
     Default sem filtros: caller herda toda a arvore (v1 + v2 misturadas
     se a v2 ja tiver sido seedada). Pra preservar comportamento do
     classificador antes da fase 11, callers que queiram so v1 devem
-    passar `taxonomy_version='v1'` explicitamente."""
-    key = (polo_scope, taxonomy_version)
+    passar `taxonomy_version='v1'` explicitamente.
+
+    Quando `office_external_id` e passado E o setting
+    `template_driven_taxonomy` esta ativo, a arvore retornada e a
+    "enxuta" — so com cats que tem template do escritorio + whitelist
+    residual."""
+    key: _CacheKey = (polo_scope, taxonomy_version, office_external_id)
     now = time.monotonic()
     cached_at = _TREE_CACHE_AT.get(key, 0.0)
     if key in _TREE_CACHE and (now - cached_at) < _CACHE_TTL_SECONDS:
@@ -147,13 +256,22 @@ def _get_active_tree(
         cached_at = _TREE_CACHE_AT.get(key, 0.0)
         if key in _TREE_CACHE and (now - cached_at) < _CACHE_TTL_SECONDS:
             return _TREE_CACHE[key]
-        from_db = _load_tree_from_db(polo_scope=polo_scope, taxonomy_version=taxonomy_version)
+        from_db = _load_tree_from_db(
+            polo_scope=polo_scope,
+            taxonomy_version=taxonomy_version,
+            office_external_id=office_external_id,
+        )
         if from_db is not None:
             _TREE_CACHE[key] = from_db
         else:
-            # Fallback hardcoded so faz sentido pra v1 sem filtro de polo.
-            # Pra v2 sem dados no DB, retorna dict vazio (caller decide).
-            if (taxonomy_version in (None, "v1")) and polo_scope in (None, "ambos"):
+            # Fallback hardcoded so faz sentido pra v1 sem filtro de polo
+            # ou office. Pra v2 ou com filtro de office sem DB, retorna
+            # dict vazio (caller decide).
+            if (
+                taxonomy_version in (None, "v1")
+                and polo_scope in (None, "ambos")
+                and office_external_id is None
+            ):
                 _TREE_CACHE[key] = {k: list(v) for k, v in CLASSIFICATION_TREE.items()}
             else:
                 _TREE_CACHE[key] = {}
@@ -258,9 +376,14 @@ def _find_category_by_normalized(
     label: str,
     polo_scope: Optional[str] = None,
     taxonomy_version: Optional[str] = None,
+    office_external_id: Optional[int] = None,
 ) -> str | None:
     norm = _normalize_label(label)
-    for category in _get_active_tree(polo_scope=polo_scope, taxonomy_version=taxonomy_version):
+    for category in _get_active_tree(
+        polo_scope=polo_scope,
+        taxonomy_version=taxonomy_version,
+        office_external_id=office_external_id,
+    ):
         if _normalize_label(category) == norm:
             return category
     return None
@@ -271,9 +394,14 @@ def _find_subcategory_by_normalized(
     label: str,
     polo_scope: Optional[str] = None,
     taxonomy_version: Optional[str] = None,
+    office_external_id: Optional[int] = None,
 ) -> str | None:
     norm = _normalize_label(label)
-    tree = _get_active_tree(polo_scope=polo_scope, taxonomy_version=taxonomy_version)
+    tree = _get_active_tree(
+        polo_scope=polo_scope,
+        taxonomy_version=taxonomy_version,
+        office_external_id=office_external_id,
+    )
     for subcategory in tree.get(category, []):
         if _normalize_label(subcategory) == norm:
             return subcategory
@@ -300,6 +428,7 @@ def build_taxonomy_text(
     custom_additions: list[dict[str, str]] | None = None,
     polo_scope: Optional[str] = None,
     taxonomy_version: Optional[str] = None,
+    office_external_id: Optional[int] = None,
 ) -> str:
     """
     Gera representação textual da taxonomia para uso em prompts.
@@ -312,12 +441,16 @@ def build_taxonomy_text(
         polo_scope: filtra por polo ('ativo' / 'passivo' / 'ambos' / None).
                     'ativo'/'passivo' inclui tambem cats marcadas como 'ambos'.
         taxonomy_version: filtra por versao ('v1' / 'v2' / None).
+        office_external_id: quando passado E modo template-driven ativo,
+                            arvore vem ja filtrada por templates do escritorio.
     """
     # Cópia da árvore base (do DB com cache, ou fallback hardcoded)
     tree = {
         k: list(v)
         for k, v in _get_active_tree(
-            polo_scope=polo_scope, taxonomy_version=taxonomy_version
+            polo_scope=polo_scope,
+            taxonomy_version=taxonomy_version,
+            office_external_id=office_external_id,
         ).items()
     }
 
@@ -360,9 +493,14 @@ def build_taxonomy_text(
 def get_all_valid_categories(
     polo_scope: Optional[str] = None,
     taxonomy_version: Optional[str] = None,
+    office_external_id: Optional[int] = None,
 ) -> set[str]:
     return set(
-        _get_active_tree(polo_scope=polo_scope, taxonomy_version=taxonomy_version).keys()
+        _get_active_tree(
+            polo_scope=polo_scope,
+            taxonomy_version=taxonomy_version,
+            office_external_id=office_external_id,
+        ).keys()
     )
 
 
@@ -370,9 +508,12 @@ def get_valid_subcategories(
     category: str,
     polo_scope: Optional[str] = None,
     taxonomy_version: Optional[str] = None,
+    office_external_id: Optional[int] = None,
 ) -> set[str]:
     subs = _get_active_tree(
-        polo_scope=polo_scope, taxonomy_version=taxonomy_version
+        polo_scope=polo_scope,
+        taxonomy_version=taxonomy_version,
+        office_external_id=office_external_id,
     ).get(category, [])
     return set(subs) if subs else {"-"}
 
@@ -382,6 +523,7 @@ def repair_classification(
     subcategory: str,
     polo_scope: Optional[str] = None,
     taxonomy_version: Optional[str] = None,
+    office_external_id: Optional[int] = None,
 ) -> tuple[str, str]:
     """
     Tenta corrigir pares (category, subcategory) comuns emitidos errado pelo
@@ -395,7 +537,11 @@ def repair_classification(
     """
     cat = (category or "").strip()
     sub = (subcategory or "").strip()
-    tree = _get_active_tree(polo_scope=polo_scope, taxonomy_version=taxonomy_version)
+    tree = _get_active_tree(
+        polo_scope=polo_scope,
+        taxonomy_version=taxonomy_version,
+        office_external_id=office_external_id,
+    )
 
     pair_alias = _PAIR_ALIASES.get((_normalize_label(cat), _normalize_label(sub)))
     if pair_alias:
@@ -407,14 +553,21 @@ def repair_classification(
         cat = aliased_cat
     else:
         cat = _find_category_by_normalized(
-            cat, polo_scope=polo_scope, taxonomy_version=taxonomy_version
+            cat,
+            polo_scope=polo_scope,
+            taxonomy_version=taxonomy_version,
+            office_external_id=office_external_id,
         ) or cat
 
     if cat in tree:
         if not tree[cat]:
             return cat, "-"
         sub = _find_subcategory_by_normalized(
-            cat, sub, polo_scope=polo_scope, taxonomy_version=taxonomy_version
+            cat,
+            sub,
+            polo_scope=polo_scope,
+            taxonomy_version=taxonomy_version,
+            office_external_id=office_external_id,
         ) or sub
 
     if cat in tree:
@@ -451,8 +604,13 @@ def validate_classification(
     subcategory: str,
     polo_scope: Optional[str] = None,
     taxonomy_version: Optional[str] = None,
+    office_external_id: Optional[int] = None,
 ) -> bool:
-    tree = _get_active_tree(polo_scope=polo_scope, taxonomy_version=taxonomy_version)
+    tree = _get_active_tree(
+        polo_scope=polo_scope,
+        taxonomy_version=taxonomy_version,
+        office_external_id=office_external_id,
+    )
     if category not in tree:
         return False
     subs = tree[category]

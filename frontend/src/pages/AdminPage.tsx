@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { TaxonomyToggleCard } from "@/components/TaxonomyToggleCard";
+import { TemplateDrivenTaxonomyCard } from "@/components/TemplateDrivenTaxonomyCard";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -685,6 +686,9 @@ const SyncManager = () => {
 
             {/* Card: Toggle Taxonomy v1 <-> v2 (fase 11) */}
             <TaxonomyToggleCard />
+
+            {/* Card: Modo arvore enxuta - template-driven (fase 13) */}
+            <TemplateDrivenTaxonomyCard />
 
             {/* Card: Cache de Escritórios (Índice) */}
             <Card>

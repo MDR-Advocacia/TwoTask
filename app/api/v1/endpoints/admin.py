@@ -740,6 +740,77 @@ def update_taxonomy_settings(
     )
 
 
+# ─── Template-driven taxonomy toggle (fase 13) ──────────────────────────────
+
+
+class TemplateDrivenTaxonomyResponse(BaseModel):
+    enabled: bool
+    description: str
+
+
+class TemplateDrivenTaxonomyRequest(BaseModel):
+    enabled: bool
+
+
+@router.get(
+    "/template-driven-taxonomy/settings",
+    response_model=TemplateDrivenTaxonomyResponse,
+    summary="Estado do modo arvore enxuta (template-driven taxonomy)",
+    tags=["Admin"],
+)
+def get_template_driven_taxonomy(_db: Session = Depends(get_db)):
+    """Quando ativo, a arvore aplicavel a cada escritorio so inclui cats
+    com pelo menos um template ativo do escritorio (ou global). Cats
+    residuais "Para Analise" sempre entram via whitelist."""
+    from app.services.app_settings import get_setting
+
+    raw = (get_setting("template_driven_taxonomy") or "true").strip().lower()
+    enabled = raw in ("true", "1", "yes", "on")
+    return TemplateDrivenTaxonomyResponse(
+        enabled=enabled,
+        description=(
+            "Modo arvore enxuta ativo: a IA so ve categorias com template do escritorio"
+            if enabled
+            else "Modo arvore completa: IA ve a arvore inteira (filtrada apenas por polo/version)"
+        ),
+    )
+
+
+@router.patch(
+    "/template-driven-taxonomy/settings",
+    response_model=TemplateDrivenTaxonomyResponse,
+    summary="Atualizar modo arvore enxuta",
+    tags=["Admin"],
+)
+def update_template_driven_taxonomy(
+    body: TemplateDrivenTaxonomyRequest,
+    _db: Session = Depends(get_db),
+):
+    """Liga ou desliga o modo enxuto. Invalida o cache de taxonomia
+    inteiro pra que a proxima classificacao reflita imediatamente."""
+    from app.services.app_settings import set_setting
+    from app.services.classifier.taxonomy import invalidate_taxonomy_cache
+
+    set_setting(
+        "template_driven_taxonomy",
+        "true" if body.enabled else "false",
+        description=(
+            "Quando true, a arvore aplicavel a um escritorio so inclui categorias "
+            "com pelo menos um template ativo do escritorio (ou global). "
+            "Cats residuais 'Para Analise' sempre aparecem via whitelist."
+        ),
+    )
+    invalidate_taxonomy_cache()
+    return TemplateDrivenTaxonomyResponse(
+        enabled=body.enabled,
+        description=(
+            "Modo arvore enxuta ativo: a IA so ve categorias com template do escritorio"
+            if body.enabled
+            else "Modo arvore completa: IA ve a arvore inteira (filtrada apenas por polo/version)"
+        ),
+    )
+
+
 # ─── Saved Filters ──────────────────────────────────────────────────────────
 
 class SavedFilterCreateRequest(BaseModel):

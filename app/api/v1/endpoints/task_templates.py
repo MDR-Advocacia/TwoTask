@@ -166,6 +166,22 @@ def _support_squad_name_lookup(tmpl: TaskTemplate) -> Optional[str]:
         return None
 
 
+def _invalidate_taxonomy_cache_safe(office_external_id: Optional[int]) -> None:
+    """Wrapper que loga (mas nao propaga) erros de invalidacao do cache.
+
+    Cache miss em runtime apenas atrasa a propagacao da mudanca em ate
+    60s (TTL natural). Erro aqui nao deve quebrar o CRUD do template.
+    Modo arvore enxuta (fase 13)."""
+    try:
+        from app.services.classifier.taxonomy import (
+            invalidate_taxonomy_cache_for_office,
+        )
+        invalidate_taxonomy_cache_for_office(office_external_id)
+    except Exception:  # noqa: BLE001
+        # Silencioso — TTL natural sobe a mudanca em ate 60s.
+        pass
+
+
 def _validate_foreign_keys(
     db: Session,
     office_external_id: Optional[int],
@@ -308,6 +324,10 @@ def create_template(payload: TaskTemplateCreate, db: Session = Depends(get_db)):
     db.add(tmpl)
     db.commit()
     db.refresh(tmpl)
+    # Modo arvore enxuta: invalida cache de taxonomia do escritorio
+    # afetado (e dos globais) pra que a proxima classificacao desse
+    # office veja a cat nova ja na arvore enxuta.
+    _invalidate_taxonomy_cache_safe(payload.office_external_id)
     return _to_response(tmpl)
 
 
@@ -333,11 +353,20 @@ def update_template(
             updates.get("responsible_user_external_id", tmpl.responsible_user_external_id),
         )
 
+    # Captura escritorios pra invalidar cache: o antigo (caso o operador
+    # tenha mudado o office_external_id) e o novo. Modo arvore enxuta
+    # depende disso pra refletir a edicao imediatamente.
+    old_office = tmpl.office_external_id
+    new_office = updates.get("office_external_id", old_office)
+
     for k, v in updates.items():
         setattr(tmpl, k, v)
 
     db.commit()
     db.refresh(tmpl)
+    _invalidate_taxonomy_cache_safe(old_office)
+    if new_office != old_office:
+        _invalidate_taxonomy_cache_safe(new_office)
     return _to_response(tmpl)
 
 
@@ -347,8 +376,10 @@ def delete_template(template_id: int, db: Session = Depends(get_db)):
     tmpl = db.query(TaskTemplate).filter(TaskTemplate.id == template_id).first()
     if not tmpl:
         raise HTTPException(status_code=404, detail="Template não encontrado.")
+    office_id = tmpl.office_external_id
     db.delete(tmpl)
     db.commit()
+    _invalidate_taxonomy_cache_safe(office_id)
     return None
 
 
@@ -428,6 +459,10 @@ def migrate_template_to_v2(
     tmpl.needs_taxonomy_review = False
     db.commit()
     db.refresh(tmpl)
+    # Migrar tira o template do estado dormente (needs_taxonomy_review=true)
+    # — agora ele vai casar publicacoes do escritorio. Isso muda a arvore
+    # enxuta: a cat antes "ausente" agora aparece. Invalida cache.
+    _invalidate_taxonomy_cache_safe(tmpl.office_external_id)
     return _to_response(tmpl)
 
 
