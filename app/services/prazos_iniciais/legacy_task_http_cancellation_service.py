@@ -154,8 +154,23 @@ class LegacyTaskHttpCancellationService:
         memoria do processo (single worker via APScheduler max_instances=1
         + single container Coolify — mesma justificativa do circuit
         breaker e do _last_tick_holder).
+
+        Login serializado DENTRO do lock (double-checked locking). Antes
+        liberava o lock pra rodar `_login_via_node` (subprocess Node ~1
+        min) e re-pegava depois — mas isso permitia chamadas concorrentes
+        (worker tick + endpoints pontuais com intake_id=) dispararem
+        logins em paralelo. Confirmado em produção (2026-05-08): o L1
+        ROTACIONA sessions — cada novo login invalida o cookie do
+        anterior, e os POSTs feitos com cookies "antigos" caem em 403
+        consistente. Reprod no log: 10 logins simultaneos -> 9 falham
+        com auth_failure, so o ultimo da rajada passa.
+
+        Trade-off: chamadas concorrentes esperam ate 1 min pelo login.
+        Aceitavel — sem isso, batch de cancelamentos vira parade de 403.
         """
         with self._session_cache.lock:
+            # Re-check (DCL): pode ter sido renovado por outra thread
+            # enquanto esperavamos o lock.
             if (
                 self._session_cache.cookies
                 and self._session_cache.obtained_at
@@ -163,11 +178,8 @@ class LegacyTaskHttpCancellationService:
             ):
                 return dict(self._session_cache.cookies)
 
-        # Renova fora do lock — o subprocess Node leva 5-10s e nao
-        # precisa segurar threads concorrentes nesse intervalo.
-        cookies = self._login_via_node()
-
-        with self._session_cache.lock:
+            # Login dentro do lock pra serializar.
+            cookies = self._login_via_node()
             self._session_cache.cookies = cookies
             self._session_cache.obtained_at = self._utcnow()
             return dict(cookies)
