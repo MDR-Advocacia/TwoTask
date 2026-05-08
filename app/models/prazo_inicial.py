@@ -130,6 +130,23 @@ EXTRACTION_CONFIDENCE_PARTIAL = "partial"
 EXTRACTION_CONFIDENCE_LOW = "low"
 
 
+# ─── Status do check heuristico da habilitacao (pin023) ───────────────
+# Validacao por matching de strings no texto extraido do PDF — verifica
+# que a peticao + procuracao + substabelecimento estao presentes, que o
+# CNJ bate com o intake, que o cliente do polo passivo aparece, e que
+# o pedido (d) com EXCLUSIVAMENTE em nome de Marcos Delli OAB/RN 5.553
+# esta na peca (sem isso, intimacao em outro nome eh nula — CPC 272 §5º).
+#
+# Status FALHA NAO BLOQUEIA o avanco do intake — apenas sinaliza no
+# painel pra o operador resolver. Decisao de produto 2026-05-08.
+
+HABILITACAO_CHECK_STATUS_NOT_VERIFIED = "NAO_VERIFICADO"
+HABILITACAO_CHECK_STATUS_OK = "OK"
+HABILITACAO_CHECK_STATUS_WARNING = "ALERTA"
+HABILITACAO_CHECK_STATUS_FAILED = "FALHA"
+HABILITACAO_CHECK_STATUS_EXTRACTION_ERROR = "ERRO_EXTRACAO"
+
+
 class PrazoInicialIntake(Base):
     """
     Registro principal — 1 linha por processo recebido pela API externa.
@@ -310,6 +327,19 @@ class PrazoInicialIntake(Base):
     habilitacao_pdf_sha256 = Column(String(64), nullable=True)
     habilitacao_pdf_bytes = Column(BigInteger, nullable=True)
     habilitacao_pdf_filename_original = Column(String(255), nullable=True)
+
+    # Check heuristico do PDF da habilitacao (pin023). Roda sincrono
+    # no upload/criacao do intake; status FALHA sinaliza mas NAO bloqueia
+    # o avanco. Resultado detalhado fica em `habilitacao_check_result`
+    # (lista de checks individuais com id/label/criticidade/status/detalhe).
+    habilitacao_check_status = Column(
+        String(32),
+        nullable=False,
+        server_default=HABILITACAO_CHECK_STATUS_NOT_VERIFIED,
+        index=True,
+    )
+    habilitacao_check_result = Column(JSON, nullable=True)
+    habilitacao_check_at = Column(DateTime(timezone=True), nullable=True)
 
     received_at = Column(
         DateTime(timezone=True),

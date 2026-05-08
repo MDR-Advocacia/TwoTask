@@ -204,6 +204,34 @@ class IntakeService:
             intake.id, external_id, normalized_cnj,
         )
 
+        # ── Validacao heuristica da habilitacao (pin023) ──
+        # Roda checks sobre o PDF da habilitacao (peticao/procuracao/
+        # substabelecimento, CNJ bate, cliente bate, pedido (d) com
+        # OAB do titular, etc.). Sincrono — pdfplumber em ~6 paginas
+        # roda em <1s. Status FALHA NAO bloqueia o intake; apenas
+        # sinaliza no painel pra o operador resolver. Falha aqui eh
+        # nao-fatal (try/except envolvente).
+        if intake.habilitacao_pdf_path:
+            try:
+                from app.services.prazos_iniciais.habilitacao_validator import (
+                    run_validation,
+                    persist_outcome,
+                )
+                outcome = run_validation(intake)
+                persist_outcome(intake, outcome)
+                self.db.commit()
+                self.db.refresh(intake)
+                logger.info(
+                    "Habilitacao check intake %d: status=%s, %d checks.",
+                    intake.id, outcome.status, len(outcome.checks),
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Habilitacao validator: falha nao-fatal no intake %d "
+                    "(seguindo sem check).",
+                    intake.id,
+                )
+
         # ── Enfileiramento automático no AJUS (módulo paralelo) ──
         # Cada intake recebido vira um candidato a andamento na fila
         # AJUS, usando o cod_andamento default cadastrado pela admin.

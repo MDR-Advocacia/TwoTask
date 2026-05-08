@@ -233,6 +233,22 @@ class SugestaoOut(BaseModel):
         from_attributes = True
 
 
+class HabilitacaoCheckOut(BaseModel):
+    """Resultado de um check individual da habilitacao (pin023)."""
+    id: str
+    label: str
+    criticidade: str  # "CRITICO" | "AVISO"
+    status: str       # "OK" | "ALERTA" | "FALHA" | "PULADO"
+    detalhe: Optional[str] = None
+
+
+class HabilitacaoCheckResultOut(BaseModel):
+    """Resultado agregado da validacao heuristica da habilitacao."""
+    status: str       # "NAO_VERIFICADO" | "OK" | "ALERTA" | "FALHA" | "ERRO_EXTRACAO"
+    checks: list[HabilitacaoCheckOut] = []
+    checked_at: Optional[datetime] = None
+
+
 class IntakeSummary(BaseModel):
     id: int
     external_id: str
@@ -293,6 +309,10 @@ class IntakeSummary(BaseModel):
     has_habilitacao_pdf: bool = False
     habilitacao_pdf_filename_original: Optional[str] = None
     habilitacao_pdf_bytes: Optional[int] = None
+    # Status agregado da validacao heuristica da habilitacao (pin023).
+    # Detalhe completo (lista de checks) so' vai no IntakeDetail; aqui
+    # so' o status pra UI mostrar badge na lista.
+    habilitacao_check_status: str = "NAO_VERIFICADO"
     # Patrocínio (pin018) — só presente quando o intake bateu com
     # vinculada Master. Operador vê na listagem como badge sumário.
     patrocinio_decisao: Optional[str] = None
@@ -372,6 +392,10 @@ class IntakeDetail(IntakeSummary):
     # do signatário, parte representada e análise de qualidade. Sempre
     # presente; quando `existe=false`, demais campos são null.
     contestacao_existente: Optional[ContestacaoExistenteOut] = None
+    # Validacao heuristica da habilitacao (pin023) — bloco completo
+    # com cada check individual. None enquanto NAO_VERIFICADO sem
+    # checks salvos; quando rodar pelo menos uma vez, vem populado.
+    habilitacao_check: Optional[HabilitacaoCheckResultOut] = None
 
 
 class IntakeListResponse(BaseModel):
@@ -781,6 +805,10 @@ def _intake_to_summary(intake: PrazoInicialIntake) -> IntakeSummary:
             intake, "habilitacao_pdf_filename_original", None
         ),
         habilitacao_pdf_bytes=getattr(intake, "habilitacao_pdf_bytes", None),
+        habilitacao_check_status=(
+            getattr(intake, "habilitacao_check_status", None)
+            or "NAO_VERIFICADO"
+        ),
         patrocinio_decisao=(
             intake.patrocinio.decisao if getattr(intake, "patrocinio", None) else None
         ),
@@ -1401,6 +1429,18 @@ def get_intake(
         analise_qualidade=getattr(intake, "contestacao_analise_qualidade", None),
     )
 
+    # Bloco habilitacao_check (pin023): None quando NAO_VERIFICADO
+    # sem checks salvos; objeto completo quando rodou ao menos uma vez.
+    raw_check = getattr(intake, "habilitacao_check_result", None) or {}
+    raw_checks = raw_check.get("checks") if isinstance(raw_check, dict) else []
+    habilitacao_check_out: Optional[HabilitacaoCheckResultOut] = None
+    if raw_checks or getattr(intake, "habilitacao_check_at", None) is not None:
+        habilitacao_check_out = HabilitacaoCheckResultOut(
+            status=getattr(intake, "habilitacao_check_status", None) or "NAO_VERIFICADO",
+            checks=[HabilitacaoCheckOut(**c) for c in raw_checks if isinstance(c, dict)],
+            checked_at=getattr(intake, "habilitacao_check_at", None),
+        )
+
     return IntakeDetail(
         **summary.model_dump(),
         capa_json=intake.capa_json,
@@ -1412,6 +1452,7 @@ def get_intake(
         pedidos=pedidos_serialized,
         patrocinio=patrocinio_out,
         contestacao_existente=contestacao_existente_out,
+        habilitacao_check=habilitacao_check_out,
     )
 
 
@@ -1498,6 +1539,49 @@ def get_intake_habilitacao_pdf(
         path=absolute,
         media_type="application/pdf",
         filename=filename,
+    )
+
+
+@router.post(
+    "/intakes/{intake_id}/habilitacao/recheck",
+    summary="Re-roda a validacao heuristica do PDF da habilitacao (pin023).",
+)
+def recheck_habilitacao(
+    intake_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+) -> "HabilitacaoCheckResultOut":
+    """
+    Roda os checks heuristicos sobre o PDF de habilitacao salvo,
+    persiste o resultado em `habilitacao_check_*` e devolve o status
+    agregado + lista de checks. Util pra reprocessar intakes antigos
+    (NAO_VERIFICADO) ou pra debugar uma falha apos ajuste de constantes.
+
+    Status FALHA NAO bloqueia o intake — apenas sinaliza no painel.
+    """
+    intake = db.get(PrazoInicialIntake, intake_id)
+    if intake is None:
+        raise HTTPException(status_code=404, detail="Intake não encontrado.")
+    if not getattr(intake, "habilitacao_pdf_path", None):
+        raise HTTPException(
+            status_code=400,
+            detail="Intake não tem PDF de habilitação para validar.",
+        )
+
+    from app.services.prazos_iniciais.habilitacao_validator import (
+        run_validation,
+        persist_outcome,
+    )
+
+    outcome = run_validation(intake)
+    persist_outcome(intake, outcome)
+    db.commit()
+    db.refresh(intake)
+
+    return HabilitacaoCheckResultOut(
+        status=outcome.status,
+        checks=[HabilitacaoCheckOut(**c) for c in outcome.checks],
+        checked_at=outcome.checked_at,
     )
 
 
