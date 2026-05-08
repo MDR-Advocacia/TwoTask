@@ -6,7 +6,8 @@ categoria/subcategoria contra a taxonomia).
 
 O que ESTE módulo valida:
   - Cross-field: `audiencia_data`/`audiencia_hora`/`audiencia_link` só
-    podem vir preenchidos quando `categoria == "Audiência Agendada"`.
+    podem vir preenchidos quando categoria e' de audiencia ("Audiências" v2
+    ou "Audiência Agendada" v1 legacy).
   - `prazo_dias` exige `prazo_tipo` e `prazo_fundamentacao` preenchidos.
   - `prazo_dias` ausente exige `prazo_tipo` e `prazo_fundamentacao` null.
   - `confianca` ∈ {alta, media, baixa}.
@@ -59,7 +60,13 @@ _TIME_RE = re.compile(r"^\d{2}:\d{2}$")
 _VALID_POLOS = {"ativo", "passivo", "ambos"}
 _VALID_CONFIANCA = {"alta", "media", "baixa"}
 _VALID_PRAZO_TIPO = {"util", "corrido"}
-_AUDIENCIA_CATEGORY = "Audiência Agendada"
+# Categorias que ATIVAM extracao de audiencia (data/hora/link).
+# Aceita v2 ("Audiências" — atual) e v1 ("Audiência Agendada" —
+# preservado pra back-compat com publicacoes ja classificadas em v1).
+# Bug raiz observado em 2026-05-08: validator hardcoded apenas com v1,
+# descartava data/hora/link de toda audiencia classificada em v2 com
+# warning "categoria != Audiência Agendada".
+_AUDIENCIA_CATEGORIES = {"Audiências", "Audiência Agendada"}
 # Sistemas que costumam aparecer em publicacoes de pesquisa patrimonial
 # e bloqueio. Campo opcional `sistema_mencionado` (taxonomy v2): IA
 # preenche quando o texto cita um deles. Mantido como enum fechado pra
@@ -122,7 +129,7 @@ def validate_response(payload: Any) -> CleanClassification:
 
     Caso contrário, qualquer inconsistência cross-field vira warning e
     o campo problemático é zerado (ex.: audiencia_data limpa se
-    categoria != "Audiência Agendada").
+    categoria nao for de audiencia).
     """
     if not isinstance(payload, dict):
         raise ResponseSchemaError(
@@ -150,21 +157,24 @@ def validate_response(payload: Any) -> CleanClassification:
     audiencia_link = _coerce_str(payload.get("audiencia_link"))
 
     # Cross-field: campos de audiência só fazem sentido na categoria certa.
-    is_audiencia = categoria == _AUDIENCIA_CATEGORY
+    is_audiencia = categoria in _AUDIENCIA_CATEGORIES
     if not is_audiencia:
         if audiencia_data:
             warnings.append(
-                f"audiencia_data='{audiencia_data}' descartada (categoria='{categoria}' não é '{_AUDIENCIA_CATEGORY}')"
+                f"audiencia_data='{audiencia_data}' descartada "
+                f"(categoria='{categoria}' nao e categoria de audiencia)"
             )
             audiencia_data = None
         if audiencia_hora:
             warnings.append(
-                f"audiencia_hora='{audiencia_hora}' descartada (categoria != '{_AUDIENCIA_CATEGORY}')"
+                f"audiencia_hora='{audiencia_hora}' descartada "
+                f"(categoria='{categoria}' nao e categoria de audiencia)"
             )
             audiencia_hora = None
         if audiencia_link:
             warnings.append(
-                f"audiencia_link descartado (categoria != '{_AUDIENCIA_CATEGORY}')"
+                f"audiencia_link descartado "
+                f"(categoria='{categoria}' nao e categoria de audiencia)"
             )
             audiencia_link = None
 

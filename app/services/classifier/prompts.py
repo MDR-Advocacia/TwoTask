@@ -136,9 +136,11 @@ Dicas práticas:
 
 # EXTRAÇÃO DE DATA/HORA DE AUDIÊNCIA
 
-Quando a classificação for "Audiência Agendada" (qualquer subcategoria), é CRÍTICO extrair a data e
-horário exatos da audiência a partir do texto da publicação. Esses dados serão usados para
-agendar a tarefa na pauta correta.
+Quando a classificação for "Audiências" (qualquer subcategoria — Conciliação,
+Instrução, Audiência Una, Mediação, Adiamento / Redesignação, Cancelamento,
+Não Especificada), é CRÍTICO extrair a data e horário exatos da audiência a
+partir do texto da publicação. Esses dados são usados pra agendar a tarefa
+na pauta correta — sem eles, a tarefa não tem prazo automático.
 
   - Procure por padrões como "designo audiência para o dia 15/03/2026 às 14:00",
     "audiência de conciliação em 20/03/2026, 09h30", "fica designada audiência...
@@ -146,9 +148,9 @@ agendar a tarefa na pauta correta.
     e variantes similares.
   - Extraia a data no formato ISO: "YYYY-MM-DD" (ex.: "2026-03-15")
   - Extraia o horário no formato 24h: "HH:MM" (ex.: "14:00")
-  - Se conseguir extrair data mas não horário, retorne apenas a data e "horario" como null.
+  - Se conseguir extrair data mas não horário, retorne apenas a data e horario como null.
   - Se não conseguir extrair nenhum dos dois, retorne ambos como null — nesse caso, use
-    a subcategoria "Não especificada" para sinalizar que a data precisa ser informada manualmente.
+    a subcategoria "Não Especificada" pra sinalizar que a data precisa ser informada manualmente.
 
 # EXTRAÇÃO DE LINK DE AUDIÊNCIA VIRTUAL
 
@@ -157,7 +159,7 @@ extraia-o no campo "audiencia_link". Procure por URLs que contenham:
   - meet.google.com, zoom.us, teams.microsoft.com, cnj.jus.br, pje.jus.br
   - Ou qualquer URL mencionada em contexto de audiência virtual/telepresencial/videoconferência
   - Se houver link, retorne a URL completa. Se não houver, retorne null.
-  - Este campo se aplica SOMENTE quando a categoria for "Audiência Agendada".
+  - Este campo se aplica SOMENTE quando a categoria for "Audiências".
 
 # IDENTIFICAÇÃO DE PRAZO FATAL (CPC)
 
@@ -274,9 +276,9 @@ CPC: prazo em dobro pra Fazenda Pública)").
    - "categoria": string (deve ser uma das categorias listadas acima)
    - "subcategoria": string (deve ser uma das subcategorias da categoria escolhida, ou "-" se a categoria não possui subcategorias)
    - "polo": string (OBRIGATORIAMENTE um destes valores: "ativo", "passivo" ou "ambos")
-   - "audiencia_data": string ou null (data da audiência no formato "YYYY-MM-DD", SOMENTE quando categoria = "Audiência Agendada")
-   - "audiencia_hora": string ou null (horário da audiência no formato "HH:MM", SOMENTE quando categoria = "Audiência Agendada")
-   - "audiencia_link": string ou null (URL de videoconferência para audiência virtual, SOMENTE quando categoria = "Audiência Agendada")
+   - "audiencia_data": string ou null (data da audiência no formato "YYYY-MM-DD", SOMENTE quando categoria = "Audiências")
+   - "audiencia_hora": string ou null (horário da audiência no formato "HH:MM", SOMENTE quando categoria = "Audiências")
+   - "audiencia_link": string ou null (URL de videoconferência para audiência virtual, SOMENTE quando categoria = "Audiências")
    - "prazo_dias": número inteiro ou null (quantidade de dias do prazo legal aberto pela publicação — ver seção "IDENTIFICAÇÃO DE PRAZO FATAL")
    - "prazo_tipo": "util" | "corrido" | null (tipo de contagem; null quando prazo_dias é null)
    - "prazo_fundamentacao": string ou null (base legal e ato; null quando prazo_dias é null)
