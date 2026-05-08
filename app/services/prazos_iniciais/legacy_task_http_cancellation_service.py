@@ -36,14 +36,13 @@ import logging
 import os
 import shutil
 import subprocess
-import threading
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
 
 import requests
+from filelock import FileLock, Timeout as FileLockTimeout
 
 from app.core.config import settings
 from app.services.legal_one_client import LegalOneApiClient
@@ -84,11 +83,14 @@ class _CancelHttpError(Exception):
         self.category = category
 
 
-@dataclass
-class _SessionCache:
-    cookies: dict[str, str] = field(default_factory=dict)
-    obtained_at: Optional[datetime] = None
-    lock: threading.Lock = field(default_factory=threading.Lock)
+# Caminhos do cache compartilhado entre workers. /app/data e' o volume
+# Docker montado em todos os 4 workers Uvicorn — todos veem o mesmo
+# arquivo. O .lock pareia com o .json e serializa logins entre os
+# workers (sem isso, 4 workers tentam logar em paralelo, o L1 rotaciona
+# session a cada novo login, e os 3 que perdem a corrida ficam com
+# cookie morto -> 403 em massa).
+_SESSION_CACHE_PATH = Path("/app/data/legacy_task_http_session.json")
+_SESSION_LOCK_PATH = Path("/app/data/legacy_task_http_session.lock")
 
 
 class LegacyTaskHttpCancellationService:
@@ -109,7 +111,6 @@ class LegacyTaskHttpCancellationService:
         # credenciais/runner — duplicar essa logica daria divergencia.
         self._legacy = legacy_helper or LegacyTaskCancellationService(client=self.client)
         self._http = requests.Session()
-        self._session_cache = _SessionCache()
         self.logger = logging.getLogger(__name__)
 
     # ── helpers ───────────────────────────────────────────────────────
@@ -148,46 +149,94 @@ class LegacyTaskHttpCancellationService:
         )
         return timedelta(minutes=minutes)
 
+    def _read_session_file(self) -> Optional[dict[str, str]]:
+        """Le o cache de cookies do disco. None se nao existe ou expirou."""
+        if not _SESSION_CACHE_PATH.exists():
+            return None
+        try:
+            data = json.loads(_SESSION_CACHE_PATH.read_text(encoding="utf-8"))
+            obtained_at = datetime.fromisoformat(data["obtained_at"])
+            cookies = data.get("cookies") or {}
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        if self._utcnow() - obtained_at >= self._session_ttl():
+            return None
+        if not cookies or ".ASPXAUTH" not in cookies:
+            return None
+        return dict(cookies)
+
+    def _write_session_file(self, cookies: dict[str, str]) -> None:
+        """Persiste cookies no disco com timestamp."""
+        _SESSION_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _SESSION_CACHE_PATH.write_text(
+            json.dumps(
+                {
+                    "cookies": cookies,
+                    "obtained_at": self._utcnow().isoformat(),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
     def _ensure_session(self) -> dict[str, str]:
         """
         Retorna cookies validos pra requisicoes no L1 web. Cacheia em
-        memoria do processo (single worker via APScheduler max_instances=1
-        + single container Coolify — mesma justificativa do circuit
-        breaker e do _last_tick_holder).
+        arquivo no volume `/app/data` compartilhado entre os 4 workers
+        Uvicorn (UVICORN_WORKERS=4 no docker-api-start.sh).
 
-        Login serializado DENTRO do lock (double-checked locking). Antes
-        liberava o lock pra rodar `_login_via_node` (subprocess Node ~1
-        min) e re-pegava depois — mas isso permitia chamadas concorrentes
-        (worker tick + endpoints pontuais com intake_id=) dispararem
-        logins em paralelo. Confirmado em produção (2026-05-08): o L1
-        ROTACIONA sessions — cada novo login invalida o cookie do
-        anterior, e os POSTs feitos com cookies "antigos" caem em 403
-        consistente. Reprod no log: 10 logins simultaneos -> 9 falham
-        com auth_failure, so o ultimo da rajada passa.
+        Por que arquivo + filelock e nao memoria + threading.Lock?
+        Porque cada worker Uvicorn e' um processo Python separado — cada
+        um teria seu proprio cache em memoria + lock e disparariam
+        logins em paralelo. O servidor L1 ROTACIONA session a cada novo
+        login (cookie do login anterior vira invalido), entao 4 logins
+        simultaneos = 3 falham com 403 e so o ultimo passa.
 
-        Trade-off: chamadas concorrentes esperam ate 1 min pelo login.
-        Aceitavel — sem isso, batch de cancelamentos vira parade de 403.
+        Reproduzido em prod (2026-05-08): worker tick disparou em
+        worker_0/1/2/3 quase ao mesmo tempo, todos chamaram login.start,
+        e a maioria dos POSTs subsequentes caiu em auth_failure.
+
+        Solucao: cookie em arquivo no volume compartilhado. Filelock
+        serializa logins entre os 4 workers — quem chega primeiro loga,
+        os outros esperam, depois leem o cache (DCL pattern) e nao
+        re-logam. Login real acontece ~1x a cada `session_ttl_minutes`.
         """
-        with self._session_cache.lock:
-            # Re-check (DCL): pode ter sido renovado por outra thread
-            # enquanto esperavamos o lock.
-            if (
-                self._session_cache.cookies
-                and self._session_cache.obtained_at
-                and self._utcnow() - self._session_cache.obtained_at < self._session_ttl()
-            ):
-                return dict(self._session_cache.cookies)
+        # Fast path — arquivo ja' tem cookie valido (sem precisar de lock).
+        cached = self._read_session_file()
+        if cached:
+            return cached
 
-            # Login dentro do lock pra serializar.
-            cookies = self._login_via_node()
-            self._session_cache.cookies = cookies
-            self._session_cache.obtained_at = self._utcnow()
-            return dict(cookies)
+        lock = FileLock(str(_SESSION_LOCK_PATH), timeout=120)
+        try:
+            with lock:
+                # Re-check apos o lock: outro worker pode ter logado e
+                # escrito o arquivo enquanto estavamos esperando.
+                cached = self._read_session_file()
+                if cached:
+                    return cached
+
+                # Login efetivo. Custa ~1 min (subprocess Node + SSO L1).
+                # Outros workers que chegarem aqui durante esse minuto
+                # ficam parados no `with lock` esperando.
+                cookies = self._login_via_node()
+                self._write_session_file(cookies)
+                return cookies
+        except FileLockTimeout as exc:
+            raise RuntimeError(
+                "Timeout (>120s) esperando o lock de login do legacy_task_http. "
+                "Outro worker pode estar travado no Playwright — "
+                "verifique os run_dirs em /app/output/playwright/legalone/."
+            ) from exc
 
     def _invalidate_session(self) -> None:
-        with self._session_cache.lock:
-            self._session_cache.cookies = {}
-            self._session_cache.obtained_at = None
+        """Apaga o cache de cookies (forca proximo _ensure_session a relogar)."""
+        try:
+            _SESSION_CACHE_PATH.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning(
+                "legacy_task_http: nao foi possivel apagar cache de sessao: %s",
+                exc,
+            )
 
     def _resolve_login_paths(self) -> Path:
         run_dir = (

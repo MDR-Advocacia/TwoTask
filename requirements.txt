@@ -35,3 +35,9 @@ anthropic==0.40.0
 
 # ─── Extração de PDF (intake USER_UPLOAD) ─────────
 pdfplumber==0.11.4
+
+# ─── Lock cross-process ───────────────────────────
+# filelock pro cache de cookie do legacy_task_http: serializa logins
+# entre os 4 workers Uvicorn e persiste o cookie em arquivo (volume
+# /app/data) pra todos eles compartilharem a mesma sessão.
+filelock==3.16.1
