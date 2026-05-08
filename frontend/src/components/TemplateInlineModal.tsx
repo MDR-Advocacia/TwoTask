@@ -1,17 +1,21 @@
 /**
  * TemplateInlineModal — modal contextual de template (criar / editar).
  *
- * Diferenca do modal antigo: cat/sub vem do CONTEXTO (linha clicada
- * na arvore), nao do operador escolhendo num dropdown gigante. So
- * pergunta o que e essencial pra a tarefa: nome, subtipo, responsavel,
- * prazo, descricao, notas, target_role/squad.
+ * Diferenca do modal antigo (TaskTemplatesPageLegacy): cat/sub e office
+ * vem do CONTEXTO da arvore (linha clicada), nao do operador escolhendo
+ * num dropdown gigante. O resto eh igual ao modal rico:
+ *  - Multi-task: N tarefas por classificacao (cada bloco = 1 template).
+ *  - Atribuir ao assistente do responsavel (target_role).
+ *  - Squad de suporte opcional (target_squad_id) — sobrepoe o
+ *    responsavel padrao.
  *
  * Usado pelo OfficeTemplateTree quando o operador clica:
  *  - "+ adicionar template" → mode="create" com cat/sub pre-preenchidos
- *  - "editar" → mode="edit" com template carregado
+ *  - "editar" → mode="edit" com template carregado em 1 bloco; permite
+ *    adicionar blocos novos pra criar templates extras na mesma cat/sub.
  */
 import { useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, Plus, X } from "lucide-react";
 
 import {
   Dialog,
@@ -21,7 +25,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -45,7 +51,7 @@ export interface TemplateInlineModalProps {
   onOpenChange: (open: boolean) => void;
   /** Pra criar: passa office + cat + sub. Pra editar: passa templateId. */
   mode: "create" | "edit";
-  officeExternalId: number | null;  // null = template global
+  officeExternalId: number | null; // null = template global
   category: string;
   subcategory: string | null;
   templateId?: number;
@@ -59,6 +65,12 @@ interface User {
   email?: string;
 }
 
+interface SupportSquadOption {
+  id: number;
+  name: string;
+  office_external_id: number | null;
+}
+
 const PRIORITIES = [
   { value: "Low", label: "Baixa" },
   { value: "Normal", label: "Normal" },
@@ -69,6 +81,37 @@ const DUE_REFERENCE_OPTIONS = [
   { value: "publication", label: "Data da publicação" },
   { value: "today", label: "Data atual (quando criar a tarefa)" },
 ];
+
+const BLANK_BLOCK = {
+  id: undefined as number | undefined,
+  task_subtype_external_id: null as number | null,
+  responsible_user_external_id: null as number | null,
+  priority: "Normal",
+  due_business_days: 3,
+  due_date_reference: "publication",
+  description_template:
+    "Publicação judicial referente ao processo {cnj} em {publication_date}.",
+  notes_template: "",
+  target_role_assistant: false,
+  target_squad_id: "" as string,
+};
+
+type TaskBlock = typeof BLANK_BLOCK;
+
+const extractErrorMessage = (data: any, fallback: string): string => {
+  const detail = data?.detail;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map((d: any) => (typeof d === "string" ? d : d?.msg))
+      .filter(Boolean);
+    if (msgs.length > 0) return msgs.join("; ");
+  }
+  if (detail && typeof detail === "object" && typeof detail.msg === "string") {
+    return detail.msg;
+  }
+  return fallback;
+};
 
 export function TemplateInlineModal({
   open,
@@ -82,37 +125,23 @@ export function TemplateInlineModal({
 }: TemplateInlineModalProps) {
   const { toast } = useToast();
 
-  const [name, setName] = useState("");
-  const [subtypeId, setSubtypeId] = useState<number | null>(null);
-  const [responsibleId, setResponsibleId] = useState<number | null>(null);
-  const [priority, setPriority] = useState("Normal");
-  const [dueDays, setDueDays] = useState(3);
-  const [dueRef, setDueRef] = useState("publication");
-  const [description, setDescription] = useState("");
-  const [notes, setNotes] = useState("");
-
+  const [taskBlocks, setTaskBlocks] = useState<TaskBlock[]>([{ ...BLANK_BLOCK }]);
   const [taskTypes, setTaskTypes] = useState<SubtypePickerTaskType[]>([]);
   const [users, setUsers] = useState<User[]>([]);
+  const [supportSquads, setSupportSquads] = useState<SupportSquadOption[]>([]);
   const [loadingMeta, setLoadingMeta] = useState(false);
   const [loadingTemplate, setLoadingTemplate] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  // Reset form ao abrir
+  // Reset form ao abrir em modo create
   useEffect(() => {
     if (!open) return;
     if (mode === "create") {
-      setName(`${category}${subcategory ? ` / ${subcategory}` : ""}`);
-      setSubtypeId(null);
-      setResponsibleId(null);
-      setPriority("Normal");
-      setDueDays(3);
-      setDueRef("publication");
-      setDescription("");
-      setNotes("");
+      setTaskBlocks([{ ...BLANK_BLOCK }]);
     }
-  }, [open, mode, category, subcategory]);
+  }, [open, mode]);
 
-  // Carrega meta (subtipos + usuarios) ao abrir
+  // Carrega meta (subtipos + usuarios + squads de suporte) ao abrir
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -120,13 +149,26 @@ export function TemplateInlineModal({
     Promise.all([
       apiFetch("/api/v1/task-templates/meta/task-types"),
       apiFetch("/api/v1/task-templates/meta/users"),
+      apiFetch("/api/v1/squads?kind=support"),
     ])
-      .then(async ([rTypes, rUsers]) => {
-        if (!rTypes.ok || !rUsers.ok) throw new Error("Falha carregando catálogos");
-        const [types, us] = await Promise.all([rTypes.json(), rUsers.json()]);
+      .then(async ([rTypes, rUsers, rSquads]) => {
+        if (!rTypes.ok || !rUsers.ok)
+          throw new Error("Falha carregando catálogos");
+        const [types, us, sqs] = await Promise.all([
+          rTypes.json(),
+          rUsers.json(),
+          rSquads.ok ? rSquads.json() : Promise.resolve([]),
+        ]);
         if (cancelled) return;
         setTaskTypes(types ?? []);
         setUsers(us ?? []);
+        setSupportSquads(
+          (sqs ?? []).map((s: any) => ({
+            id: s.id,
+            name: s.name,
+            office_external_id: s.office_external_id ?? null,
+          })),
+        );
       })
       .catch((err) => {
         if (cancelled) return;
@@ -142,7 +184,7 @@ export function TemplateInlineModal({
     };
   }, [open, toast]);
 
-  // Em modo edit: carrega o template
+  // Em modo edit: carrega o template específico em 1 bloco
   useEffect(() => {
     if (!open || mode !== "edit" || !templateId) return;
     let cancelled = false;
@@ -152,14 +194,21 @@ export function TemplateInlineModal({
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const t = await res.json();
         if (cancelled) return;
-        setName(t.name ?? "");
-        setSubtypeId(t.task_subtype_external_id ?? null);
-        setResponsibleId(t.responsible_user_external_id ?? null);
-        setPriority(t.priority ?? "Normal");
-        setDueDays(t.due_business_days ?? 3);
-        setDueRef(t.due_date_reference ?? "publication");
-        setDescription(t.description_template ?? "");
-        setNotes(t.notes_template ?? "");
+        setTaskBlocks([
+          {
+            id: t.id,
+            task_subtype_external_id: t.task_subtype_external_id ?? null,
+            responsible_user_external_id:
+              t.responsible_user_external_id ?? null,
+            priority: t.priority ?? "Normal",
+            due_business_days: t.due_business_days ?? 3,
+            due_date_reference: t.due_date_reference ?? "publication",
+            description_template: t.description_template ?? "",
+            notes_template: t.notes_template ?? "",
+            target_role_assistant: t.target_role === "assistente",
+            target_squad_id: t.target_squad_id ? String(t.target_squad_id) : "",
+          },
+        ]);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -175,54 +224,122 @@ export function TemplateInlineModal({
     };
   }, [open, mode, templateId, toast]);
 
+  const setBlockField = <K extends keyof TaskBlock>(
+    idx: number,
+    key: K,
+    value: TaskBlock[K],
+  ) =>
+    setTaskBlocks((prev) => {
+      const next = [...prev];
+      next[idx] = { ...next[idx], [key]: value };
+      return next;
+    });
+
+  // Adiciona bloco com base no anterior, MAS limpa subtype pra forcar
+  // o operador a escolher um diferente (evita 409 de duplicate-key no backend).
+  const addTaskBlock = () =>
+    setTaskBlocks((prev) => [
+      ...prev,
+      {
+        ...prev[prev.length - 1],
+        id: undefined,
+        task_subtype_external_id: null,
+      },
+    ]);
+
+  const removeTaskBlock = (idx: number) =>
+    setTaskBlocks((prev) => prev.filter((_, i) => i !== idx));
+
+  // Subtypes em uso entre blocos do form (exclui o proprio bloco) —
+  // desabilita no SubtypePicker pra evitar 409 de duplicata exata.
+  const subtypesInUseForBlock = (blockIdx: number): Set<number> => {
+    const used = new Set<number>();
+    taskBlocks.forEach((b, i) => {
+      if (i === blockIdx) return;
+      if (b.task_subtype_external_id != null) {
+        used.add(b.task_subtype_external_id);
+      }
+    });
+    return used;
+  };
+
+  const subtypeName = (subtypeId: number | null): string => {
+    if (subtypeId == null) return "Tarefa";
+    for (const t of taskTypes) {
+      const s = t.subtypes.find((x) => x.external_id === subtypeId);
+      if (s) return s.name;
+    }
+    return "Tarefa";
+  };
+
   const handleSubmit = async () => {
-    if (!subtypeId) {
-      toast({ title: "Selecione o subtipo de tarefa" });
-      return;
+    // Valida cada bloco: subtipo eh obrigatorio
+    for (let i = 0; i < taskBlocks.length; i++) {
+      if (taskBlocks[i].task_subtype_external_id == null) {
+        toast({
+          title: `Tarefa ${i + 1}: selecione o subtipo`,
+          variant: "destructive",
+        });
+        return;
+      }
     }
-    if (!name.trim()) {
-      toast({ title: "Defina um nome para o template" });
-      return;
-    }
+
     setSubmitting(true);
     try {
-      const payload: Record<string, unknown> = {
-        name: name.trim(),
+      const buildPayload = (block: TaskBlock) => ({
+        // Nome auto-derivado do subtipo (operador nao precisa nomear).
+        name: `${category}${subcategory ? " / " + subcategory : ""} — ${subtypeName(block.task_subtype_external_id)}`,
         category,
         subcategory: subcategory ?? null,
         office_external_id: officeExternalId,
-        task_subtype_external_id: subtypeId,
-        responsible_user_external_id: responsibleId,
-        priority,
-        due_business_days: dueDays,
-        due_date_reference: dueRef,
-        description_template: description || null,
-        notes_template: notes || null,
+        task_subtype_external_id: block.task_subtype_external_id!,
+        responsible_user_external_id: block.responsible_user_external_id,
+        priority: block.priority,
+        due_business_days: block.due_business_days,
+        due_date_reference: block.due_date_reference,
+        description_template: block.description_template || null,
+        notes_template: block.notes_template || null,
         is_active: true,
-        target_role: "principal",
-      };
-
-      const url =
-        mode === "create"
-          ? "/api/v1/task-templates/"
-          : `/api/v1/task-templates/${templateId}`;
-      const method = mode === "create" ? "POST" : "PUT";
-
-      const res = await apiFetch(url, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        target_role: block.target_role_assistant ? "assistente" : "principal",
+        target_squad_id: block.target_squad_id
+          ? parseInt(block.target_squad_id)
+          : null,
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(
-          (typeof data?.detail === "string" && data.detail) ||
-            "Falha ao salvar template.",
-        );
+
+      let createdCount = 0;
+      let updatedCount = 0;
+
+      for (const block of taskBlocks) {
+        const payload = buildPayload(block);
+        const isUpdate = mode === "edit" && block.id != null;
+        const url = isUpdate
+          ? `/api/v1/task-templates/${block.id}`
+          : "/api/v1/task-templates/";
+        const method = isUpdate ? "PUT" : "POST";
+
+        const res = await apiFetch(url, {
+          method,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(extractErrorMessage(data, "Falha ao salvar tarefa."));
+        }
+        if (isUpdate) updatedCount++;
+        else createdCount++;
       }
+
+      const summary =
+        mode === "edit" && createdCount > 0
+          ? `${updatedCount} atualizada${updatedCount !== 1 ? "s" : ""} + ${createdCount} criada${createdCount !== 1 ? "s" : ""}`
+          : mode === "edit"
+            ? `${updatedCount} atualizada${updatedCount !== 1 ? "s" : ""}`
+            : `${createdCount} criada${createdCount !== 1 ? "s" : ""}`;
+
       toast({
-        title: mode === "create" ? "Template criado" : "Template atualizado",
-        description: `${category}${subcategory ? ` / ${subcategory}` : ""}`,
+        title: "Template salvo",
+        description: `${category}${subcategory ? ` / ${subcategory}` : ""} · ${summary}`,
       });
       onSaved();
       onOpenChange(false);
@@ -238,6 +355,15 @@ export function TemplateInlineModal({
   };
 
   const isLoading = loadingMeta || loadingTemplate;
+
+  // Filtra squads disponiveis pelo escritorio do contexto.
+  // Template global (officeExternalId == null) → mostra todas.
+  const availableSquads = supportSquads.filter((s) => {
+    if (officeExternalId == null) return true;
+    return s.office_external_id === officeExternalId;
+  });
+
+  const newBlocksCount = taskBlocks.filter((b) => !b.id).length;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -266,137 +392,296 @@ export function TemplateInlineModal({
           </div>
         ) : (
           <div className="space-y-4 py-2">
-            {/* Nome */}
-            <div className="grid gap-1.5">
-              <Label htmlFor="tmpl-name" className="text-xs font-medium">
-                Nome do template *
-              </Label>
-              <Input
-                id="tmpl-name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Ex.: Verificar contestação"
-              />
-            </div>
-
-            {/* Subtipo */}
-            <SubtypePicker
-              value={subtypeId}
-              taskTypes={taskTypes}
-              onChange={(id) => setSubtypeId(id)}
-              required
-            />
-
-            {/* Responsável */}
-            <div className="grid gap-1.5">
-              <Label className="text-xs font-medium">
-                Responsável <span className="text-muted-foreground">(opcional)</span>
-              </Label>
-              <UserSelector
-                // UserSelector espera value como string (external_id em string)
-                // — aqui convertemos number<->string nas bordas pra alinhar tipos.
-                value={responsibleId !== null ? String(responsibleId) : null}
-                users={users.map((u) => ({
-                  id: u.external_id,
-                  external_id: u.external_id,
-                  name: u.name,
-                  squads: [],
-                }))}
-                onChange={(strId) =>
-                  setResponsibleId(strId !== null ? Number(strId) : null)
-                }
-                placeholder="Selecione o responsável (opcional)"
-              />
-              <p className="text-xs text-muted-foreground">
-                Se vazio, usa o responsável principal da pasta no momento de criar a tarefa.
-              </p>
-            </div>
-
-            {/* Prioridade + prazo */}
-            <div className="grid grid-cols-3 gap-3">
-              <div className="grid gap-1.5">
-                <Label className="text-xs font-medium">Prioridade</Label>
-                <Select value={priority} onValueChange={setPriority}>
-                  <SelectTrigger className="h-9 text-sm">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {PRIORITIES.map((p) => (
-                      <SelectItem
-                        key={p.value}
-                        value={p.value}
-                        className="text-sm"
-                      >
-                        {p.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="grid gap-1.5">
-                <Label htmlFor="tmpl-due-days" className="text-xs font-medium">
-                  Prazo (dias úteis)
-                </Label>
-                <Input
-                  id="tmpl-due-days"
-                  type="number"
-                  min={0}
-                  max={365}
-                  value={dueDays}
-                  onChange={(e) =>
-                    setDueDays(Math.max(0, Math.min(365, Number(e.target.value))))
-                  }
-                />
-              </div>
-              <div className="grid gap-1.5">
-                <Label className="text-xs font-medium">A contar de</Label>
-                <Select value={dueRef} onValueChange={setDueRef}>
-                  <SelectTrigger className="h-9 text-sm">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {DUE_REFERENCE_OPTIONS.map((o) => (
-                      <SelectItem
-                        key={o.value}
-                        value={o.value}
-                        className="text-sm"
-                      >
-                        {o.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            {/* Descrição + notas */}
-            <div className="grid gap-1.5">
-              <Label htmlFor="tmpl-desc" className="text-xs font-medium">
-                Descrição da tarefa{" "}
-                <span className="text-muted-foreground">
-                  (opcional, suporta {"{cnj}"} e {"{publication_date}"})
+            {/* Header de Tarefas */}
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium">
+                Tarefas a criar
+                <span className="ml-1 text-xs text-muted-foreground">
+                  ({taskBlocks.length})
                 </span>
-              </Label>
-              <Textarea
-                id="tmpl-desc"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="Ex.: Verificar prazo de contestação no CNJ {cnj}"
-                rows={2}
-              />
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={addTaskBlock}
+                className="h-7 px-2 text-xs"
+              >
+                <Plus className="mr-1 h-3 w-3" />
+                Adicionar tarefa
+              </Button>
             </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="tmpl-notes" className="text-xs font-medium">
-                Notas internas{" "}
-                <span className="text-muted-foreground">(opcional)</span>
-              </Label>
-              <Textarea
-                id="tmpl-notes"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                rows={2}
-              />
-            </div>
+
+            {taskBlocks.map((block, idx) => {
+              const usedSubtypes = subtypesInUseForBlock(idx);
+              const canRemove =
+                taskBlocks.length > 1 && !(mode === "edit" && block.id);
+              return (
+                <div
+                  key={idx}
+                  className="rounded-lg border bg-muted/20 p-4 space-y-4"
+                >
+                  {/* Block header */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                        Tarefa {idx + 1}
+                      </p>
+                      {mode === "edit" && block.id && (
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] h-4 px-1.5"
+                        >
+                          Editando existente
+                        </Badge>
+                      )}
+                      {mode === "edit" && !block.id && (
+                        <Badge
+                          variant="secondary"
+                          className="text-[10px] h-4 px-1.5"
+                        >
+                          Nova
+                        </Badge>
+                      )}
+                    </div>
+                    {canRemove && (
+                      <button
+                        type="button"
+                        onClick={() => removeTaskBlock(idx)}
+                        className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
+                        title="Remover esta tarefa"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Subtipo */}
+                  <SubtypePicker
+                    value={block.task_subtype_external_id}
+                    taskTypes={taskTypes}
+                    onChange={(subId) =>
+                      setBlockField(idx, "task_subtype_external_id", subId)
+                    }
+                    disabledSubtypeIds={usedSubtypes}
+                    label="Subtipo de tarefa"
+                    required
+                    placeholder="Selecione o subtipo"
+                    searchPlaceholder="Buscar por tipo ou subtipo..."
+                  />
+
+                  {/* Responsável + assistente + squad */}
+                  <div className="grid gap-1.5">
+                    <Label className="text-xs">
+                      Usuário responsável{" "}
+                      <span className="text-muted-foreground font-normal">
+                        (opcional — será exigido ao criar a tarefa)
+                      </span>
+                    </Label>
+                    <UserSelector
+                      value={
+                        block.responsible_user_external_id !== null
+                          ? String(block.responsible_user_external_id)
+                          : null
+                      }
+                      users={users.map((u) => ({
+                        id: u.external_id,
+                        external_id: u.external_id,
+                        name: u.name,
+                        squads: [],
+                      }))}
+                      onChange={(strId) =>
+                        setBlockField(
+                          idx,
+                          "responsible_user_external_id",
+                          strId !== null ? Number(strId) : null,
+                        )
+                      }
+                      placeholder="Selecione o usuário..."
+                    />
+
+                    <div className="flex items-start gap-2 pt-1">
+                      <Checkbox
+                        id={`tmpl-target-assistant-${idx}`}
+                        checked={!!block.target_role_assistant}
+                        onCheckedChange={(v) =>
+                          setBlockField(idx, "target_role_assistant", !!v)
+                        }
+                      />
+                      <Label
+                        htmlFor={`tmpl-target-assistant-${idx}`}
+                        className="text-xs font-normal leading-tight cursor-pointer"
+                      >
+                        Atribuir ao <strong>assistente</strong>
+                        {block.target_squad_id
+                          ? " da squad escolhida abaixo"
+                          : " do responsável"}
+                        <span className="block text-muted-foreground">
+                          {block.target_squad_id
+                            ? "Quando marcado, vai pro assistente da squad de suporte (round-robin). Desmarcado = vai pro líder dessa squad."
+                            : "Quando marcado, vai pro assistente da squad principal do responsável."}
+                        </span>
+                      </Label>
+                    </div>
+
+                    <div className="grid gap-1.5 pt-1">
+                      <Label className="text-xs">
+                        Squad de suporte{" "}
+                        <span className="text-muted-foreground font-normal">
+                          (opcional — sobrepõe o responsável padrão)
+                        </span>
+                      </Label>
+                      <Select
+                        value={block.target_squad_id || "_none"}
+                        onValueChange={(v) =>
+                          setBlockField(
+                            idx,
+                            "target_squad_id",
+                            v === "_none" ? "" : v,
+                          )
+                        }
+                      >
+                        <SelectTrigger className="h-8 text-sm">
+                          <SelectValue placeholder="Sem squad de suporte" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="_none">
+                            Sem squad de suporte (responsável padrão)
+                          </SelectItem>
+                          {availableSquads.map((s) => (
+                            <SelectItem key={s.id} value={String(s.id)}>
+                              {s.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  {/* Prazo + Referência + Prioridade */}
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="grid gap-1.5">
+                      <Label className="text-xs">Prazo (dias úteis)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={365}
+                        value={block.due_business_days}
+                        onChange={(e) =>
+                          setBlockField(
+                            idx,
+                            "due_business_days",
+                            Math.max(
+                              0,
+                              Math.min(365, Number(e.target.value)),
+                            ),
+                          )
+                        }
+                        className="h-8 text-sm"
+                      />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label className="text-xs">Contar a partir de</Label>
+                      <Select
+                        value={block.due_date_reference || "publication"}
+                        onValueChange={(v) =>
+                          setBlockField(idx, "due_date_reference", v)
+                        }
+                      >
+                        <SelectTrigger className="h-8 text-sm">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {DUE_REFERENCE_OPTIONS.map((o) => (
+                            <SelectItem
+                              key={o.value}
+                              value={o.value}
+                              className="text-sm"
+                            >
+                              {o.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label className="text-xs">Prioridade</Label>
+                      <Select
+                        value={block.priority}
+                        onValueChange={(v) => setBlockField(idx, "priority", v)}
+                      >
+                        <SelectTrigger className="h-8 text-sm">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {PRIORITIES.map((p) => (
+                            <SelectItem
+                              key={p.value}
+                              value={p.value}
+                              className="text-sm"
+                            >
+                              {p.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  {/* Textos */}
+                  <div className="grid gap-2">
+                    <p className="text-xs text-muted-foreground">
+                      Placeholders:{" "}
+                      <code className="rounded bg-muted px-1">{"{cnj}"}</code>{" "}
+                      <code className="rounded bg-muted px-1">
+                        {"{publication_date}"}
+                      </code>{" "}
+                      <code className="rounded bg-muted px-1">
+                        {"{description}"}
+                      </code>
+                    </p>
+                    <div className="grid gap-1.5">
+                      <Label className="text-xs">Descrição da tarefa</Label>
+                      <Textarea
+                        rows={2}
+                        placeholder="Publicação judicial referente ao processo {cnj}..."
+                        value={block.description_template}
+                        onChange={(e) =>
+                          setBlockField(
+                            idx,
+                            "description_template",
+                            e.target.value,
+                          )
+                        }
+                        className="text-sm"
+                      />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label className="text-xs">Observações (notas)</Label>
+                      <Textarea
+                        rows={2}
+                        placeholder="Opcional — aparece no campo Notas da tarefa."
+                        value={block.notes_template}
+                        onChange={(e) =>
+                          setBlockField(idx, "notes_template", e.target.value)
+                        }
+                        className="text-sm"
+                      />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* Add another task (bottom shortcut) */}
+            <button
+              type="button"
+              onClick={addTaskBlock}
+              className="w-full rounded-lg border border-dashed border-muted-foreground/30 py-2 text-xs text-muted-foreground hover:border-primary/50 hover:text-primary transition-colors flex items-center justify-center gap-1.5"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Adicionar outra tarefa para esta classificação
+            </button>
           </div>
         )}
 
@@ -414,7 +699,13 @@ export function TemplateInlineModal({
             onClick={handleSubmit}
             disabled={submitting || isLoading}
           >
-            {submitting ? "Salvando..." : mode === "create" ? "Criar template" : "Salvar"}
+            {submitting
+              ? "Salvando..."
+              : mode === "create"
+                ? `Criar template (${taskBlocks.length} tarefa${taskBlocks.length > 1 ? "s" : ""})`
+                : newBlocksCount > 0
+                  ? `Salvar + criar ${newBlocksCount} nova${newBlocksCount > 1 ? "s" : ""}`
+                  : "Salvar alterações"}
           </Button>
         </DialogFooter>
       </DialogContent>
