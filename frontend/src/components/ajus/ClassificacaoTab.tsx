@@ -99,6 +99,11 @@ import type {
   AjusClassifStatus,
 } from "@/types/api";
 import { SessionsCard } from "@/components/ajus/SessionsCard";
+import {
+  classifyAjusError,
+  severityToBadgeClass,
+  type AjusErrorSeverity,
+} from "@/lib/ajusErrorClassifier";
 
 const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "__all__", label: "Todos os status" },
@@ -913,6 +918,80 @@ export function ClassificacaoTab() {
             </div>
           </div>
         </CardHeader>
+        {(() => {
+          // Resumo de itens em erro agrupados por categoria —
+          // pra operador ver de relance o que precisa de intervencao
+          // humana vs o que so retry resolve.
+          const erroItems = items.filter(
+            (i) => i.status === "erro" && i.error_message,
+          );
+          if (erroItems.length === 0) return null;
+          type Bucket = {
+            label: string;
+            severity: AjusErrorSeverity;
+            hint: string;
+            count: number;
+          };
+          const buckets = new Map<string, Bucket>();
+          for (const it of erroItems) {
+            const cls = classifyAjusError(it.error_message);
+            const cur = buckets.get(cls.kind);
+            if (cur) {
+              cur.count += 1;
+            } else {
+              buckets.set(cls.kind, {
+                label: cls.label,
+                severity: cls.severity,
+                hint: cls.hint,
+                count: 1,
+              });
+            }
+          }
+          const ordered = Array.from(buckets.entries())
+            .map(([kind, b]) => ({ kind, ...b }))
+            .sort((a, b) => {
+              // human_action primeiro, depois data_input, infra, unknown
+              const order = {
+                human_action: 0, data_input: 1, infra: 2, unknown: 3,
+              } as const;
+              const da = order[a.severity] - order[b.severity];
+              return da !== 0 ? da : b.count - a.count;
+            });
+          const humanActionTotal = ordered
+            .filter((b) => b.severity === "human_action")
+            .reduce((s, b) => s + b.count, 0);
+          return (
+            <div className="border-y bg-muted/30 px-6 py-3">
+              <div className="mb-2 flex items-center gap-2 text-xs">
+                <AlertCircle className="h-3.5 w-3.5 text-amber-700" />
+                <span className="font-medium">
+                  {erroItems.length} item(ns) em erro
+                </span>
+                {humanActionTotal > 0 && (
+                  <Badge
+                    variant="outline"
+                    className="border-red-300 bg-red-50 text-red-700"
+                  >
+                    {humanActionTotal} precisam de ação humana no AJUS
+                  </Badge>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {ordered.map((b) => (
+                  <Badge
+                    key={b.kind}
+                    variant="outline"
+                    className={`text-[11px] ${severityToBadgeClass(b.severity)}`}
+                    title={b.hint}
+                  >
+                    {b.label}
+                    <span className="ml-1 opacity-80">· {b.count}</span>
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
         <CardContent>
           <Table>
             <TableHeader>
@@ -980,14 +1059,34 @@ export function ClassificacaoTab() {
                         )}
                         {isProcessing ? "Em execução" : isClaimed ? "Na fila do runner" : stBadge.label}
                       </Badge>
-                      {item.error_message && (
-                        <div
-                          className="mt-1 max-w-[260px] truncate text-xs text-destructive"
-                          title={item.error_message}
-                        >
-                          {item.error_message}
-                        </div>
-                      )}
+                      {item.error_message && (() => {
+                        const cls = classifyAjusError(item.error_message);
+                        const severityHint: Record<AjusErrorSeverity, string> = {
+                          human_action: "Precisa de ação humana no AJUS",
+                          data_input: "Dado da planilha inválido — editar item",
+                          infra: "Transiente — reenfileirar costuma resolver",
+                          unknown: "Erro não-categorizado",
+                        };
+                        return (
+                          <div
+                            className="mt-1 flex max-w-[280px] flex-col gap-0.5"
+                            title={
+                              `[${cls.kind}] ${cls.hint}\n\n` +
+                              `Mensagem original do runner:\n${item.error_message}`
+                            }
+                          >
+                            <Badge
+                              variant="outline"
+                              className={`w-fit text-[10px] ${severityToBadgeClass(cls.severity)}`}
+                            >
+                              {cls.label}
+                            </Badge>
+                            <div className="text-[11px] text-muted-foreground line-clamp-2">
+                              {severityHint[cls.severity]}
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
