@@ -568,6 +568,86 @@ class PrazosIniciaisLegacyTaskQueueService:
         )
         return [self._item_to_dict(it) for it in items]
 
+    def quarantine_exhausted_items(
+        self,
+        *,
+        commit: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Move pra FALHA todos os items em PENDENTE/FALHA com attempt_count
+        >= max_attempts. Roda no inicio de cada tick do worker periodico
+        (process_pending_items).
+
+        Antes desse sweep (2026-05-08), items que estouravam o cap de
+        retries ficavam num limbo: o worker filtrava attempt_count <
+        max_attempts e nunca os via, mas eles continuavam em PENDENTE
+        invisiveis no painel de saude (totals_by_status mostrava o
+        agregado bruto). Resultado: 35 items presos sem nunca virarem
+        FALHA, eligible_count=0 sem motivo aparente.
+
+        Apos o sweep, eles aparecem no card "Falhas" do operador, que
+        decide entre Reprocessar (zera attempt_count) ou Cancelar.
+
+        Retorna {"quarantined_count": N, "max_attempts": M, "items": [...]}
+        """
+        from app.core.config import settings as _settings
+        max_attempts = max(
+            1,
+            int(_settings.prazos_iniciais_legacy_task_max_attempts or 5),
+        )
+        candidates = (
+            self.db.query(PrazoInicialLegacyTaskCancellationItem)
+            .filter(
+                PrazoInicialLegacyTaskCancellationItem.queue_status.in_(
+                    [QUEUE_STATUS_PENDING, QUEUE_STATUS_FAILED]
+                ),
+                PrazoInicialLegacyTaskCancellationItem.attempt_count
+                >= max_attempts,
+            )
+            .all()
+        )
+        # Filtra os que ja' estao em FALHA com last_reason correto pra
+        # evitar UPDATE no-op em todo tick (idempotencia + log limpo).
+        quarantined: list[dict[str, Any]] = []
+        for item in candidates:
+            already_quarantined = (
+                item.queue_status == QUEUE_STATUS_FAILED
+                and item.last_reason == "max_attempts_reached"
+            )
+            if already_quarantined:
+                continue
+            item.queue_status = QUEUE_STATUS_FAILED
+            item.last_reason = "max_attempts_reached"
+            item.last_error = (
+                f"max_attempts_reached (attempt_count={item.attempt_count} "
+                f">= max={max_attempts}). Reprocessar zera o contador e "
+                "tenta de novo; Pular cancela definitivamente."
+            )
+            item.updated_at = self._utcnow()
+            quarantined.append(self._item_to_dict(item))
+            logger.warning(
+                "legacy_task_queue.quarantine_exhausted",
+                extra={
+                    "event": "legacy_task_queue.quarantine_exhausted",
+                    "item_id": item.id,
+                    "intake_id": item.intake_id,
+                    "attempt_count": item.attempt_count,
+                    "max_attempts": max_attempts,
+                    "previous_status": (
+                        QUEUE_STATUS_PENDING
+                        if item.queue_status == QUEUE_STATUS_FAILED
+                        else item.queue_status
+                    ),
+                },
+            )
+        if commit and quarantined:
+            self.db.commit()
+        return {
+            "quarantined_count": len(quarantined),
+            "max_attempts": max_attempts,
+            "items": quarantined,
+        }
+
     def recover_zombies(
         self,
         *,
@@ -683,6 +763,32 @@ class PrazosIniciaisLegacyTaskQueueService:
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "legacy_task_queue.tick.zombie_recovery_failed tick_id=%s err=%s",
+                    tick_id, exc,
+                )
+
+        # Quarentena: items em PENDENTE/FALHA que estouraram max_attempts
+        # viram FALHA com last_reason="max_attempts_reached". Antes desse
+        # sweep, eles ficavam em PENDENTE invisiveis (filtro de elegibilidade
+        # exclui attempt_count >= max), e eligible_count caia pra 0 sem
+        # motivo aparente. Soh roda no tick periodico — chamadas pontuais
+        # com intake_id ignoram cap e nao precisam dessa limpeza.
+        if intake_id is None:
+            try:
+                quarantine_summary = self.quarantine_exhausted_items(commit=True)
+                quarantined_count = int(quarantine_summary.get("quarantined_count", 0))
+                if quarantined_count > 0:
+                    logger.info(
+                        "legacy_task_queue.tick.exhausted_quarantined",
+                        extra={
+                            "event": "legacy_task_queue.tick.exhausted_quarantined",
+                            "tick_id": tick_id,
+                            "quarantined_count": quarantined_count,
+                            "max_attempts": quarantine_summary.get("max_attempts"),
+                        },
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "legacy_task_queue.tick.quarantine_failed tick_id=%s err=%s",
                     tick_id, exc,
                 )
 
