@@ -79,6 +79,7 @@ import {
   ClassificationPickerDialog,
   type ExistingClassification,
 } from "@/components/ClassificationPickerDialog";
+import { OfficeTemplatesView } from "@/components/OfficeTemplatesView";
 
 const API = "/api/v1/task-templates";
 
@@ -263,7 +264,7 @@ const BLANK_FORM = {
 
 // ─── Component ─────────────────────────────────────────────────────────────
 
-const TaskTemplatesPage = () => {
+const TaskTemplatesPageLegacy = () => {
   const { toast } = useToast();
 
   const [templates, setTemplates] = useState<TaskTemplate[]>([]);
@@ -3022,6 +3023,23 @@ const TaskTemplatesPage = () => {
         />
       )}
     </div>
+  );
+};
+
+const TaskTemplatesPage = () => {
+  return (
+    <Tabs defaultValue="by-office" className="space-y-4">
+      <TabsList className="grid w-full max-w-2xl grid-cols-2">
+        <TabsTrigger value="by-office">Por escritório</TabsTrigger>
+        <TabsTrigger value="audit">Auditoria — todos os templates</TabsTrigger>
+      </TabsList>
+      <TabsContent value="by-office" className="mt-4">
+        <OfficeTemplatesView />
+      </TabsContent>
+      <TabsContent value="audit" className="mt-4">
+        <TaskTemplatesPageLegacy />
+      </TabsContent>
+    </Tabs>
   );
 };
 

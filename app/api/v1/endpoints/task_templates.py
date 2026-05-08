@@ -242,6 +242,167 @@ def list_templates(
     return [_to_response(t) for t in templates]
 
 
+@router.get("/coverage")
+def get_office_coverage(
+    office_external_id: int = Query(
+        ...,
+        description="ID externo do escritório responsável. Obrigatório.",
+    ),
+    db: Session = Depends(get_db),
+):
+    """Dashboard por escritório: arvore aplicavel + status de cobertura por
+    categoria/subcategoria. Resposta unica que o frontend usa pra renderizar
+    a tela `Por escritorio` (TaskTemplatesPage tab default).
+
+    Estrutura da resposta:
+      {
+        "office": {external_id, name, path, polo_scope},
+        "taxonomy": {active_version, template_driven_mode},
+        "tree": [
+          {
+            "category": "...",
+            "polo_scope": "...",  // do registro classification_categories
+            "subcategories": [
+              {
+                "name": "...",
+                "templates": [TaskTemplateResponse, ...],
+                "pending_templates": [TaskTemplateResponse, ...],
+              },
+              ...
+            ],
+            "category_only_templates": [...],   // pra cats sem subs (sub IS NULL)
+            "category_only_pending": [...]
+          }
+        ],
+        "summary": {
+          total_categories, categories_with_template,
+          categories_without_template, pending_review_total
+        }
+      }
+
+    `tree` ja vem filtrada por polo do escritorio + versao ativa da
+    taxonomia. NAO aplica o filtro "modo arvore enxuta" (template-driven)
+    aqui — o operador precisa enxergar TODAS as cats do polo pra saber
+    o que falta configurar; a UI marca cada linha com "tem template" /
+    "sem template" / "pendente".
+    """
+    from app.services.classifier.taxonomy import (
+        _get_active_tree, get_active_taxonomy_version,
+        is_template_driven_taxonomy_active,
+    )
+    from app.models.classification_taxonomy import ClassificationCategory
+
+    office = (
+        db.query(LegalOneOffice)
+        .filter(LegalOneOffice.external_id == office_external_id)
+        .first()
+    )
+    if office is None:
+        raise HTTPException(404, f"Escritório {office_external_id} não encontrado.")
+
+    polo = (getattr(office, "polo_scope", None) or "ambos").strip().lower()
+    active_version = get_active_taxonomy_version()
+
+    # Carrega arvore SEM filtro template-driven (operador precisa ver
+    # cats sem template pra adicionar). Usa polo do escritorio + version
+    # ativa.
+    tree_dict = _get_active_tree(
+        polo_scope=polo if polo in ("ativo", "passivo") else None,
+        taxonomy_version=active_version,
+        # NAO passa office_external_id — sem filtro template-driven
+    )
+
+    # Carrega todos os templates do escritorio (ativos + pendentes,
+    # globais incluidos) com 1 query e mapeia por (cat, sub).
+    tmpl_rows = (
+        db.query(TaskTemplate)
+        .filter(
+            (TaskTemplate.office_external_id == office_external_id)
+            | (TaskTemplate.office_external_id.is_(None))
+        )
+        .all()
+    )
+    # Agrupa por (cat, sub) → list of templates
+    by_key: dict[tuple[str, Optional[str]], list[TaskTemplate]] = {}
+    by_key_pending: dict[tuple[str, Optional[str]], list[TaskTemplate]] = {}
+    for t in tmpl_rows:
+        key = (t.category, t.subcategory)
+        if t.needs_taxonomy_review:
+            by_key_pending.setdefault(key, []).append(t)
+        else:
+            by_key.setdefault(key, []).append(t)
+
+    tree_payload = []
+    cats_with_template = 0
+    pending_total = 0
+    # Polo de cada categoria — busca em uma query so pra evitar N+1.
+    polo_by_cat = {
+        c.name: c.polo_scope
+        for c in db.query(ClassificationCategory)
+        .filter(ClassificationCategory.is_active.is_(True))
+        .all()
+    }
+
+    for cat_name, subs in tree_dict.items():
+        cat_node = {
+            "category": cat_name,
+            "polo_scope": polo_by_cat.get(cat_name),
+            "subcategories": [],
+            "category_only_templates": [],
+            "category_only_pending": [],
+        }
+        cat_has_template = False
+
+        if subs:
+            for sub_name in subs:
+                k = (cat_name, sub_name)
+                tmpls = by_key.get(k, [])
+                pendings = by_key_pending.get(k, [])
+                if tmpls:
+                    cat_has_template = True
+                pending_total += len(pendings)
+                cat_node["subcategories"].append({
+                    "name": sub_name,
+                    "templates": [_to_response(t) for t in tmpls],
+                    "pending_templates": [_to_response(t) for t in pendings],
+                })
+        else:
+            # Categoria sem subs: templates apontam pra (cat, NULL)
+            k = (cat_name, None)
+            tmpls = by_key.get(k, [])
+            pendings = by_key_pending.get(k, [])
+            if tmpls:
+                cat_has_template = True
+            pending_total += len(pendings)
+            cat_node["category_only_templates"] = [_to_response(t) for t in tmpls]
+            cat_node["category_only_pending"] = [_to_response(t) for t in pendings]
+
+        if cat_has_template:
+            cats_with_template += 1
+
+        tree_payload.append(cat_node)
+
+    return {
+        "office": {
+            "external_id": office.external_id,
+            "name": office.name,
+            "path": office.path or office.name,
+            "polo_scope": polo,
+        },
+        "taxonomy": {
+            "active_version": active_version,
+            "template_driven_mode": is_template_driven_taxonomy_active(),
+        },
+        "tree": tree_payload,
+        "summary": {
+            "total_categories": len(tree_payload),
+            "categories_with_template": cats_with_template,
+            "categories_without_template": len(tree_payload) - cats_with_template,
+            "pending_review_total": pending_total,
+        },
+    }
+
+
 @router.get("/pending-review")
 def list_pending_review(
     office_external_id: Optional[int] = Query(None),
