@@ -498,6 +498,16 @@ export default function PrazosIniciaisPage() {
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [offset, setOffset] = useState(0);
   const [pageSize, setPageSize] = useState<25 | 50 | 100>(PAGE_SIZE_DEFAULT);
+  // Sentinela "Aplicar foi clicado" — incrementa em onAplicarFiltros e
+  // entra como dep de loadIntakes/useEffect. Garante que a busca dispara
+  // mesmo quando NENHUM applied muda no commit (operador edita um filtro
+  // mas o estado nao propagou pro pai por race do MultiSelect, ou clica
+  // Aplicar 2x sem editar nada). Antes desse trigger (2026-05-08), o
+  // refetch dependia exclusivamente do useEffect reagindo a loadIntakes
+  // — quando o setApplied resultava no mesmo valor, loadIntakes mantinha
+  // a mesma ref e nenhum HTTP saia. Diagnostico empirico: patch de fetch
+  // + XHR registrava 0 requests por clique no Aplicar.
+  const [refetchTrigger, setRefetchTrigger] = useState(0);
 
   const [items, setItems] = useState<PrazoInicialIntakeSummary[]>([]);
   const [total, setTotal] = useState(0);
@@ -798,6 +808,8 @@ export default function PrazosIniciaisPage() {
       appliedProduto, appliedProbExito, appliedDateFrom, appliedDateTo,
       appliedHasError, appliedSource, appliedSubmittedBy, appliedTipoPrazo,
       appliedPdfFailed, mineOnly, user?.id, l1Users, offset, pageSize,
+      // Sentinela do botao Aplicar — ver coment do useState refetchTrigger.
+      refetchTrigger,
     ],
   );
 
@@ -979,6 +991,9 @@ export default function PrazosIniciaisPage() {
     setAppliedTipoPrazo(tipoPrazoFilter);
     setAppliedPdfFailed(pdfFailedFilter);
     setOffset(0);
+    // Forca refetch mesmo quando nenhum applied muda — ver comentario
+    // no useState do refetchTrigger.
+    setRefetchTrigger((n) => n + 1);
   };
 
   const onLimparFiltros = () => {

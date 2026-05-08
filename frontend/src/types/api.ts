@@ -259,6 +259,15 @@ export interface PrazoInicialIntakeSummary {
   has_habilitacao_pdf?: boolean;
   habilitacao_pdf_filename_original?: string | null;
   habilitacao_pdf_bytes?: number | null;
+  // Status agregado da validacao heuristica do PDF da habilitacao
+  // (pin023). Detalhe completo (lista de checks) so' vai no Detail.
+  habilitacao_check_status?:
+    | "NAO_VERIFICADO"
+    | "OK"
+    | "ALERTA"
+    | "FALHA"
+    | "ERRO_EXTRACAO"
+    | string;
   // Patrocinio (pin018) — sumário pra badge na listagem.
   patrocinio_decisao?:
     | "MDR_ADVOCACIA"
@@ -396,12 +405,38 @@ export interface PrazoInicialPedido {
   fundamentacao_risco: string | null;
 }
 
+// Validacao heuristica da habilitacao (pin023). Cada check eh uma
+// linha individual com criticidade (CRITICO|AVISO) e status
+// (OK|ALERTA|FALHA|PULADO). FALHA sinaliza mas nao bloqueia.
+export interface PrazoInicialHabilitacaoCheck {
+  id: string;
+  label: string;
+  criticidade: "CRITICO" | "AVISO" | string;
+  status: "OK" | "ALERTA" | "FALHA" | "PULADO" | string;
+  detalhe: string | null;
+}
+
+export interface PrazoInicialHabilitacaoCheckResult {
+  status:
+    | "NAO_VERIFICADO"
+    | "OK"
+    | "ALERTA"
+    | "FALHA"
+    | "ERRO_EXTRACAO"
+    | string;
+  checks: PrazoInicialHabilitacaoCheck[];
+  checked_at: string | null;
+}
+
 export interface PrazoInicialIntakeDetail extends PrazoInicialIntakeSummary {
   capa_json: PrazoInicialCapaProcesso;
   metadata_json: Record<string, unknown> | null;
   sugestoes: PrazoInicialSugestao[];
   pedidos: PrazoInicialPedido[];
   patrocinio: PrazoInicialPatrocinio | null;
+  // pin023 — bloco completo da validacao heuristica. null quando
+  // nunca rodou (intake antigo NAO_VERIFICADO).
+  habilitacao_check?: PrazoInicialHabilitacaoCheckResult | null;
 }
 
 export interface PrazoInicialIntakeListResponse {
@@ -469,6 +504,9 @@ export interface PrazoInicialIntakeFilters {
   // Origem do intake (pin016).
   source?: string;                  // CSV: "EXTERNAL_API,USER_UPLOAD"
   submitted_by_user_id?: string;    // CSV — atalho "Minha fila"
+  // Classificacao = tipo_prazo das sugestoes. Filtra intakes com AO
+  // MENOS uma sugestao em algum desses tipos. CSV: "AUDIENCIA,CONTESTAR".
+  tipo_prazo?: string;
   pdf_extraction_failed?: boolean;  // true = só uploads com extração falha
   // Patrocinio (pin018)
   patrocinio_decisao?: string;          // CSV: "MDR_ADVOCACIA,OUTRO_ESCRITORIO,..."
