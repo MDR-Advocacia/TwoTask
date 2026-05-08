@@ -1,7 +1,7 @@
 """user_feedbacks: feedback livre dos usuarios pra equipe (botao flutuante)
 
-Revision ID: ufdbk001_user_feedbacks
-Revises: tax009_seed_template_driven_setting
+Revision ID: ufdbk001
+Revises: tax009
 Create Date: 2026-05-08
 
 Tabela:
@@ -24,8 +24,12 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "ufdbk001_user_feedbacks"
-down_revision = "tax009_seed_template_driven_setting"
+# IDs CURTOS — seguir convencao da casa (tax009, pin019, etc.). O alembic
+# guarda o valor do campo `revision` (nao o nome do arquivo) na tabela
+# alembic_version, entao IDs longos quebram o `upgrade head` quando a
+# proxima migration referenciar este down_revision pelo nome de arquivo.
+revision = "ufdbk001"
+down_revision = "tax009"
 branch_labels = None
 depends_on = None
 
