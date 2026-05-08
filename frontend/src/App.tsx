@@ -27,6 +27,7 @@ import PublicationTreatmentPage from './pages/PublicationTreatmentPage';
 import LookupByCnjPage from './pages/LookupByCnjPage';
 import PrazosIniciaisPage from './pages/PrazosIniciaisPage';
 import PrazosIniciaisTreatmentPage from './pages/PrazosIniciaisTreatmentPage';
+import PrazosIniciaisTreatmentPageOperator from './pages/PrazosIniciaisTreatmentPageOperator';
 import PrazosIniciaisTemplatesAdminPage from './pages/PrazosIniciaisTemplatesAdminPage';
 import PatrocinioRelatorioPage from './pages/PatrocinioRelatorioPage';
 import AjusPage from './pages/AjusPage';
@@ -77,7 +78,8 @@ function AppContent() {
             <Route path="/automations" element={<AutomationsPage />} />
             <Route path="/batches" element={<BatchExecutionsPage />} />
             <Route path="/prazos-iniciais" element={<PrazosIniciaisPage />} />
-            <Route path="/prazos-iniciais/treatment" element={<PrazosIniciaisTreatmentPage />} />
+            <Route path="/prazos-iniciais/treatment" element={<PrazosIniciaisTreatmentPageOperator />} />
+            <Route path="/prazos-iniciais/treatment/detalhes" element={<PrazosIniciaisTreatmentPage />} />
             <Route
               path="/prazos-iniciais/templates"
               element={<PrazosIniciaisTemplatesAdminPage />}

@@ -22,14 +22,26 @@ import {
   ChevronRight,
   Pencil,
   Plus,
-  PowerOff,
+  Trash2,
   RefreshCw,
+  Building2,
+  Loader2,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api-client";
 
@@ -134,6 +146,10 @@ export function OfficeTemplateTree({
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [busyTemplateId, setBusyTemplateId] = useState<number | null>(null);
+  // Confirmacao de remocao via AlertDialog (UI amigavel) em vez de
+  // confirm() nativo do navegador. State controla qual template esta
+  // pendente de confirmacao.
+  const [templateToRemove, setTemplateToRemove] = useState<CoverageTemplateInfo | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -213,16 +229,27 @@ export function OfficeTemplateTree({
     }
   }, [query, filteredTree, data]);
 
-  const handleDeactivate = async (t: CoverageTemplateInfo) => {
-    if (!confirm(`Desativar template "${t.name}"?`)) return;
+  // Abre AlertDialog (nao executa ainda — espera confirmacao)
+  const handleRequestRemove = (t: CoverageTemplateInfo) => {
+    setTemplateToRemove(t);
+  };
+
+  // Executa de fato (chamado pelo botao Confirmar do AlertDialog)
+  const handleConfirmRemove = async () => {
+    if (!templateToRemove) return;
+    const t = templateToRemove;
     setBusyTemplateId(t.id);
+    setTemplateToRemove(null);
     try {
       await deactivateTemplate(t.id);
-      toast({ title: "Template desativado", description: t.name });
+      toast({
+        title: "Template removido",
+        description: `${t.name} — pode ser reativado por um administrador na aba "Auditoria".`,
+      });
       await load();
     } catch (err: any) {
       toast({
-        title: "Erro ao desativar",
+        title: "Erro ao remover",
         description: err?.message || String(err),
         variant: "destructive",
       });
@@ -338,12 +365,63 @@ export function OfficeTemplateTree({
 
       {/* Árvore */}
       <div className="space-y-2">
-        {filteredTree.length === 0 ? (
+        {loading && !data ? (
+          // Skeleton enquanto carrega: evita flash branco quando troca
+          // escritorio. Mostra 3 cards "fantasma" com animacao pulse.
+          <>
+            {[1, 2, 3].map((i) => (
+              <Card key={i} className="animate-pulse">
+                <CardContent className="p-0">
+                  <div className="px-4 py-3 flex items-center gap-2">
+                    <ChevronRight className="h-4 w-4 text-muted-foreground/30" />
+                    <div className="h-4 w-48 bg-muted rounded" />
+                    <div className="ml-auto h-5 w-20 bg-muted rounded" />
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </>
+        ) : filteredTree.length === 0 ? (
           <Card>
-            <CardContent className="text-center text-sm text-muted-foreground py-12">
-              {query
-                ? "Nenhuma categoria corresponde à busca."
-                : "Sem categorias na árvore aplicável."}
+            <CardContent className="text-center text-sm text-muted-foreground py-12 space-y-2">
+              {query ? (
+                <>
+                  <p>Nenhuma categoria corresponde a "{query}".</p>
+                  <p className="text-xs">
+                    Tente outro termo ou{" "}
+                    <button
+                      type="button"
+                      className="underline hover:text-foreground"
+                      onClick={() => setQuery("")}
+                    >
+                      limpar a busca
+                    </button>
+                    .
+                  </p>
+                </>
+              ) : (
+                <>
+                  <Building2 className="h-10 w-10 mx-auto text-muted-foreground/40" />
+                  <p className="font-medium text-foreground">
+                    Nenhuma categoria disponível pra esse escritório
+                  </p>
+                  <p className="max-w-md mx-auto">
+                    Pode ser que a configuração da taxonomia ainda não esteja
+                    completa pra esse escritório. Peça pra um administrador
+                    verificar.
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={load}
+                    className="mt-3"
+                  >
+                    <RefreshCw className="h-4 w-4 mr-1" />
+                    Tentar novamente
+                  </Button>
+                </>
+              )}
             </CardContent>
           </Card>
         ) : (
@@ -358,12 +436,49 @@ export function OfficeTemplateTree({
               }
               onEditTemplate={onEditTemplate}
               onMigrateTemplate={onMigrateTemplate}
-              onDeactivate={handleDeactivate}
+              onRequestRemove={handleRequestRemove}
               busyTemplateId={busyTemplateId}
             />
           ))
         )}
       </div>
+
+      {/* Dialog de confirmacao pra remover template (substitui confirm() nativo) */}
+      <AlertDialog
+        open={templateToRemove !== null}
+        onOpenChange={(open) => {
+          if (!open) setTemplateToRemove(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remover este template?</AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2">
+              <span className="block">
+                <strong>{templateToRemove?.name}</strong>
+              </span>
+              <span className="block text-sm">
+                Esse template não vai mais gerar tarefas automáticas pra
+                publicações dessa classificação. A categoria continua
+                aparecendo na lista, mas marcada como{" "}
+                <span className="font-medium">"sem template"</span>.
+              </span>
+              <span className="block text-xs text-muted-foreground">
+                Pode ser reativado por um administrador na aba "Auditoria".
+              </span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirmRemove}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Remover
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -377,7 +492,7 @@ interface CategoryRowProps {
   onAddTemplate: (category: string, subcategory: string | null) => void;
   onEditTemplate: (t: CoverageTemplateInfo) => void;
   onMigrateTemplate: (t: CoverageTemplateInfo) => void;
-  onDeactivate: (t: CoverageTemplateInfo) => Promise<void>;
+  onRequestRemove: (t: CoverageTemplateInfo) => void;
   busyTemplateId: number | null;
 }
 
@@ -388,7 +503,7 @@ function CategoryRow({
   onAddTemplate,
   onEditTemplate,
   onMigrateTemplate,
-  onDeactivate,
+  onRequestRemove,
   busyTemplateId,
 }: CategoryRowProps) {
   const totalTemplates =
@@ -456,7 +571,7 @@ function CategoryRow({
                 onAddTemplate={() => onAddTemplate(cat.category, null)}
                 onEditTemplate={onEditTemplate}
                 onMigrateTemplate={onMigrateTemplate}
-                onDeactivate={onDeactivate}
+                onRequestRemove={onRequestRemove}
                 busyTemplateId={busyTemplateId}
               />
             )}
@@ -470,7 +585,7 @@ function CategoryRow({
                 onAddTemplate={() => onAddTemplate(cat.category, sub.name)}
                 onEditTemplate={onEditTemplate}
                 onMigrateTemplate={onMigrateTemplate}
-                onDeactivate={onDeactivate}
+                onRequestRemove={onRequestRemove}
                 busyTemplateId={busyTemplateId}
               />
             ))}
@@ -491,7 +606,7 @@ interface SubRowProps {
   onAddTemplate: () => void;
   onEditTemplate: (t: CoverageTemplateInfo) => void;
   onMigrateTemplate: (t: CoverageTemplateInfo) => void;
-  onDeactivate: (t: CoverageTemplateInfo) => Promise<void>;
+  onRequestRemove: (t: CoverageTemplateInfo) => void;
   busyTemplateId: number | null;
 }
 
@@ -503,7 +618,7 @@ function SubRow({
   onAddTemplate,
   onEditTemplate,
   onMigrateTemplate,
-  onDeactivate,
+  onRequestRemove,
   busyTemplateId,
 }: SubRowProps) {
   const hasTemplate = templates.length > 0;
@@ -561,6 +676,7 @@ function SubRow({
                   className="h-6 px-2"
                   onClick={() => onEditTemplate(t)}
                   disabled={busyTemplateId === t.id}
+                  title="Edita os campos da tarefa (responsável, prazo, descrição...)"
                 >
                   <Pencil className="h-3 w-3 mr-1" />
                   editar
@@ -570,11 +686,12 @@ function SubRow({
                   variant="ghost"
                   size="sm"
                   className="h-6 px-2 text-muted-foreground hover:text-destructive"
-                  onClick={() => onDeactivate(t)}
+                  onClick={() => onRequestRemove(t)}
                   disabled={busyTemplateId === t.id}
+                  title="Remove o template (categoria continua aparecendo, mas sem proposta automática)"
                 >
-                  <PowerOff className="h-3 w-3 mr-1" />
-                  desativar
+                  <Trash2 className="h-3 w-3 mr-1" />
+                  remover
                 </Button>
               </div>
             </div>
