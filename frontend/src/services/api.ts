@@ -607,9 +607,14 @@ export async function submitPrazosIniciaisClassifyPending(
 
 export async function fetchPrazosIniciaisBatches(
   limit = 50,
+  offset = 0,
 ): Promise<PrazoInicialBatchListResponse> {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+  });
   const response = await apiFetch(
-    `/api/v1/prazos-iniciais/batches?limit=${limit}`,
+    `/api/v1/prazos-iniciais/batches?${params.toString()}`,
   );
   return expectJson<PrazoInicialBatchListResponse>(response);
 }

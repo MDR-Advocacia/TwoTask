@@ -726,6 +726,12 @@ export default function PrazosIniciaisPage() {
   const [batchesLoading, setBatchesLoading] = useState(false);
   const [classifyingPending, setClassifyingPending] = useState(false);
   const [batchActionId, setBatchActionId] = useState<number | null>(null);
+  // Paginacao da tabela de batches (mesmo padrao da tabela de intakes:
+  // offset + pageSize + total devolvido pelo backend). Default 25/pagina,
+  // operador pode trocar pra 50 ou 100.
+  const [batchesOffset, setBatchesOffset] = useState(0);
+  const [batchesPageSize, setBatchesPageSize] = useState<25 | 50 | 100>(25);
+  const [batchesTotal, setBatchesTotal] = useState(0);
 
   // Reaplicar templates em lote — re-roda match_templates nas sugestoes
   // existentes sem chamar IA. Usado quando operador cadastra/edita
@@ -959,6 +965,22 @@ export default function PrazosIniciaisPage() {
       hasNext: offset + pageSize < total,
     };
   }, [offset, total, pageSize]);
+
+  const batchesPageInfo = useMemo(() => {
+    const start = batchesTotal === 0 ? 0 : batchesOffset + 1;
+    const end = Math.min(batchesOffset + batchesPageSize, batchesTotal);
+    const currentPage = Math.floor(batchesOffset / batchesPageSize) + 1;
+    const totalPages =
+      batchesTotal === 0 ? 0 : Math.ceil(batchesTotal / batchesPageSize);
+    return {
+      start,
+      end,
+      currentPage,
+      totalPages,
+      hasPrev: batchesOffset > 0,
+      hasNext: batchesOffset + batchesPageSize < batchesTotal,
+    };
+  }, [batchesOffset, batchesTotal, batchesPageSize]);
 
   // Modal B: contadores e flag de submit. Sucessor do antigo
   // selectedSuggestionCount/canConfirmScheduling do Modal A.
@@ -1784,8 +1806,12 @@ export default function PrazosIniciaisPage() {
   const loadBatches = useCallback(async () => {
     setBatchesLoading(true);
     try {
-      const response = await fetchPrazosIniciaisBatches(20);
+      const response = await fetchPrazosIniciaisBatches(
+        batchesPageSize,
+        batchesOffset,
+      );
       setBatches(response.items);
+      setBatchesTotal(response.total);
     } catch (error) {
       // Falhar silenciosamente — a tela principal continua funcionando
       // sem a listagem de batches. O erro já aparece no console.
@@ -1793,7 +1819,7 @@ export default function PrazosIniciaisPage() {
     } finally {
       setBatchesLoading(false);
     }
-  }, []);
+  }, [batchesOffset, batchesPageSize]);
 
   useEffect(() => {
     loadBatches();
@@ -2223,7 +2249,7 @@ export default function PrazosIniciaisPage() {
       ) : null}
 
       {/* ── Batches de classificação (Onda 1 manual) ───────────────────── */}
-      {batches.length > 0 && (
+      {batchesTotal > 0 && (
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
@@ -2359,6 +2385,67 @@ export default function PrazosIniciaisPage() {
                   })}
                 </TableBody>
               </Table>
+            </div>
+
+            {/* Paginador da tabela de batches — mesmo padrao do paginador
+                da tabela de intakes mais abaixo. Trocar pageSize zera
+                offset. Setting pageSize ou clicar nos chevrons dispara
+                loadBatches via useEffect (deps de
+                batchesOffset/batchesPageSize). */}
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4">
+              <div className="text-sm text-muted-foreground">
+                {batchesTotal === 0
+                  ? "Nenhum batch."
+                  : `Mostrando ${batchesPageInfo.start}–${batchesPageInfo.end} de ${batchesTotal} batch(es).`}
+              </div>
+              <div className="flex items-center gap-3">
+                <Select
+                  value={String(batchesPageSize)}
+                  onValueChange={(v) => {
+                    setBatchesPageSize(Number(v) as 25 | 50 | 100);
+                    setBatchesOffset(0);
+                  }}
+                  disabled={batchesLoading}
+                >
+                  <SelectTrigger className="h-8 w-[140px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="25">25 por página</SelectItem>
+                    <SelectItem value="50">50 por página</SelectItem>
+                    <SelectItem value="100">100 por página</SelectItem>
+                  </SelectContent>
+                </Select>
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 w-8 p-0"
+                    disabled={!batchesPageInfo.hasPrev || batchesLoading}
+                    onClick={() =>
+                      setBatchesOffset(Math.max(0, batchesOffset - batchesPageSize))
+                    }
+                    title="Página anterior"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
+                  <span className="text-sm font-medium px-2 min-w-[110px] text-center">
+                    {batchesPageInfo.totalPages === 0
+                      ? "—"
+                      : `Página ${batchesPageInfo.currentPage} de ${batchesPageInfo.totalPages}`}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 w-8 p-0"
+                    disabled={!batchesPageInfo.hasNext || batchesLoading}
+                    onClick={() => setBatchesOffset(batchesOffset + batchesPageSize)}
+                    title="Próxima página"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
             </div>
           </CardContent>
         </Card>

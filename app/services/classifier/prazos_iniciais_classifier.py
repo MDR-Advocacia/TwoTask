@@ -1036,13 +1036,22 @@ class PrazosIniciaisBatchClassifier:
             .first()
         )
 
-    def list_batches(self, limit: int = 50) -> List[PrazoInicialBatch]:
+    def list_batches(
+        self, limit: int = 50, offset: int = 0,
+    ) -> List[PrazoInicialBatch]:
         return (
             self.db.query(PrazoInicialBatch)
             .order_by(PrazoInicialBatch.created_at.desc())
+            .offset(offset)
             .limit(limit)
             .all()
         )
+
+    def count_batches(self) -> int:
+        """Total de batches no banco (sem paginacao). Usado pelo endpoint
+        de listagem pra montar o {total, items} esperado pelo paginador
+        do frontend."""
+        return self.db.query(PrazoInicialBatch).count()
 
     @staticmethod
     def batch_to_dict(batch: PrazoInicialBatch) -> dict:
