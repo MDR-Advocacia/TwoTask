@@ -20,6 +20,7 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
+    Form,
     HTTPException,
     Path as FastapiPath,
     Query,
@@ -40,6 +41,7 @@ from app.models.ajus import (
     AJUS_QUEUE_STATUSES,
     AjusAndamentoQueue,
     AjusClassificacaoQueue,
+    AjusClassificationBlocklist,
     AjusCodAndamento,
     AjusSessionAccount,
 )
@@ -125,6 +127,10 @@ class AndamentoQueueOut(BaseModel):
     error_message: Optional[str]
     created_at: str
     dispatched_at: Optional[str]
+    # Marca o item como bloqueado por classificacao pendente (CNJ esta no
+    # ajus_classification_blocklist). UI usa pra desabilitar acoes de
+    # disparo / mostrar badge "Class. pendente".
+    is_blocked_classification: bool = False
 
 
 class AndamentoQueueListResponse(BaseModel):
@@ -140,13 +146,67 @@ class DispatchBatchResponse(BaseModel):
     errored: list[dict]
 
 
+class BackfillCompletedRequest(BaseModel):
+    """
+    Filtros opcionais pro backfill da fila AJUS a partir dos intakes
+    de prazos iniciais ja' classificados (qualquer status pos-classificacao,
+    incluindo erros e concluidos).
+    """
+    statuses: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Lista de status do intake. None = usa o set padrao "
+            "(qualquer status pos-classificacao)."
+        ),
+    )
+    from_date: Optional[date] = Field(
+        default=None,
+        description="Filtra intakes criados a partir desta data (inclusivo).",
+    )
+    to_date: Optional[date] = Field(
+        default=None,
+        description="Filtra intakes criados ate esta data (inclusivo).",
+    )
+    dry_run: bool = Field(
+        default=False,
+        description="Se True, so' conta candidatos sem mexer na fila.",
+    )
+    limit: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=10000,
+        description="Limite de intakes processados nessa chamada.",
+    )
+
+
+class BackfillNoPdfItem(BaseModel):
+    intake_id: int
+    cnj_number: str
+
+
+class BackfillCompletedResponse(BaseModel):
+    candidates: int
+    enqueued: int
+    skipped_already: int
+    skipped_other: int
+    intake_ids_enqueued: list[int]
+    enqueued_without_pdf: list[BackfillNoPdfItem]
+    dry_run: bool
+    error: Optional[str] = None
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Helpers de serialização
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _queue_to_out(item: AjusAndamentoQueue) -> AndamentoQueueOut:
+def _queue_to_out(
+    item: AjusAndamentoQueue,
+    blocked_cnj_digits: Optional[set[str]] = None,
+) -> AndamentoQueueOut:
     cod = item.cod_andamento
+    digits = "".join(c for c in (item.cnj_number or "") if c.isdigit())
+    is_blocked = bool(blocked_cnj_digits) and digits in (blocked_cnj_digits or set())
     return AndamentoQueueOut(
         id=item.id,
         intake_id=item.intake_id,
@@ -168,6 +228,7 @@ def _queue_to_out(item: AjusAndamentoQueue) -> AndamentoQueueOut:
         dispatched_at=(
             item.dispatched_at.isoformat() if item.dispatched_at else None
         ),
+        is_blocked_classification=is_blocked,
     )
 
 
@@ -321,9 +382,26 @@ def list_andamentos(
         .limit(limit)
         .all()
     )
+    # Pre-computa CNJs bloqueados por classificacao pendente (1 query soh
+    # com IN-list dos digitos da pagina atual). Frontend usa pra renderizar
+    # badge e desabilitar botoes de disparo nos items afetados.
+    from app.models.ajus import AjusClassificationBlocklist
+    digit_set: set[str] = set()
+    for it in items:
+        d = "".join(c for c in (it.cnj_number or "") if c.isdigit())
+        if d:
+            digit_set.add(d)
+    blocked_digits: set[str] = set()
+    if digit_set:
+        rows = (
+            db.query(AjusClassificationBlocklist.cnj_number)
+            .filter(AjusClassificationBlocklist.cnj_number.in_(digit_set))
+            .all()
+        )
+        blocked_digits = {r[0] for r in rows}
     return AndamentoQueueListResponse(
         total=total,
-        items=[_queue_to_out(i) for i in items],
+        items=[_queue_to_out(i, blocked_digits) for i in items],
     )
 
 
@@ -343,6 +421,142 @@ def dispatch_pending(
     service = AjusQueueService(db)
     result = service.dispatch_pending_batch(batch_limit=batch_limit)
     return DispatchBatchResponse(**result)
+
+
+@router.post(
+    "/andamentos/backfill-from-intakes",
+    response_model=BackfillCompletedResponse,
+    summary=(
+        "Enfileira no AJUS os intakes de prazos iniciais ja' classificados "
+        "que ainda nao tem item na fila. Inclui status de erro pos-classificacao "
+        "e finalizados. Intakes sem PDF entram na fila marcados pra anexo manual. "
+        "Idempotente -- rodar 2x nao duplica. Use `dry_run=true` pra preview."
+    ),
+)
+def backfill_from_intakes(
+    payload: BackfillCompletedRequest = BackfillCompletedRequest(),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    service = AjusQueueService(db)
+    result = service.backfill_completed_intakes(
+        statuses=payload.statuses,
+        from_date=payload.from_date,
+        to_date=payload.to_date,
+        dry_run=payload.dry_run,
+        limit=payload.limit,
+    )
+    return BackfillCompletedResponse(**result)
+
+
+
+class DispatchSelectedRequest(BaseModel):
+    item_ids: list[int] = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_ITENS_POR_REQUEST,
+        description=(
+            f"Ids dos itens a disparar (max {MAX_ITENS_POR_REQUEST} por "
+            "request, limite AJUS). Todos devem estar em pendente ou erro."
+        ),
+    )
+
+
+@router.post(
+    "/andamentos/dispatch-selected",
+    response_model=DispatchBatchResponse,
+    summary=(
+        "Dispatcha em UMA request um conjunto de itens escolhidos pelo "
+        f"operador. Limite: {MAX_ITENS_POR_REQUEST} itens por chamada."
+    ),
+)
+def dispatch_selected_andamentos(
+    payload: DispatchSelectedRequest,
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    service = AjusQueueService(db)
+    try:
+        result = service.dispatch_selected(payload.item_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return DispatchBatchResponse(**result)
+
+
+@router.get(
+    "/andamentos/{item_id}/pdf",
+    summary=(
+        "Devolve o PDF da habilitacao anexado ao item. 404 se item nao "
+        "existe; 410 se item nao tem PDF anexado (ainda)."
+    ),
+)
+def download_andamento_pdf(
+    item_id: int = FastapiPath(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    service = AjusQueueService(db)
+    try:
+        pdf_bytes, filename = service.get_pdf_bytes(item_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        # 410 Gone -- semanticamente correto: existe o item, mas o anexo
+        # nao esta disponivel. Frontend pode tratar como "anexar via upload".
+        raise HTTPException(status_code=410, detail=str(exc)) from exc
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Content-Length": str(len(pdf_bytes)),
+        },
+    )
+
+
+@router.post(
+    "/andamentos/{item_id}/pdf",
+    response_model=AndamentoQueueOut,
+    summary=(
+        "Anexa um PDF a um item existente que nao tem anexo. Limpa o "
+        "prefixo de 'sem anexo' do informacao e, se em ERRO, volta pra "
+        "PENDENTE pra re-disparar."
+    ),
+)
+async def upload_andamento_pdf(
+    item_id: int = FastapiPath(..., ge=1),
+    file: UploadFile = File(..., description="PDF da habilitacao."),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    try:
+        pdf_bytes = await file.read()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=400, detail=f"Falha ao ler arquivo: {exc}",
+        ) from exc
+    if len(pdf_bytes) > _BULK_MAX_FILE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Arquivo excede 10MB (limite AJUS): {len(pdf_bytes)} bytes."
+            ),
+        )
+    service = AjusQueueService(db)
+    try:
+        item = service.attach_pdf(item_id, pdf_bytes)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Falha ao gravar PDF no storage: {exc}",
+        ) from exc
+    return _queue_to_out(item)
 
 
 @router.post("/andamentos/{item_id}/cancel", response_model=AndamentoQueueOut)
@@ -375,6 +589,269 @@ def retry_andamento(
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _queue_to_out(item)
+
+
+class DispatchOneResponse(BaseModel):
+    """Resposta do dispatch pontual (1 item).
+
+    `success` traduz o status_final pra um booleano amigavel —
+    True quando AJUS confirmou insercao (`inserido=true`), False
+    nos demais casos. `msg` carrega a mensagem do erro AJUS quando
+    success=False.
+    """
+    item_id: int
+    status_final: str
+    success: bool
+    msg: Optional[str] = None
+    cod_informacao_judicial: Optional[str] = None
+
+
+@router.post(
+    "/andamentos/{item_id}/dispatch",
+    response_model=DispatchOneResponse,
+    summary=(
+        "Dispatcha 1 item pontual da fila pro AJUS — debug-friendly. "
+        "Aceita item em status pendente ou erro; bloqueia sucesso/cancelado/enviando."
+    ),
+)
+def dispatch_one_andamento(
+    item_id: int = FastapiPath(..., ge=1),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    """
+    Util pra:
+      - Testar credenciais AJUS com 1 caso conhecido antes de soltar lote.
+      - Re-disparar pontual depois de operador corrigir manualmente
+        algum dado do item (ex.: data_evento errada).
+      - Debug operacional ("processar este aqui agora, não esperar fila").
+
+    HTTP 502 quando a chamada AJUS em si falha (token invalido, 5xx do
+    AJUS, timeout). HTTP 409 quando status do item nao permite dispatch.
+    """
+    from app.services.ajus.ajus_client import AjusApiError, AjusConfigError
+
+    service = AjusQueueService(db)
+    try:
+        result = service.dispatch_one(item_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (AjusConfigError, AjusApiError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return DispatchOneResponse(**result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Upload em lote (manual) — arquivos com CNJ no titulo OU lista de CNJs
+# ═══════════════════════════════════════════════════════════════════════
+# Permite enfileirar N andamentos AJUS sem passar por intake. Dois modos:
+#   1) bulk-upload (multipart): N PDFs, CNJ extraido do nome do arquivo,
+#      o PDF vira anexo do andamento.
+#   2) bulk-cnj (JSON): lista de CNJs sem arquivo (andamento de capa).
+# Variaveis comuns (cod_andamento_id, situacao, datas, hora, template
+# de informacao) se aplicam ao lote inteiro. Itens criados com
+# intake_id=NULL e status=pendente; aparecem na fila normal e o
+# operador clica "Enviar próximos 20" como sempre.
+
+
+class BulkAndamentoVarsBase(BaseModel):
+    cod_andamento_id: int = Field(..., ge=1)
+    situacao: Optional[str] = Field(default=None, pattern="^[AC]$")
+    data_evento: Optional[date] = None
+    data_agendamento: Optional[date] = None
+    data_fatal: Optional[date] = None
+    hora_agendamento: Optional[time] = None
+    informacao_template_override: Optional[str] = None
+
+
+class BulkCnjIn(BulkAndamentoVarsBase):
+    cnj_list: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description=(
+            "Lista de CNJs (com ou sem mascara). Cada item gera 1 "
+            "andamento sem anexo de PDF."
+        ),
+    )
+
+
+class BulkAndamentoSkipped(BaseModel):
+    cnj: str
+    filename: Optional[str] = None
+    reason: str
+
+
+class BulkAndamentoResponse(BaseModel):
+    created: int
+    updated: int = 0
+    skipped: list[BulkAndamentoSkipped]
+    item_ids: list[int]
+    created_ids: list[int] = []
+    updated_ids: list[int] = []
+
+
+def _resolve_cod_andamento_or_404(
+    db: Session, cod_andamento_id: int,
+) -> AjusCodAndamento:
+    cod = db.get(AjusCodAndamento, cod_andamento_id)
+    if cod is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Codigo de andamento {cod_andamento_id} nao encontrado.",
+        )
+    if not cod.is_active:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Codigo de andamento {cod.codigo} esta inativo. "
+                "Reative-o ou escolha outro."
+            ),
+        )
+    return cod
+
+
+# Limite local: AJUS aceita 10MB por arquivo, mantemos o mesmo aqui.
+_BULK_MAX_FILE_BYTES = 10 * 1024 * 1024
+
+
+@router.post(
+    "/andamentos/bulk-upload",
+    response_model=BulkAndamentoResponse,
+    summary=(
+        "Upload em lote de PDFs com CNJ no nome do arquivo. Cria 1 item "
+        "na fila por arquivo, com PDF anexado e variaveis comuns ao lote."
+    ),
+)
+async def bulk_upload_andamentos(
+    files: list[UploadFile] = File(..., description="PDFs com CNJ no nome."),
+    cod_andamento_id: int = Form(..., ge=1),
+    situacao: Optional[str] = Form(default=None, pattern="^[AC]$"),
+    data_evento: Optional[date] = Form(default=None),
+    data_agendamento: Optional[date] = Form(default=None),
+    data_fatal: Optional[date] = Form(default=None),
+    hora_agendamento: Optional[time] = Form(default=None),
+    informacao_template_override: Optional[str] = Form(default=None),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    """
+    Multipart: variaveis em form fields, arquivos em `files`. CNJ
+    extraido do nome de cada arquivo (regex CNJ; aceita com ou sem
+    mascara). Arquivo com CNJ nao encontrado vira `skipped`.
+    Tamanho > 10MB (limite AJUS) tambem skipa.
+
+    HTTP 404 se cod_andamento_id nao existe; 409 se inativo.
+    """
+    from app.services.ajus.queue_service import (
+        AjusQueueService,
+        extract_cnj_from_filename,
+    )
+
+    if not files:
+        raise HTTPException(status_code=400, detail="Nenhum arquivo enviado.")
+
+    cod = _resolve_cod_andamento_or_404(db, cod_andamento_id)
+
+    pre_skipped: list[dict] = []
+    valid_entries: list[dict] = []
+    for upload in files:
+        filename = upload.filename or ""
+        cnj = extract_cnj_from_filename(filename)
+        try:
+            content = await upload.read()
+        except Exception as exc:  # noqa: BLE001
+            pre_skipped.append({
+                "cnj": cnj or "",
+                "filename": filename,
+                "reason": f"Falha ao ler arquivo: {exc}",
+            })
+            continue
+        if len(content) > _BULK_MAX_FILE_BYTES:
+            pre_skipped.append({
+                "cnj": cnj or "",
+                "filename": filename,
+                "reason": (
+                    f"Arquivo excede 10MB (limite AJUS): {len(content)} bytes."
+                ),
+            })
+            continue
+        valid_entries.append({
+            "cnj": cnj or "",
+            "filename": filename,
+            "pdf_bytes": content,
+        })
+
+    service = AjusQueueService(db)
+    result = service.bulk_enqueue(
+        cod_andamento=cod,
+        entries=valid_entries,
+        situacao=situacao,
+        data_evento=data_evento,
+        data_agendamento=data_agendamento,
+        data_fatal=data_fatal,
+        hora_agendamento=hora_agendamento,
+        informacao_template_override=informacao_template_override,
+    )
+    return BulkAndamentoResponse(
+        created=result["created"],
+        updated=result.get("updated", 0),
+        skipped=[
+            BulkAndamentoSkipped(**s) for s in pre_skipped + result["skipped"]
+        ],
+        item_ids=result["item_ids"],
+        created_ids=result.get("created_ids", []),
+        updated_ids=result.get("updated_ids", []),
+    )
+
+
+@router.post(
+    "/andamentos/bulk-cnj",
+    response_model=BulkAndamentoResponse,
+    summary=(
+        "Cria N itens da fila a partir de uma lista de CNJs (sem anexo)."
+    ),
+)
+def bulk_cnj_andamentos(
+    payload: BulkCnjIn,
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    from app.services.ajus.queue_service import AjusQueueService
+
+    cod = _resolve_cod_andamento_or_404(db, payload.cod_andamento_id)
+
+    entries: list[dict] = [
+        {"cnj": raw.strip(), "filename": None, "pdf_bytes": None}
+        for raw in payload.cnj_list if raw and raw.strip()
+    ]
+    if not entries:
+        raise HTTPException(
+            status_code=400,
+            detail="Lista de CNJs vazia (apos limpar linhas em branco).",
+        )
+
+    service = AjusQueueService(db)
+    result = service.bulk_enqueue(
+        cod_andamento=cod,
+        entries=entries,
+        situacao=payload.situacao,
+        data_evento=payload.data_evento,
+        data_agendamento=payload.data_agendamento,
+        data_fatal=payload.data_fatal,
+        hora_agendamento=payload.hora_agendamento,
+        informacao_template_override=payload.informacao_template_override,
+    )
+    return BulkAndamentoResponse(
+        created=result["created"],
+        updated=result.get("updated", 0),
+        skipped=[BulkAndamentoSkipped(**s) for s in result["skipped"]],
+        item_ids=result["item_ids"],
+        created_ids=result.get("created_ids", []),
+        updated_ids=result.get("updated_ids", []),
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1402,4 +1879,164 @@ def retry_classif_bulk(
         item_ids=payload.item_ids,
     )
     return ClassifRetryBulkOut(**result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Blocklist de classificacao pendente — upload XLSX, listagem, stats
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class BlocklistItemOut(BaseModel):
+    id: int
+    cnj_number: str
+    cod_ajus: Optional[str] = None
+    materia: Optional[str] = None
+    first_seen_at: str
+    last_seen_at: str
+
+
+class BlocklistListResponse(BaseModel):
+    total: int
+    items: list[BlocklistItemOut]
+
+
+class BlocklistUploadResponse(BaseModel):
+    """Resumo do upload — quantos foram add/update/remove + total final."""
+    added: int
+    updated: int
+    removed: int
+    total_after: int
+
+
+class BlocklistStatsResponse(BaseModel):
+    total_no_blocklist: int
+    items_fila_bloqueados: int
+    ultimo_upload_at: Optional[str] = None
+
+
+def _blocklist_to_out(row: AjusClassificationBlocklist) -> BlocklistItemOut:
+    return BlocklistItemOut(
+        id=row.id,
+        cnj_number=row.cnj_number,
+        cod_ajus=row.cod_ajus,
+        materia=row.materia,
+        first_seen_at=row.first_seen_at.isoformat() if row.first_seen_at else "",
+        last_seen_at=row.last_seen_at.isoformat() if row.last_seen_at else "",
+    )
+
+
+@router.post(
+    "/classification-blocklist/upload",
+    response_model=BlocklistUploadResponse,
+    summary=(
+        "Sobe planilha XLSX com CNJs de classificacao pendente e SUBSTITUI "
+        "o blocklist atual. CNJs que sumirem do upload voltam a poder ser "
+        "disparados; CNJs novos passam a ser pulados no dispatch."
+    ),
+)
+async def upload_classification_blocklist(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    from app.services.ajus.classification_blocklist_service import (
+        AjusClassificationBlocklistService,
+        BlocklistParseError,
+        parse_xlsx,
+    )
+
+    if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(
+            status_code=400,
+            detail="Arquivo deve ser .xlsx (ou .xlsm).",
+        )
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Arquivo vazio.")
+    try:
+        parsed = parse_xlsx(content)
+    except BlocklistParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    service = AjusClassificationBlocklistService(db)
+    result = service.replace_blocklist(parsed)
+    logger.info(
+        "Blocklist upload: file=%s parsed=%d %s",
+        file.filename, len(parsed), result,
+    )
+    return BlocklistUploadResponse(**result)
+
+
+@router.get(
+    "/classification-blocklist",
+    response_model=BlocklistListResponse,
+    summary="Lista o blocklist atual com paginacao + filtro opcional por CNJ.",
+)
+def list_classification_blocklist(
+    cnj_number: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    from app.services.ajus.classification_blocklist_service import (
+        AjusClassificationBlocklistService,
+    )
+
+    service = AjusClassificationBlocklistService(db)
+    total, rows = service.list_all(
+        limit=limit, offset=offset, cnj_filter=cnj_number,
+    )
+    return BlocklistListResponse(
+        total=total,
+        items=[_blocklist_to_out(r) for r in rows],
+    )
+
+
+@router.get(
+    "/classification-blocklist/stats",
+    response_model=BlocklistStatsResponse,
+    summary=(
+        "Stats agregados do blocklist: total no blocklist, items da fila "
+        "atualmente bloqueados, e timestamp do ultimo upload."
+    ),
+)
+def stats_classification_blocklist(
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    from app.services.ajus.classification_blocklist_service import (
+        AjusClassificationBlocklistService,
+    )
+
+    service = AjusClassificationBlocklistService(db)
+    s = service.stats()
+    return BlocklistStatsResponse(
+        total_no_blocklist=s["total_no_blocklist"],
+        items_fila_bloqueados=s["items_fila_bloqueados"],
+        ultimo_upload_at=(
+            s["ultimo_upload_at"].isoformat()
+            if s["ultimo_upload_at"] else None
+        ),
+    )
+
+
+@router.delete(
+    "/classification-blocklist",
+    response_model=BlocklistUploadResponse,
+    summary="Apaga TODO o blocklist (escape hatch — nao usar em rotina).",
+)
+def clear_classification_blocklist(
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    from app.services.ajus.classification_blocklist_service import (
+        AjusClassificationBlocklistService,
+    )
+
+    service = AjusClassificationBlocklistService(db)
+    n = service.clear()
+    return BlocklistUploadResponse(
+        added=0, updated=0, removed=n, total_after=0,
+    )
 
