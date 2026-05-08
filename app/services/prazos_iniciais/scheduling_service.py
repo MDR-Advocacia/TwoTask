@@ -812,16 +812,29 @@ class PrazosIniciaisSchedulingService:
                         f"Sugestão {entry.suggestion_id} não pertence ao intake {intake_id}."
                     )
                 selected.append((sugestao, entry))
+        elif custom_tasks:
+            # Operador escolheu APENAS tarefas avulsas (desmarcou todas as
+            # sugestoes da IA, ou nao havia sugestao agendavel). NAO roda
+            # o fallback "agenda todas nao-rejeitadas" — respeita a
+            # escolha explicita. Antes desse guard (2026-05-08), o
+            # fallback puxava qualquer sugestao com
+            # data_final_calculada=null pro lote e _build_l1_task_payload
+            # explodia com "Sugestao N sem data_final_calculada".
+            selected = []
         else:
+            # Fallback historico (cliente nao passou nem sugestao nem
+            # tarefa avulsa): agenda todas as sugestoes nao-rejeitadas.
+            # Mantido pra compat com chamadores programaticos que ainda
+            # dependem desse default.
             selected = [
                 (s, ConfirmedSuggestionInput(suggestion_id=s.id))
                 for s in intake.sugestoes or []
                 if s.review_status != SUGESTAO_REVIEW_REJECTED
             ]
 
-        if not selected:
+        if not selected and not custom_tasks:
             raise RuntimeError(
-                "Nenhuma sugestão elegível para confirmar o agendamento deste intake."
+                "Nenhuma sugestão ou tarefa avulsa para confirmar o agendamento deste intake."
             )
 
         # ── FASE 1 — valida review_status de todas antes de tocar no L1 ──
