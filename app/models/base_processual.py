@@ -46,6 +46,10 @@ UPLOAD_STATUS_FALHOU = "FALHOU"
 UPLOAD_STATUS_IDEMPOTENTE = "IDEMPOTENTE"
 UPLOAD_STATUS_DRY_RUN = "DRY_RUN"
 UPLOAD_STATUS_DRY_RUN_EXPIRADO = "DRY_RUN_EXPIRADO"
+# Lote historico: usado pelo backfill — registra contagem de processos
+# do lote (PLANILHA_MIGRACAO_COMPLETA) SEM criar processos individuais.
+# Dashboard serie-diaria agrega summary_novos por uploaded_at.
+UPLOAD_STATUS_LOTE_HISTORICO = "LOTE_HISTORICO"
 
 # Tipos de evento
 EVENTO_ENTROU = "ENTROU"

@@ -39,6 +39,7 @@ from app.models.base_processual import (
     UPLOAD_STATUS_DRY_RUN,
     UPLOAD_STATUS_FALHOU,
     UPLOAD_STATUS_IDEMPOTENTE,
+    UPLOAD_STATUS_LOTE_HISTORICO,
     UPLOAD_STATUS_PROCESSANDO,
 )
 from app.services.base_processual.diff import (
@@ -208,6 +209,7 @@ def process_upload(
     uploaded_by_user_id: Optional[int],
     dry_run: bool = False,
     storage_path: Optional[str] = None,
+    force_uploaded_at: Optional[datetime] = None,
 ) -> UploadResult:
     """Pipeline principal de upload. Idempotente via file_sha256.
 
@@ -560,6 +562,8 @@ def process_upload(
         upload.status = UPLOAD_STATUS_CONCLUIDO
         upload.committed_at = datetime.now(timezone.utc)
         db.commit()
+        if force_uploaded_at is not None:
+            _override_timestamps_for_upload(db, upload_id, force_uploaded_at)
         return UploadResult(
             upload_id=upload_id,
             status=UPLOAD_STATUS_CONCLUIDO,
@@ -586,6 +590,92 @@ def process_upload(
             storage_path=storage_path,
             error_message="Erro inesperado no processamento. Veja logs do servidor.",
         )
+
+
+
+def _override_timestamps_for_upload(
+    db: Session, upload_id: int, ts: datetime
+) -> None:
+    """Sobrescreve timestamps de todos os artefatos criados por um upload.
+
+    Usado pelo backfill historico: pra um upload datado de 25/03/2026, todos os
+    snapshots, eventos, processos (first_seen) e o proprio upload ficam com a
+    timestamp historica em vez de datetime.now() (que e' quando o backfill
+    rodou). Roda em transacao propria — db.commit() ao fim.
+    """
+    db.query(BaseProcessualUpload).filter(
+        BaseProcessualUpload.id == upload_id
+    ).update(
+        {
+            "uploaded_at": ts,
+            "processed_at": ts,
+            "committed_at": ts,
+        },
+        synchronize_session=False,
+    )
+    db.query(BaseProcessualSnapshot).filter(
+        BaseProcessualSnapshot.upload_id == upload_id
+    ).update({"captured_at": ts}, synchronize_session=False)
+    db.query(BaseProcessualEvento).filter(
+        BaseProcessualEvento.upload_id == upload_id
+    ).update({"created_at": ts}, synchronize_session=False)
+    db.query(BaseProcessualProcesso).filter(
+        BaseProcessualProcesso.first_seen_upload_id == upload_id
+    ).update(
+        {"created_at": ts, "updated_at": ts},
+        synchronize_session=False,
+    )
+    db.commit()
+
+
+def register_lote_historico(
+    db: Session,
+    *,
+    filename: str,
+    content: bytes,
+    uploaded_by_user_id: Optional[int],
+    storage_path: Optional[str],
+    uploaded_at: datetime,
+    total_rows: int,
+) -> "UploadResult":
+    """Registra um upload historico SEM criar processos individuais.
+
+    Usado pelo backfill pros lotes PLANILHA_MIGRACAO_COMPLETA: cada arquivo
+    vira 1 row em base_processual_upload com status=LOTE_HISTORICO,
+    summary_novos = total de linhas do lote. NAO cria processos/snapshots/
+    eventos — o dashboard serie-diaria agrega summary_novos por uploaded_at.
+
+    Trade-off: perde-se granularidade individual (nao da' pra clicar num lote
+    e ver os 390 processos), mas a contagem temporal fica correta sem
+    poluir o schema com cod_ajus sinteticos.
+    """
+    upload = BaseProcessualUpload(
+        filename=filename,
+        # NULL pra evitar conflito com UNIQUE (alinha com pattern IDEMPOTENTE/DRY_RUN/FAIL).
+        # Lotes historicos sao append-only — subir o mesmo arquivo gera multiplos
+        # rows (raro caso de uso, OK).
+        file_sha256=None,
+        file_bytes=len(content),
+        total_rows_in_file=total_rows,
+        summary_novos=total_rows,
+        summary_removidos=0,
+        summary_atualizados=0,
+        summary_inalterados=0,
+        status=UPLOAD_STATUS_LOTE_HISTORICO,
+        uploaded_by_user_id=uploaded_by_user_id,
+        storage_path=storage_path,
+        uploaded_at=uploaded_at,
+        processed_at=uploaded_at,
+        committed_at=uploaded_at,
+    )
+    db.add(upload)
+    db.commit()
+    db.refresh(upload)
+    return UploadResult(
+        upload_id=upload.id,
+        status=UPLOAD_STATUS_LOTE_HISTORICO,
+        summary_novos=total_rows,
+    )
 
 
 def _persist_failure(

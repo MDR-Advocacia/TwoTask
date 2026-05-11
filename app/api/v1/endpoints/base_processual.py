@@ -472,6 +472,31 @@ def dashboard_serie_diaria(
             d = dia
         by_day.setdefault(d, {})[tipo] = int(total)
 
+    # NOVO: agrega uploads LOTE_HISTORICO por uploaded_at — cada lote contribui
+    # com summary_novos pro bucket EVENTO_ENTROU. Backfill historico (PLANILHA_
+    # MIGRACAO_COMPLETA) registra so' a contagem sem criar processos individuais.
+    upload_day_col = sa_func.cast(BaseProcessualUpload.uploaded_at, sa_types.Date)
+    lote_rows = (
+        db.query(
+            upload_day_col.label("dia"),
+            sa_func.coalesce(
+                sa_func.sum(BaseProcessualUpload.summary_novos), 0
+            ).label("total"),
+        )
+        .filter(BaseProcessualUpload.uploaded_at >= start)
+        .filter(BaseProcessualUpload.uploaded_at < end)
+        .filter(BaseProcessualUpload.status == "LOTE_HISTORICO")
+        .group_by("dia")
+        .all()
+    )
+    for dia, total in lote_rows:
+        if hasattr(dia, "date"):
+            d2: date_type = dia.date()
+        else:
+            d2 = dia
+        by_day.setdefault(d2, {})
+        by_day[d2][EVENTO_ENTROU] = by_day[d2].get(EVENTO_ENTROU, 0) + int(total)
+
     # Preencher TODOS os dias do range (zero quando nao tem evento)
     items: list[BaseProcessualSerieDiariaItem] = []
     cur = start.date() if hasattr(start, "date") else start

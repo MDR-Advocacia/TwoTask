@@ -13,6 +13,7 @@ from app.api.v1.endpoints import (
     automations,
     base_processual,
     base_processual_api_keys,
+    base_processual_backfill,
     base_processual_bulk,
     base_processual_exports,
     base_processual_public,
@@ -292,6 +293,9 @@ app.include_router(base_processual.router, prefix="/api/v1", dependencies=protec
 # evitar inchaco do base_processual.py (que ja' tem ~1k linhas). Inclui
 # /eventos (cross-upload) e /processos/bulk-update.
 app.include_router(base_processual_bulk.router, prefix="/api/v1", dependencies=protected_dependencies)
+# Backfill historico: POST /uploads/backfill aceita uploaded_at + mode
+# (snapshot ou lote_historico) pra popular timeline de uploads passados.
+app.include_router(base_processual_backfill.router, prefix="/api/v1", dependencies=protected_dependencies)
 # Exports XLSX (Chunk 5): 6 templates de relatorio + historico paginado.
 app.include_router(base_processual_exports.router, prefix="/api/v1", dependencies=protected_dependencies)
 # API keys admin CRUD (Chunk 6) — JWT obrigatorio + role admin via require_admin.
