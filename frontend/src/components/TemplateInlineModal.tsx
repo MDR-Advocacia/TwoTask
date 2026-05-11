@@ -367,7 +367,14 @@ export function TemplateInlineModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto overflow-x-hidden">
+      {/* `[&>*]:min-w-0` em todos os filhos diretos do DialogContent: o
+          shadcn aplica `display: grid` no Content, e grid items default
+          `min-width: auto` — entao um Button com texto longo (ex.: subtipo
+          "BB Execucao e Encerramento · Impugnacao ao Cumprimento...") +
+          `whitespace-nowrap` (default do Button shadcn) faz o item de
+          grid estourar a max-width do modal e abrir scrollbar horizontal.
+          min-w-0 nos filhos resolve. */}
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto overflow-x-hidden [&>*]:min-w-0">
         <DialogHeader>
           <DialogTitle>
             {mode === "create" ? "Adicionar template" : "Editar template"}

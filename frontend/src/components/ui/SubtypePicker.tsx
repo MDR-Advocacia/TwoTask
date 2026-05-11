@@ -112,7 +112,12 @@ export const SubtypePicker = ({
             )}
           >
             {selectedLabel ? (
-              <span className="truncate">
+              // `min-w-0` no span do truncate: o Button do shadcn e
+              // inline-flex, e flex/inline-flex items tem min-width:auto
+              // por default — sem min-w-0 o conteudo nao trunca e estoura
+              // a largura do Button (gerando scrollbar horizontal no modal
+              // pai, mesmo com overflow-x-hidden no DialogContent).
+              <span className="truncate min-w-0">
                 <span className="text-muted-foreground">
                   {selectedLabel.typeName} ·{" "}
                 </span>

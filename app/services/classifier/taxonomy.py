@@ -409,8 +409,29 @@ def _find_subcategory_by_normalized(
 
 
 _CATEGORY_ALIASES: dict[str, str] = {
-    "manifestacao": "Manifestação das Partes",
-    "manifestacao das partes": "Manifestação das Partes",
+    # Aliases v1 -> v2: pubs antigas (pre-seed v2) ficaram com cat v1
+    # gravada no DB, e templates novos estao todos em v2. Sem esses
+    # aliases o matcher nao casa cat literal e o operador via "Sem
+    # template" em milhares de pubs. taxonomy_active_version=v2 hoje,
+    # entao redirecionar v1 -> v2 e o comportamento desejado em todos
+    # os callers (matcher, repair pos-IA, edicao manual, migracao).
+    "manifestacao": "Manifestações, Prazos e Providências",
+    "manifestacao das partes": "Manifestações, Prazos e Providências",
+    "saneamento e organizacao do processo": "Manifestações, Prazos e Providências",
+    # Chave dos aliases tem que bater com a saida de _normalize_label
+    # (lowercase, sem acento, sem hifen, sem barra, sem '°' -> usa 'o').
+    # Conferido empiricamente: "2° Grau - Cível" -> "2o grau civel",
+    # "1° Grau - Cível / Execução" -> "1o grau civel execucao".
+    "2o grau civel": "Recursos e Julgamentos em 2º Grau",
+    "2 grau civel": "Recursos e Julgamentos em 2º Grau",
+    "sentenca": "Sentença e Extinção",
+    "1o grau civel execucao": "Cumprimento de Sentença / Execução",
+    "1 grau civel execucao": "Cumprimento de Sentença / Execução",
+    "tutela": "Tutelas, Liminares e Medidas Urgentes",
+    "audiencia agendada": "Audiências",
+    "provas": "Provas, Perícia e Saneamento",
+    "complementar custas": "Custas, Alvarás, Mandados e Atos Cartorários",
+    "para analise": "Para Análise",
     "recurso inominado contrarrazoes": "Recurso Inominado",
 }
 

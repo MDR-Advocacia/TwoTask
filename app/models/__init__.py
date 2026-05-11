@@ -34,3 +34,10 @@ from .classification_taxonomy import (
     ClassificationSubcategory,
 )
 from .user_feedback import UserFeedback
+from .base_processual import (
+    BaseProcessualApiKey,
+    BaseProcessualEvento,
+    BaseProcessualProcesso,
+    BaseProcessualSnapshot,
+    BaseProcessualUpload,
+)
