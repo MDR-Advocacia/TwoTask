@@ -315,3 +315,164 @@ class PaginatedResponse(BaseModel, Generic[T]):
     items: List[T]
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# --- Schemas para Base Processual (Chunk 1: uploads + eventos) ---
+
+class BaseProcessualUploadOut(BaseModel):
+    """Detalhe de um upload (linha de base_processual_upload)."""
+    id: int
+    filename: str
+    file_sha256: str
+    file_bytes: Optional[int] = None
+    total_rows_in_file: Optional[int] = None
+    summary_novos: int
+    summary_removidos: int
+    summary_atualizados: int
+    summary_inalterados: int
+    status: str
+    error_message: Optional[str] = None
+    eventos_preview_json: Optional[List[Dict[str, Any]]] = None
+    dry_run_of_upload_id: Optional[int] = None
+    storage_path: Optional[str] = None
+    uploaded_by_user_id: Optional[int] = None
+    uploaded_at: datetime
+    processed_at: Optional[datetime] = None
+    committed_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BaseProcessualUploadListResponse(BaseModel):
+    """Lista paginada de uploads (formato padrao da casa: {total, items})."""
+    total: int
+    items: List[BaseProcessualUploadOut]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BaseProcessualUploadResult(BaseModel):
+    """Resposta dos endpoints POST /uploads e POST /uploads/{id}/commit.
+
+    Em dry-run, `eventos_preview` traz uma lista compacta de mudancas
+    previstas (cap=200).
+    """
+    upload_id: int
+    status: str
+    summary_novos: int = 0
+    summary_removidos: int = 0
+    summary_atualizados: int = 0
+    summary_inalterados: int = 0
+    error_message: Optional[str] = None
+    is_idempotente: bool = False
+    eventos_preview: Optional[List[Dict[str, Any]]] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BaseProcessualEventoOut(BaseModel):
+    """Evento atomico (ENTROU/SAIU/ATUALIZADO/ATUALIZADO_MANUAL) de um upload."""
+    id: int
+    upload_id: int
+    processo_id: int
+    cod_ajus: str
+    tipo_evento: str
+    changed_fields: Optional[Dict[str, Any]] = None
+    snapshot_before_id: Optional[int] = None
+    snapshot_after_id: Optional[int] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BaseProcessualEventoListResponse(BaseModel):
+    total: int
+    items: List[BaseProcessualEventoOut]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# --- Schemas Dashboard (Chunk 2) ---
+
+class BaseProcessualTopResponsavelItem(BaseModel):
+    """Linha do ranking 'Top responsaveis' do dashboard."""
+    usuario_responsavel: Optional[str]
+    total: int
+
+
+class BaseProcessualUfItem(BaseModel):
+    """Linha da distribuicao UF."""
+    uf: Optional[str]
+    total: int
+
+
+class BaseProcessualResumoOut(BaseModel):
+    """KPIs do dashboard de Base Processual.
+
+    'Hoje' = data UTC corrente. Operador no Brasil (UTC-3) vai ver o
+    'hoje' do servidor; refinamento de timezone fica pra fase 2 se importar.
+    """
+    total_ativos_na_base: int
+    total_removidos_na_base: int
+    novos_hoje: int
+    saidos_hoje: int
+    atualizados_hoje: int
+    ultimo_upload_id: Optional[int] = None
+    ultimo_upload_em: Optional[datetime] = None
+    ultimo_upload_status: Optional[str] = None
+    ultimo_upload_filename: Optional[str] = None
+    top_responsaveis: List[BaseProcessualTopResponsavelItem] = Field(default_factory=list)
+    distribuicao_uf: List[BaseProcessualUfItem] = Field(default_factory=list)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BaseProcessualSerieDiariaItem(BaseModel):
+    """Um ponto da serie temporal (1 por dia)."""
+    data: datetime
+    novos: int = 0
+    removidos: int = 0
+    atualizados: int = 0
+
+
+class BaseProcessualSerieDiariaResponse(BaseModel):
+    """Range temporal de movimentacao do dashboard (default = ultimos 90d)."""
+    from_date: datetime
+    to_date: datetime
+    items: List[BaseProcessualSerieDiariaItem]
+
+
+class BaseProcessualMovimentacaoItem(BaseModel):
+    """Linha de movimentacao do dia (ENTROU / SAIU / ATUALIZADO)."""
+    evento_id: int
+    cod_ajus: str
+    numero_processo_mascarado: Optional[str] = None
+    empresa: Optional[str] = None
+    uf: Optional[str] = None
+    comarca: Optional[str] = None
+    usuario_responsavel: Optional[str] = None
+    distribuido_em: Optional[datetime] = None
+    # Para SAIU: ultimo dia em que esteve ATIVO. Para ENTROU/ATUALIZADO: criacao do evento.
+    visto_em: Optional[datetime] = None
+    # Para ATUALIZADO: dict {campo: {de, para}}.
+    changed_fields: Optional[Dict[str, Any]] = None
+
+
+class BaseProcessualMovimentacaoDoDiaResponse(BaseModel):
+    """Listas detalhadas dos 3 tipos de movimentacao em uma data especifica."""
+    data: datetime
+    entraram_total: int
+    sairam_total: int
+    atualizados_total: int
+    entraram: List[BaseProcessualMovimentacaoItem]
+    sairam: List[BaseProcessualMovimentacaoItem]
+    atualizados: List[BaseProcessualMovimentacaoItem]
+
+
+class BaseProcessualInatividadeOut(BaseModel):
+    """Tempo desde o ultimo upload CONCLUIDO + flag de alerta."""
+    ultimo_upload_em: Optional[datetime] = None
+    horas_desde_ultimo: Optional[float] = None
+    alerta: bool = False
+    threshold_horas: int = 24

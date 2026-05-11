@@ -22,6 +22,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { BaseProcessualPage } from "@/pages/BaseProcessualPage";
 import UserSelector from "@/components/ui/UserSelector";
 import { apiFetch } from "@/lib/api-client";
 import { Trash2, Crown, Star } from "lucide-react";
@@ -1220,6 +1221,7 @@ const AdminPage = () => {
                     <TabsTrigger value="users">Usuários & Permissões</TabsTrigger>
                     <TabsTrigger value="notices">Avisos</TabsTrigger>
                     <TabsTrigger value="feedback">Feedback</TabsTrigger>
+                    <TabsTrigger value="base-processual">Base Processual</TabsTrigger>
                 </TabsList>
                 <TabsContent value="sync" className="space-y-6">
                     <SyncManager />
@@ -1241,6 +1243,9 @@ const AdminPage = () => {
                 </TabsContent>
                 <TabsContent value="feedback" className="space-y-6">
                     <UserFeedbackManager />
+                </TabsContent>
+            <TabsContent value="base-processual" className="space-y-6">
+                    <BaseProcessualPage />
                 </TabsContent>
             </Tabs>
         </div>

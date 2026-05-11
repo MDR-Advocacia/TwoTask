@@ -11,6 +11,7 @@ from app.api.v1.endpoints import (
     auth,
     ajus,
     automations,
+    base_processual,
     capture_health,
     classifier,
     dashboard,
@@ -280,6 +281,9 @@ app.include_router(
 app.include_router(task_templates.router, prefix="/api/v1/task-templates", tags=["Templates de Tarefa"], dependencies=protected_dependencies)
 app.include_router(ajus.router, prefix="/api/v1", tags=["AJUS"], dependencies=protected_dependencies)
 app.include_router(automations.router, prefix="/api/v1/automations", tags=["Automações"], dependencies=protected_dependencies)
+# Base Processual: upload diario da Listagem de Acoes do L1 + dashboard
+# de movimentacao de carteira. JWT obrigatorio + guard interno admin-only.
+app.include_router(base_processual.router, prefix="/api/v1", dependencies=protected_dependencies)
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Autenticacao"])
 
 
