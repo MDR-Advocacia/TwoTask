@@ -12,10 +12,16 @@ e segue (campo fica None na row dict).
 from __future__ import annotations
 
 import io
+import re
 import unicodedata
 from typing import Iterator, Optional
 
 import openpyxl
+
+
+# Linhas de rodape do Reports do L1: cod_ajus = 'TOTAIS:', 'TOTAL', etc.
+# Sao linhas de sumario com agregados, nao processos reais — pular silenciosamente.
+_FOOTER_COD_RE = re.compile(r"^\s*totais?\s*:?\s*$", re.IGNORECASE)
 
 
 def _normalize_header(s) -> str:
@@ -196,20 +202,34 @@ def _try_match_header(row: tuple) -> dict[str, Optional[int]]:
     return result
 
 
+def _is_footer_row(row: tuple, cod_idx: Optional[int]) -> bool:
+    """Detecta rodape 'TOTAIS:'/'TOTAL' do Reports do L1 — pular silenciosamente."""
+    if cod_idx is None or cod_idx >= len(row):
+        return False
+    cod_val = row[cod_idx]
+    if cod_val is None:
+        return False
+    return bool(_FOOTER_COD_RE.match(str(cod_val)))
+
+
 def _rows_iterator(
     header_map: dict[str, Optional[int]],
     first_extra,
     rows_iter,
 ) -> Iterator[dict]:
     """Junta opcional primeira-row + iterator restante, transformando em dicts."""
+    cod_idx = header_map.get("cod_ajus")
     if first_extra is not None:
-        d = _row_to_dict(first_extra, header_map)
-        if any(v is not None for v in d.values()):
-            yield d
+        if not _is_footer_row(first_extra, cod_idx):
+            d = _row_to_dict(first_extra, header_map)
+            if any(v is not None for v in d.values()):
+                yield d
     for row in rows_iter:
         if row is None:
             continue
         if all(c is None or (isinstance(c, str) and not c.strip()) for c in row):
+            continue
+        if _is_footer_row(row, cod_idx):
             continue
         d = _row_to_dict(row, header_map)
         yield d

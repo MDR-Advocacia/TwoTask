@@ -409,38 +409,61 @@ def _find_subcategory_by_normalized(
 
 
 _CATEGORY_ALIASES: dict[str, str] = {
-    # Aliases v1 -> v2: pubs antigas (pre-seed v2) ficaram com cat v1
-    # gravada no DB, e templates novos estao todos em v2. Sem esses
-    # aliases o matcher nao casa cat literal e o operador via "Sem
-    # template" em milhares de pubs. taxonomy_active_version=v2 hoje,
-    # entao redirecionar v1 -> v2 e o comportamento desejado em todos
-    # os callers (matcher, repair pos-IA, edicao manual, migracao).
-    "manifestacao": "Manifestações, Prazos e Providências",
-    "manifestacao das partes": "Manifestações, Prazos e Providências",
-    "saneamento e organizacao do processo": "Manifestações, Prazos e Providências",
-    # Chave dos aliases tem que bater com a saida de _normalize_label
-    # (lowercase, sem acento, sem hifen, sem barra, sem '°' -> usa 'o').
-    # Conferido empiricamente: "2° Grau - Cível" -> "2o grau civel",
-    # "1° Grau - Cível / Execução" -> "1o grau civel execucao".
-    "2o grau civel": "Recursos e Julgamentos em 2º Grau",
+    # Aliases v1 -> v2 (mapeamento empirico definido com operador em
+    # 2026-05-11 cobrindo 4598 pubs orfas no DB de producao). Pubs antigas
+    # (pre-seed v2) ficaram com cat v1 gravada e templates novos estao
+    # todos em v2. Sem esses aliases o matcher nao casa cat literal e o
+    # operador via "Sem template" em ~84% das publicacoes ja' classificadas.
+    # taxonomy_active_version=v2 hoje, entao redirecionar v1 -> v2 e' o
+    # comportamento desejado em todos os callers (matcher, repair pos-IA,
+    # edicao manual, migracao).
+    #
+    # Chave dos aliases tem que bater com a saida de `_normalize_label`
+    # (lowercase, sem acento, sem hifen, sem barra, '°' -> 'o').
+    # Conferido empiricamente: "2° Grau - Cível" -> "2o grau civel".
+    #
+    # Volume aprox. de pubs cobertas por cada alias (top->bottom):
+    "manifestacao das partes": "Manifestações, Prazos e Providências",       # 1258
+    "manifestacao": "Manifestações, Prazos e Providências",                  # variantes
+    "2o grau civel": "Recursos e Julgamentos em 2º Grau",                    # 996
     "2 grau civel": "Recursos e Julgamentos em 2º Grau",
-    "sentenca": "Sentença e Extinção",
-    "1o grau civel execucao": "Cumprimento de Sentença / Execução",
+    "sentenca": "Sentença e Extinção",                                       # 586
+    "para analise": "Para Análise",                                          # 514
+    "1o grau civel execucao": "Cumprimento de Sentença / Execução",          # 354
     "1 grau civel execucao": "Cumprimento de Sentença / Execução",
-    "tutela": "Tutelas, Liminares e Medidas Urgentes",
-    "audiencia agendada": "Audiências",
-    "provas": "Provas, Perícia e Saneamento",
-    "complementar custas": "Custas, Alvarás, Mandados e Atos Cartorários",
-    "para analise": "Para Análise",
-    "recurso inominado contrarrazoes": "Recurso Inominado",
+    "execucao": "Cumprimento de Sentença / Execução",                        # 7
+    "tutela": "Tutelas, Liminares e Medidas Urgentes",                       # 225
+    "audiencia agendada": "Audiências",                                      # 204
+    "provas": "Provas, Perícia e Saneamento",                                # 141
+    # 'Saneamento e Organizacao do Processo' vai pra 'Provas, Pericia e
+    # Saneamento' (decisao 2026-05-11): nome literal 'Saneamento' bate
+    # com a cat alvo, e juridicamente saneamento do processo e' fase
+    # pre-instrutoria de delimitacao de pontos controvertidos + decisao
+    # sobre provas — encaixa melhor que 'Manifestacoes'.
+    "saneamento e organizacao do processo": "Provas, Perícia e Saneamento", # 99
+    "complementar custas": "Custas, Alvarás, Mandados e Atos Cartorários",  # 79
+    "citacao": "Citação e Intimação Inicial",                                # 48
+    "arquivamento definitivo": "Trânsito em Julgado e Arquivamento",         # 30
+    "transito em julgado": "Trânsito em Julgado e Arquivamento",             # 22
+    # 'Embargos de Declaracao' e 'Recurso Inominado' vao pra cat principal
+    # de recursos (decisao 2026-05-11: 'recursal' = 'Recursos e Julgamentos
+    # em 2 Grau', que tem 54 templates ativos vs 1 da cat 'Recursos'
+    # generica). Subs vistas confirmam (Decisao Monocratica, Contrarrazoes
+    # = pos-julgamento em colegiado / turma recursal).
+    "embargos de declaracao": "Recursos e Julgamentos em 2º Grau",           # 22
+    "recurso inominado": "Recursos e Julgamentos em 2º Grau",                # 13
+    "recurso inominado contrarrazoes": "Recursos e Julgamentos em 2º Grau",  # variante
 }
 
 
 _PAIR_ALIASES: dict[tuple[str, str], tuple[str, str]] = {
+    # 'Recurso Inominado / Abertura de Prazo' (v1) -> Recursos em 2 Grau
+    # / Contrarrazoes (v2). A cat principal vai pelo _CATEGORY_ALIASES;
+    # a sub canonica em v2 e' 'Contrarrazões'.
     (
         "recurso inominado contrarrazoes",
         "abertura de prazo",
-    ): ("Recurso Inominado", "Contrarrazões"),
+    ): ("Recursos e Julgamentos em 2º Grau", "Contrarrazões"),
 }
 
 
