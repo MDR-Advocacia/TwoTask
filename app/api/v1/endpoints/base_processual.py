@@ -280,29 +280,39 @@ def download_xlsx(
 # ============================================================================
 
 import os
+import re
 from datetime import date as date_type, timedelta
 
-from sqlalchemy import func as sa_func, types as sa_types
+from sqlalchemy import func as sa_func, or_ as sa_or, types as sa_types
 
 from app.api.v1.schemas import (
     BaseProcessualInatividadeOut,
     BaseProcessualMovimentacaoDoDiaResponse,
     BaseProcessualMovimentacaoItem,
+    BaseProcessualProcessoListResponse,
+    BaseProcessualProcessoOut,
+    BaseProcessualProcessoPatch,
     BaseProcessualResumoOut,
     BaseProcessualSerieDiariaItem,
     BaseProcessualSerieDiariaResponse,
+    BaseProcessualSnapshotListResponse,
+    BaseProcessualSnapshotOut,
     BaseProcessualTopResponsavelItem,
     BaseProcessualUfItem,
 )
 from app.models.base_processual import (
     BaseProcessualProcesso,
+    BaseProcessualSnapshot,
     EVENTO_ATUALIZADO,
+    EVENTO_ATUALIZADO_MANUAL,
     EVENTO_ENTROU,
     EVENTO_SAIU,
     PRESENCA_ATIVO,
     PRESENCA_REMOVIDO,
     UPLOAD_STATUS_CONCLUIDO,
 )
+from app.services.base_processual.diff import compute_diff_hash
+from app.services.base_processual.upload_processor import _payload_normalized_json
 
 
 def _today_utc() -> datetime:
@@ -603,6 +613,342 @@ def dashboard_movimentacao_do_dia(
         sairam=sairam,
         atualizados=atualizados,
     )
+
+
+# ============================================================================
+# Processos (Chunk 3)
+# ============================================================================
+
+_PROCESSO_NORM_FIELDS = (
+    "cod_ajus", "numero_processo", "numero_processo_mascarado",
+    "numero_interno", "numero_pasta", "acao_principal", "materia",
+    "risco_prob_perda", "tipo_acao", "polo", "natureza", "numero_vara",
+    "foro", "comarca", "uf", "empresa", "grupo_responsavel",
+    "usuario_responsavel", "escritorio_responsavel", "situacao_processo",
+    "justica_honorario", "valor_causa", "valor_prev_acordo", "valor_acordo",
+    "valor_discutido", "valor_exito", "valor_condenacao", "valor_contingencia",
+    "ult_andamento", "data_ult_andamento", "dias_ult_atualizacao",
+    "distribuido_em", "processo_virtual", "numero_contrato",
+    "usuario_cadastro_acao", "data_cadastro_acao", "autores_raw", "reus_raw",
+    "autores_json", "reus_json",
+)
+
+
+def _processo_to_norm(p: BaseProcessualProcesso) -> dict:
+    return {k: getattr(p, k) for k in _PROCESSO_NORM_FIELDS}
+
+
+@router.get("/processos", response_model=BaseProcessualProcessoListResponse)
+def list_processos(
+    presenca_status: Optional[str] = Query(None),
+    cod_ajus: Optional[str] = Query(None),
+    numero_pasta: Optional[str] = Query(None),
+    empresa: Optional[str] = Query(None),
+    uf: Optional[str] = Query(None),
+    comarca: Optional[str] = Query(None),
+    situacao_processo: Optional[str] = Query(None),
+    polo: Optional[str] = Query(None),
+    materia: Optional[str] = Query(None),
+    natureza: Optional[str] = Query(None),
+    tipo_acao: Optional[str] = Query(None),
+    risco_prob_perda: Optional[str] = Query(None),
+    usuario_responsavel: Optional[str] = Query(None),
+    grupo_responsavel: Optional[str] = Query(None),
+    escritorio_responsavel: Optional[str] = Query(None),
+    valor_causa_min: Optional[float] = Query(None),
+    valor_causa_max: Optional[float] = Query(None),
+    distribuido_de: Optional[date_type] = Query(None),
+    distribuido_ate: Optional[date_type] = Query(None),
+    search: Optional[str] = Query(None),
+    sort_by: str = Query("ult_andamento_desc"),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    user: LegalOneUser = Depends(require_admin),
+):
+    """Lista processos com filtros + busca + paginacao.
+
+    Default: ATIVO_NA_BASE ordenado por ult_andamento_desc. Operador filtra
+    pra encontrar carteira por UF/comarca/responsavel/situacao/etc.
+    """
+    q = db.query(BaseProcessualProcesso)
+
+    if presenca_status:
+        q = q.filter(BaseProcessualProcesso.presenca_status == presenca_status)
+    if cod_ajus:
+        q = q.filter(BaseProcessualProcesso.cod_ajus == cod_ajus)
+    if numero_pasta:
+        q = q.filter(BaseProcessualProcesso.numero_pasta == numero_pasta)
+    if empresa:
+        q = q.filter(BaseProcessualProcesso.empresa == empresa)
+    if uf:
+        q = q.filter(BaseProcessualProcesso.uf == uf.upper())
+    if comarca:
+        q = q.filter(BaseProcessualProcesso.comarca.ilike(f"%{comarca}%"))
+    if situacao_processo:
+        q = q.filter(BaseProcessualProcesso.situacao_processo == situacao_processo)
+    if polo:
+        q = q.filter(BaseProcessualProcesso.polo == polo)
+    if materia:
+        q = q.filter(BaseProcessualProcesso.materia == materia)
+    if natureza:
+        q = q.filter(BaseProcessualProcesso.natureza == natureza)
+    if tipo_acao:
+        q = q.filter(BaseProcessualProcesso.tipo_acao.ilike(f"%{tipo_acao}%"))
+    if risco_prob_perda:
+        q = q.filter(BaseProcessualProcesso.risco_prob_perda == risco_prob_perda)
+    if usuario_responsavel:
+        q = q.filter(
+            BaseProcessualProcesso.usuario_responsavel.ilike(f"%{usuario_responsavel}%")
+        )
+    if grupo_responsavel:
+        q = q.filter(BaseProcessualProcesso.grupo_responsavel == grupo_responsavel)
+    if escritorio_responsavel:
+        q = q.filter(
+            BaseProcessualProcesso.escritorio_responsavel.ilike(
+                f"%{escritorio_responsavel}%"
+            )
+        )
+    if valor_causa_min is not None:
+        q = q.filter(BaseProcessualProcesso.valor_causa >= valor_causa_min)
+    if valor_causa_max is not None:
+        q = q.filter(BaseProcessualProcesso.valor_causa <= valor_causa_max)
+    if distribuido_de:
+        q = q.filter(BaseProcessualProcesso.distribuido_em >= distribuido_de)
+    if distribuido_ate:
+        q = q.filter(BaseProcessualProcesso.distribuido_em <= distribuido_ate)
+
+    # Busca livre multi-target: CNJ (digits >= 5), cod_ajus parcial,
+    # numero_pasta, autores/reus via cast JSON->text + ILIKE.
+    if search:
+        s = search.strip()
+        if s:
+            digits = re.sub(r"[^0-9]", "", s)
+            filters = []
+            if digits and len(digits) >= 5:
+                filters.append(
+                    BaseProcessualProcesso.numero_processo.ilike(f"%{digits}%")
+                )
+            filters.append(BaseProcessualProcesso.cod_ajus.ilike(f"%{s}%"))
+            filters.append(BaseProcessualProcesso.numero_pasta.ilike(f"%{s}%"))
+            filters.append(
+                sa_func.cast(
+                    BaseProcessualProcesso.autores_json, sa_types.Text
+                ).ilike(f"%{s}%")
+            )
+            filters.append(
+                sa_func.cast(
+                    BaseProcessualProcesso.reus_json, sa_types.Text
+                ).ilike(f"%{s}%")
+            )
+            q = q.filter(sa_or(*filters))
+
+    sort_map = {
+        "ult_andamento_desc": BaseProcessualProcesso.data_ult_andamento.desc().nullslast(),
+        "ult_andamento_asc": BaseProcessualProcesso.data_ult_andamento.asc().nullsfirst(),
+        "cod_ajus_asc": BaseProcessualProcesso.cod_ajus.asc(),
+        "cod_ajus_desc": BaseProcessualProcesso.cod_ajus.desc(),
+        "valor_causa_desc": BaseProcessualProcesso.valor_causa.desc().nullslast(),
+        "valor_causa_asc": BaseProcessualProcesso.valor_causa.asc().nullsfirst(),
+        "distribuido_desc": BaseProcessualProcesso.distribuido_em.desc().nullslast(),
+        "distribuido_asc": BaseProcessualProcesso.distribuido_em.asc().nullsfirst(),
+        "updated_desc": BaseProcessualProcesso.updated_at.desc(),
+    }
+    q = q.order_by(sort_map.get(sort_by, sort_map["ult_andamento_desc"]))
+
+    total = q.count()
+    items = q.limit(limit).offset(offset).all()
+    return BaseProcessualProcessoListResponse(
+        total=total,
+        items=[BaseProcessualProcessoOut.model_validate(p) for p in items],
+    )
+
+
+@router.get("/processos/{cod_ajus}", response_model=BaseProcessualProcessoOut)
+def get_processo(
+    cod_ajus: str,
+    db: Session = Depends(get_db),
+    user: LegalOneUser = Depends(require_admin),
+):
+    """Detalhe do processo (estado atual). Historico/eventos via outros endpoints."""
+    p = (
+        db.query(BaseProcessualProcesso)
+        .filter(BaseProcessualProcesso.cod_ajus == cod_ajus)
+        .first()
+    )
+    if p is None:
+        raise HTTPException(
+            status_code=404, detail=f"Processo {cod_ajus} nao encontrado."
+        )
+    return BaseProcessualProcessoOut.model_validate(p)
+
+
+@router.get(
+    "/processos/{cod_ajus}/historico",
+    response_model=BaseProcessualSnapshotListResponse,
+)
+def get_processo_historico(
+    cod_ajus: str,
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    user: LegalOneUser = Depends(require_admin),
+):
+    """Snapshots paginados do processo (mais recente primeiro)."""
+    p = (
+        db.query(BaseProcessualProcesso)
+        .filter(BaseProcessualProcesso.cod_ajus == cod_ajus)
+        .first()
+    )
+    if p is None:
+        raise HTTPException(
+            status_code=404, detail=f"Processo {cod_ajus} nao encontrado."
+        )
+    q = (
+        db.query(BaseProcessualSnapshot)
+        .filter(BaseProcessualSnapshot.processo_id == p.id)
+        .order_by(BaseProcessualSnapshot.captured_at.desc())
+    )
+    total = q.count()
+    items = q.limit(limit).offset(offset).all()
+    return BaseProcessualSnapshotListResponse(
+        total=total,
+        items=[BaseProcessualSnapshotOut.model_validate(s) for s in items],
+    )
+
+
+@router.get(
+    "/processos/{cod_ajus}/eventos",
+    response_model=BaseProcessualEventoListResponse,
+)
+def get_processo_eventos(
+    cod_ajus: str,
+    tipo_evento: Optional[str] = Query(None),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    user: LegalOneUser = Depends(require_admin),
+):
+    """Eventos do processo (cronologico desc, opcionalmente filtrado por tipo)."""
+    p = (
+        db.query(BaseProcessualProcesso)
+        .filter(BaseProcessualProcesso.cod_ajus == cod_ajus)
+        .first()
+    )
+    if p is None:
+        raise HTTPException(
+            status_code=404, detail=f"Processo {cod_ajus} nao encontrado."
+        )
+    q = (
+        db.query(BaseProcessualEvento)
+        .filter(BaseProcessualEvento.processo_id == p.id)
+        .order_by(BaseProcessualEvento.created_at.desc())
+    )
+    if tipo_evento:
+        q = q.filter(BaseProcessualEvento.tipo_evento == tipo_evento)
+    total = q.count()
+    items = q.limit(limit).offset(offset).all()
+    return BaseProcessualEventoListResponse(
+        total=total,
+        items=[BaseProcessualEventoOut.model_validate(e) for e in items],
+    )
+
+
+@router.patch("/processos/{cod_ajus}", response_model=BaseProcessualProcessoOut)
+def patch_processo(
+    cod_ajus: str,
+    payload: BaseProcessualProcessoPatch,
+    db: Session = Depends(get_db),
+    user: LegalOneUser = Depends(require_admin),
+):
+    """Override manual de campos editaveis. Gera snapshot + evento ATUALIZADO_MANUAL.
+
+    Cria uma linha 'OVERRIDE_MANUAL' em base_processual_upload pra satisfazer
+    a FK nao-nullable de snapshot/evento. Esse "upload virtual" carrega o
+    motivo do override no error_message (audit trail).
+    """
+    p = (
+        db.query(BaseProcessualProcesso)
+        .filter(BaseProcessualProcesso.cod_ajus == cod_ajus)
+        .first()
+    )
+    if p is None:
+        raise HTTPException(
+            status_code=404, detail=f"Processo {cod_ajus} nao encontrado."
+        )
+
+    changes = payload.model_dump(exclude_unset=True, exclude={"motivo"})
+    if not changes:
+        raise HTTPException(status_code=400, detail="Nenhum campo pra atualizar.")
+
+    def _serialize(v):
+        if v is None:
+            return None
+        if isinstance(v, (int, float, bool, str)):
+            return v
+        return str(v)
+
+    changed_fields: dict[str, dict] = {}
+    for k, v in changes.items():
+        old = getattr(p, k, None)
+        if old != v:
+            changed_fields[k] = {"de": _serialize(old), "para": _serialize(v)}
+
+    if not changed_fields:
+        return BaseProcessualProcessoOut.model_validate(p)
+
+    for k, v in changes.items():
+        setattr(p, k, v)
+    db.flush()
+
+    now_utc = datetime.utcnow()
+    override_upload = BaseProcessualUpload(
+        filename=f"override-manual-{cod_ajus}-{now_utc.isoformat()}",
+        file_sha256=None,
+        file_bytes=None,
+        total_rows_in_file=1,
+        status="OVERRIDE_MANUAL",
+        error_message=payload.motivo or None,
+        uploaded_by_user_id=user.id,
+        processed_at=now_utc,
+        committed_at=now_utc,
+    )
+    db.add(override_upload)
+    db.flush()
+
+    norm = _processo_to_norm(p)
+    snapshot = BaseProcessualSnapshot(
+        processo_id=p.id,
+        upload_id=override_upload.id,
+        cod_ajus=p.cod_ajus,
+        payload_normalized=_payload_normalized_json(norm),
+        payload_raw=None,
+        diff_hash=compute_diff_hash(norm),
+    )
+    db.add(snapshot)
+    db.flush()
+
+    prev_snapshot_id = p.current_snapshot_id
+    p.current_snapshot_id = snapshot.id
+
+    evento = BaseProcessualEvento(
+        upload_id=override_upload.id,
+        processo_id=p.id,
+        cod_ajus=p.cod_ajus,
+        tipo_evento=EVENTO_ATUALIZADO_MANUAL,
+        changed_fields=changed_fields,
+        snapshot_before_id=prev_snapshot_id,
+        snapshot_after_id=snapshot.id,
+    )
+    db.add(evento)
+    db.commit()
+    db.refresh(p)
+    return BaseProcessualProcessoOut.model_validate(p)
+
+
+# ============================================================================
+# Dashboard (Chunk 2 — mantido abaixo dos processos pra agrupar por tema)
+# ============================================================================
 
 
 @router.get(

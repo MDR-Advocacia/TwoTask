@@ -1221,7 +1221,7 @@ const AdminPage = () => {
                     <TabsTrigger value="users">Usuários & Permissões</TabsTrigger>
                     <TabsTrigger value="notices">Avisos</TabsTrigger>
                     <TabsTrigger value="feedback">Feedback</TabsTrigger>
-                    <TabsTrigger value="base-processual">Base Processual</TabsTrigger>
+                    <TabsTrigger value="base-processual">Base Banco Master</TabsTrigger>
                 </TabsList>
                 <TabsContent value="sync" className="space-y-6">
                     <SyncManager />

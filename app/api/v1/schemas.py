@@ -476,3 +476,238 @@ class BaseProcessualInatividadeOut(BaseModel):
     horas_desde_ultimo: Optional[float] = None
     alerta: bool = False
     threshold_horas: int = 24
+
+
+# --- Schemas Processos (Chunk 3) ---
+
+class BaseProcessualProcessoOut(BaseModel):
+    """Estado atual do processo na base. Linha de base_processual_processo."""
+    id: int
+    cod_ajus: str
+    numero_processo: Optional[str] = None
+    numero_processo_mascarado: Optional[str] = None
+    numero_interno: Optional[str] = None
+    numero_pasta: Optional[str] = None
+    acao_principal: Optional[str] = None
+    materia: Optional[str] = None
+    risco_prob_perda: Optional[str] = None
+    tipo_acao: Optional[str] = None
+    polo: Optional[str] = None
+    natureza: Optional[str] = None
+    numero_vara: Optional[str] = None
+    foro: Optional[str] = None
+    comarca: Optional[str] = None
+    uf: Optional[str] = None
+    empresa: str
+    grupo_responsavel: Optional[str] = None
+    usuario_responsavel: Optional[str] = None
+    escritorio_responsavel: Optional[str] = None
+    situacao_processo: str
+    justica_honorario: Optional[str] = None
+    valor_causa: Optional[float] = None
+    valor_prev_acordo: Optional[float] = None
+    valor_acordo: Optional[float] = None
+    valor_discutido: Optional[float] = None
+    valor_exito: Optional[float] = None
+    valor_condenacao: Optional[float] = None
+    valor_contingencia: Optional[float] = None
+    ult_andamento: Optional[str] = None
+    data_ult_andamento: Optional[datetime] = None
+    dias_ult_atualizacao: Optional[int] = None
+    distribuido_em: Optional[datetime] = None
+    processo_virtual: Optional[bool] = None
+    numero_contrato: Optional[str] = None
+    usuario_cadastro_acao: Optional[str] = None
+    data_cadastro_acao: Optional[datetime] = None
+    autores_json: Optional[List[Dict[str, Any]]] = None
+    reus_json: Optional[List[Dict[str, Any]]] = None
+    presenca_status: str
+    first_seen_upload_id: Optional[int] = None
+    last_seen_upload_id: Optional[int] = None
+    removed_at_upload_id: Optional[int] = None
+    current_snapshot_id: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BaseProcessualProcessoListResponse(BaseModel):
+    total: int
+    items: List[BaseProcessualProcessoOut]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BaseProcessualSnapshotOut(BaseModel):
+    """Snapshot historico de um processo num upload especifico."""
+    id: int
+    upload_id: int
+    cod_ajus: str
+    diff_hash: str
+    captured_at: datetime
+    payload_normalized: Dict[str, Any]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BaseProcessualSnapshotListResponse(BaseModel):
+    total: int
+    items: List[BaseProcessualSnapshotOut]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BaseProcessualProcessoPatch(BaseModel):
+    """Override manual de um processo. Apenas campos editaveis pelo operador.
+
+    Gera evento ATUALIZADO_MANUAL com changed_fields {campo: {de, para}}.
+    """
+    situacao_processo: Optional[str] = None
+    usuario_responsavel: Optional[str] = None
+    grupo_responsavel: Optional[str] = None
+    escritorio_responsavel: Optional[str] = None
+    polo: Optional[str] = None
+    materia: Optional[str] = None
+    risco_prob_perda: Optional[str] = None
+    # razao do override (audit) — nao aplicada como campo, fica no upload.error_message
+    motivo: Optional[str] = None
+
+
+# --- Schemas Bulk Update (Chunk 4) ---
+
+class BaseProcessualBulkUpdateFilters(BaseModel):
+    """Filtros usados pra selecionar quais processos receberao o bulk update.
+
+    Mesmos campos do GET /processos — UI envia o filtro corrente e o servidor
+    aplica nas mesmas condicoes pra evitar surpresa.
+    """
+    presenca_status: Optional[str] = None
+    cod_ajus_list: Optional[List[str]] = None
+    empresa: Optional[str] = None
+    uf: Optional[str] = None
+    comarca: Optional[str] = None
+    situacao_processo: Optional[str] = None
+    polo: Optional[str] = None
+    materia: Optional[str] = None
+    natureza: Optional[str] = None
+    tipo_acao: Optional[str] = None
+    risco_prob_perda: Optional[str] = None
+    usuario_responsavel: Optional[str] = None
+    grupo_responsavel: Optional[str] = None
+    escritorio_responsavel: Optional[str] = None
+    valor_causa_min: Optional[float] = None
+    valor_causa_max: Optional[float] = None
+    distribuido_de: Optional[datetime] = None
+    distribuido_ate: Optional[datetime] = None
+    search: Optional[str] = None
+
+
+class BaseProcessualBulkUpdateSet(BaseModel):
+    """Campos editaveis em bulk — mesmo subset do PATCH individual."""
+    situacao_processo: Optional[str] = None
+    usuario_responsavel: Optional[str] = None
+    grupo_responsavel: Optional[str] = None
+    escritorio_responsavel: Optional[str] = None
+    polo: Optional[str] = None
+    materia: Optional[str] = None
+    risco_prob_perda: Optional[str] = None
+
+
+class BaseProcessualBulkUpdatePayload(BaseModel):
+    """Body de POST /processos/bulk-update.
+
+    `confirm_count`: opcional, se enviado o servidor valida que o total
+    real ainda bate (protege contra race entre preview e commit).
+    """
+    filter: BaseProcessualBulkUpdateFilters
+    set: BaseProcessualBulkUpdateSet
+    motivo: Optional[str] = None
+    confirm_count: Optional[int] = None
+
+
+class BaseProcessualBulkUpdateResult(BaseModel):
+    """Resposta do bulk update."""
+    total_afetados: int
+    cods_afetados: List[str]
+    upload_id: int  # do upload virtual BULK_UPDATE (audit trail)
+    eventos_criados: int
+
+
+# --- Schemas Exports (Chunk 5) ---
+
+class BaseProcessualExportCreate(BaseModel):
+    """Body do POST /exports.
+
+    Templates aceitos (em template):
+    - movimentacao_semanal: params = {from_date?, to_date?} (default = last 7d)
+    - carteira_responsavel: params = {empresa?}
+    - sumicos_periodo: params = {from_date?, to_date?} (default = mes corrente)
+    - variacao_valores: params = {threshold_pct?, from_date?} (default 50%, todos)
+    - carteira_uf_comarca: params = {empresa?}
+    - snapshot_completo: params = {presenca_status?} (default ATIVO_NA_BASE)
+    """
+    template: str
+    params: Optional[Dict[str, Any]] = None
+
+
+class BaseProcessualExportOut(BaseModel):
+    id: int
+    template_name: str
+    params_json: Optional[Dict[str, Any]] = None
+    status: str
+    file_path: Optional[str] = None
+    file_bytes: Optional[int] = None
+    total_rows: Optional[int] = None
+    error_message: Optional[str] = None
+    requested_by_user_id: Optional[int] = None
+    requested_at: datetime
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BaseProcessualExportListResponse(BaseModel):
+    total: int
+    items: List[BaseProcessualExportOut]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# --- Schemas API Keys (Chunk 6) ---
+
+class BaseProcessualApiKeyOut(BaseModel):
+    """Chave de API — NUNCA inclui plaintext nem hash completo."""
+    id: int
+    nome: str
+    key_prefix: str
+    scope: str
+    rate_limit_per_min: int
+    last_used_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    created_by_user_id: Optional[int] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BaseProcessualApiKeyListResponse(BaseModel):
+    total: int
+    items: List[BaseProcessualApiKeyOut]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BaseProcessualApiKeyCreatePayload(BaseModel):
+    """Body do POST /admin/base-processual/api-keys."""
+    nome: str
+    scope: str  # read_processos | read_valores | read_dashboard | read_all
+    rate_limit_per_min: Optional[int] = 60
+
+
+class BaseProcessualApiKeyCreateResponse(BaseModel):
+    """Resposta de POST/Regenerate — plaintext mostrado UMA VEZ."""
+    api_key: BaseProcessualApiKeyOut
+    plaintext: str  # operador copia agora; nao tem recuperacao

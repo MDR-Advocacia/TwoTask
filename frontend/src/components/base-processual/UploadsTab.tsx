@@ -54,6 +54,7 @@ import {
   type BaseProcessualUploadOut,
   type BaseProcessualUploadResult,
   commitDryRun,
+  downloadFileWithAuth,
   downloadXlsxUrl,
   dryRunUpload,
   listUploads,
@@ -503,16 +504,19 @@ function UploadRow({ u }: { u: BaseProcessualUploadOut }) {
       </TableCell>
       <TableCell>
         {u.storage_path && (
-          <a
-            href={downloadXlsxUrl(u.id)}
-            target="_blank"
-            rel="noreferrer"
+          <Button
+            variant="ghost"
+            size="sm"
             title="Baixar XLSX original"
+            onClick={() => {
+              const filename = u.filename || `upload-${u.id}.xlsx`;
+              downloadFileWithAuth(downloadXlsxUrl(u.id), filename).catch(
+                (err) => toast.error("Falha no download", { description: err.message }),
+              );
+            }}
           >
-            <Button variant="ghost" size="sm">
-              <Download className="h-4 w-4" />
-            </Button>
-          </a>
+            <Download className="h-4 w-4" />
+          </Button>
         )}
       </TableCell>
     </TableRow>

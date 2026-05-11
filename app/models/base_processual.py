@@ -354,6 +354,72 @@ class BaseProcessualEvento(Base):
     )
 
 
+# Templates de export (Chunk 5)
+EXPORT_TPL_MOVIMENTACAO_SEMANAL = "movimentacao_semanal"
+EXPORT_TPL_CARTEIRA_RESPONSAVEL = "carteira_responsavel"
+EXPORT_TPL_SUMICOS_PERIODO = "sumicos_periodo"
+EXPORT_TPL_VARIACAO_VALORES = "variacao_valores"
+EXPORT_TPL_CARTEIRA_UF_COMARCA = "carteira_uf_comarca"
+EXPORT_TPL_SNAPSHOT_COMPLETO = "snapshot_completo"
+
+EXPORT_TEMPLATES = (
+    EXPORT_TPL_MOVIMENTACAO_SEMANAL,
+    EXPORT_TPL_CARTEIRA_RESPONSAVEL,
+    EXPORT_TPL_SUMICOS_PERIODO,
+    EXPORT_TPL_VARIACAO_VALORES,
+    EXPORT_TPL_CARTEIRA_UF_COMARCA,
+    EXPORT_TPL_SNAPSHOT_COMPLETO,
+)
+
+# Status do export
+EXPORT_STATUS_PENDENTE = "PENDENTE"
+EXPORT_STATUS_PROCESSANDO = "PROCESSANDO"
+EXPORT_STATUS_PRONTO = "PRONTO"
+EXPORT_STATUS_FALHOU = "FALHOU"
+
+
+class BaseProcessualExport(Base):
+    """Relatorio XLSX gerado a partir da base. 1 row por solicitacao.
+
+    Em v1 o processamento e' SINCRONO (rapido pra ate 6k processos).
+    Em v2 podemos jogar pra APScheduler com status=PROCESSANDO mid-flight.
+    """
+    __tablename__ = "base_processual_export"
+
+    id = Column(Integer, primary_key=True, index=True)
+    template_name = Column(String(64), nullable=False, index=True)
+    params_json = Column(JSON, nullable=True)
+    status = Column(
+        String(32),
+        nullable=False,
+        default=EXPORT_STATUS_PENDENTE,
+        server_default=EXPORT_STATUS_PENDENTE,
+        index=True,
+    )
+    file_path = Column(String(512), nullable=True)
+    file_bytes = Column(Integer, nullable=True)
+    total_rows = Column(Integer, nullable=True)
+    error_message = Column(Text, nullable=True)
+    requested_by_user_id = Column(
+        Integer,
+        ForeignKey("legal_one_users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    requested_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        index=True,
+    )
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+
+    requester = relationship(
+        "LegalOneUser", foreign_keys=[requested_by_user_id]
+    )
+
+
 class BaseProcessualApiKey(Base):
     __tablename__ = "base_processual_api_key"
 

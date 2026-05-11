@@ -37,6 +37,7 @@ from .user_feedback import UserFeedback
 from .base_processual import (
     BaseProcessualApiKey,
     BaseProcessualEvento,
+    BaseProcessualExport,
     BaseProcessualProcesso,
     BaseProcessualSnapshot,
     BaseProcessualUpload,

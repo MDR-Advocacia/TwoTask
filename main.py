@@ -12,6 +12,10 @@ from app.api.v1.endpoints import (
     ajus,
     automations,
     base_processual,
+    base_processual_api_keys,
+    base_processual_bulk,
+    base_processual_exports,
+    base_processual_public,
     capture_health,
     classifier,
     dashboard,
@@ -284,6 +288,17 @@ app.include_router(automations.router, prefix="/api/v1/automations", tags=["Auto
 # Base Processual: upload diario da Listagem de Acoes do L1 + dashboard
 # de movimentacao de carteira. JWT obrigatorio + guard interno admin-only.
 app.include_router(base_processual.router, prefix="/api/v1", dependencies=protected_dependencies)
+# Mesmo prefixo /admin/base-processual mas separado em arquivo proprio pra
+# evitar inchaco do base_processual.py (que ja' tem ~1k linhas). Inclui
+# /eventos (cross-upload) e /processos/bulk-update.
+app.include_router(base_processual_bulk.router, prefix="/api/v1", dependencies=protected_dependencies)
+# Exports XLSX (Chunk 5): 6 templates de relatorio + historico paginado.
+app.include_router(base_processual_exports.router, prefix="/api/v1", dependencies=protected_dependencies)
+# API keys admin CRUD (Chunk 6) — JWT obrigatorio + role admin via require_admin.
+app.include_router(base_processual_api_keys.router, prefix="/api/v1", dependencies=protected_dependencies)
+# API publica (Chunk 6) — SEM JWT. Auth via header X-Base-Processual-Key.
+# Cuidado: NAO adicionar protected_dependencies aqui — quebraria o uso externo.
+app.include_router(base_processual_public.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Autenticacao"])
 
 

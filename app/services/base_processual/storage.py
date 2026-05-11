@@ -54,3 +54,31 @@ def delete_xlsx(storage_path: Optional[str]) -> None:
         Path(storage_path).unlink(missing_ok=True)
     except OSError:
         pass
+
+
+# --- Exports (Chunk 5) ---
+
+_EXPORTS_DIR_DEFAULT = "/data/base-processual/exports"
+
+
+def get_exports_dir() -> Path:
+    base = os.environ.get("BASE_PROCESSUAL_EXPORTS_DIR", _EXPORTS_DIR_DEFAULT)
+    path = Path(base)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except (OSError, PermissionError):
+        fallback = Path.cwd() / "data" / "base-processual" / "exports"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+    return path
+
+
+def save_export_xlsx(export_id: int, content: bytes) -> str:
+    """Salva XLSX de export em disco. Naming determinista por export_id."""
+    target = get_exports_dir() / f"export-{export_id}.xlsx"
+    target.write_bytes(content)
+    return str(target)
+
+
+def read_export_xlsx(storage_path: str) -> bytes:
+    return Path(storage_path).read_bytes()
