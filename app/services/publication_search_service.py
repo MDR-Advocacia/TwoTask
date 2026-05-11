@@ -1114,7 +1114,38 @@ class PublicationSearchService:
                 continue
 
             matching_templates = []
+            # Importa repair aqui dentro pra evitar import cycle no topo
+            # do arquivo (taxonomy.py importa coisas pesadas).
+            from app.services.classifier.taxonomy import repair_classification
             for clf_info in _classification_infos(rec):
+                # Repair: cat/sub legados v1 viram v2 via _CATEGORY_ALIASES
+                # (ex.: "2 Grau - Civel" -> "Recursos e Julgamentos em 2 Grau"),
+                # case/acento normaliza, e sub invalida cai pra "Para Analise"
+                # da cat. Sem isso pubs classificadas antes do seed v2
+                # ficavam orfas de template (cat literal v1 nao bate com
+                # template v2). Passa polo_scope da pub e forca taxonomy_v2
+                # pra alinhar com taxonomy_active_version=v2.
+                raw_cat = clf_info.get("category") or ""
+                raw_sub = clf_info.get("subcategory") or "-"
+                try:
+                    repaired_cat, repaired_sub = repair_classification(
+                        raw_cat, raw_sub,
+                        polo_scope=getattr(rec, "polo", None),
+                        taxonomy_version="v2",
+                    )
+                except Exception:
+                    repaired_cat, repaired_sub = raw_cat, raw_sub
+                # Sub: aceita TANTO a raw quanto a repaired. Motivo: o
+                # repair forca a sub pra "Para Análise" quando a sub raw
+                # nao existe na taxonomia v2 (ex.: pub veio com sub
+                # "Manifestação Avulsa", v2 nao tem ela na cat alvo),
+                # MAS o operador pode ter cadastrado o template com
+                # exatamente "Manifestação Avulsa" como sub. Tentamos
+                # ambas + cat-only (sub NULL) como rede de seguranca.
+                sub_candidates: set[str] = set()
+                for s in (raw_sub, repaired_sub):
+                    if s and s not in ("-",):
+                        sub_candidates.add(s)
                 # Busca templates correspondentes:
                 #   - Se o registro tem escritório: busca templates do escritório OU templates globais (office IS NULL)
                 #   - Se o registro não tem escritório (sem processo): busca APENAS templates globais (office IS NULL)
@@ -1131,16 +1162,18 @@ class PublicationSearchService:
                 # re-apontar pra cat/sub da v2 via POST
                 # /task-templates/{id}/migrate. is_active=True ainda
                 # respeita desativacao manual feita pelo operador.
+                _sub_filter = (
+                    TaskTemplate.subcategory.in_(sub_candidates) | TaskTemplate.subcategory.is_(None)
+                    if sub_candidates
+                    else TaskTemplate.subcategory.is_(None)
+                )
                 templates = (
                     self.db.query(TaskTemplate)
                     .filter(TaskTemplate.is_active == True)
                     .filter(TaskTemplate.needs_taxonomy_review == False)
-                    .filter(TaskTemplate.category == clf_info["category"])
+                    .filter(TaskTemplate.category == repaired_cat)
                     .filter(office_filter)
-                    .filter(
-                        (TaskTemplate.subcategory == clf_info["subcategory"])
-                        | (TaskTemplate.subcategory.is_(None))
-                    )
+                    .filter(_sub_filter)
                     .order_by(TaskTemplate.subcategory.nullslast())
                     .all()
                 )
@@ -1158,48 +1191,48 @@ class PublicationSearchService:
                         # Quantos com cat que bate, sem outros filtros
                         n_cat_only = (
                             self.db.query(TaskTemplate)
-                            .filter(TaskTemplate.category == clf_info["category"])
+                            .filter(TaskTemplate.category == repaired_cat)
                             .count()
                         )
                         # Adiciona office_filter
                         n_with_office = (
                             self.db.query(TaskTemplate)
-                            .filter(TaskTemplate.category == clf_info["category"])
+                            .filter(TaskTemplate.category == repaired_cat)
                             .filter(office_filter)
                             .count()
                         )
                         # Adiciona subcategory match
                         n_with_sub = (
                             self.db.query(TaskTemplate)
-                            .filter(TaskTemplate.category == clf_info["category"])
+                            .filter(TaskTemplate.category == repaired_cat)
                             .filter(office_filter)
-                            .filter(
-                                (TaskTemplate.subcategory == clf_info["subcategory"])
-                                | (TaskTemplate.subcategory.is_(None))
-                            )
+                            .filter(_sub_filter)
                             .count()
                         )
                         # Adiciona is_active=True
                         n_active = (
                             self.db.query(TaskTemplate)
-                            .filter(TaskTemplate.category == clf_info["category"])
+                            .filter(TaskTemplate.category == repaired_cat)
                             .filter(office_filter)
-                            .filter(
-                                (TaskTemplate.subcategory == clf_info["subcategory"])
-                                | (TaskTemplate.subcategory.is_(None))
-                            )
+                            .filter(_sub_filter)
                             .filter(TaskTemplate.is_active == True)
                             .count()
                         )
+                        # Loga raw vs repaired pra diagnosticar quando cat
+                        # v1 nao tem alias e _find_category_by_normalized
+                        # nao acha nada — caso onde precisa adicionar alias
+                        # novo em _CATEGORY_ALIASES.
                         logger.warning(
-                            "match_template.miss rec=%s cat=%r sub=%r "
-                            "office=%s lawsuit=%s polo=%r | "
-                            "templates: cat-only=%d +office=%d +sub=%d "
-                            "+active=%d (final=0; filtro needs_review=False "
-                            "removeu %d)",
+                            "match_template.miss rec=%s raw_cat=%r raw_sub=%r "
+                            "-> repaired_cat=%r repaired_sub=%r office=%s "
+                            "lawsuit=%s polo=%r | templates: cat-only=%d "
+                            "+office=%d +sub=%d +active=%d (final=0; "
+                            "filtro needs_review=False removeu %d)",
                             rec.id,
-                            clf_info.get("category"),
-                            clf_info.get("subcategory"),
+                            raw_cat,
+                            raw_sub,
+                            repaired_cat,
+                            repaired_sub,
                             rec.linked_office_id,
                             rec.linked_lawsuit_id,
                             getattr(rec, "polo", None),
@@ -1207,7 +1240,7 @@ class PublicationSearchService:
                             n_with_office,
                             n_with_sub,
                             n_active,
-                            n_active,  # final=0 + sobreviventes ate active = quantos foram excluidos pelo needs_review
+                            n_active,
                         )
                     except Exception as exc:
                         logger.debug("match_template diagnostico falhou: %s", exc)

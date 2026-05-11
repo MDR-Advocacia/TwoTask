@@ -409,17 +409,61 @@ def _find_subcategory_by_normalized(
 
 
 _CATEGORY_ALIASES: dict[str, str] = {
-    "manifestacao": "Manifestação das Partes",
-    "manifestacao das partes": "Manifestação das Partes",
-    "recurso inominado contrarrazoes": "Recurso Inominado",
+    # Aliases v1 -> v2 (mapeamento empirico definido com operador em
+    # 2026-05-11 cobrindo 4598 pubs orfas no DB de producao). Pubs antigas
+    # (pre-seed v2) ficaram com cat v1 gravada e templates novos estao
+    # todos em v2. Sem esses aliases o matcher nao casa cat literal e o
+    # operador via "Sem template" em ~84% das publicacoes ja' classificadas.
+    # taxonomy_active_version=v2 hoje, entao redirecionar v1 -> v2 e' o
+    # comportamento desejado em todos os callers (matcher, repair pos-IA,
+    # edicao manual, migracao).
+    #
+    # Chave dos aliases tem que bater com a saida de `_normalize_label`
+    # (lowercase, sem acento, sem hifen, sem barra, '°' -> 'o').
+    # Conferido empiricamente: "2° Grau - Cível" -> "2o grau civel".
+    #
+    # Volume aprox. de pubs cobertas por cada alias (top->bottom):
+    "manifestacao das partes": "Manifestações, Prazos e Providências",       # 1258
+    "manifestacao": "Manifestações, Prazos e Providências",                  # variantes
+    "2o grau civel": "Recursos e Julgamentos em 2º Grau",                    # 996
+    "2 grau civel": "Recursos e Julgamentos em 2º Grau",
+    "sentenca": "Sentença e Extinção",                                       # 586
+    "para analise": "Para Análise",                                          # 514
+    "1o grau civel execucao": "Cumprimento de Sentença / Execução",          # 354
+    "1 grau civel execucao": "Cumprimento de Sentença / Execução",
+    "execucao": "Cumprimento de Sentença / Execução",                        # 7
+    "tutela": "Tutelas, Liminares e Medidas Urgentes",                       # 225
+    "audiencia agendada": "Audiências",                                      # 204
+    "provas": "Provas, Perícia e Saneamento",                                # 141
+    # 'Saneamento e Organizacao do Processo' vai pra 'Provas, Pericia e
+    # Saneamento' (decisao 2026-05-11): nome literal 'Saneamento' bate
+    # com a cat alvo, e juridicamente saneamento do processo e' fase
+    # pre-instrutoria de delimitacao de pontos controvertidos + decisao
+    # sobre provas — encaixa melhor que 'Manifestacoes'.
+    "saneamento e organizacao do processo": "Provas, Perícia e Saneamento", # 99
+    "complementar custas": "Custas, Alvarás, Mandados e Atos Cartorários",  # 79
+    "citacao": "Citação e Intimação Inicial",                                # 48
+    "arquivamento definitivo": "Trânsito em Julgado e Arquivamento",         # 30
+    "transito em julgado": "Trânsito em Julgado e Arquivamento",             # 22
+    # 'Embargos de Declaracao' e 'Recurso Inominado' vao pra cat principal
+    # de recursos (decisao 2026-05-11: 'recursal' = 'Recursos e Julgamentos
+    # em 2 Grau', que tem 54 templates ativos vs 1 da cat 'Recursos'
+    # generica). Subs vistas confirmam (Decisao Monocratica, Contrarrazoes
+    # = pos-julgamento em colegiado / turma recursal).
+    "embargos de declaracao": "Recursos e Julgamentos em 2º Grau",           # 22
+    "recurso inominado": "Recursos e Julgamentos em 2º Grau",                # 13
+    "recurso inominado contrarrazoes": "Recursos e Julgamentos em 2º Grau",  # variante
 }
 
 
 _PAIR_ALIASES: dict[tuple[str, str], tuple[str, str]] = {
+    # 'Recurso Inominado / Abertura de Prazo' (v1) -> Recursos em 2 Grau
+    # / Contrarrazoes (v2). A cat principal vai pelo _CATEGORY_ALIASES;
+    # a sub canonica em v2 e' 'Contrarrazões'.
     (
         "recurso inominado contrarrazoes",
         "abertura de prazo",
-    ): ("Recurso Inominado", "Contrarrazões"),
+    ): ("Recursos e Julgamentos em 2º Grau", "Contrarrazões"),
 }
 
 
@@ -588,13 +632,54 @@ def repair_classification(
             if sub in subs:
                 return parent, sub
 
+    # Fallback final pra cat valida + sub invalida.
+    #
+    # REGRA RIGIDA (alinhada com user em 2026-05-08):
+    #   - INVENTAR NAO EXISTE. Sub que nao bate com a lista da cat
+    #     NUNCA vira "qualquer sub razoavel". Vira sub "Para Análise"
+    #     da propria cat (se existir) ou cai pra cat residual global
+    #     "Para Análise" do polo.
+    #   - Sub residual e identificada por nome contendo "Para Análise"
+    #     (case-insensitive, com/sem acento). NAO usa "Não definido"
+    #     etc — sao subs especificas, nao residuais.
+    #   - Se a cat valida nao tem sub "Para Análise" interna E nao
+    #     existe cat residual na arvore, retorna o par original sem
+    #     consertar — vai falhar no validate, e o caller vira
+    #     "Para Análise" via outro caminho ou marca como erro pra
+    #     operador revisar. Nao mascaramos com sub aleatoria.
     if cat in tree:
         subs = tree[cat]
-        if subs and sub in ("-", "", "Para Análise", "Para análise"):
+        if not subs:
+            # Categoria-only (sem subs): sub correta e '-'.
+            return cat, "-"
+        # Sub invalida: tenta sub "Para Análise" interna da cat.
+        if sub not in subs:
             for s in subs:
-                if "Para Análise" in s or "Não definid" in s or "Não especificad" in s:
+                norm_s = _normalize_label(s)
+                if "para analise" in norm_s:
                     return cat, s
-            return cat, subs[-1]
+            # Cat nao tem "Para Análise" interna: cai pra cat residual
+            # global do polo (se existir).
+            for residual_cat, residual_subs in tree.items():
+                if "para analise" in _normalize_label(residual_cat):
+                    # Cat residual e' tipicamente sem subs (subs=[])
+                    return residual_cat, "-" if not residual_subs else residual_subs[0]
+            # Sem cat residual na arvore: retorna par original.
+            # Validate vai rejeitar, caller decide. NAO inventamos.
+            return cat, sub
+
+    # Fallback FINAL: cat invalida (nao bateu nem com aliases nem com
+    # busca normalizada) — cai em cat residual da arvore. Antes esse
+    # caso retornava par original que vinha da IA, virava
+    # "Classificacao invalida" e ficava sem proposta de tarefa. Decisao
+    # com user 2026-05-08: garantia de zero "Classificacao invalida"
+    # saindo do repair. Se a arvore nao tem cat residual ("Para Análise"
+    # / "Para Análise — Recuperação de Crédito" / "Para análise"),
+    # retorna par original como ultimo recurso (cenario raro: arvore
+    # sem catch-all configurado).
+    for residual_cat, residual_subs in tree.items():
+        if "para analise" in _normalize_label(residual_cat):
+            return residual_cat, "-" if not residual_subs else residual_subs[0]
 
     return cat, sub
 

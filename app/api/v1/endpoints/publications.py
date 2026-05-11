@@ -1611,33 +1611,62 @@ def get_classification_taxonomy(
     _=Depends(auth_security.get_current_user),
 ):
     """
-    Retorna a taxonomia de classificações.
-    Se office_external_id for informado, aplica os overrides do escritório.
+    Retorna a taxonomia de classificacoes ATIVA (respeita
+    `taxonomy_active_version`). Usada pelo filtro de Classificacao na
+    PublicationsPage.
+
+    Antes esse endpoint retornava `CLASSIFICATION_TREE` (constante v1
+    legada) — entao com `taxonomy_active_version=v2` o filtro mostrava
+    cats v1 ("2 Grau - Civel", "Sentenca"...) que nao casavam com cat
+    nenhuma das publicacoes ja classificadas pela IA em v2
+    ("Recursos e Julgamentos em 2 Grau", "Sentenca e Extincao"...).
+    Resultado: filtrar por classificacao retornava 0 publicacoes.
+
+    Com office_external_id, aplica overrides do escritorio (taxonomy v2).
     """
-    from app.services.classifier.taxonomy import CLASSIFICATION_TREE, build_taxonomy_text
+    from app.services.classifier.taxonomy import (
+        _get_active_tree, get_active_taxonomy_version,
+    )
     from app.services.classifier.prompts import load_office_overrides
 
+    # IMPORTANTE: passar `taxonomy_version=<versao_ativa>` explicitamente.
+    # Sem isso _get_active_tree() retorna v1+v2 misturado (comportamento
+    # default herdado pra compat com classificador antes da fase 11) — e
+    # o filtro de classificacao mostraria as duas arvores juntas, dobrando
+    # as opcoes e confundindo o operador. Com taxonomy_version explicito,
+    # so volta a arvore da versao vigente (v2 quando seedada).
+    active_v = get_active_taxonomy_version() or "v1"
+    tree_raw = _get_active_tree(
+        taxonomy_version=active_v,
+        office_external_id=office_external_id,
+    )
+    tree = {k: list(v) for k, v in tree_raw.items()}
+
     if office_external_id:
-        excluded, custom = load_office_overrides(db, office_external_id)
-        # Build custom tree for response
-        tree = {k: list(v) for k, v in CLASSIFICATION_TREE.items()}
-        if excluded:
-            cats_to_remove = set()
-            for cat, sub in excluded:
-                if sub is None:
-                    cats_to_remove.add(cat)
-                elif cat in tree and sub in tree[cat]:
-                    tree[cat].remove(sub)
-            for cat in cats_to_remove:
-                tree.pop(cat, None)
-        if custom:
-            for item in custom:
-                cat = item.get("category", "")
-                sub = item.get("subcategory")
-                if cat not in tree:
-                    tree[cat] = []
-                if sub and sub not in tree[cat]:
-                    tree[cat].append(sub)
+        try:
+            excluded, custom = load_office_overrides(db, office_external_id)
+            if excluded:
+                cats_to_remove = set()
+                for cat, sub in excluded:
+                    if sub is None:
+                        cats_to_remove.add(cat)
+                    elif cat in tree and sub in tree[cat]:
+                        tree[cat].remove(sub)
+                for cat in cats_to_remove:
+                    tree.pop(cat, None)
+            if custom:
+                for item in custom:
+                    cat = item.get("category", "")
+                    sub = item.get("subcategory")
+                    if not cat:
+                        continue
+                    if cat not in tree:
+                        tree[cat] = []
+                    if sub and sub not in tree[cat]:
+                        tree[cat].append(sub)
+        except Exception:
+            # Falha aplicando overrides nao deve quebrar o filtro.
+            pass
         return {"office_external_id": office_external_id, "taxonomy": tree}
 
-    return {"office_external_id": None, "taxonomy": CLASSIFICATION_TREE}
+    return {"office_external_id": None, "taxonomy": tree}
