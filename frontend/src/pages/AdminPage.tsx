@@ -33,7 +33,6 @@ import { UserFeedbackManager } from "@/components/UserFeedbackManager";
 // --- Tipos de Dados ---
 interface Sector { id: number; name: string; }
 interface Squad { id: number; name: string; }
-interface TaskTypeGroup { parent_id: number; parent_name: string; sub_types: { id: number; name: string; squad_ids: number[]; }[]; }
 interface AdminUser {
   id: number;
   name: string;
@@ -428,92 +427,6 @@ const SquadsManager = () => {
   );
 };
 
-
-// --- Componente: Renomear Grupos de Tipos de Tarefa ---
-// (versao reduzida apos sqd002 — a M2M Squad↔TaskType foi removida e
-// squads sao por escritorio agora. Sobra so' a renomeacao de grupos pais
-// custom — usada pra agrupar subtipos no UI sem mexer no catalogo do L1.)
-const TaskGroupsManager = () => {
-    const { toast } = useToast();
-    const [taskGroups, setTaskGroups] = useState<TaskTypeGroup[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
-    const [editingGroup, setEditingGroup] = useState<{ id: number; name: string } | null>(null);
-    const [newGroupName, setNewGroupName] = useState("");
-
-    const fetchInitialData = async () => {
-        setLoading(true);
-        setError(null);
-        try {
-            const tasksResponse = await apiFetch('/api/v1/admin/task-types');
-            if (!tasksResponse.ok) throw new Error('Falha ao carregar tipos de tarefa.');
-            setTaskGroups(await tasksResponse.json());
-        } catch (err: any) {
-            setError(err.message);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    useEffect(() => { fetchInitialData(); }, []);
-
-    const handleEditClick = (group: { parent_id: number; parent_name: string }) => {
-        setEditingGroup({ id: group.parent_id, name: group.parent_name });
-        setNewGroupName(group.parent_name);
-        setIsEditDialogOpen(true);
-    };
-
-    const handleRenameSave = async () => {
-        if (!editingGroup || !newGroupName.trim()) return;
-        try {
-            const res = await apiFetch(`/api/v1/admin/task-parent-groups/${editingGroup.id}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: newGroupName.trim() }),
-            });
-            if (!res.ok) throw new Error((await res.json()).detail || "Falha ao renomear.");
-            toast({ title: "Sucesso!", description: "Grupo renomeado." });
-            setIsEditDialogOpen(false);
-            fetchInitialData();
-        } catch (err: any) {
-            toast({ title: "Erro ao Renomear", description: err.message, variant: "destructive" });
-        }
-    };
-
-    if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin" /></div>;
-    if (error) return <Alert variant="destructive"><AlertCircle className="h-4 w-4 mr-2" /><AlertTitle>Erro</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>;
-
-    return (
-        <Card>
-            <CardHeader>
-                <CardTitle>Grupos de Tipos de Tarefa</CardTitle>
-                <CardDescription>
-                    Renomeie grupos pais de tipos de tarefa pra organizar a UI.
-                    A atribuição de tarefas a squads agora é por escritório (ver tab "Squads").
-                </CardDescription>
-            </CardHeader>
-            <CardContent>
-                <Accordion type="single" collapsible className="w-full">
-                    {taskGroups.map(group => (
-                        <AccordionItem value={`item-${group.parent_id}`} key={group.parent_id}>
-                            <AccordionTrigger>
-                                <span className="flex-grow text-left">{group.parent_name}</span>
-                                <Button variant="ghost" size="icon" className="ml-4 h-8 w-8" onClick={(e) => { e.stopPropagation(); handleEditClick(group); }}><Pencil className="h-4 w-4" /></Button>
-                            </AccordionTrigger>
-                            <AccordionContent>
-                                <div className="text-xs text-muted-foreground p-2">
-                                    Subtipos neste grupo: {group.sub_types.length}
-                                </div>
-                            </AccordionContent>
-                        </AccordionItem>
-                    ))}
-                </Accordion>
-            </CardContent>
-            <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}><DialogContent><DialogHeader><DialogTitle>Renomear Grupo</DialogTitle></DialogHeader><div className="py-4"><Label htmlFor="group-name">Novo nome para "{editingGroup?.name}"</Label><Input id="group-name" value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} className="mt-2" autoFocus /></div><DialogFooter><DialogClose asChild><Button type="button" variant="secondary">Cancelar</Button></DialogClose><Button type="button" onClick={handleRenameSave}>Salvar</Button></DialogFooter></DialogContent></Dialog>
-        </Card>
-    );
-};
 
 // --- Tipos do cache-status ---
 interface OfficeIndexStatus {
@@ -1215,7 +1128,6 @@ const AdminPage = () => {
             <Tabs defaultValue="sync" className="w-full">
                 <TabsList>
                     <TabsTrigger value="sync">Sincronização</TabsTrigger>
-                    <TabsTrigger value="tasks">Tipos de Tarefa</TabsTrigger>
                     <TabsTrigger value="squads">Squads</TabsTrigger>
                     <TabsTrigger value="taxonomy">Taxonomia</TabsTrigger>
                     <TabsTrigger value="users">Usuários & Permissões</TabsTrigger>
@@ -1225,9 +1137,6 @@ const AdminPage = () => {
                 </TabsList>
                 <TabsContent value="sync" className="space-y-6">
                     <SyncManager />
-                </TabsContent>
-                <TabsContent value="tasks" className="space-y-6">
-                    <TaskGroupsManager />
                 </TabsContent>
                 <TabsContent value="squads" className="space-y-6">
                     <SquadsManager />
