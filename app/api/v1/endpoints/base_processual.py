@@ -340,18 +340,29 @@ def dashboard_resumo(
         or 0
     )
 
-    # eventos do dia, agrupados por tipo
-    eventos_hoje_rows = (
-        db.query(BaseProcessualEvento.tipo_evento, sa_func.count())
-        .filter(BaseProcessualEvento.created_at >= today_start)
-        .filter(BaseProcessualEvento.created_at < tomorrow_start)
-        .group_by(BaseProcessualEvento.tipo_evento)
-        .all()
-    )
-    counts_by_tipo = {row[0]: int(row[1]) for row in eventos_hoje_rows}
-    novos_hoje = counts_by_tipo.get(EVENTO_ENTROU, 0)
-    saidos_hoje = counts_by_tipo.get(EVENTO_SAIU, 0)
-    atualizados_hoje = counts_by_tipo.get(EVENTO_ATUALIZADO, 0)
+    # Eventos do dia — NET (estado liquido), nao a soma bruta de eventos.
+    # Filtra por presenca atual + DISTINCT pra evitar contar 2x o mesmo processo
+    # quando ele teve multiplos ENTROU/SAIU no dia (ex.: ressurgimento).
+    def _distinct_processos_com_evento_hoje(tipo: str, presenca: Optional[str]) -> int:
+        q = (
+            db.query(sa_func.count(sa_func.distinct(BaseProcessualEvento.processo_id)))
+            .select_from(BaseProcessualEvento)
+            .join(
+                BaseProcessualProcesso,
+                BaseProcessualEvento.processo_id == BaseProcessualProcesso.id,
+            )
+            .filter(BaseProcessualEvento.created_at >= today_start)
+            .filter(BaseProcessualEvento.created_at < tomorrow_start)
+            .filter(BaseProcessualEvento.tipo_evento == tipo)
+        )
+        if presenca is not None:
+            q = q.filter(BaseProcessualProcesso.presenca_status == presenca)
+        return int(q.scalar() or 0)
+
+    novos_hoje = _distinct_processos_com_evento_hoje(EVENTO_ENTROU, PRESENCA_ATIVO)
+    saidos_hoje = _distinct_processos_com_evento_hoje(EVENTO_SAIU, PRESENCA_REMOVIDO)
+    # ATUALIZADO nao tem estado "reverso" — conta todos os distintos
+    atualizados_hoje = _distinct_processos_com_evento_hoje(EVENTO_ATUALIZADO, None)
 
     # ultimo upload (qualquer status — pra UI mostrar inclusive os FALHOU recentes)
     ultimo_upload = (
@@ -493,18 +504,54 @@ def dashboard_movimentacao_do_dia(
 
     base_q = (
         db.query(BaseProcessualEvento)
+        .join(
+            BaseProcessualProcesso,
+            BaseProcessualEvento.processo_id == BaseProcessualProcesso.id,
+        )
         .filter(BaseProcessualEvento.created_at >= day_start)
         .filter(BaseProcessualEvento.created_at < day_end)
     )
 
+    # Filtros por estado liquido + dedup por processo (mantem o evento mais recente).
+    # Evita ENTROU+SAIU+ENTROU do mesmo cod_ajus virarem 3 linhas confusas no UI.
+    _presenca_por_tipo = {
+        EVENTO_ENTROU: PRESENCA_ATIVO,
+        EVENTO_SAIU: PRESENCA_REMOVIDO,
+    }
+
     def _items_for(tipo: str) -> tuple[int, list[BaseProcessualMovimentacaoItem]]:
         q = base_q.filter(BaseProcessualEvento.tipo_evento == tipo)
-        total = q.count()
-        rows = (
-            q.order_by(BaseProcessualEvento.id.desc())
-            .limit(limit)
+        presenca_filter = _presenca_por_tipo.get(tipo)
+        if presenca_filter is not None:
+            q = q.filter(BaseProcessualProcesso.presenca_status == presenca_filter)
+        total = (
+            db.query(sa_func.count(sa_func.distinct(BaseProcessualEvento.processo_id)))
+            .select_from(BaseProcessualEvento)
+            .join(
+                BaseProcessualProcesso,
+                BaseProcessualEvento.processo_id == BaseProcessualProcesso.id,
+            )
+            .filter(BaseProcessualEvento.created_at >= day_start)
+            .filter(BaseProcessualEvento.created_at < day_end)
+            .filter(BaseProcessualEvento.tipo_evento == tipo)
+        )
+        if presenca_filter is not None:
+            total = total.filter(
+                BaseProcessualProcesso.presenca_status == presenca_filter
+            )
+        total = int(total.scalar() or 0)
+        # Pra lista: pega o evento MAIS RECENTE por processo (DISTINCT ON processo_id).
+        # PG-only mas estamos em PG. Em SQLite degrada pro evento mais antigo — OK pra dev.
+        rows_raw = (
+            q.order_by(
+                BaseProcessualEvento.processo_id,
+                BaseProcessualEvento.id.desc(),
+            )
+            .distinct(BaseProcessualEvento.processo_id)
             .all()
         )
+        # ordena por id desc na ponta pra UI ver os recentes primeiro
+        rows = sorted(rows_raw, key=lambda e: e.id, reverse=True)[:limit]
         out: list[BaseProcessualMovimentacaoItem] = []
         # pre-carrega processos pra evitar N+1
         proc_ids = [e.processo_id for e in rows]
