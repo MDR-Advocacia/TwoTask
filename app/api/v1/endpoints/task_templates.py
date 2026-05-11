@@ -477,7 +477,15 @@ def get_template(template_id: int, db: Session = Depends(get_db)):
 
 @router.post("/", response_model=TaskTemplateResponse, status_code=201)
 def create_template(payload: TaskTemplateCreate, db: Session = Depends(get_db)):
-    """Cria um novo template de tarefa."""
+    """Cria um novo template de tarefa.
+
+    Quando ja existe um template *inativo* com a mesma chave
+    (category+subcategory+office+task_subtype), reativa-o e sobrescreve
+    com o payload novo — em vez de bloquear o operador com 409. Motivo:
+    a remocao via UI e soft-delete (PUT is_active=False) e o endpoint
+    /coverage so mostra ativos. Sem essa reativacao o operador via UI
+    vazia mas recebia "ja existe um template" ao tentar criar de novo,
+    sem conseguir achar o "fantasma" pra reativar."""
     _validate_foreign_keys(
         db,
         payload.office_external_id,
@@ -496,7 +504,7 @@ def create_template(payload: TaskTemplateCreate, db: Session = Depends(get_db)):
         TaskTemplate.office_external_id == payload.office_external_id,
         TaskTemplate.task_subtype_external_id == payload.task_subtype_external_id,
     ).first()
-    if existing:
+    if existing and existing.is_active:
         raise HTTPException(
             status_code=409,
             detail=(
@@ -505,6 +513,23 @@ def create_template(payload: TaskTemplateCreate, db: Session = Depends(get_db)):
                 "classificação, escolha um subtipo de tarefa diferente."
             ),
         )
+
+    if existing and not existing.is_active:
+        # Template foi soft-deleted via "remover" — reativa e sobrescreve
+        # com o payload novo. Visto do operador, isso e' a criacao normal:
+        # ele nao tinha visibilidade pra saber que existia um registro
+        # inativo travando a chave.
+        for k, v in payload.dict().items():
+            setattr(existing, k, v)
+        existing.is_active = True
+        # Tira o template de "pendente revisao": o operador acabou de
+        # reescolher cat/sub pela UI nova (v2), entao a flag legacy nao
+        # se aplica mais.
+        existing.needs_taxonomy_review = False
+        db.commit()
+        db.refresh(existing)
+        _invalidate_taxonomy_cache_safe(existing.office_external_id)
+        return _to_response(existing)
 
     tmpl = TaskTemplate(**payload.dict())
     db.add(tmpl)
