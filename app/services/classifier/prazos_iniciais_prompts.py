@@ -218,6 +218,19 @@ Mesma regra para a íntegra: contestação, habilitação e procuração são SE
 **Errado**: marcar `suspeita_devolucao=true` porque o advogado X habilitou antes do corte MDR, sem checar que X representa o Banco Will (não o Master). Esse foi o erro que motivou esta regra.
 **Certo**: ignorar advogados de outros co-réus. A regra do corte 18/03/2026 só roda contra advogados do bloco da vinculada Master.
 
+### Exemplo NEGATIVO concreto (NÃO marcar suspeita)
+
+Capa com polo passivo múltiplo: BANCO SANTANDER, NU FINANCEIRA, BANCO DAYCOVAL, BANCO SAFRA, BANCO DO BRASIL, **BANCO MASTER S/A (vinculada)**. Único advogado habilitado da defesa: ROBERTA DA CAMARA LIMA CAVALCANTI — OAB PE28467, contestação juntada em 17/04/2026. A contestação dela abre com *"vem, BANCO DAYCOVAL S/A, por sua advogada infra-assinada, apresentar contestação…"* — ou seja, a Roberta representa o **Daycoval**, NÃO o Master. **Resposta correta**: `decisao=MDR_ADVOCACIA`, `suspeita_devolucao=false`, `outro_advogado_nome=null`, e `fundamentacao` explicitando: *"Roberta da Camara Lima Cavalcanti representa o BANCO DAYCOVAL S/A (vide cabeçalho da contestação de 17/04/2026), não a vinculada Master — desconsiderada. Nenhum advogado externo habilitado pela vinculada Master."* **Resposta errada (o que estamos tentando evitar)**: atribuir a Roberta ao Banco Master só porque o nome dela aparece na capa/timeline + Master está no polo passivo.
+
+### ⚠️ CHECKPOINT OBRIGATÓRIO antes de marcar `OUTRO_ESCRITORIO` ou `suspeita_devolucao=true` por advogado externo
+
+ANTES de setar `outro_advogado_nome` + `suspeita_devolucao=true`, você DEVE conseguir citar no `motivo_suspeita` UMA das duas evidências abaixo (com o trecho literal entre aspas, curto, da íntegra ou da capa):
+
+1. **Frase explícita da contestação/habilitação** assinada pelo advogado externo onde ele se identifica como representante da vinculada Master — exemplos típicos: *"vem, respeitosamente, BANCO MASTER S/A, por seu advogado abaixo assinado…"*, *"habilita-se nos autos como patrono do réu BANCO MASTER S/A…"*, *"em nome do BANCO MASTER S/A…"*; OU
+2. **Bloco estruturado da capa** (`polo_passivo[i]`) onde o `documento`/CNPJ casa com uma vinculada Master da user message E o nome do advogado está na sub-lista `advogados` daquela parte específica.
+
+Se você NÃO consegue citar nenhuma dessas duas evidências, **NÃO marque** `suspeita_devolucao=true` e **NÃO preencha** `outro_advogado_*`. Default seguro: `decisao=MDR_ADVOCACIA`, `suspeita_devolucao=false`, e `fundamentacao` explicando que o advogado X foi visto na íntegra mas não foi possível confirmar vínculo com a vinculada Master (cite a parte que ele de fato representa, se identificável).
+
 Em caso de dúvida sobre o vínculo (capa truncada, petição sem qualificação clara, advogado listado fora dos blocos por parte), reduza `confianca` e descreva a dúvida em `polo_passivo_observacao` ou `motivo_suspeita`.
 
 ## `natureza_acao` — sempre preencher quando aplicavel=true
@@ -271,6 +284,8 @@ Quando `decisao=OUTRO_ESCRITORIO` ou `suspeita_devolucao=true` por contestação
 ## `motivo_suspeita`
 
 Obrigatório quando `suspeita_devolucao=true`. Cite a evidência concreta em 1-2 frases: data da habilitação, nome do advogado **+ a parte que ele representa** (ex.: "habilitado pelo BANCO MASTER S.A. em 24/02/2026 — anterior ao corte 18/03/2026"), ou natureza fora de consumerista. Se o advogado representar OUTRO réu (não a vinculada Master), NÃO marque `suspeita_devolucao=true`.
+
+Quando a flag for por advogado externo (não por natureza), inclua **entre aspas** o trecho curto da íntegra/capa que prova o vínculo com a vinculada Master (vide CHECKPOINT OBRIGATÓRIO acima). Sem esse trecho citável, downgrade para `MDR_ADVOCACIA` + `suspeita_devolucao=false`.
 
 ## `fundamentacao`
 
