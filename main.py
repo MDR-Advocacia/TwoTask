@@ -19,6 +19,7 @@ from app.api.v1.endpoints import (
     base_processual_public,
     capture_health,
     classifier,
+    classificador,
     dashboard,
     offices,
     prazos_iniciais,
@@ -199,6 +200,18 @@ async def lifespan(_: FastAPI):
             "Falha ao registrar dispatch_worker de prazos iniciais no startup."
         )
 
+    # Worker periodico do Classificador — polling de batches Anthropic.
+    try:
+        from app.services.classificador.poll_worker import (
+            register_classificador_poll_job,
+        )
+
+        register_classificador_poll_job(scheduler)
+    except Exception:
+        logger.exception(
+            "Falha ao registrar worker do Classificador no startup."
+        )
+
     # Cron diário de cleanup dos PDFs da habilitação (Onda 3).
     # Pega resíduos: intakes já uplodados pro GED mas com pdf_path != None,
     # e também arquivos antigos (retenção) de intakes que travaram fora
@@ -267,6 +280,9 @@ app.include_router(tasks.batch_router, prefix="/api/v1/tasks")
 app.include_router(users.router, prefix="/api/v1/users", tags=["Users"], dependencies=protected_dependencies)
 app.include_router(offices.router, prefix="/api/v1", tags=["Offices"], dependencies=protected_dependencies)
 app.include_router(classifier.router, prefix="/api/v1/classifier", tags=["Classificador"], dependencies=protected_dependencies)
+# Classificador (diagnostico de carteira) — modulo paralelo a Prazos Iniciais.
+# Ver memory project_classificador.md. Fase 1 = esqueleto com endpoints stub.
+app.include_router(classificador.router, prefix="/api/v1", tags=["Classificador - Diagnostico"], dependencies=protected_dependencies)
 app.include_router(publications.router, prefix="/api/v1/publications", tags=["Publicações"], dependencies=protected_dependencies)
 app.include_router(publication_treatment.router, prefix="/api/v1/publications", tags=["Publicações"], dependencies=protected_dependencies)
 # Intake externo: autenticado por API key (header X-Intake-Api-Key), SEM JWT.

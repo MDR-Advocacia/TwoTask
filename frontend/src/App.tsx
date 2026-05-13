@@ -32,6 +32,7 @@ import PrazosIniciaisTreatmentPageOperator from './pages/PrazosIniciaisTreatment
 import PrazosIniciaisTemplatesAdminPage from './pages/PrazosIniciaisTemplatesAdminPage';
 import PatrocinioRelatorioPage from './pages/PatrocinioRelatorioPage';
 import AjusPage from './pages/AjusPage';
+import ClassificadorPage from './pages/ClassificadorPage';
 
 // Contexto de Autenticação
 import { AuthProvider, AuthContext } from './contexts/AuthContext';
@@ -90,6 +91,7 @@ function AppContent() {
               element={<PatrocinioRelatorioPage />}
             />
             <Route path="/ajus" element={<AjusPage />} />
+            <Route path="/classificador" element={<ClassificadorPage />} />
           </Route>
 
           {/* Rota para página não encontrada */}

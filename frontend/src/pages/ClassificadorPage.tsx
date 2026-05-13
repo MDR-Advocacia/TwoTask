@@ -1,0 +1,792 @@
+// frontend/src/pages/ClassificadorPage.tsx
+//
+// Pagina do modulo Classificador (diagnostico de carteira).
+//
+// Fase 2 (corrente):
+// - Aba "Novo lote": 2 dialogs reais (upload xlsx + import de Prazos Iniciais).
+// - Aba "Historico": tabela paginada de lotes criados, com badges de status.
+// - Aba "Painel": placeholder (Fase 4 — graficos com recharts).
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Loader2, FileUp, Workflow, BarChart3, ScanSearch, Trash2, AlertCircle, FilePlus2, Sparkles, Eye } from "lucide-react";
+import { useToast } from "@/components/ui/use-toast";
+import {
+  ClassificadorLoteSummary,
+  ClassificadorFromPiPreview,
+  classifyClassificadorLote,
+  createClassificadorLoteFromPi,
+  createClassificadorLoteUpload,
+  deleteClassificadorLote,
+  fetchClassificadorLotes,
+  previewClassificadorFromPi,
+} from "@/services/api";
+import UploadPdfDialog from "@/components/classificador/UploadPdfDialog";
+import LoteDetailDialog from "@/components/classificador/LoteDetailDialog";
+
+
+// ─── Helpers ──────────────────────────────────────────────────────────
+
+const STATUS_BADGE: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
+  RASCUNHO: { label: "Rascunho", variant: "secondary" },
+  CAPTURANDO_L1: { label: "Capturando L1", variant: "default" },
+  PRONTO_PARA_CLASSIFICAR: { label: "Pronto", variant: "default" },
+  CLASSIFICANDO: { label: "Classificando", variant: "default" },
+  CLASSIFICADO: { label: "Classificado", variant: "default" },
+  ERRO: { label: "Erro", variant: "destructive" },
+  CANCELADO: { label: "Cancelado", variant: "outline" },
+};
+
+function fmtBRL(value: number | null | undefined): string {
+  if (value == null) return "—";
+  return value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+function fmtDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+  } catch {
+    return iso;
+  }
+}
+
+
+// ─── Componente principal ────────────────────────────────────────────
+
+export default function ClassificadorPage() {
+  const [tab, setTab] = useState<string>("novo");
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const refreshHistorico = useCallback(() => setReloadKey(k => k + 1), []);
+
+  const handleLoteCriado = useCallback((lote: ClassificadorLoteSummary) => {
+    refreshHistorico();
+    setTab("historico");
+  }, [refreshHistorico]);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1">
+        <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
+          <ScanSearch className="h-6 w-6 text-primary" />
+          Classificador
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          Diagnostico de carteira processual — captura, classifica e gera
+          relatorio executivo pra cliente. Reaproveita intakes ja tratados em
+          Prazos Iniciais ou aceita carteiras avulsas via xlsx.
+        </p>
+      </div>
+
+      <Tabs value={tab} onValueChange={setTab} className="w-full">
+        <TabsList>
+          <TabsTrigger value="novo" className="gap-2">
+            <FileUp className="h-4 w-4" />
+            Novo lote
+          </TabsTrigger>
+          <TabsTrigger value="historico" className="gap-2">
+            <Workflow className="h-4 w-4" />
+            Historico
+          </TabsTrigger>
+          <TabsTrigger value="painel" className="gap-2">
+            <BarChart3 className="h-4 w-4" />
+            Painel
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="novo" className="mt-4">
+          <div className="grid gap-4 md:grid-cols-2">
+            <UploadXlsxCard onCreated={handleLoteCriado} />
+            <ImportFromPiCard onCreated={handleLoteCriado} />
+          </div>
+
+          <Card className="mt-4">
+            <CardHeader>
+              <CardTitle className="text-base">Fluxo do diagnostico</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ol className="list-decimal pl-5 space-y-1 text-sm text-muted-foreground">
+                <li>Capturar carteira (upload xlsx ou import de Prazos Iniciais).</li>
+                <li>Refresh L1 — capa atualizada de cada processo (Fase 2c).</li>
+                <li>Classificacao Anthropic — categoria/sub + PCOND + prob. exito (Fase 3).</li>
+                <li>Relatorio — xlsx multi-aba + PDF executivo + painel (Fase 4).</li>
+              </ol>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="historico" className="mt-4">
+          <LotesHistoricoTable reloadKey={reloadKey} onChanged={refreshHistorico} />
+        </TabsContent>
+
+        <TabsContent value="painel" className="mt-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Painel agregado</CardTitle>
+              <CardDescription>
+                Visao consolidada de todas as carteiras classificadas. Disponivel
+                na Fase 4 (graficos com recharts).
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="py-12 text-center text-sm text-muted-foreground">
+                Em construcao — Fase 4.
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+
+// ─── Card: Upload xlsx ────────────────────────────────────────────────
+
+function UploadXlsxCard({ onCreated }: { onCreated: (lote: ClassificadorLoteSummary) => void }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [nome, setNome] = useState("");
+  const [clienteNome, setClienteNome] = useState("");
+  const [descricao, setDescricao] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [warnings, setWarnings] = useState<string[]>([]);
+
+  const canSubmit = nome.trim().length > 0 && file != null && !submitting;
+
+  const handleSubmit = async () => {
+    if (!canSubmit || !file) return;
+    setSubmitting(true);
+    setWarnings([]);
+    try {
+      const result = await createClassificadorLoteUpload({
+        nome: nome.trim(),
+        cliente_nome: clienteNome.trim() || undefined,
+        descricao: descricao.trim() || undefined,
+        file,
+      });
+      toast({
+        title: "Lote criado",
+        description: `Lote #${result.lote.id} com ${result.lote.total_processos} processos.`,
+      });
+      if (result.warnings && result.warnings.length > 0) {
+        setWarnings(result.warnings);
+        // mantem dialog aberto pra operador ver os avisos
+      } else {
+        setOpen(false);
+        setNome("");
+        setClienteNome("");
+        setDescricao("");
+        setFile(null);
+      }
+      onCreated(result.lote);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast({ title: "Falha no upload", description: msg, variant: "destructive" });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-lg flex items-center gap-2">
+          <FileUp className="h-5 w-5" />
+          Upload de planilha
+        </CardTitle>
+        <CardDescription>
+          Sobe uma planilha .xlsx com coluna <strong>CNJ</strong> (uma linha
+          por processo). Os outros dados sao buscados na Legal One depois.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogTrigger asChild>
+            <Button className="w-full">Criar lote por upload xlsx</Button>
+          </DialogTrigger>
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Novo lote — upload de planilha</DialogTitle>
+              <DialogDescription>
+                Sobe um arquivo .xlsx com coluna CNJ. Maximo 30MB. Linhas
+                vazias e duplicatas sao ignoradas automaticamente.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="grid gap-3 py-2">
+              <div className="grid gap-1">
+                <Label htmlFor="up-nome">Nome do lote *</Label>
+                <Input
+                  id="up-nome"
+                  value={nome}
+                  onChange={e => setNome(e.target.value)}
+                  placeholder="Ex.: Diagnostico Banco Master Q2/2026"
+                  maxLength={255}
+                />
+              </div>
+              <div className="grid gap-1">
+                <Label htmlFor="up-cliente">Cliente final (opcional)</Label>
+                <Input
+                  id="up-cliente"
+                  value={clienteNome}
+                  onChange={e => setClienteNome(e.target.value)}
+                  placeholder="Ex.: Banco Master"
+                  maxLength={255}
+                />
+              </div>
+              <div className="grid gap-1">
+                <Label htmlFor="up-desc">Descricao (opcional)</Label>
+                <Textarea
+                  id="up-desc"
+                  value={descricao}
+                  onChange={e => setDescricao(e.target.value)}
+                  rows={2}
+                />
+              </div>
+              <div className="grid gap-1">
+                <Label htmlFor="up-file">Arquivo .xlsx *</Label>
+                <Input
+                  id="up-file"
+                  type="file"
+                  accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  onChange={e => setFile(e.target.files?.[0] || null)}
+                />
+                {file && (
+                  <p className="text-xs text-muted-foreground">
+                    {file.name} — {(file.size / 1024).toFixed(1)} KB
+                  </p>
+                )}
+              </div>
+
+              {warnings.length > 0 && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs space-y-1">
+                  <div className="flex items-center gap-1 font-medium text-amber-900">
+                    <AlertCircle className="h-3.5 w-3.5" />
+                    Avisos do parser ({warnings.length})
+                  </div>
+                  <ul className="list-disc pl-4 max-h-32 overflow-auto text-amber-800">
+                    {warnings.map((w, i) => (
+                      <li key={i}>{w}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setOpen(false)} disabled={submitting}>
+                Cancelar
+              </Button>
+              <Button onClick={handleSubmit} disabled={!canSubmit}>
+                {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Criar lote
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </CardContent>
+    </Card>
+  );
+}
+
+
+// ─── Card: Import de Prazos Iniciais ─────────────────────────────────
+
+function ImportFromPiCard({ onCreated }: { onCreated: (lote: ClassificadorLoteSummary) => void }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [nome, setNome] = useState("");
+  const [clienteNome, setClienteNome] = useState("");
+  const [descricao, setDescricao] = useState("");
+  const [dataInicio, setDataInicio] = useState("");
+  const [dataFim, setDataFim] = useState("");
+  const [preview, setPreview] = useState<ClassificadorFromPiPreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const filtros = useMemo(() => ({
+    data_inicio: dataInicio || null,
+    data_fim: dataFim || null,
+  }), [dataInicio, dataFim]);
+
+  // Auto-preview quando filtros mudam (debounced)
+  useEffect(() => {
+    if (!open) return;
+    const timer = setTimeout(async () => {
+      setPreviewLoading(true);
+      try {
+        const p = await previewClassificadorFromPi(filtros);
+        setPreview(p);
+      } catch {
+        setPreview(null);
+      } finally {
+        setPreviewLoading(false);
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [filtros, open]);
+
+  const canSubmit =
+    nome.trim().length > 0 && preview != null && preview.count > 0 && !submitting;
+
+  const handleSubmit = async () => {
+    if (!canSubmit) return;
+    setSubmitting(true);
+    try {
+      const result = await createClassificadorLoteFromPi({
+        nome: nome.trim(),
+        cliente_nome: clienteNome.trim() || undefined,
+        descricao: descricao.trim() || undefined,
+        filtros,
+      });
+      toast({
+        title: "Lote criado",
+        description: `Lote #${result.lote.id} com ${result.lote.total_processos} processos espelhados de Prazos Iniciais.`,
+      });
+      setOpen(false);
+      setNome("");
+      setClienteNome("");
+      setDescricao("");
+      setDataInicio("");
+      setDataFim("");
+      setPreview(null);
+      onCreated(result.lote);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast({ title: "Falha ao criar lote", description: msg, variant: "destructive" });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-lg flex items-center gap-2">
+          <Workflow className="h-5 w-5" />
+          Import de Prazos Iniciais
+        </CardTitle>
+        <CardDescription>
+          Cria um lote a partir dos intakes ja tratados em Prazos Iniciais.
+          Os dados serao refrescados na Legal One antes do snapshot (Fase 2c).
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogTrigger asChild>
+            <Button variant="outline" className="w-full">
+              Criar lote a partir de Prazos Iniciais
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Novo lote — import de Prazos Iniciais</DialogTitle>
+              <DialogDescription>
+                Filtra os intakes ja tratados (status CLASSIFICADO/EM_REVISAO/
+                AGENDADO/CONCLUIDO) e espelha como lote do Classificador.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="grid gap-3 py-2">
+              <div className="grid gap-1">
+                <Label htmlFor="pi-nome">Nome do lote *</Label>
+                <Input
+                  id="pi-nome"
+                  value={nome}
+                  onChange={e => setNome(e.target.value)}
+                  placeholder="Ex.: Carteira Q2/2026"
+                  maxLength={255}
+                />
+              </div>
+              <div className="grid gap-1">
+                <Label htmlFor="pi-cliente">Cliente final (opcional)</Label>
+                <Input
+                  id="pi-cliente"
+                  value={clienteNome}
+                  onChange={e => setClienteNome(e.target.value)}
+                  placeholder="Ex.: Banco Master"
+                  maxLength={255}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="grid gap-1">
+                  <Label htmlFor="pi-di">Data inicio</Label>
+                  <Input
+                    id="pi-di"
+                    type="date"
+                    value={dataInicio}
+                    onChange={e => setDataInicio(e.target.value)}
+                  />
+                </div>
+                <div className="grid gap-1">
+                  <Label htmlFor="pi-df">Data fim</Label>
+                  <Input
+                    id="pi-df"
+                    type="date"
+                    value={dataFim}
+                    onChange={e => setDataFim(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="grid gap-1">
+                <Label htmlFor="pi-desc">Descricao (opcional)</Label>
+                <Textarea
+                  id="pi-desc"
+                  value={descricao}
+                  onChange={e => setDescricao(e.target.value)}
+                  rows={2}
+                />
+              </div>
+
+              <div className="rounded-md border bg-muted/40 p-3 text-sm">
+                {previewLoading ? (
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Calculando preview...
+                  </div>
+                ) : preview ? (
+                  <>
+                    <div className="font-medium">
+                      {preview.count > 0
+                        ? `${preview.count} intake${preview.count > 1 ? "s" : ""} casam com os filtros.`
+                        : "Nenhum intake casa com esses filtros."}
+                    </div>
+                    {preview.sample.length > 0 && (
+                      <ul className="mt-1 text-xs text-muted-foreground space-y-0.5">
+                        {preview.sample.slice(0, 3).map(s => (
+                          <li key={s.id}>
+                            #{s.id} · {s.cnj_number || "(sem CNJ)"} · {s.status}
+                          </li>
+                        ))}
+                        {preview.count > 3 && <li>+ {preview.count - 3} mais</li>}
+                      </ul>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-muted-foreground">
+                    Defina os filtros pra ver o preview.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setOpen(false)} disabled={submitting}>
+                Cancelar
+              </Button>
+              <Button onClick={handleSubmit} disabled={!canSubmit}>
+                {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Criar lote {preview && preview.count > 0 ? `(${preview.count})` : ""}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </CardContent>
+    </Card>
+  );
+}
+
+
+// ─── Tabela: Historico ───────────────────────────────────────────────
+
+const PAGE_SIZE_DEFAULT = 25;
+
+function LotesHistoricoTable({
+  reloadKey,
+  onChanged,
+}: {
+  reloadKey: number;
+  onChanged: () => void;
+}) {
+  const { toast } = useToast();
+  const [items, setItems] = useState<ClassificadorLoteSummary[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(PAGE_SIZE_DEFAULT);
+  const [loading, setLoading] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [classifyingId, setClassifyingId] = useState<number | null>(null);
+  const [uploadDialogLote, setUploadDialogLote] = useState<ClassificadorLoteSummary | null>(null);
+  const [detailDialogLote, setDetailDialogLote] = useState<ClassificadorLoteSummary | null>(null);
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  const handleClassify = async (lote: ClassificadorLoteSummary) => {
+    if (!confirm(
+      `Classificar lote #${lote.id} (${lote.nome})?\n\n` +
+      `Vai submeter ${lote.total_processos_capturados} processos pra Sonnet ` +
+      `via Anthropic Batches API. Custo estimado e' o do PI por processo.\n\n` +
+      `Operacao async — pode levar minutos a horas. Worker do servidor ` +
+      `acompanha automaticamente.`,
+    )) return;
+    setClassifyingId(lote.id);
+    try {
+      const r = await classifyClassificadorLote(lote.id);
+      toast({
+        title: "Batch submetido",
+        description: `Batch #${r.batch_id} (${r.total_records} processos) - ${r.status}. ` +
+          `Anthropic batch=${r.anthropic_batch_id?.slice(0, 16) || "—"}...`,
+      });
+      onChanged();
+    } catch (err) {
+      toast({
+        title: "Falha ao classificar",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setClassifyingId(null);
+    }
+  };
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    fetchClassificadorLotes({
+      limit: pageSize,
+      offset: (page - 1) * pageSize,
+    })
+      .then(res => {
+        if (!alive) return;
+        setItems(res.items);
+        setTotal(res.total);
+      })
+      .catch(err => {
+        if (!alive) return;
+        toast({
+          title: "Falha ao carregar lotes",
+          description: err instanceof Error ? err.message : String(err),
+          variant: "destructive",
+        });
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [page, pageSize, reloadKey, toast]);
+
+  const handleDelete = async (loteId: number) => {
+    if (!confirm(`Apagar lote #${loteId}? Essa operacao nao pode ser desfeita.`)) return;
+    setDeletingId(loteId);
+    try {
+      await deleteClassificadorLote(loteId);
+      toast({ title: "Lote apagado", description: `#${loteId} removido.` });
+      onChanged();
+    } catch (err) {
+      toast({
+        title: "Falha ao apagar lote",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Lotes ja criados</CardTitle>
+        <CardDescription>
+          Cada linha e' um diagnostico de carteira. Total: {total}.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {loading && items.length === 0 ? (
+          <div className="py-12 text-center text-sm text-muted-foreground">
+            <Loader2 className="inline h-4 w-4 animate-spin mr-2" />
+            Carregando...
+          </div>
+        ) : items.length === 0 ? (
+          <div className="py-12 text-center text-sm text-muted-foreground">
+            Nenhum lote criado ainda. Vai pra aba "Novo lote" pra comecar.
+          </div>
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-xs text-muted-foreground">
+                    <th className="py-2 pr-3">#</th>
+                    <th className="py-2 pr-3">Nome</th>
+                    <th className="py-2 pr-3">Cliente</th>
+                    <th className="py-2 pr-3">Status</th>
+                    <th className="py-2 pr-3 text-right">Processos</th>
+                    <th className="py-2 pr-3 text-right">PCOND total</th>
+                    <th className="py-2 pr-3">Criado em</th>
+                    <th className="py-2 pr-3" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map(lote => {
+                    const badge = STATUS_BADGE[lote.status] || { label: lote.status, variant: "outline" as const };
+                    return (
+                      <tr key={lote.id} className="border-b hover:bg-muted/30">
+                        <td className="py-2 pr-3 font-mono text-xs">#{lote.id}</td>
+                        <td className="py-2 pr-3">{lote.nome}</td>
+                        <td className="py-2 pr-3 text-muted-foreground">
+                          {lote.cliente_nome || "—"}
+                        </td>
+                        <td className="py-2 pr-3">
+                          <Badge variant={badge.variant}>{badge.label}</Badge>
+                        </td>
+                        <td className="py-2 pr-3 text-right tabular-nums">
+                          {lote.total_processos_classificados}/{lote.total_processos}
+                        </td>
+                        <td className="py-2 pr-3 text-right tabular-nums text-muted-foreground">
+                          {fmtBRL(lote.pcond_total)}
+                        </td>
+                        <td className="py-2 pr-3 text-xs text-muted-foreground">
+                          {fmtDate(lote.created_at)}
+                        </td>
+                        <td className="py-2 pr-3 text-right">
+                          <div className="inline-flex items-center gap-0.5">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => setUploadDialogLote(lote)}
+                              disabled={lote.status === "CLASSIFICADO"}
+                              title={lote.status === "CLASSIFICADO" ? "Lote ja classificado" : "Subir PDFs"}
+                            >
+                              <FilePlus2 className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleClassify(lote)}
+                              disabled={
+                                classifyingId === lote.id ||
+                                lote.total_processos_capturados === 0 ||
+                                lote.status === "CLASSIFICADO" ||
+                                lote.status === "CLASSIFICANDO"
+                              }
+                              title={
+                                lote.total_processos_capturados === 0
+                                  ? "Suba PDFs antes de classificar"
+                                  : lote.status === "CLASSIFICADO"
+                                    ? "Lote ja classificado"
+                                    : lote.status === "CLASSIFICANDO"
+                                      ? "Lote em classificacao em curso"
+                                      : `Classificar ${lote.total_processos_capturados} processos via Sonnet`
+                              }
+                            >
+                              {classifyingId === lote.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Sparkles className="h-4 w-4" />
+                              )}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => setDetailDialogLote(lote)}
+                              title="Detalhe (processos + batches)"
+                            >
+                              <Eye className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleDelete(lote.id)}
+                              disabled={
+                                deletingId === lote.id ||
+                                lote.status === "CLASSIFICADO"
+                              }
+                              title={
+                                lote.status === "CLASSIFICADO"
+                                  ? "Lotes classificados nao podem ser deletados"
+                                  : "Apagar lote"
+                              }
+                            >
+                              {deletingId === lote.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Trash2 className="h-4 w-4" />
+                              )}
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+              <div>
+                Pagina {page} de {totalPages} · Mostrando {items.length} de {total}
+              </div>
+              <div className="flex items-center gap-2">
+                <select
+                  className="rounded border bg-background px-2 py-1 text-xs"
+                  value={pageSize}
+                  onChange={e => {
+                    setPageSize(Number(e.target.value));
+                    setPage(1);
+                  }}
+                >
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={page <= 1}
+                  onClick={() => setPage(p => Math.max(1, p - 1))}
+                >
+                  Anterior
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={page >= totalPages}
+                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                >
+                  Proxima
+                </Button>
+              </div>
+            </div>
+          </>
+        )}
+      </CardContent>
+
+      {/* Dialogs */}
+      {uploadDialogLote && (
+        <UploadPdfDialog
+          loteId={uploadDialogLote.id}
+          loteNome={uploadDialogLote.nome}
+          open={!!uploadDialogLote}
+          onOpenChange={(v) => !v && setUploadDialogLote(null)}
+          onUploaded={onChanged}
+        />
+      )}
+      <LoteDetailDialog
+        lote={detailDialogLote}
+        open={!!detailDialogLote}
+        onOpenChange={(v) => !v && setDetailDialogLote(null)}
+      />
+    </Card>
+  );
+}

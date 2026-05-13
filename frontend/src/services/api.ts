@@ -1751,3 +1751,313 @@ export async function updateUserFeedback(
   return expectJson<UserFeedback>(res);
 }
 
+
+// ─────────────────────────────────────────────────────────────────────
+// Classificador (diagnostico de carteira) — Fase 2
+// Tipos sao inline aqui pra evitar poluir types/api.ts antes da Fase 4
+// (que vai introduzir muitos campos de relatorio).
+// ─────────────────────────────────────────────────────────────────────
+
+export interface ClassificadorLoteSummary {
+  id: number;
+  nome: string;
+  cliente_nome: string | null;
+  descricao: string | null;
+  status: string;
+  source_summary: Record<string, number> | null;
+  filtros_aplicados: Record<string, unknown> | null;
+  total_processos: number;
+  total_processos_capturados: number;
+  total_processos_classificados: number;
+  total_processos_com_erro: number;
+  valor_total_causa: number | null;
+  valor_total_estimado: number | null;
+  pcond_total: number | null;
+  prob_exito_medio: number | null;
+  analise_estrategica_carteira: string | null;
+  snapshot_at: string | null;
+  captura_l1_started_at: string | null;
+  captura_l1_finished_at: string | null;
+  classificacao_started_at: string | null;
+  classificacao_finished_at: string | null;
+  error_message: string | null;
+  created_at: string | null;
+  created_by_user_id: number | null;
+}
+
+export interface ClassificadorLotesListResponse {
+  total: number;
+  items: ClassificadorLoteSummary[];
+}
+
+export interface ClassificadorUploadResponse {
+  lote: ClassificadorLoteSummary;
+  warnings: string[];
+}
+
+export interface ClassificadorFromPiFiltros {
+  data_inicio?: string | null;
+  data_fim?: string | null;
+  office_id?: number | null;
+  cliente_nome_match?: string | null;
+  statuses?: string[] | null;
+}
+
+export interface ClassificadorFromPiPreview {
+  count: number;
+  sample: Array<{
+    id: number;
+    cnj_number: string | null;
+    status: string;
+    received_at: string | null;
+    office_id: number | null;
+  }>;
+}
+
+export interface ClassificadorProcessoSummary {
+  id: number;
+  lote_id: number;
+  source: string;
+  source_intake_id: number | null;
+  cnj_number: string | null;
+  external_id: string | null;
+  produto: string | null;
+  categoria_id: number | null;
+  subcategoria_id: number | null;
+  polo: string | null;
+  valor_estimado: number | null;
+  pcond_sugerido: number | null;
+  prob_exito: number | null;
+  confianca: number | null;
+  status: string;
+  error_message: string | null;
+  data_captura_l1: string | null;
+  data_classificacao: string | null;
+}
+
+export interface ClassificadorProcessosListResponse {
+  total: number;
+  items: ClassificadorProcessoSummary[];
+}
+
+export async function fetchClassificadorLotes(params: {
+  status?: string;
+  cliente_nome?: string;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<ClassificadorLotesListResponse> {
+  const q = new URLSearchParams();
+  if (params.status) q.set("status", params.status);
+  if (params.cliente_nome) q.set("cliente_nome", params.cliente_nome);
+  if (params.limit != null) q.set("limit", String(params.limit));
+  if (params.offset != null) q.set("offset", String(params.offset));
+  const qs = q.toString();
+  const res = await apiFetch(
+    `/api/v1/classificador/lotes${qs ? `?${qs}` : ""}`,
+  );
+  return expectJson<ClassificadorLotesListResponse>(res);
+}
+
+export async function createClassificadorLoteUpload(input: {
+  nome: string;
+  cliente_nome?: string;
+  descricao?: string;
+  file: File;
+}): Promise<ClassificadorUploadResponse> {
+  const fd = new FormData();
+  fd.append("nome", input.nome);
+  if (input.cliente_nome) fd.append("cliente_nome", input.cliente_nome);
+  if (input.descricao) fd.append("descricao", input.descricao);
+  fd.append("file", input.file);
+  const res = await apiFetch("/api/v1/classificador/lotes", {
+    method: "POST",
+    body: fd,
+  });
+  return expectJson<ClassificadorUploadResponse>(res);
+}
+
+export async function previewClassificadorFromPi(
+  filtros: ClassificadorFromPiFiltros,
+): Promise<ClassificadorFromPiPreview> {
+  const res = await apiFetch(
+    "/api/v1/classificador/lotes/from-prazos-iniciais/preview",
+    {
+      method: "POST",
+      body: JSON.stringify(filtros),
+    },
+  );
+  return expectJson<ClassificadorFromPiPreview>(res);
+}
+
+export async function createClassificadorLoteFromPi(payload: {
+  nome: string;
+  cliente_nome?: string;
+  descricao?: string;
+  filtros: ClassificadorFromPiFiltros;
+}): Promise<{ lote: ClassificadorLoteSummary }> {
+  const res = await apiFetch(
+    "/api/v1/classificador/lotes/from-prazos-iniciais",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+  return expectJson<{ lote: ClassificadorLoteSummary }>(res);
+}
+
+export async function fetchClassificadorLote(
+  loteId: number,
+): Promise<ClassificadorLoteSummary> {
+  const res = await apiFetch(`/api/v1/classificador/lotes/${loteId}`);
+  return expectJson<ClassificadorLoteSummary>(res);
+}
+
+export async function fetchClassificadorProcessos(
+  loteId: number,
+  params: {
+    status?: string;
+    source?: string;
+    categoria_id?: number;
+    polo?: string;
+    cnj_match?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<ClassificadorProcessosListResponse> {
+  const q = new URLSearchParams();
+  if (params.status) q.set("status", params.status);
+  if (params.source) q.set("source", params.source);
+  if (params.categoria_id != null) q.set("categoria_id", String(params.categoria_id));
+  if (params.polo) q.set("polo", params.polo);
+  if (params.cnj_match) q.set("cnj_match", params.cnj_match);
+  if (params.limit != null) q.set("limit", String(params.limit));
+  if (params.offset != null) q.set("offset", String(params.offset));
+  const qs = q.toString();
+  const res = await apiFetch(
+    `/api/v1/classificador/lotes/${loteId}/processos${qs ? `?${qs}` : ""}`,
+  );
+  return expectJson<ClassificadorProcessosListResponse>(res);
+}
+
+export async function deleteClassificadorLote(loteId: number): Promise<void> {
+  const res = await apiFetch(`/api/v1/classificador/lotes/${loteId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 204) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || `HTTP error! status: ${res.status}`);
+  }
+}
+
+
+// ─── Classificador Fase 3 (PDF intake + classify Sonnet) ─────────────
+
+export interface ClassificadorPdfIntakeResult {
+  processo: {
+    id: number;
+    lote_id: number;
+    cnj_number: string | null;
+    source: string;
+    pdf_filename: string | null;
+    pdf_sha256: string | null;
+    pdf_bytes: number | null;
+    extractor_used: string | null;
+    extraction_confidence: string | null;
+    pdf_extraction_failed: boolean;
+    status: string;
+    error_message: string | null;
+    capa_json_keys: string[] | null;
+    integra_json_keys: string[] | null;
+  };
+}
+
+export interface ClassificadorBatchSummary {
+  id: number;
+  lote_id: number;
+  anthropic_batch_id: string | null;
+  anthropic_status: string | null;
+  status: string;
+  total_records: number;
+  succeeded_count: number;
+  errored_count: number;
+  expired_count: number;
+  canceled_count: number;
+  model_used: string | null;
+  results_url: string | null;
+  error_message: string | null;
+  requested_by_email: string | null;
+  created_at: string | null;
+  submitted_at: string | null;
+  ended_at: string | null;
+  applied_at: string | null;
+}
+
+export async function uploadClassificadorProcessoPdf(
+  loteId: number,
+  file: File,
+  opts?: {
+    cnj_hint?: string;
+    external_id?: string;
+    produto?: string;
+    observacao?: string;
+  },
+): Promise<ClassificadorPdfIntakeResult> {
+  const fd = new FormData();
+  fd.append("file", file);
+  if (opts?.cnj_hint) fd.append("cnj_hint", opts.cnj_hint);
+  if (opts?.external_id) fd.append("external_id", opts.external_id);
+  if (opts?.produto) fd.append("produto", opts.produto);
+  if (opts?.observacao) fd.append("observacao", opts.observacao);
+  const res = await apiFetch(
+    `/api/v1/classificador/lotes/${loteId}/processos/upload-pdf`,
+    { method: "POST", body: fd },
+  );
+  return expectJson<ClassificadorPdfIntakeResult>(res);
+}
+
+export async function classifyClassificadorLote(loteId: number): Promise<{
+  batch_id: number;
+  anthropic_batch_id: string | null;
+  anthropic_status: string | null;
+  status: string;
+  total_records: number;
+  model_used: string | null;
+  submitted_at: string | null;
+}> {
+  const res = await apiFetch(
+    `/api/v1/classificador/lotes/${loteId}/classify`,
+    { method: "POST" },
+  );
+  return expectJson(res);
+}
+
+export async function fetchClassificadorBatches(
+  loteId: number,
+): Promise<{ total: number; items: ClassificadorBatchSummary[] }> {
+  const res = await apiFetch(`/api/v1/classificador/lotes/${loteId}/batches`);
+  return expectJson(res);
+}
+
+export async function refreshClassificadorBatch(
+  batchId: number,
+): Promise<ClassificadorBatchSummary> {
+  const res = await apiFetch(
+    `/api/v1/classificador/batches/${batchId}/refresh-status`,
+    { method: "POST" },
+  );
+  return expectJson<ClassificadorBatchSummary>(res);
+}
+
+export async function applyClassificadorBatch(
+  batchId: number,
+): Promise<{
+  batch: ClassificadorBatchSummary;
+  result: { succeeded: number; failed: number; skipped: number };
+}> {
+  const res = await apiFetch(
+    `/api/v1/classificador/batches/${batchId}/apply`,
+    { method: "POST" },
+  );
+  return expectJson(res);
+}
+

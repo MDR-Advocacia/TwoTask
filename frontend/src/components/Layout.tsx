@@ -10,6 +10,7 @@ import {
   LogOut,
   Menu,
   Newspaper,
+  ScanSearch,
   Settings,
   Users,
   Workflow,
@@ -91,6 +92,12 @@ export default function Layout({ children }: PropsWithChildren) {
         { to: "/prazos-iniciais/treatment", icon: ListChecks, label: "Tratamento Web Agendamentos Iniciais", requirePermission: 'canUsePrazosIniciais' },
         { to: "/prazos-iniciais/templates", icon: Settings, label: "Templates de Prazos Iniciais", requirePermission: 'isAdmin' },
         { to: "/ajus", icon: Workflow, label: "AJUS — Andamentos", requirePermission: 'canUsePrazosIniciais' },
+      ],
+    },
+    {
+      title: "Classificador",
+      items: [
+        { to: "/classificador", icon: ScanSearch, label: "Diagnostico de Carteira", requirePermission: 'canUsePrazosIniciais' },
       ],
     },
     {

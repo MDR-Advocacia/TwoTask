@@ -42,3 +42,10 @@ from .base_processual import (
     BaseProcessualSnapshot,
     BaseProcessualUpload,
 )
+from .classificador import (
+    ClassificadorBatch,
+    ClassificadorLote,
+    ClassificadorPedido,
+    ClassificadorProcesso,
+    ClassificadorRelatorio,
+)

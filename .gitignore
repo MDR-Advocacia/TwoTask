@@ -81,6 +81,13 @@ Desktop.ini
 Dockerfile copy.frontend
 legal-one-firms-brazil-api.json
 
+# Imagens soltas na raiz (slides/screenshots de sessão de trabalho).
+# Restrito à raiz com /*.jpg pra NÃO ignorar imagens legítimas dentro
+# de frontend/public/, app/static/, docs/, etc.
+/*.jpg
+/*.jpeg
+/*.png
+
 # Dados de teste locais (PDFs + JSONs de intake pra testes manuais)
 test-data/
 
