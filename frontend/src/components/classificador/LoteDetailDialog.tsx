@@ -440,12 +440,15 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
               <Button
                 variant="outline"
                 onClick={() => handleGenerate("PDF")}
-                disabled
-                title="PDF executivo entra na Fase 4 Round 2"
+                disabled={generatingRel === "PDF"}
+                title="Gera PDF executivo (5 paginas) — capa + graficos + analise"
               >
-                <FileText className="mr-2 h-4 w-4" />
+                {generatingRel === "PDF" ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <FileText className="mr-2 h-4 w-4" />
+                )}
                 Gerar PDF
-                <Badge variant="outline" className="ml-2 text-[10px]">Em breve</Badge>
               </Button>
               <Button variant="ghost" size="sm" onClick={loadRelatorios}>
                 <RefreshCw className="h-4 w-4" />

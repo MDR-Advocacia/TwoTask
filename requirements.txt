@@ -30,6 +30,11 @@ apscheduler==3.11.0
 # ─── Planilhas ────────────────────────────────────
 openpyxl==3.1.5
 
+# ─── Relatórios PDF (Classificador Fase 4 R2) ─────
+# reportlab puro (sem matplotlib) — gera capa, KPIs, gráficos pizza/barras
+# nativos via reportlab.graphics. Python puro, sem deps de sistema.
+reportlab==4.2.5
+
 # ─── Classificador ────────────────────────────────
 anthropic==0.40.0
 

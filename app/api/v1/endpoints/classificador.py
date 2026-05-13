@@ -71,6 +71,7 @@ from app.services.classificador.report_storage import (
     resolve_report_path,
     save_report,
 )
+from app.services.classificador.report_pdf import generate_pdf_report
 from app.services.classificador.report_xlsx import generate_xlsx_report
 from app.services.classificador.xlsx_reader import XlsxHeaderError
 from app.services.prazos_iniciais.storage import PdfValidationError
@@ -926,12 +927,6 @@ def create_relatorio(
             detail=f"Formato invalido: {formato!r}. Use XLSX ou PDF.",
         )
 
-    if formato == REL_FORMAT_PDF:
-        raise HTTPException(
-            status_code=501,
-            detail="PDF executivo entra na Fase 4 Round 2. Use XLSX por enquanto.",
-        )
-
     # 1) Cria registro em PROCESSANDO
     now = _dt.utcnow()
     rel = ClassificadorRelatorio(
@@ -948,10 +943,16 @@ def create_relatorio(
     try:
         # 2) Monta payload agregado
         data = build_report_data(db, lote_id)
-        # 3) Gera xlsx
-        xlsx_bytes = generate_xlsx_report(data)
+        # 3) Gera arquivo conforme formato
+        if formato == REL_FORMAT_XLSX:
+            file_bytes = generate_xlsx_report(data)
+            ext = "xlsx"
+        else:
+            # REL_FORMAT_PDF
+            file_bytes = generate_pdf_report(data)
+            ext = "pdf"
         # 4) Salva no volume
-        stored = save_report(xlsx_bytes, extension="xlsx")
+        stored = save_report(file_bytes, extension=ext)
         # 5) Persiste
         rel.status = REL_STATUS_PRONTO
         rel.file_path = stored.relative_path
@@ -965,7 +966,7 @@ def create_relatorio(
         db.commit()
         db.refresh(rel)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Classificador.report: falha ao gerar xlsx lote=%s", lote_id)
+        logger.exception("Classificador.report: falha ao gerar %s lote=%s", formato, lote_id)
         rel.status = REL_STATUS_FALHOU
         rel.error_message = f"{type(exc).__name__}: {exc}"
         rel.finished_at = _dt.utcnow()
