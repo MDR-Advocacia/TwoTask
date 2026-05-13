@@ -66,6 +66,12 @@ from app.services.classificador.pdf_intake import (
     SOURCE_PDF_UPLOAD,
     ingest_pdf,
 )
+from app.services.classificador.report_data import build_report_data
+from app.services.classificador.report_storage import (
+    resolve_report_path,
+    save_report,
+)
+from app.services.classificador.report_xlsx import generate_xlsx_report
 from app.services.classificador.xlsx_reader import XlsxHeaderError
 from app.services.prazos_iniciais.storage import PdfValidationError
 
@@ -874,16 +880,112 @@ def _serialize_batch(b: ClassificadorBatch) -> dict:
     }
 
 
+class RelatorioCreatePayload(BaseModel):
+    formato: str = Field(default="XLSX", description="XLSX (Fase 4 Round 1) ou PDF (Round 2)")
+
+
 @router.post(
     "/lotes/{lote_id}/relatorios",
-    status_code=status.HTTP_501_NOT_IMPLEMENTED,
+    status_code=status.HTTP_201_CREATED,
 )
-def create_relatorio(lote_id: int):
-    """[Fase 4] Gera relatorio xlsx/pdf async. Stub."""
-    raise HTTPException(
-        status_code=501,
-        detail="Em construcao — Fase 4 do Classificador (geracao de relatorios).",
+def create_relatorio(
+    lote_id: int,
+    payload: RelatorioCreatePayload,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth_security.get_current_user),
+):
+    """Gera relatorio XLSX (sincrono) ou PDF (Round 2 — ainda stub).
+
+    Fluxo:
+    1. Valida lote
+    2. Monta payload via report_data.build_report_data
+    3. Gera xlsx em memoria (openpyxl)
+    4. Salva no volume via report_storage
+    5. Cria registro em classificador_relatorio (status=PRONTO)
+
+    XLSX <5s pra carteira <10k processos. Acima disso, mover pra async
+    (worker APScheduler). Atualmente sincrono.
+    """
+    from datetime import datetime as _dt
+    from app.models.classificador import (
+        REL_FORMAT_PDF,
+        REL_FORMAT_XLSX,
+        REL_STATUS_FALHOU,
+        REL_STATUS_PRONTO,
+        REL_STATUS_PROCESSANDO,
     )
+
+    lote = db.query(ClassificadorLote).filter(ClassificadorLote.id == lote_id).first()
+    if lote is None:
+        raise HTTPException(status_code=404, detail=f"Lote #{lote_id} nao encontrado.")
+
+    formato = payload.formato.upper().strip()
+    if formato not in (REL_FORMAT_XLSX, REL_FORMAT_PDF):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Formato invalido: {formato!r}. Use XLSX ou PDF.",
+        )
+
+    if formato == REL_FORMAT_PDF:
+        raise HTTPException(
+            status_code=501,
+            detail="PDF executivo entra na Fase 4 Round 2. Use XLSX por enquanto.",
+        )
+
+    # 1) Cria registro em PROCESSANDO
+    now = _dt.utcnow()
+    rel = ClassificadorRelatorio(
+        lote_id=lote_id,
+        formato=formato,
+        status=REL_STATUS_PROCESSANDO,
+        requested_by_user_id=current_user.id if current_user else None,
+        requested_at=now,
+        started_at=now,
+    )
+    db.add(rel)
+    db.flush()
+
+    try:
+        # 2) Monta payload agregado
+        data = build_report_data(db, lote_id)
+        # 3) Gera xlsx
+        xlsx_bytes = generate_xlsx_report(data)
+        # 4) Salva no volume
+        stored = save_report(xlsx_bytes, extension="xlsx")
+        # 5) Persiste
+        rel.status = REL_STATUS_PRONTO
+        rel.file_path = stored.relative_path
+        rel.file_bytes = stored.size_bytes
+        rel.file_sha256 = stored.sha256
+        rel.finished_at = _dt.utcnow()
+        rel.params_json = {
+            "totals": data.get("kpis"),
+            "qtd_processos": data["kpis"].get("total_processos"),
+        }
+        db.commit()
+        db.refresh(rel)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Classificador.report: falha ao gerar xlsx lote=%s", lote_id)
+        rel.status = REL_STATUS_FALHOU
+        rel.error_message = f"{type(exc).__name__}: {exc}"
+        rel.finished_at = _dt.utcnow()
+        db.commit()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao gerar relatorio: {type(exc).__name__}: {exc}",
+        )
+
+    return {
+        "id": rel.id,
+        "lote_id": rel.lote_id,
+        "formato": rel.formato,
+        "status": rel.status,
+        "file_bytes": rel.file_bytes,
+        "file_sha256": rel.file_sha256,
+        "requested_at": rel.requested_at.isoformat() if rel.requested_at else None,
+        "started_at": rel.started_at.isoformat() if rel.started_at else None,
+        "finished_at": rel.finished_at.isoformat() if rel.finished_at else None,
+    }
 
 
 @router.get("/lotes/{lote_id}/relatorios")
@@ -917,13 +1019,56 @@ def list_relatorios(lote_id: int, db: Session = Depends(get_db)):
     }
 
 
-@router.get(
-    "/lotes/{lote_id}/relatorios/{relatorio_id}/download",
-    status_code=status.HTTP_501_NOT_IMPLEMENTED,
-)
-def download_relatorio(lote_id: int, relatorio_id: int):
-    """[Fase 4] Download do relatorio gerado. Stub."""
-    raise HTTPException(
-        status_code=501,
-        detail="Em construcao — Fase 4 do Classificador (download de relatorio).",
+@router.get("/lotes/{lote_id}/relatorios/{relatorio_id}/download")
+def download_relatorio(
+    lote_id: int,
+    relatorio_id: int,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth_security.get_current_user),
+):
+    """Download do arquivo do relatorio (FileResponse com filename amigavel)."""
+    from fastapi.responses import FileResponse
+    from app.models.classificador import REL_FORMAT_XLSX, REL_STATUS_PRONTO
+
+    rel = (
+        db.query(ClassificadorRelatorio)
+        .filter(ClassificadorRelatorio.id == relatorio_id)
+        .filter(ClassificadorRelatorio.lote_id == lote_id)
+        .first()
     )
+    if rel is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Relatorio #{relatorio_id} nao encontrado no lote #{lote_id}.",
+        )
+    if rel.status != REL_STATUS_PRONTO or not rel.file_path:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Relatorio #{relatorio_id} nao esta PRONTO (status={rel.status}).",
+        )
+
+    try:
+        abs_path = resolve_report_path(rel.file_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if not abs_path.exists():
+        raise HTTPException(
+            status_code=410,
+            detail=f"Arquivo do relatorio #{relatorio_id} nao encontrado no volume.",
+        )
+
+    lote = db.query(ClassificadorLote).filter(ClassificadorLote.id == lote_id).first()
+    nome_lote_safe = "".join(
+        c if c.isalnum() or c in "-_" else "_"
+        for c in (lote.nome if lote else f"lote-{lote_id}")
+    )[:60]
+
+    if rel.formato == REL_FORMAT_XLSX:
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        filename = f"classificador-{nome_lote_safe}-{rel.id}.xlsx"
+    else:
+        media_type = "application/pdf"
+        filename = f"classificador-{nome_lote_safe}-{rel.id}.pdf"
+
+    return FileResponse(path=abs_path, media_type=media_type, filename=filename)

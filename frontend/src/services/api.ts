@@ -2096,3 +2096,69 @@ export async function applyClassificadorBatch(
   return expectJson(res);
 }
 
+// ─── Classificador — Relatorios (Fase 4 Round 1) ──────────────────────
+
+export interface ClassificadorRelatorioSummary {
+  id: number;
+  lote_id?: number;
+  formato: string;
+  status: string;
+  file_bytes: number | null;
+  file_sha256?: string | null;
+  error_message?: string | null;
+  requested_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export async function fetchClassificadorRelatorios(
+  loteId: number,
+): Promise<{ total: number; items: ClassificadorRelatorioSummary[] }> {
+  const res = await apiFetch(`/api/v1/classificador/lotes/${loteId}/relatorios`);
+  return expectJson(res);
+}
+
+export async function generateClassificadorRelatorio(
+  loteId: number,
+  formato: "XLSX" | "PDF" = "XLSX",
+): Promise<ClassificadorRelatorioSummary> {
+  const res = await apiFetch(
+    `/api/v1/classificador/lotes/${loteId}/relatorios`,
+    {
+      method: "POST",
+      body: JSON.stringify({ formato }),
+    },
+  );
+  return expectJson<ClassificadorRelatorioSummary>(res);
+}
+
+export function downloadClassificadorRelatorioUrl(
+  loteId: number,
+  relatorioId: number,
+): string {
+  // URL relativa — apiFetch ja injeta base + headers. Pra download via
+  // <a href>, usamos a URL absoluta do backend (sem proxy).
+  return `/api/v1/classificador/lotes/${loteId}/relatorios/${relatorioId}/download`;
+}
+
+export async function downloadClassificadorRelatorio(
+  loteId: number,
+  relatorioId: number,
+  filename: string,
+): Promise<void> {
+  const res = await apiFetch(downloadClassificadorRelatorioUrl(loteId, relatorioId));
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || `HTTP error! status: ${res.status}`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+

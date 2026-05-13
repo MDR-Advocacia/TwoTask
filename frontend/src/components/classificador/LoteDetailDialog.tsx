@@ -16,14 +16,18 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Loader2, RefreshCw, FileText, Sparkles } from "lucide-react";
+import { Loader2, RefreshCw, FileText, Sparkles, FileSpreadsheet, Download } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
   ClassificadorBatchSummary,
   ClassificadorLoteSummary,
   ClassificadorProcessoSummary,
+  ClassificadorRelatorioSummary,
+  downloadClassificadorRelatorio,
   fetchClassificadorBatches,
   fetchClassificadorProcessos,
+  fetchClassificadorRelatorios,
+  generateClassificadorRelatorio,
   refreshClassificadorBatch,
 } from "@/services/api";
 
@@ -73,9 +77,13 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
   const [procTotal, setProcTotal] = useState(0);
   const [procPage, setProcPage] = useState(1);
   const [batches, setBatches] = useState<ClassificadorBatchSummary[]>([]);
+  const [relatorios, setRelatorios] = useState<ClassificadorRelatorioSummary[]>([]);
   const [loadingProc, setLoadingProc] = useState(false);
   const [loadingBatch, setLoadingBatch] = useState(false);
+  const [loadingRel, setLoadingRel] = useState(false);
   const [refreshingBatch, setRefreshingBatch] = useState<number | null>(null);
+  const [generatingRel, setGeneratingRel] = useState<"XLSX" | "PDF" | null>(null);
+  const [downloadingRel, setDownloadingRel] = useState<number | null>(null);
 
   const PAGE_SIZE = 50;
   const procTotalPages = Math.max(1, Math.ceil(procTotal / PAGE_SIZE));
@@ -118,12 +126,69 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
     }
   }, [lote, toast]);
 
+  const loadRelatorios = useCallback(async () => {
+    if (!lote) return;
+    setLoadingRel(true);
+    try {
+      const r = await fetchClassificadorRelatorios(lote.id);
+      setRelatorios(r.items);
+    } catch (err) {
+      toast({
+        title: "Falha ao carregar relatorios",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setLoadingRel(false);
+    }
+  }, [lote, toast]);
+
+  const handleGenerate = async (formato: "XLSX" | "PDF") => {
+    if (!lote) return;
+    setGeneratingRel(formato);
+    try {
+      const r = await generateClassificadorRelatorio(lote.id, formato);
+      toast({
+        title: `Relatorio ${formato} gerado`,
+        description: `Relatorio #${r.id} (${r.file_bytes ? (r.file_bytes / 1024).toFixed(1) + " KB" : "—"}). Status: ${r.status}.`,
+      });
+      await loadRelatorios();
+    } catch (err) {
+      toast({
+        title: `Falha ao gerar ${formato}`,
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setGeneratingRel(null);
+    }
+  };
+
+  const handleDownload = async (rel: ClassificadorRelatorioSummary) => {
+    if (!lote) return;
+    setDownloadingRel(rel.id);
+    try {
+      const ext = rel.formato.toLowerCase();
+      const filename = `classificador-lote-${lote.id}-${rel.id}.${ext}`;
+      await downloadClassificadorRelatorio(lote.id, rel.id, filename);
+    } catch (err) {
+      toast({
+        title: "Falha ao baixar relatorio",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setDownloadingRel(null);
+    }
+  };
+
   useEffect(() => {
     if (open && lote) {
       if (tab === "processos") loadProcessos();
       if (tab === "batches") loadBatches();
+      if (tab === "relatorios") loadRelatorios();
     }
-  }, [open, lote, tab, loadProcessos, loadBatches]);
+  }, [open, lote, tab, loadProcessos, loadBatches, loadRelatorios]);
 
   // Auto-refresh quando ha batch in_progress
   const hasActiveBatch = useMemo(
@@ -181,6 +246,10 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
             <TabsTrigger value="batches" className="gap-2">
               <Sparkles className="h-4 w-4" />
               Batches IA ({batches.length})
+            </TabsTrigger>
+            <TabsTrigger value="relatorios" className="gap-2">
+              <FileSpreadsheet className="h-4 w-4" />
+              Relatorios ({relatorios.length})
             </TabsTrigger>
           </TabsList>
 
@@ -352,6 +421,112 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
                 })}
               </div>
             )}
+          </TabsContent>
+
+          {/* ─── Relatorios ─── */}
+          <TabsContent value="relatorios" className="flex-1 overflow-auto mt-3">
+            <div className="flex items-center gap-2 mb-3">
+              <Button
+                onClick={() => handleGenerate("XLSX")}
+                disabled={generatingRel === "XLSX"}
+              >
+                {generatingRel === "XLSX" ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <FileSpreadsheet className="mr-2 h-4 w-4" />
+                )}
+                Gerar XLSX
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => handleGenerate("PDF")}
+                disabled
+                title="PDF executivo entra na Fase 4 Round 2"
+              >
+                <FileText className="mr-2 h-4 w-4" />
+                Gerar PDF
+                <Badge variant="outline" className="ml-2 text-[10px]">Em breve</Badge>
+              </Button>
+              <Button variant="ghost" size="sm" onClick={loadRelatorios}>
+                <RefreshCw className="h-4 w-4" />
+              </Button>
+            </div>
+
+            {loadingRel && relatorios.length === 0 ? (
+              <div className="py-12 text-center text-sm text-muted-foreground">
+                <Loader2 className="inline h-4 w-4 animate-spin mr-2" />
+                Carregando...
+              </div>
+            ) : relatorios.length === 0 ? (
+              <div className="py-12 text-center text-sm text-muted-foreground">
+                Nenhum relatorio gerado ainda. Click "Gerar XLSX" pra criar o primeiro.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b text-left text-muted-foreground">
+                      <th className="py-1.5 pr-2">#</th>
+                      <th className="py-1.5 pr-2">Formato</th>
+                      <th className="py-1.5 pr-2">Status</th>
+                      <th className="py-1.5 pr-2 text-right">Tamanho</th>
+                      <th className="py-1.5 pr-2">Gerado em</th>
+                      <th className="py-1.5 pr-2 text-right">Acoes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {relatorios.map(r => {
+                      const ready = r.status === "PRONTO";
+                      const failed = r.status === "FALHOU";
+                      return (
+                        <tr key={r.id} className="border-b hover:bg-muted/30">
+                          <td className="py-1.5 pr-2 font-mono">#{r.id}</td>
+                          <td className="py-1.5 pr-2">
+                            <Badge variant="outline">{r.formato}</Badge>
+                          </td>
+                          <td className="py-1.5 pr-2">
+                            <Badge variant={ready ? "default" : failed ? "destructive" : "secondary"}>
+                              {r.status}
+                            </Badge>
+                          </td>
+                          <td className="py-1.5 pr-2 text-right tabular-nums text-muted-foreground">
+                            {r.file_bytes ? `${(r.file_bytes / 1024).toFixed(1)} KB` : "—"}
+                          </td>
+                          <td className="py-1.5 pr-2 text-muted-foreground">
+                            {fmtDateTime(r.finished_at || r.requested_at)}
+                          </td>
+                          <td className="py-1.5 pr-2 text-right">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleDownload(r)}
+                              disabled={!ready || downloadingRel === r.id}
+                              title={
+                                ready
+                                  ? "Baixar relatorio"
+                                  : `Indisponivel — status ${r.status}`
+                              }
+                            >
+                              {downloadingRel === r.id ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Download className="h-3.5 w-3.5" />
+                              )}
+                            </Button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <p className="mt-3 text-[11px] text-muted-foreground">
+              XLSX e' gerado de forma sincrona (geralmente {"<"} 5s). Inclui 12
+              abas com KPIs, sumarios por categoria/patrocinio/produto/UF, top
+              20 e detalhamento completo.
+            </p>
           </TabsContent>
         </Tabs>
       </DialogContent>
