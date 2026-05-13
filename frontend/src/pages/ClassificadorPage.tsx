@@ -38,6 +38,7 @@ import {
 } from "@/services/api";
 import UploadPdfDialog from "@/components/classificador/UploadPdfDialog";
 import LoteDetailDialog from "@/components/classificador/LoteDetailDialog";
+import QuickPdfCard from "@/components/classificador/QuickPdfCard";
 
 
 // ─── Helpers ──────────────────────────────────────────────────────────
@@ -111,9 +112,11 @@ export default function ClassificadorPage() {
         </TabsList>
 
         <TabsContent value="novo" className="mt-4">
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="grid gap-4 md:grid-cols-3">
             <UploadXlsxCard onCreated={handleLoteCriado} />
             <ImportFromPiCard onCreated={handleLoteCriado} />
+            <QuickPdfCard onCreated={(lote) => handleLoteCriado(lote)} />
+            {/* (segundo arg `processoIds` ignorado — sera usado em Fase 4 pra abrir detalhe automatico) */}
           </div>
 
           <Card className="mt-4">

@@ -427,6 +427,189 @@ def list_processos(
     }
 
 
+# ─── Quick PDF (atalho de teste: cria lote + sobe PDF num shot) ──────
+
+
+@router.post("/lotes/quick-pdf", status_code=status.HTTP_201_CREATED)
+def quick_pdf(
+    files: list[UploadFile] = File(
+        ...,
+        description=(
+            "1 ou mais PDFs de processo (multipart com multiplos `files`). "
+            "Cada PDF vira 1 processo no mesmo lote criado."
+        ),
+    ),
+    nome: Optional[str] = Form(default=None),
+    cliente_nome: Optional[str] = Form(default=None),
+    cnj_hint: Optional[str] = Form(default=None),
+    produto: Optional[str] = Form(default=None),
+    observacao: Optional[str] = Form(default=None),
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth_security.get_current_user),
+):
+    """Atalho pra testar 1 ou MAIS PDFs num shot: cria lote auto + sobe todos.
+
+    Diferente de POST /lotes (xlsx) e /lotes/from-prazos-iniciais — esse
+    aqui e' pra teste rapido: operador sobe N PDFs e o sistema cria
+    UM lote com nome auto-gerado ("Teste avulso — DD/MM HH:MM" se nao
+    informar) contendo um processo por PDF.
+
+    Tolerante a falha: se um PDF nao for valido (vazio, sem magic bytes
+    ou >30MB), aquele e' marcado como ERRO_CAPTURA e os outros seguem.
+    Se TODOS falharem, o lote e' deletado e a request retorna 400.
+
+    Depois operador classifica via UI (botao ✨ no historico) ou worker.
+
+    Returns:
+        { lote: {...}, processos: [{...}, ...] }  — 1 entrada por PDF.
+    """
+    from datetime import datetime as _dt
+
+    from app.models.classificador import (
+        LOTE_STATUS_RASCUNHO,
+        ClassificadorLote,
+    )
+
+    if not files:
+        raise HTTPException(status_code=400, detail="Nenhum arquivo enviado.")
+
+    # Le todos os bytes upfront (cap por arquivo, sem cap total — operador
+    # decide volume; UI mostra tamanho total agregado pra ele).
+    pdfs: list[tuple[str, bytes, Optional[str]]] = []  # (filename, bytes, error)
+    for f in files:
+        content = f.file.read()
+        if not content:
+            pdfs.append((f.filename or "vazio.pdf", b"", "Arquivo vazio."))
+            continue
+        if len(content) > 30 * 1024 * 1024:
+            pdfs.append((f.filename or "?.pdf", b"", "Arquivo > 30MB."))
+            continue
+        pdfs.append((f.filename or "?.pdf", content, None))
+
+    # Nome auto-gerado se nao informar
+    nome_final = (nome or "").strip() or (
+        f"Teste avulso — {_dt.now().strftime('%d/%m %H:%M')}"
+    )
+    descricao = (
+        "Teste avulso de 1 PDF"
+        if len(files) == 1
+        else f"Teste avulso de {len(files)} PDFs"
+    )
+
+    # 1) Cria lote
+    lote = ClassificadorLote(
+        nome=nome_final,
+        cliente_nome=(cliente_nome or "").strip() or None,
+        descricao=descricao,
+        status=LOTE_STATUS_RASCUNHO,
+        source_summary={},
+        snapshot_at=_dt.utcnow(),
+        created_by_user_id=current_user.id if current_user else None,
+    )
+    db.add(lote)
+    db.flush()
+
+    # 2) Processa cada PDF — tolerante a falha
+    processos_out: list[dict] = []
+    sucessos = 0
+
+    for filename, content, pre_error in pdfs:
+        if pre_error:
+            # PDF nao chegou nem a passar pra ingest_pdf (vazio / muito grande)
+            processos_out.append({
+                "filename": filename,
+                "ok": False,
+                "error_message": pre_error,
+                "processo": None,
+            })
+            continue
+
+        try:
+            proc = ingest_pdf(
+                db,
+                lote_id=lote.id,
+                pdf_bytes=content,
+                pdf_filename=filename,
+                source=SOURCE_PDF_UPLOAD,
+                cnj_hint=cnj_hint,
+                produto=produto,
+                metadata={"observacao_operador": observacao} if observacao else None,
+                created_by_user_id=current_user.id if current_user else None,
+            )
+        except PdfValidationError as exc:
+            processos_out.append({
+                "filename": filename, "ok": False,
+                "error_message": str(exc), "processo": None,
+            })
+            continue
+        except PdfIntakeError as exc:
+            processos_out.append({
+                "filename": filename, "ok": False,
+                "error_message": str(exc), "processo": None,
+            })
+            continue
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Falha no quick-pdf pra %s", filename)
+            processos_out.append({
+                "filename": filename, "ok": False,
+                "error_message": f"{type(exc).__name__}: {exc}",
+                "processo": None,
+            })
+            continue
+
+        sucessos += 1
+        processos_out.append({
+            "filename": filename,
+            "ok": True,
+            "error_message": None,
+            "processo": {
+                "id": proc.id,
+                "lote_id": proc.lote_id,
+                "cnj_number": proc.cnj_number,
+                "source": proc.source,
+                "pdf_filename": proc.pdf_filename_original,
+                "pdf_sha256": proc.pdf_sha256,
+                "pdf_bytes": proc.pdf_bytes,
+                "extractor_used": proc.extractor_used,
+                "extraction_confidence": proc.extraction_confidence,
+                "pdf_extraction_failed": proc.pdf_extraction_failed,
+                "status": proc.status,
+                "error_message": proc.error_message,
+                "capa_json_keys": (
+                    list(proc.capa_json.keys())
+                    if isinstance(proc.capa_json, dict) else None
+                ),
+                "integra_json_keys": (
+                    list(proc.integra_json.keys())
+                    if isinstance(proc.integra_json, dict) else None
+                ),
+            },
+        })
+
+    # Se TODOS os PDFs falharam, derruba o lote (nao deixa lote vazio)
+    if sucessos == 0:
+        db.delete(lote)
+        db.commit()
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Nenhum PDF pode ser processado ({len(processos_out)} tentativas). "
+                "Verifique se os arquivos sao PDFs validos e <= 30MB."
+            ),
+        )
+
+    db.refresh(lote)
+    return {
+        "lote": _serialize_lote(lote),
+        "processos": processos_out,
+        "summary": {
+            "total": len(processos_out),
+            "ok": sucessos,
+            "failed": len(processos_out) - sucessos,
+        },
+    }
+
+
 # ─── Upload de PDF por processo (Fase 3 round 1) ─────────────────────
 
 

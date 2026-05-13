@@ -1992,6 +1992,41 @@ export interface ClassificadorBatchSummary {
   applied_at: string | null;
 }
 
+export interface ClassificadorQuickPdfResult {
+  lote: ClassificadorLoteSummary;
+  processos: Array<{
+    filename: string;
+    ok: boolean;
+    error_message: string | null;
+    processo: ClassificadorPdfIntakeResult["processo"] | null;
+  }>;
+  summary: { total: number; ok: number; failed: number };
+}
+
+export async function createClassificadorLoteFromPdf(
+  files: File[],
+  opts?: {
+    nome?: string;
+    cliente_nome?: string;
+    cnj_hint?: string;
+    produto?: string;
+    observacao?: string;
+  },
+): Promise<ClassificadorQuickPdfResult> {
+  const fd = new FormData();
+  for (const f of files) fd.append("files", f);
+  if (opts?.nome) fd.append("nome", opts.nome);
+  if (opts?.cliente_nome) fd.append("cliente_nome", opts.cliente_nome);
+  if (opts?.cnj_hint) fd.append("cnj_hint", opts.cnj_hint);
+  if (opts?.produto) fd.append("produto", opts.produto);
+  if (opts?.observacao) fd.append("observacao", opts.observacao);
+  const res = await apiFetch("/api/v1/classificador/lotes/quick-pdf", {
+    method: "POST",
+    body: fd,
+  });
+  return expectJson<ClassificadorQuickPdfResult>(res);
+}
+
 export async function uploadClassificadorProcessoPdf(
   loteId: number,
   file: File,
