@@ -63,14 +63,94 @@ aprovisionamento (CPC 25: remota=0, possivel=0, provavel=valor_estimado),
 fundamentacao_risco.
 
 ## Patrocinio (regras MDR/Master)
-Ver bloco `patrocinio` no schema. Crossref CNPJ contra lista de
-vinculadas Master da user message. Anti-falso-positivo do PI permanece:
-advogado linkado a OUTRO reu (nao Master) nao conta.
 
-## Contestacao existente
-Ver bloco `contestacao_existente`. Detecta contestacao ja apresentada,
-quem apresentou (MDR via Marcos Delli ou outro escritorio), qualidade
-(generica vs customizada).
+Ver bloco `patrocinio` no schema. Crossref CNPJ contra lista de
+vinculadas Master da user message.
+
+⚠️ **REGRA CRITICA — habilitacao em multi-reu**: em processo com varios
+reus (Banco Master + Daycoval + Will + etc.), CADA reu tem suas proprias
+habilitacoes. Pra esse bloco SO conta advogado que se habilitou
+representando MASTER OU UMA VINCULADA da lista (cross-CNPJ obrigatorio).
+Confirme por **uma das duas evidencias** antes de marcar
+`outro_advogado_*` ou `suspeita_devolucao=true`:
+
+  1. Frase explicita da habilitacao/contestacao do advogado externo se
+     identificando como representante de Master/vinculada — exemplos:
+     *"habilita-se nos autos como patrono de BANCO MASTER S/A..."*,
+     *"vem, respeitosamente, BANCO MASTER MULTIPLO S.A., por seu
+     advogado abaixo assinado..."*; OU
+  2. Bloco estruturado da capa: `polo_passivo[i].documento` (CNPJ) casa
+     com uma vinculada da lista E o advogado consta em
+     `polo_passivo[i].advogados`.
+
+Se NAO ha evidencia de vinculo, `decisao=MDR_ADVOCACIA` +
+`suspeita_devolucao=false`. Documente em `fundamentacao` os advogados
+de OUTROS reus que foram desconsiderados (Banco Daycoval — adv. X;
+Banco Will — adv. Y, etc.) pra confirmar que voce leu a estrutura
+per-party direito.
+
+**Advogado interno MDR** (NUNCA marcar como outro escritorio):
+- **Marcos Delli** (variacoes: "Marcos Delli", "MARCOS DELLI", "Marcos D.
+  de Sousa", "M. Delli") — quando ele habilita pela Master, e' MDR.
+
+**Data de corte: 18/03/2026** (inicio do contrato MDR/Master). Habilitacao
+de advogado Master DIFERENTE de Marcos Delli com data ≤ corte →
+`OUTRO_ESCRITORIO` + `suspeita_devolucao=true`.
+
+## Contestacao existente (regra forte em multi-reu + criterio mecanico)
+
+Ver bloco `contestacao_existente`. Detecta contestacao ja apresentada
+no processo.
+
+⚠️ **REGRA CRITICA — contestacao em multi-reu**: em processo com varios
+reus, e' comum ter 3-5 contestacoes (uma por banco/empresa). Pra esse
+bloco SO conta contestacao defendendo MASTER OU VINCULADA da lista
+(cross-CNPJ obrigatorio via cabecalho da peca + polo passivo da capa).
+
+Identifique a parte representada pelo **cabecalho/qualificacao** da
+contestacao:
+- *"vem, respeitosamente, BANCO MASTER S/A, por seu advogado abaixo
+  assinado, apresentar CONTESTACAO..."* → conta (Master)
+- *"vem, BANCO DAYCOVAL S/A, ... apresentar contestacao..."* → IGNORE
+  (nao e' Master/vinculada)
+
+Se MULTIPLAS contestacoes do Master/vinculada → pegue a MAIS RECENTE.
+Se NENHUMA → `existe=false` mesmo que haja contestacoes de outros reus.
+
+`parte_representada`: nome literal da vinculada conforme a peca (ex.:
+"BANCO MASTER S.A.", "Banco Master Multiplo S.A.", "Master Patrimonial
+LTDA"). Tem que casar com algum nome da lista de vinculadas.
+
+`apresentada_por_mdr`: TRUE se assinatura/qualificacao traz Marcos Delli
+(em qualquer variacao). FALSE se for outro advogado. NULL se peca sem
+assinatura legivel ou truncada.
+
+### `generica` — REGRA MECANICA (NAO avalie conteudo da peca)
+
+Olhe a JUNTADA da contestacao na timeline da integra. Considere apenas
+os DOCUMENTOS PROBATORIOS — IGNORE estes documentos burocraticos:
+- Procuracao
+- Substabelecimento
+- Petição/Carta de habilitacao
+- Carta de preposicao
+- Documento de identificacao (RG, CPF, contrato social, cartao CNPJ)
+
+**Regra**:
+- Contestacao juntada com pelo menos 1 documento probatorio (extrato,
+  contrato, comprovante, laudo, gravacao, e-mail, foto, planilha,
+  midia, parecer) → `generica=false`.
+- Contestacao juntada SOZINHA, OU acompanhada apenas de docs
+  burocraticos → `generica=true`.
+- Truncada/integra cortada → `generica=null`.
+
+**NAO** avalie tamanho da peca, citacao ao autor, teses invocadas ou
+qualidade do texto. Criterio e' MECANICO — presenca/ausencia de doc
+probatorio na mesma juntada.
+
+`analise_qualidade`: 1-3 frases descrevendo APENAS o que voce observou
+sobre a JUNTADA (ex.: *"Contestacao juntada com extratos e contrato.
+Anexou comprovante de pagamento."* ou *"Contestacao juntada apenas com
+procuracao — sem prova documental."*). Nao opine sobre o merito.
 
 ## Sentenca (NOVO)
 Bloco `sentenca`: existe?, data, tipo (procedente / improcedente /
@@ -82,10 +162,37 @@ procedente/parcial).
 Bloco `transito_julgado`: transitado?, data, fundamentacao (cite a
 certidao de transito ou movimentacao que comprova).
 
-## Primeira habilitacao Master (NOVO)
+## Primeira habilitacao Master (NOVO — multi-reu critico)
+
 Bloco `primeira_habilitacao_master`: qual advogado se habilitou
 PRIMEIRO em nome de uma vinculada Master. Diferente de patrocinio (que
 e' a SUSPEITA atual). Aqui e' o primeiro historicamente.
+
+⚠️ **REGRA CRITICA — habilitacoes em multi-reu**: em processo com
+varios reus, cada reu tem suas proprias habilitacoes. Pra esse bloco SO
+conta habilitacao cujo OUTORGANTE seja Master ou vinculada da lista
+(cross-CNPJ obrigatorio). Ignore habilitacoes em nome de Daycoval,
+Will, BV, Itau, ou qualquer outro reu fora da lista.
+
+**Como identificar**:
+- Procure peticoes com label "Habilitacao", "Petição (Habilitacao)" ou
+  cabecalho contendo *"habilita-se nos autos como patrono de..."*,
+  *"em nome de..."*, *"vem, respeitosamente, [EMPRESA]..."*.
+- Confirme que o **outorgante e' Master ou vinculada** (cruze com
+  nomes/CNPJs da lista da user message).
+- Se varias habilitacoes Master existirem → pegue a MAIS ANTIGA
+  (cronologicamente primeira pela data da peca).
+- Se nenhuma habilitacao Master encontrada (mesmo havendo habilitacoes
+  de outros reus) → `existe=false` e demais campos null.
+
+`advogado_nome`, `advogado_oab`, `escritorio_nome` vem do cabecalho da
+peca de habilitacao. `data_habilitacao` da peticao. `parte_representada`
+e' o NOME literal da vinculada Master conforme a peca (tem que casar com
+algum nome da lista).
+
+**Marcos Delli pode aparecer aqui**: se ele foi o primeiro a se habilitar
+pelo Master, registra com nome dele. Aqui nao filtramos Marcos Delli
+(isso e' do bloco `patrocinio.outro_advogado_*`, nao deste).
 
 ## Analise estrategica
 2-3 frases consolidando: prob. exito do MDR, tese principal,
