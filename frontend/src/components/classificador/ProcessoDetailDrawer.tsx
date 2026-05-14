@@ -441,7 +441,15 @@ export default function ProcessoDetailDrawer({
                 <Field label="Source intake ID (PI)" value={data.source_intake_id} mono />
                 <Field label="PDF filename" value={data.pdf_filename_original} />
                 <Field label="PDF SHA256" value={data.pdf_sha256 ? `${data.pdf_sha256.slice(0, 16)}...` : null} mono />
-                <Field label="PDF bytes" value={data.pdf_bytes != null ? `${(data.pdf_bytes / 1024).toFixed(1)} KB` : null} />
+                <Field label="PDF bytes (original)" value={data.pdf_bytes != null ? `${(data.pdf_bytes / 1024).toFixed(1)} KB` : null} />
+                <Field
+                  label="PDF binario"
+                  value={
+                    data.pdf_path
+                      ? <Badge variant="default">Mantido no volume</Badge>
+                      : <Badge variant="outline">Descartado (JSON preserved)</Badge>
+                  }
+                />
                 <Field label="Extractor mecanico" value={data.extractor_used} />
                 <Field label="Confidence extracao" value={data.extraction_confidence} />
                 <Field label="PDF falhou?" value={fmtBool(data.pdf_extraction_failed)} />

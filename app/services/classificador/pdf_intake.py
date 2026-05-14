@@ -39,6 +39,7 @@ from app.models.classificador import (
     SOURCE_API_JSON,
     SOURCE_UPLOAD_XLSX,
 )
+from app.core.config import settings
 from app.services.classificador.pdf_compressor import compress_pdf
 from app.services.prazos_iniciais.pdf_extractor import (
     ExtractionResult,
@@ -46,6 +47,7 @@ from app.services.prazos_iniciais.pdf_extractor import (
 )
 from app.services.prazos_iniciais.storage import (
     PdfValidationError,
+    delete_pdf,
     save_pdf,
 )
 
@@ -115,27 +117,34 @@ def ingest_pdf(
             "Crie um novo lote pra continuar."
         )
 
-    # 2. Comprime PDF (best-effort, mantem 100% do texto). Se falhar
-    # ou nao gerar ganho, usa bytes originais.
+    # 2. Comprime PDF (best-effort). Skip pra arquivos muito grandes
+    # (>20MB default) — pikepdf demora 20-40s e como cleanup imediato
+    # vai apagar de qualquer jeito, e' desperdicio.
+    import time
+    t0 = time.time()
     compression = compress_pdf(pdf_bytes)
     final_bytes = compression.output_bytes
+    t_compress = time.time() - t0
 
     # 3. Persiste PDF (comprimido se houve ganho) no volume.
+    t0 = time.time()
     try:
         stored = save_pdf(final_bytes)
     except PdfValidationError:
         raise  # bubble pro endpoint (vai retornar 400)
+    t_save = time.time() - t0
 
     logger.info(
-        "Classificador.intake_pdf: lote=%s, sha256=%s, size=%dB "
-        "(compress: %s -%.1f%%), filename=%r",
-        lote_id, stored.sha256[:8], stored.size_bytes,
-        compression.tool, compression.saved_pct, pdf_filename,
+        "Classificador.intake_pdf: lote=%s sha=%s size=%dB filename=%r "
+        "[compress=%s -%.1f%% (%.1fs) save=%.1fs]",
+        lote_id, stored.sha256[:8], stored.size_bytes, pdf_filename,
+        compression.tool, compression.saved_pct, t_compress, t_save,
     )
 
-    # 3. Extracao mecanica (reusa motor do PI) — usa bytes comprimidos
+    # 4. Extracao mecanica (reusa motor do PI) — usa bytes comprimidos
     # ja que sao identicos textualmente ao original (pikepdf nao mexe
     # em texto). Economia: 1 leitura a mais nao tem.
+    t0 = time.time()
     try:
         result: ExtractionResult = extract(final_bytes)
     except Exception as exc:  # noqa: BLE001
@@ -150,10 +159,18 @@ def ingest_pdf(
             error_message=f"Erro inesperado no extractor: {type(exc).__name__}",
         )
 
-    # 4. Resolve CNJ final — extractor > hint > None
+    t_extract = time.time() - t0
+    logger.info(
+        "Classificador.intake_pdf: extract done lote=%s sha=%s [extract=%.1fs "
+        "tool=%s conf=%s success=%s]",
+        lote_id, stored.sha256[:8], t_extract,
+        result.extractor_used, result.confidence, result.success,
+    )
+
+    # 5. Resolve CNJ final — extractor > hint > None
     cnj_final = result.cnj_number or cnj_hint or None
 
-    # 5. Decide status inicial do processo
+    # 6. Decide status inicial do processo
     if result.success:
         status_inicial = PROC_STATUS_READY  # PRONTO_PARA_CLASSIFICAR
         error_msg = None
@@ -163,9 +180,14 @@ def ingest_pdf(
         error_msg = result.error_message
         pdf_extraction_failed = True
 
-    # 6. Persiste processo — inclui stats de compressao no metadata
+    # 7. Persiste processo — inclui stats de compressao no metadata
     meta_final = dict(metadata or {})
     meta_final["compression"] = compression.to_dict()
+    meta_final["timings"] = {
+        "compress_seconds": round(t_compress, 2),
+        "save_seconds": round(t_save, 2),
+        "extract_seconds": round(t_extract, 2),
+    }
 
     proc = ClassificadorProcesso(
         lote_id=lote_id,
@@ -199,7 +221,7 @@ def ingest_pdf(
     db.add(proc)
     db.flush()  # garante proc.id
 
-    # 7. Atualiza contadores desnormalizados do lote
+    # 8. Atualiza contadores desnormalizados do lote
     lote.total_processos = (lote.total_processos or 0) + 1
     if result.success:
         lote.total_processos_capturados = (lote.total_processos_capturados or 0) + 1
@@ -212,12 +234,41 @@ def ingest_pdf(
     lote.source_summary = source_summary
 
     db.commit()
+
+    # 9. CLEANUP — se extracao OK e flag de retencao desligada (default),
+    # descarta o PDF binario do volume. capa_json + integra_json no DB
+    # sao tudo que precisamos pra reclassificar/reprocessar. Mantem
+    # sha256+bytes como auditoria.
+    if result.success and not settings.classificador_keep_pdf_after_success:
+        try:
+            delete_pdf(stored.relative_path)
+            # Marca no metadata + zera pdf_path no DB
+            meta_after = dict(proc.metadata_json or {})
+            meta_after["pdf_discarded_at"] = datetime.utcnow().isoformat()
+            meta_after["pdf_discarded_reason"] = "auto_after_extraction_success"
+            proc.metadata_json = meta_after
+            proc.pdf_path = None
+            db.commit()
+            logger.info(
+                "Classificador.intake_pdf: PDF descartado proc=#%s sha=%s "
+                "(%d KB liberados)",
+                proc.id, stored.sha256[:8], stored.size_bytes // 1024,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Falha no cleanup nao bloqueia — PDF fica orfao no volume mas
+            # processo segue normalmente. Worker periodico futuro pode
+            # varrer pdf_path != None pra processos com sucesso.
+            logger.warning(
+                "Classificador.intake_pdf: falha descartando PDF proc=#%s: %s",
+                proc.id, exc,
+            )
+
     db.refresh(proc)
 
     logger.info(
         "Classificador.intake_pdf: processo #%s criado (status=%s, "
-        "extractor=%s, confidence=%s, cnj=%s)",
+        "extractor=%s, confidence=%s, cnj=%s, pdf_kept=%s)",
         proc.id, proc.status, proc.extractor_used,
-        proc.extraction_confidence, cnj_final,
+        proc.extraction_confidence, cnj_final, proc.pdf_path is not None,
     )
     return proc

@@ -77,9 +77,19 @@ def compress_pdf(pdf_bytes: bytes) -> CompressionResult:
     if not settings.classificador_compression_enabled:
         return _no_op(pdf_bytes, tool="skipped_disabled")
 
-    threshold_bytes = settings.classificador_compression_min_kb * 1024
-    if len(pdf_bytes) < threshold_bytes:
+    threshold_min_bytes = settings.classificador_compression_min_kb * 1024
+    if len(pdf_bytes) < threshold_min_bytes:
         return _no_op(pdf_bytes, tool="skipped_small")
+
+    # Skip arquivos muito grandes — pikepdf demora 20-40s+ pra comprimir
+    # 30+MB e como cleanup imediato apaga depois, gasta tempo a toa.
+    threshold_max_bytes = settings.classificador_compression_max_kb * 1024
+    if len(pdf_bytes) > threshold_max_bytes:
+        logger.info(
+            "pdf_compressor: skip (size=%dKB > max=%dKB) — vai apagar mesmo",
+            len(pdf_bytes) // 1024, settings.classificador_compression_max_kb,
+        )
+        return _no_op(pdf_bytes, tool="skipped_too_large")
 
     start = time.time()
     try:

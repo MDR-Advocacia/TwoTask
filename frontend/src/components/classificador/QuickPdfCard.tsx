@@ -348,7 +348,7 @@ export default function QuickPdfCard({ onCreated }: Props) {
                     <div className="flex items-center gap-2">
                       <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-600" />
                       <span className="font-medium text-blue-900">
-                        Enviando {progress.current} de {progress.total}...
+                        Processando {progress.current} de {progress.total}...
                       </span>
                     </div>
                     <div className="mt-1.5 h-1.5 w-full rounded-full bg-blue-200 overflow-hidden">
@@ -356,6 +356,10 @@ export default function QuickPdfCard({ onCreated }: Props) {
                         className="h-full bg-blue-600 transition-all"
                         style={{ width: `${(progress.current / progress.total) * 100}%` }}
                       />
+                    </div>
+                    <div className="mt-1.5 text-[10px] text-blue-700">
+                      Cada PDF passa por upload + extração mecânica. PDFs de 30MB+ podem levar até 1 min cada.
+                      Não feche a aba.
                     </div>
                   </div>
                 )}

@@ -143,8 +143,21 @@ class Settings(BaseSettings):
     # Skip arquivos abaixo desse limite (em KB) — nao vale a pena
     # processar PDFs pequenos.
     classificador_compression_min_kb: int = 2048  # 2MB
+    # Skip arquivos ACIMA desse limite — pikepdf demora 20-40s pra
+    # comprimir PDFs de 30+MB, e como o cleanup imediato deleta o PDF
+    # logo apos extracao, nao vale a pena pagar esse custo. Salva 20-40s
+    # por PDF grande no quick-pdf.
+    classificador_compression_max_kb: int = 20480  # 20MB
     # Se compressao piorar OU pikepdf der erro, volta ao bytes originais
     # silenciosamente. NAO bloqueia o intake.
+
+    # ─── Classificador — retencao de PDFs ──────────────────────────────
+    # Default: descarta o PDF imediatamente apos extracao mecanica OK.
+    # Capa_json + integra_json + classificacao_response_json ficam no DB.
+    # Pdf_sha256 + pdf_bytes mantem-se como auditoria. Pra reclassificar
+    # ou reprocessar, basta o integra_json (nao precisa do PDF binario).
+    # Mude pra True se quiser manter o binario por mais tempo (mais disco).
+    classificador_keep_pdf_after_success: bool = False
 
     # ─── Classificador — webhook callback ──────────────────────────────
     # URL pra notificar quando lote vira CLASSIFICADO (robo de entrega

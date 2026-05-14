@@ -48,7 +48,7 @@ from app.services.classificador.pdf_intake import (
     SOURCE_PDF_ROBOT_API,
     ingest_pdf,
 )
-from app.services.prazos_iniciais.storage import resolve_pdf_path
+from app.services.prazos_iniciais.storage import delete_pdf, resolve_pdf_path
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +150,17 @@ def _process_group(
             p.processo_id = proc.id
             p.processed_at = datetime.now(timezone.utc)
             sucessos += 1
+            # Descarta o PDF do pending storage (ja foi processado +
+            # ingest_pdf criou copia propria no volume com seu sha;
+            # esse aqui era so' staging temporario).
+            try:
+                if p.pdf_path:
+                    delete_pdf(p.pdf_path)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "pending_worker: falha deletando pending PDF %s: %s",
+                    p.pdf_path, exc,
+                )
         except Exception as exc:  # noqa: BLE001
             logger.exception("pending_worker: ingest_pdf falhou pra pending=%s", p.id)
             p.status = PENDING_STATUS_ERRO
