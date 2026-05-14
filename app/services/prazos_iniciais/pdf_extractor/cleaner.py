@@ -149,6 +149,117 @@ _RE_DOCUMENTOS_HEADER = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 
+# ─── Carimbo invertido do eSAJ TJSP (barra lateral rotacionada 180°) ──
+# O eSAJ Pasta Digital tem uma barra lateral em cada página com o carimbo
+# de assinatura digital + URL de conferência. O pdfplumber não sabe ler
+# texto rotacionado e devolve o conteúdo INVERTIDO caractere a caractere.
+#
+# Padrão observado (em 2 PDFs reais — calibrado contra TJSP):
+#   .NNNNNNNNNNNNNNNNNNNN          ← código numérico do processo invertido
+#   oremún                          ← "número" reverso
+#   o
+#   bos                             ← "sob" reverso
+#   ,
+#   HH:MM
+#   sà                              ← "às" reverso
+#   AAAA/MM/DD                      ← data invertida (já fica no formato YYYY/MM/DD por casualidade)
+#   me                              ← "em" reverso
+#   odalocotorp                     ← "protocolado" reverso
+#   ,oluaP oaS ed odatsE od acitsuJ ed lanubirT e
+#   <NOME EM CAIXA ALTA, INVERTIDO>
+#   rop etnemlatigid odanissa       ← "assinado digitalmente por" reverso
+#   ,lanigiro od aipóc é otnemucod etsE
+#   .<código alfanumérico>          ← código de validação
+#   ogidóc e                        ← "e código" reverso
+#   <CNJ invertido>
+#   ossecorp o emrofni              ← "informe o processo" reverso
+#   ,od.otnemucoDaicnerefnoCrirba/gp/latigidatsap/rb.suj.psjt.jase//:sptth
+#   etis o esseca
+#   ,lanigiro o rirefnoc araP       ← "Para conferir o original," reverso (último token)
+#
+# Estratégia: detectar a âncora `araP` (= "Para" reverso, último token do
+# bloco) e remover do início do bloco (~30 linhas atrás) até ela.
+# Usamos a sequência única `,lanigiro\s+o\s+rirefnoc\s+araP` como âncora
+# final e ancoramos no início com a sequência `oremún\s+o\s+bos` (= "sob
+# o número" reverso), que é estável e inicia o bloco.
+
+_RE_CARIMBO_INVERTIDO_ESAJ = re.compile(
+    # Tudo entre "oremún\no\nbos" e "araP" (com Para nas variações de
+    # caps que podem aparecer). re.DOTALL pra atravessar \n.
+    r"oremún\s*\n\s*o\s*\n\s*bos[\s\S]+?\baraP\b",
+    re.IGNORECASE,
+)
+
+# Caso o bloco esteja parcial (ex.: corte na truncagem) — remover linhas
+# residuais reconhecíveis isoladamente:
+_RE_CARIMBO_RESIDUAL = re.compile(
+    r"^\s*(oremún|odalocotorp|me|odanissa|etnemlatigid|otnemucod|etsE|"
+    r"lanigiro|aipóc|ogidóc|ossecorp|emrofni|etis|esseca|rirefnoc|araP|"
+    r"oluaP|oaS|odatsE|acitsuJ|lanubirT)\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+# URL invertida do eSAJ (`rb.suj.psjt.jase//:sptth` etc.)
+_RE_URL_ESAJ_INVERTIDA = re.compile(
+    r"^\s*[,]?od\.otnemucoDaicnerefnoCrirba/gp/latigidatsap/rb\.suj\.[a-z]{2,4}jt\.jase//:sptth\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+# URL normal do eSAJ (não invertida) — costuma aparecer em assinaturas
+# digitais e cabeçalhos. Já temos _RE_URL_VALIDACAO mas só pega URLs
+# isoladas na linha; aqui adicionamos uma variante mais permissiva pra
+# pegar URLs concatenadas com outro texto:
+_RE_URL_ESAJ_PASTADIGITAL = re.compile(
+    r"https?://esaj\.[a-z]{2,4}jt\.jus\.br/pastadigital/[^\s]*",
+    re.IGNORECASE,
+)
+
+# Códigos de validação isolados (`.FlJPfMe0`, `.XrYy9Xqi`, etc.)
+# Pattern: ponto inicial + 5-12 chars alfanuméricos misturados.
+_RE_CODIGO_VALIDACAO_ESAJ = re.compile(
+    r"^\s*\.[a-zA-Z0-9]{5,12}\s*$",
+    re.MULTILINE,
+)
+
+# CNJ invertido (ex.: `3500.62.8.5202.47-6186211`)
+# Pattern: dígitos.dígitos.dígitos.dígitos.dígitos-dígitos (formato espelhado)
+_RE_CNJ_INVERTIDO = re.compile(
+    r"^\s*\d{4}\.\d{2}\.\d\.\d{4}\.\d{2}-\d{7}\s*$",
+    re.MULTILINE,
+)
+
+
+# ─── Header repetido (heurística genérica) ─────────────────────────
+# Cabeçalho do escritório/firma costuma aparecer em CADA página da peça.
+# Padrão típico: 1-3 linhas curtas (<60 chars) em CAIXA ALTA OU mistura
+# Title Case repetindo várias vezes.
+# Estratégia: contar ocorrências e remover linhas que aparecem ≥5x no
+# texto inteiro e têm <80 chars (não pega parágrafos legítimos).
+
+
+def _strip_repeated_short_lines(text: str, min_repeats: int = 5,
+                                max_len: int = 80) -> str:
+    """Remove linhas curtas que se repetem N+ vezes (cabeçalho/footer).
+
+    Conservador:
+      - só remove linhas com <= max_len caracteres (não pega parágrafos)
+      - precisa repetir min_repeats+ vezes
+      - linhas vazias e numéricas puras não contam
+    """
+    from collections import Counter
+    lines = text.split("\n")
+    stripped_lines = [ln.strip() for ln in lines]
+    counter = Counter(
+        ln for ln in stripped_lines
+        if ln and len(ln) <= max_len and not ln.isdigit()
+    )
+    blacklist = {ln for ln, n in counter.items() if n >= min_repeats}
+    if not blacklist:
+        return text
+    out = [ln for ln, s in zip(lines, stripped_lines) if s not in blacklist]
+    return "\n".join(out)
+
+
 # ─── Reflow ─────────────────────────────────────────────────────────
 # Junta uma quebra de linha quando a próxima linha começa em minúscula
 # (provável continuação de parágrafo). Conservador: não junta se a
@@ -165,6 +276,16 @@ def clean_document_text(text: str) -> str:
     """
     if not text:
         return text
+
+    # Carimbo invertido do eSAJ (barra lateral rotacionada) — ALVO PRIMEIRO
+    # porque é um bloco grande (~30 linhas) e remover ele cedo simplifica
+    # o restante. re.DOTALL é implícito pelo padrão.
+    text = _RE_CARIMBO_INVERTIDO_ESAJ.sub("", text)
+    text = _RE_URL_ESAJ_INVERTIDA.sub("", text)
+    text = _RE_URL_ESAJ_PASTADIGITAL.sub("", text)
+    text = _RE_CODIGO_VALIDACAO_ESAJ.sub("", text)
+    text = _RE_CNJ_INVERTIDO.sub("", text)
+    text = _RE_CARIMBO_RESIDUAL.sub("", text)
 
     # Carimbos de assinatura (PJe, eproc, PROJUDI, eSAJ)
     text = _RE_ASSINADO.sub("", text)
@@ -197,6 +318,12 @@ def clean_document_text(text: str) -> str:
     text = _RE_TJBA_PJE.sub("", text)
     text = _RE_PARTES_ADVOGADOS.sub("", text)
     text = _RE_DOCUMENTOS_HEADER.sub("", text)
+
+    # Header/footer repetido por página (escritório, endereço, telefone).
+    # Heurística genérica: linhas curtas que aparecem 5+ vezes no doc.
+    # Aplicado APÓS as regex de carimbo invertido pra não contar essas
+    # linhas (já foram removidas).
+    text = _strip_repeated_short_lines(text)
 
     # Reflow + colapso de linhas em branco
     text = _RE_REFLOW.sub(r"\1 \2", text)

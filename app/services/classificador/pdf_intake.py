@@ -203,6 +203,15 @@ def ingest_pdf(
             # source_intake_id + classificacao IA por default)
             existing.capa_json = result.capa_json or existing.capa_json or {}
             existing.integra_json = result.integra_json or existing.integra_json or {}
+            # Copia polo_ativo/polo_passivo do capa_json pras colunas
+            # separadas (UI/serializer leem direto dessas colunas).
+            if isinstance(existing.capa_json, dict):
+                pa_new = existing.capa_json.get("polo_ativo")
+                pp_new = existing.capa_json.get("polo_passivo")
+                if pa_new is not None:
+                    existing.polo_ativo = pa_new
+                if pp_new is not None:
+                    existing.polo_passivo = pp_new
             existing.lawsuit_id = (
                 getattr(existing.capa_json, "get", lambda k: None)("lawsuit_id")
                 if isinstance(existing.capa_json, dict) else existing.lawsuit_id
@@ -257,6 +266,12 @@ def ingest_pdf(
         "extract_seconds": round(t_extract, 2),
     }
 
+    # Extrai partes do capa_json pras colunas separadas (UI/serializer
+    # leem direto delas; eles ficavam null antes do fix).
+    _cap = result.capa_json or {}
+    _pa = _cap.get("polo_ativo") if isinstance(_cap, dict) else None
+    _pp = _cap.get("polo_passivo") if isinstance(_cap, dict) else None
+
     proc = ClassificadorProcesso(
         lote_id=lote_id,
         source=source,
@@ -266,7 +281,9 @@ def ingest_pdf(
         external_id=external_id,
         produto=produto,
 
-        capa_json=result.capa_json or {},
+        capa_json=_cap,
+        polo_ativo=_pa,
+        polo_passivo=_pp,
         integra_json=result.integra_json or {},
         metadata_json=meta_final,
 

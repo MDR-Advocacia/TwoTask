@@ -2407,6 +2407,37 @@ export async function classifyClassificadorLote(
   return expectJson(res);
 }
 
+export async function cleanupClassificadorPedidosDuplicados(
+  loteId: number,
+): Promise<{
+  lote_id: number;
+  processos_afetados: number;
+  pedidos_removidos: number;
+  total_processos_no_lote: number;
+}> {
+  const res = await apiFetch(
+    `/api/v1/classificador/lotes/${loteId}/cleanup-pedidos-duplicados`,
+    { method: "POST" },
+  );
+  return expectJson(res);
+}
+
+export async function backfillClassificadorPartes(
+  loteId: number,
+): Promise<{
+  lote_id: number;
+  total_processos_no_lote: number;
+  atualizados: number;
+  com_partes_em_capa: number;
+  sem_capa_json: number;
+}> {
+  const res = await apiFetch(
+    `/api/v1/classificador/lotes/${loteId}/backfill-partes`,
+    { method: "POST" },
+  );
+  return expectJson(res);
+}
+
 export async function fetchClassificadorBatches(
   loteId: number,
 ): Promise<{ total: number; items: ClassificadorBatchSummary[] }> {

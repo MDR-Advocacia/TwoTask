@@ -41,6 +41,7 @@ from app.models.classificador import (
     LOTE_STATUS_CLASSIFIED,
     LOTE_STATUS_CLASSIFYING,
     PROC_STATUS_CLASSIFIED,
+    PROC_STATUS_CLASSIFYING,
     PROC_STATUS_ERROR_CLASSIFICATION,
     PROC_STATUS_READY,
 )
@@ -203,12 +204,16 @@ class ClassificadorBatchClassifier:
         batch.anthropic_batch_id = response.get("id")
         batch.anthropic_status = response.get("processing_status")
 
-        # Amarra processos ao batch + move lote
+        # Amarra processos ao batch + move pra EM_CLASSIFICACAO
+        # CRITICO: precisa sair do status READY pra evitar que /classify
+        # ou o worker colete o mesmo processo de novo enquanto o batch
+        # ainda nao foi aplicado — isso causava duplicacao de pedidos
+        # (cada apply_batch_results redundante chamava _materialize e
+        # criava N pedidos novos).
         for proc in processos:
             proc.classification_batch_id = batch.id
+            proc.status = PROC_STATUS_CLASSIFYING
             proc.error_message = None
-            # status PRONTO_PARA_CLASSIFICAR fica — quando o batch terminar
-            # e apply_batch_results rodar, vira CLASSIFICADO
 
         # Move lote pra CLASSIFICANDO
         lote = self.db.query(ClassificadorLote).filter(
@@ -314,6 +319,18 @@ class ClassificadorBatchClassifier:
                 skipped += 1
                 continue
 
+            # Idempotencia: so aplica em processos que estao EM_CLASSIFICACAO.
+            # Se ja foi aplicado (CLASSIFICADO) ou veio reset (READY), skipa
+            # — evita duplicar pedidos em apply_batch_results consecutivos
+            # (ex.: worker dispara 2x o mesmo batch_id ja aplicado).
+            if proc.status not in (PROC_STATUS_CLASSIFYING, PROC_STATUS_READY):
+                logger.info(
+                    "Classificador: skipando proc=%s status=%s (ja aplicado ou nao elegivel)",
+                    processo_id, proc.status,
+                )
+                skipped += 1
+                continue
+
             try:
                 response_obj = self._extract_response(item)
             except Exception as exc:
@@ -353,10 +370,13 @@ class ClassificadorBatchClassifier:
         if lote:
             self._update_lote_aggregates(lote)
             # Move lote pra CLASSIFICADO se nao tem mais processos pendentes
+            # (READY = nao submetido; CLASSIFYING = batch ainda rodando).
             pending = (
                 self.db.query(ClassificadorProcesso)
                 .filter(ClassificadorProcesso.lote_id == lote.id)
-                .filter(ClassificadorProcesso.status == PROC_STATUS_READY)
+                .filter(ClassificadorProcesso.status.in_(
+                    (PROC_STATUS_READY, PROC_STATUS_CLASSIFYING)
+                ))
                 .count()
             )
             if pending == 0:
@@ -491,9 +511,16 @@ class ClassificadorBatchClassifier:
                 mode="json"
             )
 
-        # Pedidos — limpa antigos + recria
-        for old in list(proc.pedidos):
-            self.db.delete(old)
+        # Pedidos — limpa antigos + recria.
+        # DELETE via query (mais robusto que `for old in proc.pedidos`
+        # — esse padrao confia no cache da relationship, que pode estar
+        # estale entre apply_batch_results consecutivos). Issue: lote
+        # com pedidos duplicados quando submit_batch foi chamado N vezes
+        # antes do bug de status ser corrigido.
+        self.db.query(ClassificadorPedido).filter(
+            ClassificadorPedido.processo_id == proc.id
+        ).delete(synchronize_session=False)
+        self.db.flush()
         for ped in resp.pedidos:
             new_ped = ClassificadorPedido(
                 processo_id=proc.id,

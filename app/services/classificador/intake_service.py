@@ -36,6 +36,30 @@ from app.models.classificador import (
     SOURCE_UPLOAD_XLSX,
 )
 from app.models.prazo_inicial import PrazoInicialIntake
+
+
+def _partes_do_capa(capa_json):
+    """Devolve (polo_ativo, polo_passivo) lidos do capa_json.
+
+    Os extractors do PI (PJe/eproc/PROJUDI/TJSP-eproc/eSAJ) ja extraem
+    partes mecanicamente e gravam dentro do capa_json sob essas chaves.
+    Esse helper extrai pras COLUNAS separadas do ClassificadorProcesso
+    (proc.polo_ativo, proc.polo_passivo) — pra UI renderizar e pra IA
+    receber estruturado.
+
+    Aceita capa em formato lista (PJe-style) ou string (eSAJ legacy).
+    """
+    if not isinstance(capa_json, dict):
+        return None, None
+    pa = capa_json.get("polo_ativo")
+    pp = capa_json.get("polo_passivo")
+    # Sanity: aceita lista de dicts OU string OU None. Tipos invalidos
+    # viram None (pra nao quebrar UI ou serializacao).
+    if pa is not None and not isinstance(pa, (list, str)):
+        pa = None
+    if pp is not None and not isinstance(pp, (list, str)):
+        pp = None
+    return pa, pp
 from app.services.classificador.xlsx_reader import (
     XlsxHeaderError,
     read_classificador_xlsx,
@@ -338,6 +362,11 @@ def merge_into_existing_lote(
             existing.integra_json = intake.integra_json or {}
             existing.natureza_processo = getattr(intake, "natureza_processo", None)
             existing.produto = getattr(intake, "produto", None)
+            # Copia polo_ativo/polo_passivo do capa_json pras colunas
+            # separadas (que a UI/serializer leem direto).
+            pa, pp = _partes_do_capa(intake.capa_json)
+            existing.polo_ativo = pa
+            existing.polo_passivo = pp
             if reset_classification:
                 existing.categoria_id = None
                 existing.subcategoria_id = None
@@ -356,6 +385,7 @@ def merge_into_existing_lote(
             atualizados += 1
         else:
             # Cria novo (copia capa+integra do PI tambem — ja extraidos la)
+            pa, pp = _partes_do_capa(intake.capa_json)
             proc = ClassificadorProcesso(
                 lote_id=lote_id,
                 source=SOURCE_PRAZOS_INICIAIS,
@@ -364,6 +394,8 @@ def merge_into_existing_lote(
                 lawsuit_id=intake.lawsuit_id,
                 external_id=intake.external_id,
                 capa_json=intake.capa_json or {},
+                polo_ativo=pa,
+                polo_passivo=pp,
                 integra_json=intake.integra_json or {},
                 natureza_processo=getattr(intake, "natureza_processo", None),
                 produto=getattr(intake, "produto", None),
@@ -501,6 +533,7 @@ def create_lote_from_prazos_iniciais(
         # (extraidos pelo motor mecanico do PI). Copia direto e marca
         # PRONTO_PARA_CLASSIFICAR — pula a fase de refresh L1 (que e' stub).
         has_data = bool(intake.capa_json or intake.integra_json)
+        pa, pp = _partes_do_capa(intake.capa_json)
         proc = ClassificadorProcesso(
             lote_id=lote.id,
             source=SOURCE_PRAZOS_INICIAIS,
@@ -510,6 +543,8 @@ def create_lote_from_prazos_iniciais(
             external_id=intake.external_id,
             # Copia dados do PI direto — eles ja foram extraidos mecanicamente la
             capa_json=intake.capa_json or {},
+            polo_ativo=pa,
+            polo_passivo=pp,
             integra_json=intake.integra_json or {},
             natureza_processo=getattr(intake, "natureza_processo", None),
             produto=getattr(intake, "produto", None),

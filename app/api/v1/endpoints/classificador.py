@@ -1187,10 +1187,20 @@ def get_processo_detail(
         "lawsuit_id": proc.lawsuit_id,
         "external_id": proc.external_id,
 
-        # Capa + integra
+        # Capa + integra — fallback pra capa_json.polo_ativo/passivo se a
+        # coluna separada estiver null (processos antigos, antes do fix
+        # que populava as colunas; resolvido via /backfill-partes).
         "capa_json": proc.capa_json,
-        "polo_ativo": proc.polo_ativo,
-        "polo_passivo": proc.polo_passivo,
+        "polo_ativo": (
+            proc.polo_ativo
+            if proc.polo_ativo is not None
+            else (proc.capa_json.get("polo_ativo") if isinstance(proc.capa_json, dict) else None)
+        ),
+        "polo_passivo": (
+            proc.polo_passivo
+            if proc.polo_passivo is not None
+            else (proc.capa_json.get("polo_passivo") if isinstance(proc.capa_json, dict) else None)
+        ),
         "integra_json": proc.integra_json,
         "metadata_json": proc.metadata_json,
         "natureza_processo": proc.natureza_processo,
@@ -1708,6 +1718,11 @@ def recapture_lote_from_pi(
         has_data = bool(intake.capa_json or intake.integra_json)
         p.capa_json = intake.capa_json or {}
         p.integra_json = intake.integra_json or {}
+        # Copia polo_ativo/polo_passivo do capa_json (UI/serializer leem
+        # direto das colunas separadas — ficavam null antes do fix).
+        if isinstance(intake.capa_json, dict):
+            p.polo_ativo = intake.capa_json.get("polo_ativo")
+            p.polo_passivo = intake.capa_json.get("polo_passivo")
         p.natureza_processo = getattr(intake, "natureza_processo", None)
         p.produto = getattr(intake, "produto", None)
         # So' marca PRONTO se tem dados E ainda nao foi classificado
@@ -1742,6 +1757,148 @@ def recapture_lote_from_pi(
         "novos_capturados": capturados,
         "nao_encontrados": nao_encontrados,
         "total_capturados_no_lote": total_cap,
+    }
+
+
+@router.post("/lotes/{lote_id}/backfill-partes")
+def backfill_partes_lote(
+    lote_id: int,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth_security.get_current_user),
+):
+    """Preenche proc.polo_ativo / proc.polo_passivo a partir do capa_json.
+
+    Hotfix pra processos criados ANTES do fix que copiava as partes do
+    capa_json pras colunas separadas. Os extractors do PI (PJe/eproc/
+    PROJUDI/TJSP-eproc/eSAJ) ja entregavam polo_ativo/polo_passivo
+    dentro do capa_json, mas o classificador nao copiava pras colunas
+    proc.polo_ativo/polo_passivo — entao a UI/serializer mostravam null.
+
+    Esse endpoint NAO reextrai nada — so' copia do JSON existente.
+    Operacao segura e idempotente: se ja tem valor na coluna e o
+    capa_json nao tem, mantem; se capa_json tem, sobrescreve.
+    """
+    lote = db.query(ClassificadorLote).filter(ClassificadorLote.id == lote_id).first()
+    if lote is None:
+        raise HTTPException(status_code=404, detail=f"Lote #{lote_id} nao encontrado.")
+
+    procs = (
+        db.query(ClassificadorProcesso)
+        .filter(ClassificadorProcesso.lote_id == lote_id)
+        .all()
+    )
+
+    atualizados = 0
+    com_partes = 0
+    sem_capa = 0
+    for p in procs:
+        if not isinstance(p.capa_json, dict):
+            sem_capa += 1
+            continue
+        pa = p.capa_json.get("polo_ativo")
+        pp = p.capa_json.get("polo_passivo")
+        # So sobrescreve se a chave existe no capa_json (nao zera coluna
+        # populada por outra fonte se o capa_json nao tem nada)
+        mudou = False
+        if pa is not None and p.polo_ativo != pa:
+            p.polo_ativo = pa
+            mudou = True
+        if pp is not None and p.polo_passivo != pp:
+            p.polo_passivo = pp
+            mudou = True
+        if mudou:
+            atualizados += 1
+        if pa or pp:
+            com_partes += 1
+
+    db.commit()
+    logger.info(
+        "Classificador: backfill-partes lote=%s, %d processos atualizados (de %d com partes em capa)",
+        lote_id, atualizados, com_partes,
+    )
+
+    return {
+        "lote_id": lote_id,
+        "total_processos_no_lote": len(procs),
+        "atualizados": atualizados,
+        "com_partes_em_capa": com_partes,
+        "sem_capa_json": sem_capa,
+    }
+
+
+@router.post("/lotes/{lote_id}/cleanup-pedidos-duplicados")
+def cleanup_pedidos_duplicados(
+    lote_id: int,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth_security.get_current_user),
+):
+    """Remove pedidos duplicados nos processos do lote.
+
+    Hotfix pra lotes classificados ANTES do fix de status CLASSIFYING.
+    Bug: quando /classify era chamado N vezes pro mesmo lote enquanto o
+    batch ainda rodava, cada apply_batch_results criava um novo conjunto
+    de pedidos sem limpar os anteriores (race condition no cache da
+    relationship). Resultado: 1 processo com (6 pedidos unicos) x (4
+    chamadas) = 24 pedidos.
+
+    Estrategia de cleanup: pra cada processo, identifica conjuntos de
+    pedidos duplicados pela tupla (tipo_pedido, valor_indicado,
+    valor_estimado, fundamentacao_valor) e mantem apenas o de MAIOR id
+    (mais recente). Os demais sao deletados.
+    """
+    from app.models.classificador import ClassificadorPedido
+
+    lote = db.query(ClassificadorLote).filter(ClassificadorLote.id == lote_id).first()
+    if lote is None:
+        raise HTTPException(status_code=404, detail=f"Lote #{lote_id} nao encontrado.")
+
+    procs = (
+        db.query(ClassificadorProcesso)
+        .filter(ClassificadorProcesso.lote_id == lote_id)
+        .all()
+    )
+
+    total_removidos = 0
+    procs_afetados = 0
+    for proc in procs:
+        pedidos = (
+            db.query(ClassificadorPedido)
+            .filter(ClassificadorPedido.processo_id == proc.id)
+            .order_by(ClassificadorPedido.id.asc())
+            .all()
+        )
+        # Agrupa por tupla identificadora; mantem o de maior id (mais recente)
+        seen: dict[tuple, int] = {}
+        ids_pra_remover: list[int] = []
+        for p in pedidos:
+            key = (
+                p.tipo_pedido,
+                str(p.valor_indicado) if p.valor_indicado is not None else None,
+                str(p.valor_estimado) if p.valor_estimado is not None else None,
+                (p.fundamentacao_valor or "")[:200],  # 200 chars bastam pra dedup
+            )
+            if key in seen:
+                # Ja viu — marca o ANTERIOR pra remocao (mantem o novo)
+                ids_pra_remover.append(seen[key])
+            seen[key] = p.id
+        if ids_pra_remover:
+            db.query(ClassificadorPedido).filter(
+                ClassificadorPedido.id.in_(ids_pra_remover)
+            ).delete(synchronize_session=False)
+            total_removidos += len(ids_pra_remover)
+            procs_afetados += 1
+
+    db.commit()
+    logger.info(
+        "Classificador: cleanup lote=%s, removidos=%d pedidos duplicados em %d processos",
+        lote_id, total_removidos, procs_afetados,
+    )
+
+    return {
+        "lote_id": lote_id,
+        "processos_afetados": procs_afetados,
+        "pedidos_removidos": total_removidos,
+        "total_processos_no_lote": len(procs),
     }
 
 

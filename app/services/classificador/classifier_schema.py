@@ -58,6 +58,62 @@ def _normalize_enum(value, valid_values: tuple, default=None, *, field_name: str
     return default
 
 
+def _normalize_bool(value, default: bool = False, *, field_name: str = ""):
+    """Normaliza valor pra bool obrigatorio (campos `existe`, `transitado`).
+
+    A IA (Sonnet) eventualmente devolve `null` em campos boolean
+    obrigatorios — ex.: `primeira_habilitacao_master.existe: null` em
+    vez de `false`. Em vez de quebrar a classificacao inteira (perdendo
+    o processo), convertemos None → default (geralmente False, "nao
+    encontrou nada").
+
+    Aceita tambem strings "true"/"false"/"sim"/"nao" como tolerancia
+    adicional.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None or value == "":
+        return default
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in ("true", "sim", "yes", "1", "verdadeiro"):
+            return True
+        if s in ("false", "nao", "não", "no", "0", "falso"):
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    logger.warning(
+        "classifier_schema: campo bool %r recebeu valor invalido %r — usando default %r",
+        field_name, repr(value)[:80], default,
+    )
+    return default
+
+
+def _normalize_bool_optional(value, *, field_name: str = ""):
+    """Variante de `_normalize_bool` pra campos Optional[bool].
+
+    Mantem None como None (significa "nao apurado") em vez de cair em
+    default False (que seria "nao existe"). Strings tolerantes.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in ("true", "sim", "yes", "1", "verdadeiro"):
+            return True
+        if s in ("false", "nao", "não", "no", "0", "falso"):
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    logger.warning(
+        "classifier_schema: campo bool opcional %r recebeu valor invalido %r — usando None",
+        field_name, repr(value)[:80],
+    )
+    return None
+
+
 # Tuplas de valores validos pra usar nos validators (sincronizadas com os Literal abaixo)
 _VALID_POLO = ("autor", "reu", "ambos")
 _VALID_NATUREZA_PROCESSO = ("COMUM", "JUIZADO", "AGRAVO_INSTRUMENTO", "OUTRO")
@@ -132,6 +188,23 @@ class PatrocinioResponse(BaseModel):
     confianca: Optional[Confianca] = None
     fundamentacao: Optional[str] = None
 
+    @field_validator("aplicavel", mode="before")
+    @classmethod
+    def _norm_aplicavel(cls, v):
+        return _normalize_bool(v, default=False, field_name="patrocinio.aplicavel")
+
+    @field_validator("suspeita_devolucao", mode="before")
+    @classmethod
+    def _norm_suspeita(cls, v):
+        return _normalize_bool(v, default=False,
+                               field_name="patrocinio.suspeita_devolucao")
+
+    @field_validator("polo_passivo_confirmado", mode="before")
+    @classmethod
+    def _norm_polo_conf(cls, v):
+        return _normalize_bool(v, default=True,
+                               field_name="patrocinio.polo_passivo_confirmado")
+
     @field_validator("decisao", mode="before")
     @classmethod
     def _norm_decisao(cls, v):
@@ -167,6 +240,26 @@ class ContestacaoExistenteResponse(BaseModel):
     analise_qualidade: Optional[str] = None
     justificativa: str = ""
 
+    @field_validator("existe", mode="before")
+    @classmethod
+    def _norm_existe(cls, v):
+        return _normalize_bool(v, default=False,
+                               field_name="contestacao_existente.existe")
+
+    @field_validator("apresentada_por_mdr", mode="before")
+    @classmethod
+    def _norm_apresentada_por_mdr(cls, v):
+        return _normalize_bool_optional(
+            v, field_name="contestacao_existente.apresentada_por_mdr"
+        )
+
+    @field_validator("generica", mode="before")
+    @classmethod
+    def _norm_generica(cls, v):
+        return _normalize_bool_optional(
+            v, field_name="contestacao_existente.generica"
+        )
+
 
 # ─── Sentenca (NOVO — pedido pelo operador) ───────────────────────────
 
@@ -191,6 +284,11 @@ class SentencaResponse(BaseModel):
     valor_condenacao: Optional[Decimal] = Field(default=None, ge=0)
     fundamentacao: Optional[str] = None
 
+    @field_validator("existe", mode="before")
+    @classmethod
+    def _norm_existe(cls, v):
+        return _normalize_bool(v, default=False, field_name="sentenca.existe")
+
     @field_validator("tipo", mode="before")
     @classmethod
     def _norm_tipo(cls, v):
@@ -210,6 +308,12 @@ class TransitoJulgadoResponse(BaseModel):
         default=None,
         description="Trecho/movimentacao que comprova (certidao de transito, etc.)",
     )
+
+    @field_validator("transitado", mode="before")
+    @classmethod
+    def _norm_transitado(cls, v):
+        return _normalize_bool(v, default=False,
+                               field_name="transito_julgado.transitado")
 
 
 # ─── Primeira habilitacao Master (NOVO) ───────────────────────────────
@@ -231,6 +335,15 @@ class PrimeiraHabilitacaoMasterResponse(BaseModel):
     parte_representada: Optional[str] = Field(
         default=None, description="Qual vinculada Master (Banco Master S/A, etc.)"
     )
+
+    @field_validator("existe", mode="before")
+    @classmethod
+    def _norm_existe(cls, v):
+        # CRITICO: a IA estava devolvendo `null` aqui (em vez de `false`)
+        # quando nao achava habilitacao do Master, derrubando o schema
+        # inteiro. Esse validator converte None -> False (= "nao houve").
+        return _normalize_bool(v, default=False,
+                               field_name="primeira_habilitacao_master.existe")
 
 
 # ─── Resposta principal ───────────────────────────────────────────────

@@ -24,12 +24,14 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Loader2, FileUp, Workflow, BarChart3, ScanSearch, Trash2, AlertCircle, FilePlus2, Sparkles, Eye, Inbox } from "lucide-react";
+import { Loader2, FileUp, Workflow, BarChart3, ScanSearch, Trash2, AlertCircle, FilePlus2, Sparkles, Eye, Inbox, Eraser, Users } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
   ClassificadorLoteSummary,
   ClassificadorFromPiPreview,
   classifyClassificadorLote,
+  cleanupClassificadorPedidosDuplicados,
+  backfillClassificadorPartes,
   createClassificadorLoteFromPi,
   createClassificadorLoteUpload,
   deleteClassificadorLote,
@@ -619,6 +621,8 @@ function LotesHistoricoTable({
   const [loading, setLoading] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [classifyingId, setClassifyingId] = useState<number | null>(null);
+  const [cleaningId, setCleaningId] = useState<number | null>(null);
+  const [backfillingId, setBackfillingId] = useState<number | null>(null);
   const [uploadDialogLote, setUploadDialogLote] = useState<ClassificadorLoteSummary | null>(null);
   const [detailDialogLote, setDetailDialogLote] = useState<ClassificadorLoteSummary | null>(null);
 
@@ -686,6 +690,64 @@ function LotesHistoricoTable({
       alive = false;
     };
   }, [page, pageSize, reloadKey, toast]);
+
+  const handleBackfillPartes = async (lote: ClassificadorLoteSummary) => {
+    if (!confirm(
+      `Preencher partes (polo ativo/passivo) do lote #${lote.id} (${lote.nome})?\n\n` +
+      `Util pra lotes criados antes do fix que copiava partes do capa_json ` +
+      `pras colunas separadas. Operacao segura: nao reextrai nada, so' copia ` +
+      `do JSON existente.`
+    )) return;
+    setBackfillingId(lote.id);
+    try {
+      const r = await backfillClassificadorPartes(lote.id);
+      toast({
+        title: "Backfill concluido",
+        description:
+          `${r.atualizados}/${r.total_processos_no_lote} processo${r.atualizados === 1 ? "" : "s"} atualizado${r.atualizados === 1 ? "" : "s"}. ` +
+          `${r.com_partes_em_capa} tinham partes no capa_json. ` +
+          (r.sem_capa_json > 0 ? `${r.sem_capa_json} sem capa.` : ""),
+      });
+      onChanged();
+    } catch (err) {
+      toast({
+        title: "Falha no backfill",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setBackfillingId(null);
+    }
+  };
+
+  const handleCleanupPedidos = async (lote: ClassificadorLoteSummary) => {
+    if (!confirm(
+      `Limpar pedidos duplicados do lote #${lote.id} (${lote.nome})?\n\n` +
+      `Util pra lotes que foram classificados antes do fix de duplicacao ` +
+      `(quando o botao Classificar era pressionado varias vezes seguidas).\n\n` +
+      `Mantem 1 copia de cada pedido unico por processo. Operacao segura: ` +
+      `nao apaga pedidos legitimos.`
+    )) return;
+    setCleaningId(lote.id);
+    try {
+      const r = await cleanupClassificadorPedidosDuplicados(lote.id);
+      toast({
+        title: "Limpeza concluida",
+        description:
+          `${r.pedidos_removidos} pedido${r.pedidos_removidos === 1 ? "" : "s"} duplicado${r.pedidos_removidos === 1 ? "" : "s"} ` +
+          `removido${r.pedidos_removidos === 1 ? "" : "s"} em ${r.processos_afetados} processo${r.processos_afetados === 1 ? "" : "s"}.`,
+      });
+      onChanged();
+    } catch (err) {
+      toast({
+        title: "Falha na limpeza",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setCleaningId(null);
+    }
+  };
 
   const handleDelete = async (loteId: number) => {
     if (!confirm(`Apagar lote #${loteId}? Essa operacao nao pode ser desfeita.`)) return;
@@ -804,6 +866,32 @@ function LotesHistoricoTable({
                               title="Detalhe (processos + batches)"
                             >
                               <Eye className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleBackfillPartes(lote)}
+                              disabled={backfillingId === lote.id}
+                              title="Preencher polo ativo/passivo a partir do capa_json (lotes antigos)"
+                            >
+                              {backfillingId === lote.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Users className="h-4 w-4" />
+                              )}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleCleanupPedidos(lote)}
+                              disabled={cleaningId === lote.id}
+                              title="Limpar pedidos duplicados (lotes classificados antes do fix de duplicacao)"
+                            >
+                              {cleaningId === lote.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Eraser className="h-4 w-4" />
+                              )}
                             </Button>
                             <Button
                               variant="ghost"
