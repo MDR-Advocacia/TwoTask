@@ -1381,6 +1381,7 @@ def quick_pdf(
     """
     from datetime import datetime as _dt
 
+    from app.core.config import settings as _s
     from app.models.classificador import (
         LOTE_STATUS_RASCUNHO,
         ClassificadorLote,
@@ -1415,18 +1416,26 @@ def quick_pdf(
         else f"Teste avulso de {len(files)} PDFs"
     )
 
-    # 1) Cria lote
-    lote = ClassificadorLote(
-        nome=nome_final,
-        cliente_nome=(cliente_nome or "").strip() or None,
-        descricao=descricao,
-        status=LOTE_STATUS_RASCUNHO,
-        source_summary={},
-        snapshot_at=_dt.utcnow(),
-        created_by_user_id=current_user.id if current_user else None,
-    )
-    db.add(lote)
-    db.flush()
+    # 1) Cria lote (guard amplo — bug aqui antes ficava como 500 cru sem stack pro operador)
+    try:
+        lote = ClassificadorLote(
+            nome=nome_final,
+            cliente_nome=(cliente_nome or "").strip() or None,
+            descricao=descricao,
+            status=LOTE_STATUS_RASCUNHO,
+            source_summary={},
+            snapshot_at=_dt.utcnow(),
+            created_by_user_id=current_user.id if current_user else None,
+        )
+        db.add(lote)
+        db.flush()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Falha ao criar lote no quick-pdf")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Falha ao criar lote: {type(exc).__name__}: {exc}",
+        )
 
     # 2) Processa cada PDF — tolerante a falha
     processos_out: list[dict] = []

@@ -23,7 +23,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Loader2, FileSearch, CheckCircle2, XCircle } from "lucide-react";
+import { Loader2, FileSearch, CheckCircle2, XCircle, UploadCloud, FileText, X } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
   ClassificadorLoteSummary,
@@ -60,20 +60,63 @@ export default function QuickPdfCard({ onCreated }: Props) {
   const canSubmit = files.length > 0 && oversized.length === 0 && !submitting;
   const totalSize = files.reduce((s, f) => s + f.size, 0);
 
-  const handleFilesChange = (selected: FileList | null) => {
+  const [dragActive, setDragActive] = useState(false);
+
+  const addFiles = (selected: FileList | File[] | null) => {
     if (!selected) return;
-    const arr = Array.from(selected).filter(
+    const incoming = Array.from(selected).filter(
       f => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"),
     );
-    if (arr.length !== selected.length) {
+    const total = Array.from(selected).length;
+    if (incoming.length !== total) {
       toast({
-        title: "Alguns arquivos foram ignorados",
+        title: `${total - incoming.length} arquivo${total - incoming.length > 1 ? "s" : ""} ignorado${total - incoming.length > 1 ? "s" : ""}`,
         description: "Apenas PDFs sao aceitos.",
         variant: "destructive",
       });
     }
-    setFiles(arr);
+    // Dedup por nome+tamanho (mesmo arquivo arrastado 2x não acumula)
+    setFiles(prev => {
+      const seen = new Set(prev.map(f => `${f.name}_${f.size}`));
+      const merged = [...prev];
+      for (const f of incoming) {
+        const key = `${f.name}_${f.size}`;
+        if (!seen.has(key)) {
+          merged.push(f);
+          seen.add(key);
+        }
+      }
+      return merged;
+    });
     setResult(null);
+  };
+
+  const removeFile = (idx: number) => {
+    setFiles(prev => prev.filter((_, i) => i !== idx));
+    setResult(null);
+  };
+
+  const clearFiles = () => {
+    setFiles([]);
+    setResult(null);
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setDragActive(false);
+    if (submitting) return;
+    addFiles(e.dataTransfer.files);
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    if (submitting) return;
+    setDragActive(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setDragActive(false);
   };
 
   const handleSubmit = async () => {
@@ -207,35 +250,113 @@ export default function QuickPdfCard({ onCreated }: Props) {
             <div className="grid gap-3 py-2">
               <div className="grid gap-1">
                 <Label htmlFor="qpdf-files">Arquivos PDF *</Label>
-                <Input
-                  id="qpdf-files"
-                  type="file"
-                  accept=".pdf,application/pdf"
-                  multiple
-                  onChange={e => handleFilesChange(e.target.files)}
-                  disabled={submitting}
-                />
+
+                {/* Area de drag-and-drop grande */}
+                <div
+                  onDrop={handleDrop}
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onClick={() => !submitting && document.getElementById("qpdf-files")?.click()}
+                  className={`
+                    relative rounded-lg border-2 border-dashed p-6 text-center cursor-pointer
+                    transition-colors min-h-[140px] flex flex-col items-center justify-center gap-2
+                    ${dragActive
+                      ? "border-primary bg-primary/5"
+                      : files.length > 0
+                        ? "border-muted-foreground/30 bg-muted/30"
+                        : "border-muted-foreground/40 hover:border-primary hover:bg-muted/30"
+                    }
+                    ${submitting ? "opacity-50 cursor-not-allowed" : ""}
+                  `}
+                >
+                  <UploadCloud className={`h-8 w-8 ${dragActive ? "text-primary" : "text-muted-foreground"}`} />
+                  <div className="text-sm font-medium">
+                    {dragActive
+                      ? "Solte os PDFs aqui"
+                      : files.length === 0
+                        ? "Arraste PDFs aqui ou clique pra selecionar"
+                        : `${files.length} PDF${files.length > 1 ? "s" : ""} adicionado${files.length > 1 ? "s" : ""} — arraste mais ou clique pra adicionar`}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    Aceita múltiplos PDFs · {(MAX_BYTES_PER_FILE / 1024 / 1024).toFixed(0)}MB máx por arquivo · enviados 1 por vez
+                  </div>
+                  <Input
+                    id="qpdf-files"
+                    type="file"
+                    accept=".pdf,application/pdf"
+                    multiple
+                    onChange={e => addFiles(e.target.files)}
+                    disabled={submitting}
+                    className="hidden"
+                  />
+                </div>
+
+                {/* Lista de arquivos selecionados */}
                 {files.length > 0 && (
-                  <p className="text-xs text-muted-foreground">
-                    {files.length} arquivo{files.length > 1 ? "s" : ""} · {(totalSize / 1024 / 1024).toFixed(2)} MB total
-                    {files.length > 1 && " · enviados 1 por vez"}
-                  </p>
-                )}
-                {oversized.length > 0 && (
-                  <div className="rounded-md border border-red-300 bg-red-50 p-2 text-[11px] text-red-900 mt-1">
-                    <strong>{oversized.length} arquivo{oversized.length > 1 ? "s" : ""}</strong> excede{oversized.length === 1 ? "" : "m"} o
-                    limite de {(MAX_BYTES_PER_FILE / 1024 / 1024).toFixed(0)}MB por PDF:
-                    <ul className="list-disc pl-4 mt-1">
-                      {oversized.slice(0, 5).map((f, i) => (
-                        <li key={i} className="truncate">{f.name} — {(f.size / 1024 / 1024).toFixed(1)} MB</li>
-                      ))}
-                      {oversized.length > 5 && <li>+ {oversized.length - 5} mais</li>}
+                  <div className="mt-2 rounded-md border bg-muted/20 max-h-48 overflow-y-auto">
+                    <div className="sticky top-0 bg-muted/60 px-3 py-1.5 border-b flex items-center justify-between text-xs">
+                      <span className="font-medium">
+                        {files.length} arquivo{files.length > 1 ? "s" : ""} · {(totalSize / 1024 / 1024).toFixed(2)} MB total
+                      </span>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); clearFiles(); }}
+                        className="text-muted-foreground hover:text-foreground"
+                        disabled={submitting}
+                      >
+                        Limpar tudo
+                      </button>
+                    </div>
+                    <ul className="divide-y text-xs">
+                      {files.map((f, i) => {
+                        const tooBig = f.size > MAX_BYTES_PER_FILE;
+                        return (
+                          <li key={i} className={`flex items-center gap-2 px-3 py-1.5 ${tooBig ? "bg-red-50" : ""}`}>
+                            <FileText className={`h-3.5 w-3.5 shrink-0 ${tooBig ? "text-red-600" : "text-muted-foreground"}`} />
+                            <div className="flex-1 min-w-0">
+                              <div className="truncate font-medium">{f.name}</div>
+                              <div className={`text-[10px] ${tooBig ? "text-red-700 font-medium" : "text-muted-foreground"}`}>
+                                {(f.size / 1024 / 1024).toFixed(2)} MB
+                                {tooBig && ` · excede ${(MAX_BYTES_PER_FILE / 1024 / 1024).toFixed(0)}MB`}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); removeFile(i); }}
+                              className="text-muted-foreground hover:text-red-600 shrink-0"
+                              disabled={submitting}
+                              title="Remover"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </li>
+                        );
+                      })}
                     </ul>
                   </div>
                 )}
+
+                {oversized.length > 0 && (
+                  <div className="rounded-md border border-red-300 bg-red-50 p-2 text-[11px] text-red-900 mt-1">
+                    <strong>{oversized.length} arquivo{oversized.length > 1 ? "s" : ""}</strong> excede{oversized.length === 1 ? "" : "m"} o
+                    limite de {(MAX_BYTES_PER_FILE / 1024 / 1024).toFixed(0)}MB por PDF — remova-os antes de enviar.
+                  </div>
+                )}
+
                 {progress && (
-                  <div className="text-xs text-muted-foreground">
-                    Enviando {progress.current} de {progress.total}...
+                  <div className="rounded-md border bg-blue-50 px-3 py-2 text-xs mt-1">
+                    <div className="flex items-center gap-2">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-600" />
+                      <span className="font-medium text-blue-900">
+                        Enviando {progress.current} de {progress.total}...
+                      </span>
+                    </div>
+                    <div className="mt-1.5 h-1.5 w-full rounded-full bg-blue-200 overflow-hidden">
+                      <div
+                        className="h-full bg-blue-600 transition-all"
+                        style={{ width: `${(progress.current / progress.total) * 100}%` }}
+                      />
+                    </div>
                   </div>
                 )}
               </div>
