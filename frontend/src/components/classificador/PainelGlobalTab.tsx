@@ -10,7 +10,7 @@ import {
   Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer,
   Tooltip, XAxis, YAxis,
 } from "recharts";
-import { Loader2, RefreshCw, Filter } from "lucide-react";
+import { Loader2, RefreshCw, Filter, FileSpreadsheet, FileText } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,6 +22,7 @@ import {
   ClassificadorGlobalFilterOptions,
   fetchClassificadorDashboardGlobal,
   fetchClassificadorGlobalFilterOptions,
+  generateClassificadorRelatorio,
 } from "@/services/api";
 
 
@@ -107,6 +108,34 @@ export default function PainelGlobalTab() {
   const [filterOpts, setFilterOpts] = useState<ClassificadorGlobalFilterOptions | null>(null);
   const [data, setData] = useState<ClassificadorDashboardGlobal | null>(null);
   const [loading, setLoading] = useState(false);
+  // Geracao de relatorio direto do painel (key = `${loteId}-${formato}`)
+  const [generatingRel, setGeneratingRel] = useState<string | null>(null);
+
+  const handleGenerateRelatorio = async (
+    loteId: number,
+    loteNome: string,
+    formato: "XLSX" | "PDF",
+  ) => {
+    const key = `${loteId}-${formato}`;
+    setGeneratingRel(key);
+    try {
+      const r = await generateClassificadorRelatorio(loteId, formato);
+      toast({
+        title: `Relatório ${formato} iniciado`,
+        description:
+          `Lote #${loteId} (${loteNome}) — gerado em background. ` +
+          `Abra o lote no Histórico (📊 Relatórios) pra baixar quando ficar PRONTO.`,
+      });
+    } catch (err) {
+      toast({
+        title: `Falha ao gerar ${formato}`,
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setGeneratingRel(null);
+    }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -496,26 +525,74 @@ export default function PainelGlobalTab() {
                       <th className="py-1.5 pr-2 text-right">PCOND</th>
                       <th className="py-1.5 pr-2 text-right">Êxito</th>
                       <th className="py-1.5 pr-2">Criado em</th>
+                      <th className="py-1.5 pr-2 text-center">Gerar relatório</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {data.lotes.map(l => (
-                      <tr key={l.id} className="border-b hover:bg-muted/30">
-                        <td className="py-1 pr-2 font-mono">#{l.id}</td>
-                        <td className="py-1 pr-2">{l.nome}</td>
-                        <td className="py-1 pr-2 text-muted-foreground">{l.cliente_nome || "—"}</td>
-                        <td className="py-1 pr-2">
-                          <Badge variant="outline" className="text-[10px]">{l.status}</Badge>
-                        </td>
-                        <td className="py-1 pr-2 text-right tabular-nums">
-                          {l.total_classificados}/{l.total_processos}
-                        </td>
-                        <td className="py-1 pr-2 text-right tabular-nums">{fmtCompactBRL(l.valor_total_estimado)}</td>
-                        <td className="py-1 pr-2 text-right tabular-nums">{fmtCompactBRL(l.pcond_total)}</td>
-                        <td className="py-1 pr-2 text-right tabular-nums">{fmtPct(l.prob_exito_medio)}</td>
-                        <td className="py-1 pr-2 text-muted-foreground">{fmtDate(l.created_at)}</td>
-                      </tr>
-                    ))}
+                    {data.lotes.map(l => {
+                      const isClassificado = l.status === "CLASSIFICADO";
+                      const xlsxKey = `${l.id}-XLSX`;
+                      const pdfKey = `${l.id}-PDF`;
+                      return (
+                        <tr key={l.id} className="border-b hover:bg-muted/30">
+                          <td className="py-1 pr-2 font-mono">#{l.id}</td>
+                          <td className="py-1 pr-2">{l.nome}</td>
+                          <td className="py-1 pr-2 text-muted-foreground">{l.cliente_nome || "—"}</td>
+                          <td className="py-1 pr-2">
+                            <Badge variant="outline" className="text-[10px]">{l.status}</Badge>
+                          </td>
+                          <td className="py-1 pr-2 text-right tabular-nums">
+                            {l.total_classificados}/{l.total_processos}
+                          </td>
+                          <td className="py-1 pr-2 text-right tabular-nums">{fmtCompactBRL(l.valor_total_estimado)}</td>
+                          <td className="py-1 pr-2 text-right tabular-nums">{fmtCompactBRL(l.pcond_total)}</td>
+                          <td className="py-1 pr-2 text-right tabular-nums">{fmtPct(l.prob_exito_medio)}</td>
+                          <td className="py-1 pr-2 text-muted-foreground">{fmtDate(l.created_at)}</td>
+                          <td className="py-1 pr-2">
+                            <div className="flex items-center gap-1 justify-center">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-6 px-2 text-[10px]"
+                                disabled={!isClassificado || generatingRel === xlsxKey}
+                                onClick={() => handleGenerateRelatorio(l.id, l.nome, "XLSX")}
+                                title={
+                                  !isClassificado
+                                    ? "Classifique o lote antes de gerar"
+                                    : `Gerar XLSX do lote #${l.id}`
+                                }
+                              >
+                                {generatingRel === xlsxKey ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <FileSpreadsheet className="h-3 w-3 mr-1" />
+                                )}
+                                XLSX
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-6 px-2 text-[10px]"
+                                disabled={!isClassificado || generatingRel === pdfKey}
+                                onClick={() => handleGenerateRelatorio(l.id, l.nome, "PDF")}
+                                title={
+                                  !isClassificado
+                                    ? "Classifique o lote antes de gerar"
+                                    : `Gerar PDF do lote #${l.id}`
+                                }
+                              >
+                                {generatingRel === pdfKey ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <FileText className="h-3 w-3 mr-1" />
+                                )}
+                                PDF
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
