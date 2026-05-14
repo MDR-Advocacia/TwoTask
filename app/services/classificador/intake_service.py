@@ -205,8 +205,15 @@ def preview_from_prazos_iniciais(
 ) -> dict:
     """Conta quantos intakes casam com os filtros + sample dos 5 primeiros.
 
-    Usado pra UI mostrar "Vai criar lote com N processos. Confirmar?".
+    Tambem detecta LOTES CANDIDATOS — lotes pre-existentes que ja contem
+    parte (ou todos) dos source_intake_id selecionados. Operador pode
+    optar por ATUALIZAR um lote existente em vez de criar duplicado.
+
+    Usado pra UI mostrar "Vai criar lote com N processos OU atualizar
+    Lote #42 que tem 715 em comum".
     """
+    from collections import Counter
+
     q = _build_prazos_iniciais_query(
         db,
         data_inicio=data_inicio,
@@ -216,8 +223,44 @@ def preview_from_prazos_iniciais(
         statuses=statuses,
     )
 
-    count = q.count()
-    sample = q.order_by(PrazoInicialIntake.received_at.desc()).limit(5).all()
+    intakes = q.order_by(PrazoInicialIntake.received_at.desc()).all()
+    count = len(intakes)
+    intake_ids = [i.id for i in intakes]
+
+    # Detecta lotes que ja contem alguns dos intakes selecionados
+    candidates = []
+    if intake_ids:
+        from app.models.classificador import (
+            ClassificadorLote as _Lote,
+            ClassificadorProcesso as _Proc,
+            LOTE_STATUS_CANCELLED as _CANCELLED,
+        )
+
+        existing_procs = (
+            db.query(_Proc.lote_id, _Proc.source_intake_id)
+            .filter(_Proc.source_intake_id.in_(intake_ids))
+            .filter(_Proc.source == SOURCE_PRAZOS_INICIAIS)
+            .all()
+        )
+        counter: Counter = Counter()
+        for lote_id, _intake_id in existing_procs:
+            counter[lote_id] += 1
+
+        # Top 5 lotes com mais intakes em comum
+        for lote_id, matches in counter.most_common(5):
+            lote = db.query(_Lote).filter(_Lote.id == lote_id).first()
+            if not lote or lote.status == _CANCELLED:
+                continue
+            candidates.append({
+                "id": lote.id,
+                "nome": lote.nome,
+                "cliente_nome": lote.cliente_nome,
+                "status": lote.status,
+                "total_processos": lote.total_processos or 0,
+                "matching_intakes": matches,
+                "created_at": lote.created_at.isoformat() if lote.created_at else None,
+            })
+
     return {
         "count": count,
         "sample": [
@@ -228,9 +271,131 @@ def preview_from_prazos_iniciais(
                 "received_at": i.received_at.isoformat() if i.received_at else None,
                 "office_id": i.office_id,
             }
-            for i in sample
+            for i in intakes[:5]
         ],
+        "candidate_lotes": candidates,
     }
+
+
+def merge_into_existing_lote(
+    db: Session,
+    *,
+    lote_id: int,
+    intakes: list[PrazoInicialIntake],
+    reset_classification: bool = False,
+) -> tuple[ClassificadorLote, dict]:
+    """UPSERT: atualiza processos existentes ou cria novos no lote alvo.
+
+    Pra cada intake nos filtros:
+    - Se ja existe `ClassificadorProcesso` com (lote_id, source_intake_id) →
+      ATUALIZA campos de identificacao (cnj_number, lawsuit_id, external_id)
+    - Se nao existe → CRIA novo `ClassificadorProcesso` no lote
+
+    Processos do lote que NAO aparecem mais nos intakes ficam intactos
+    (operador apaga manualmente se quiser — nao deleta automaticamente
+    pra preservar review humano).
+
+    Por default PRESERVA classificacao IA existente (categoria, polo,
+    valor_estimado, etc.). Se `reset_classification=True`, limpa esses
+    campos e marca status=PRONTO_PARA_CLASSIFICAR pra reclassificar.
+
+    Retorna (lote, stats) com counts de atualizados/criados/ignorados.
+    """
+    lote = db.query(ClassificadorLote).filter(ClassificadorLote.id == lote_id).first()
+    if lote is None:
+        raise IntakeError(f"Lote #{lote_id} nao encontrado.")
+    if lote.status == "CLASSIFICANDO":
+        raise IntakeError(
+            f"Lote #{lote_id} esta em CLASSIFICANDO — aguarde finalizar antes de atualizar."
+        )
+
+    intake_by_id = {i.id: i for i in intakes}
+    intake_ids = list(intake_by_id.keys())
+
+    # Busca processos ja existentes no lote pra esses intakes
+    existing_procs = (
+        db.query(ClassificadorProcesso)
+        .filter(ClassificadorProcesso.lote_id == lote_id)
+        .filter(ClassificadorProcesso.source_intake_id.in_(intake_ids))
+        .all()
+    )
+    existing_by_intake = {p.source_intake_id: p for p in existing_procs}
+
+    atualizados = 0
+    criados = 0
+
+    for intake_id, intake in intake_by_id.items():
+        existing = existing_by_intake.get(intake_id)
+        if existing:
+            # UPSERT: atualiza campos de identificacao + capa basica do PI
+            existing.cnj_number = intake.cnj_number
+            existing.lawsuit_id = intake.lawsuit_id
+            existing.external_id = intake.external_id
+            if reset_classification:
+                existing.categoria_id = None
+                existing.subcategoria_id = None
+                existing.polo = None
+                existing.valor_estimado = None
+                existing.pcond_sugerido = None
+                existing.prob_exito = None
+                existing.justificativa = None
+                existing.analise_estrategica = None
+                existing.confianca = None
+                existing.classificacao_response_json = None
+                existing.contestacao_existente_json = None
+                existing.status = PROC_STATUS_PENDENTE
+                existing.data_classificacao = None
+                existing.error_message = None
+            atualizados += 1
+        else:
+            # Cria novo
+            proc = ClassificadorProcesso(
+                lote_id=lote_id,
+                source=SOURCE_PRAZOS_INICIAIS,
+                source_intake_id=intake_id,
+                cnj_number=intake.cnj_number,
+                lawsuit_id=intake.lawsuit_id,
+                external_id=intake.external_id,
+                status=PROC_STATUS_PENDENTE,
+            )
+            db.add(proc)
+            criados += 1
+
+    # Atualiza contadores desnormalizados (recount manual pra ficar coerente)
+    from sqlalchemy import func
+    total = (
+        db.query(func.count(ClassificadorProcesso.id))
+        .filter(ClassificadorProcesso.lote_id == lote_id)
+        .scalar()
+    ) or 0
+    lote.total_processos = total + criados  # criados ainda nao commitaram
+
+    # Atualiza source_summary
+    ss = dict(lote.source_summary or {})
+    ss[SOURCE_PRAZOS_INICIAIS] = (ss.get(SOURCE_PRAZOS_INICIAIS, 0)
+                                   + criados)  # so adiciona os novos
+    lote.source_summary = ss
+
+    # Reset status do lote se estava CLASSIFICADO + reset_classification
+    if reset_classification and lote.status == "CLASSIFICADO":
+        lote.status = LOTE_STATUS_RASCUNHO
+        lote.classificacao_finished_at = None
+
+    db.commit()
+    db.refresh(lote)
+
+    stats = {
+        "atualizados": atualizados,
+        "criados": criados,
+        "total_no_lote": lote.total_processos,
+        "reclassificar": reset_classification,
+    }
+    logger.info(
+        "Classificador: lote #%s atualizado via PRAZOS_INICIAIS (UPSERT: "
+        "+%d novos, ~%d atualizados, reset_classification=%s)",
+        lote_id, criados, atualizados, reset_classification,
+    )
+    return lote, stats
 
 
 def create_lote_from_prazos_iniciais(
@@ -245,15 +410,20 @@ def create_lote_from_prazos_iniciais(
     cliente_nome_match: Optional[str],
     statuses: Optional[list[str]],
     created_by_user_id: Optional[int],
-) -> ClassificadorLote:
-    """Cria lote espelhando intakes de Prazos Iniciais que casam com os filtros.
+    merge_into_lote_id: Optional[int] = None,
+    reset_classification: bool = False,
+) -> tuple[ClassificadorLote, Optional[dict]]:
+    """Cria lote OU atualiza existente (UPSERT) espelhando intakes do PI.
 
-    Cada intake elegivel vira 1 row em classificador_processo com
-    source=PRAZOS_INICIAIS, source_intake_id preenchido pra rastreabilidade.
+    Se `merge_into_lote_id` informado → atualiza lote existente via
+    `merge_into_existing_lote`. Identifica processos por
+    (lote_id, source_intake_id). Retorna (lote, stats) com counts.
 
-    Capa, partes, patrocinio etc. NAO sao copiados aqui — fica pra Fase
-    2c (refresh L1) que vai chamar a L1 e atualizar os snapshots de cada
-    processo. Aqui so amarra a referencia.
+    Se NAO informado → cria lote novo (snapshot). Retorna (lote, None).
+
+    `reset_classification=True` limpa os campos da IA dos processos
+    atualizados e marca PRONTO_PARA_CLASSIFICAR (usar quando dados do PI
+    mudaram significativamente).
     """
     if not nome or not nome.strip():
         raise IntakeError("Nome do lote e' obrigatorio.")
@@ -274,6 +444,17 @@ def create_lote_from_prazos_iniciais(
             "Nenhum intake de Prazos Iniciais casa com esses filtros."
         )
 
+    # ─── CAMINHO UPSERT (atualiza lote existente) ─────────────────────
+    if merge_into_lote_id is not None:
+        lote, stats = merge_into_existing_lote(
+            db,
+            lote_id=merge_into_lote_id,
+            intakes=intakes,
+            reset_classification=reset_classification,
+        )
+        return lote, stats
+
+    # ─── CAMINHO TRADICIONAL (cria novo lote) ─────────────────────────
     filtros_payload = {
         "data_inicio": data_inicio.isoformat() if data_inicio else None,
         "data_fim": data_fim.isoformat() if data_fim else None,
@@ -304,7 +485,6 @@ def create_lote_from_prazos_iniciais(
             cnj_number=intake.cnj_number,
             lawsuit_id=intake.lawsuit_id,
             external_id=intake.external_id,
-            # Capa nao e' copiada aqui — refresh L1 vai preencher depois
             status=PROC_STATUS_PENDENTE,
         )
         db.add(proc)
@@ -316,4 +496,4 @@ def create_lote_from_prazos_iniciais(
         lote.id,
         len(intakes),
     )
-    return lote
+    return lote, None

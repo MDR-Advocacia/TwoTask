@@ -321,6 +321,9 @@ function ImportFromPiCard({ onCreated }: { onCreated: (lote: ClassificadorLoteSu
   const [preview, setPreview] = useState<ClassificadorFromPiPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  // Modo UPSERT: se selecionou um candidato pra atualizar
+  const [mergeLoteId, setMergeLoteId] = useState<number | null>(null);
+  const [resetClassif, setResetClassif] = useState(false);
 
   const filtros = useMemo(() => ({
     data_inicio: dataInicio || null,
@@ -344,23 +347,34 @@ function ImportFromPiCard({ onCreated }: { onCreated: (lote: ClassificadorLoteSu
     return () => clearTimeout(timer);
   }, [filtros, open]);
 
+  // Quando atualiza, nome do lote não é obrigatório (usa o do lote existente)
   const canSubmit =
-    nome.trim().length > 0 && preview != null && preview.count > 0 && !submitting;
+    (mergeLoteId !== null || nome.trim().length > 0) &&
+    preview != null && preview.count > 0 && !submitting;
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
     setSubmitting(true);
     try {
       const result = await createClassificadorLoteFromPi({
-        nome: nome.trim(),
+        nome: nome.trim() || "(merge)",
         cliente_nome: clienteNome.trim() || undefined,
         descricao: descricao.trim() || undefined,
         filtros,
+        merge_into_lote_id: mergeLoteId ?? undefined,
+        reset_classification: mergeLoteId !== null ? resetClassif : undefined,
       });
-      toast({
-        title: "Lote criado",
-        description: `Lote #${result.lote.id} com ${result.lote.total_processos} processos espelhados de Prazos Iniciais.`,
-      });
+      if (result.merge_stats) {
+        toast({
+          title: `Lote #${result.lote.id} atualizado`,
+          description: `${result.merge_stats.atualizados} atualizados · ${result.merge_stats.criados} novos${result.merge_stats.reclassificar ? " · reclassificando" : ""}.`,
+        });
+      } else {
+        toast({
+          title: "Lote criado",
+          description: `Lote #${result.lote.id} com ${result.lote.total_processos} processos espelhados de Prazos Iniciais.`,
+        });
+      }
       setOpen(false);
       setNome("");
       setClienteNome("");
@@ -368,10 +382,12 @@ function ImportFromPiCard({ onCreated }: { onCreated: (lote: ClassificadorLoteSu
       setDataInicio("");
       setDataFim("");
       setPreview(null);
+      setMergeLoteId(null);
+      setResetClassif(false);
       onCreated(result.lote);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      toast({ title: "Falha ao criar lote", description: msg, variant: "destructive" });
+      toast({ title: "Falha ao criar/atualizar lote", description: msg, variant: "destructive" });
     } finally {
       setSubmitting(false);
     }
@@ -486,6 +502,83 @@ function ImportFromPiCard({ onCreated }: { onCreated: (lote: ClassificadorLoteSu
                   </div>
                 )}
               </div>
+
+              {/* Lotes candidatos (dedup) */}
+              {preview && preview.candidate_lotes && preview.candidate_lotes.length > 0 && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs space-y-2">
+                  <div className="flex items-center gap-1.5 font-medium text-amber-900">
+                    <AlertCircle className="h-3.5 w-3.5" />
+                    Lote{preview.candidate_lotes.length > 1 ? "s" : ""} existente{preview.candidate_lotes.length > 1 ? "s" : ""} detectado{preview.candidate_lotes.length > 1 ? "s" : ""}
+                  </div>
+                  <div className="text-amber-800">
+                    Já existe lote no Classificador com os mesmos intakes do PI. Pra evitar duplicidade,
+                    selecione um pra atualizar — ou clique "Criar novo" se quiser snapshot separado.
+                  </div>
+                  <div className="space-y-1">
+                    {preview.candidate_lotes.map(c => (
+                      <label
+                        key={c.id}
+                        className={`flex items-start gap-2 rounded border p-2 cursor-pointer ${
+                          mergeLoteId === c.id
+                            ? "border-amber-600 bg-amber-100"
+                            : "border-amber-200 bg-white hover:bg-amber-50"
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="merge-target"
+                          checked={mergeLoteId === c.id}
+                          onChange={() => setMergeLoteId(c.id)}
+                          className="mt-0.5"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium text-amber-900">
+                            #{c.id} · {c.nome}
+                          </div>
+                          <div className="text-amber-800">
+                            {c.cliente_nome || "(sem cliente)"} · status {c.status} ·
+                            {" "}<strong>{c.matching_intakes} de {preview.count}</strong> intakes em comum
+                            {" "}({c.total_processos} total no lote)
+                          </div>
+                        </div>
+                      </label>
+                    ))}
+                    <label className={`flex items-start gap-2 rounded border p-2 cursor-pointer ${
+                      mergeLoteId === null
+                        ? "border-gray-500 bg-gray-100"
+                        : "border-gray-200 bg-white hover:bg-gray-50"
+                    }`}>
+                      <input
+                        type="radio"
+                        name="merge-target"
+                        checked={mergeLoteId === null}
+                        onChange={() => setMergeLoteId(null)}
+                        className="mt-0.5"
+                      />
+                      <div className="flex-1">
+                        <div className="font-medium text-gray-900">Criar novo lote</div>
+                        <div className="text-gray-600">
+                          Snapshot separado — preserva relatórios antigos (gera duplicidade).
+                        </div>
+                      </div>
+                    </label>
+                  </div>
+
+                  {mergeLoteId !== null && (
+                    <label className="flex items-center gap-2 text-amber-900 mt-2">
+                      <input
+                        type="checkbox"
+                        checked={resetClassif}
+                        onChange={e => setResetClassif(e.target.checked)}
+                      />
+                      <span>
+                        Reclassificar via IA após atualizar
+                        <span className="text-amber-700"> (limpa categoria/valor/pedidos atuais e marca pra rodar Sonnet de novo)</span>
+                      </span>
+                    </label>
+                  )}
+                </div>
+              )}
             </div>
 
             <DialogFooter>
@@ -494,7 +587,9 @@ function ImportFromPiCard({ onCreated }: { onCreated: (lote: ClassificadorLoteSu
               </Button>
               <Button onClick={handleSubmit} disabled={!canSubmit}>
                 {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Criar lote {preview && preview.count > 0 ? `(${preview.count})` : ""}
+                {mergeLoteId !== null
+                  ? `Atualizar lote #${mergeLoteId} (${preview?.count || 0})`
+                  : `Criar lote ${preview && preview.count > 0 ? `(${preview.count})` : ""}`}
               </Button>
             </DialogFooter>
           </DialogContent>

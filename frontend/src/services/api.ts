@@ -1812,6 +1812,15 @@ export interface ClassificadorFromPiPreview {
     received_at: string | null;
     office_id: number | null;
   }>;
+  candidate_lotes?: Array<{
+    id: number;
+    nome: string;
+    cliente_nome: string | null;
+    status: string;
+    total_processos: number;
+    matching_intakes: number;
+    created_at: string | null;
+  }>;
 }
 
 export interface ClassificadorProcessoSummary {
@@ -1894,7 +1903,17 @@ export async function createClassificadorLoteFromPi(payload: {
   cliente_nome?: string;
   descricao?: string;
   filtros: ClassificadorFromPiFiltros;
-}): Promise<{ lote: ClassificadorLoteSummary }> {
+  merge_into_lote_id?: number;
+  reset_classification?: boolean;
+}): Promise<{
+  lote: ClassificadorLoteSummary;
+  merge_stats?: {
+    atualizados: number;
+    criados: number;
+    total_no_lote: number;
+    reclassificar: boolean;
+  };
+}> {
   const res = await apiFetch(
     "/api/v1/classificador/lotes/from-prazos-iniciais",
     {
@@ -1902,7 +1921,7 @@ export async function createClassificadorLoteFromPi(payload: {
       body: JSON.stringify(payload),
     },
   );
-  return expectJson<{ lote: ClassificadorLoteSummary }>(res);
+  return expectJson(res);
 }
 
 export async function fetchClassificadorLote(

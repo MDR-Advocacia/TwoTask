@@ -409,6 +409,15 @@ class FromPrazosIniciaisPayload(BaseModel):
     cliente_nome: Optional[str] = Field(default=None, max_length=255)
     descricao: Optional[str] = None
     filtros: FromPrazosIniciaisFiltros
+    # Modo UPSERT: se informado, atualiza esse lote existente em vez de criar
+    merge_into_lote_id: Optional[int] = Field(
+        default=None,
+        description="Se preenchido, atualiza esse lote em vez de criar novo (UPSERT por source_intake_id)",
+    )
+    reset_classification: bool = Field(
+        default=False,
+        description="Quando merge: limpa campos da IA e marca PRONTO_PARA_CLASSIFICAR",
+    )
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────
@@ -568,7 +577,7 @@ def create_lote_from_prazos_iniciais_endpoint(
     Body: { nome, cliente_nome?, descricao?, filtros: { data_inicio?, data_fim?, office_id?, statuses? } }
     """
     try:
-        lote = create_lote_from_prazos_iniciais(
+        lote, merge_stats = create_lote_from_prazos_iniciais(
             db,
             nome=payload.nome,
             cliente_nome=payload.cliente_nome,
@@ -579,16 +588,21 @@ def create_lote_from_prazos_iniciais_endpoint(
             cliente_nome_match=payload.filtros.cliente_nome_match,
             statuses=payload.filtros.statuses,
             created_by_user_id=current_user.id if current_user else None,
+            merge_into_lote_id=payload.merge_into_lote_id,
+            reset_classification=payload.reset_classification,
         )
     except IntakeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Falha ao criar lote a partir de Prazos Iniciais.")
+        logger.exception("Falha ao criar/atualizar lote a partir de Prazos Iniciais.")
         raise HTTPException(
             status_code=500, detail=f"Erro inesperado: {type(exc).__name__}: {exc}"
         )
 
-    return {"lote": _serialize_lote(lote)}
+    response = {"lote": _serialize_lote(lote)}
+    if merge_stats:
+        response["merge_stats"] = merge_stats
+    return response
 
 
 @router.post("/lotes/from-prazos-iniciais/preview")
