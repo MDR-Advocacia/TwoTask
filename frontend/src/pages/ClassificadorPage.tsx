@@ -24,7 +24,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Loader2, FileUp, Workflow, BarChart3, ScanSearch, Trash2, AlertCircle, FilePlus2, Sparkles, Eye, Inbox, Eraser, Users, RefreshCw, CalendarClock } from "lucide-react";
+import { Loader2, FileUp, Workflow, BarChart3, ScanSearch, Trash2, AlertCircle, FilePlus2, Sparkles, Eye, Inbox, Eraser, Users, RefreshCw, CalendarClock, FileSpreadsheet } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
   ClassificadorLoteSummary,
@@ -663,6 +663,7 @@ function LotesHistoricoTable({
   const [audienciasId, setAudienciasId] = useState<number | null>(null);
   const [uploadDialogLote, setUploadDialogLote] = useState<ClassificadorLoteSummary | null>(null);
   const [detailDialogLote, setDetailDialogLote] = useState<ClassificadorLoteSummary | null>(null);
+  const [detailDialogTab, setDetailDialogTab] = useState<string>("visao");
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
@@ -957,10 +958,29 @@ function LotesHistoricoTable({
                             <Button
                               variant="ghost"
                               size="icon"
-                              onClick={() => setDetailDialogLote(lote)}
+                              onClick={() => {
+                                setDetailDialogTab("visao");
+                                setDetailDialogLote(lote);
+                              }}
                               title="Detalhe (processos + batches)"
                             >
                               <Eye className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => {
+                                setDetailDialogTab("relatorios");
+                                setDetailDialogLote(lote);
+                              }}
+                              disabled={lote.status !== "CLASSIFICADO"}
+                              title={
+                                lote.status !== "CLASSIFICADO"
+                                  ? "Classifique o lote antes de gerar relatórios"
+                                  : "Gerar relatório (XLSX/PDF)"
+                              }
+                            >
+                              <FileSpreadsheet className="h-4 w-4" />
                             </Button>
                             <Button
                               variant="ghost"
@@ -1096,6 +1116,7 @@ function LotesHistoricoTable({
         lote={detailDialogLote}
         open={!!detailDialogLote}
         onOpenChange={(v) => !v && setDetailDialogLote(null)}
+        initialTab={detailDialogTab}
       />
     </Card>
   );

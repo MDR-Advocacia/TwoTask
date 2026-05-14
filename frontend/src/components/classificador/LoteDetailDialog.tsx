@@ -43,6 +43,12 @@ interface LoteDetailDialogProps {
   lote: ClassificadorLoteSummary | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /**
+   * Aba inicial: "visao" | "processos" | "batches" | "relatorios".
+   * Util pra atalhos da lista (ex.: botao "Gerar relatorio" abre ja
+   * direto na aba relatorios). Default: "visao".
+   */
+  initialTab?: string;
 }
 
 const PROC_STATUS_BADGE: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
@@ -77,9 +83,20 @@ function fmtDateTime(iso: string | null | undefined): string {
   }
 }
 
-export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetailDialogProps) {
+export default function LoteDetailDialog({
+  lote,
+  open,
+  onOpenChange,
+  initialTab = "visao",
+}: LoteDetailDialogProps) {
   const { toast } = useToast();
-  const [tab, setTab] = useState<string>("visao");
+  const [tab, setTab] = useState<string>(initialTab);
+
+  // Quando o dialog abre, sincroniza com initialTab (caso o pai mude
+  // sem fechar — ex.: trocar de "Eye" pra "Relatorios" no mesmo lote)
+  useEffect(() => {
+    if (open) setTab(initialTab);
+  }, [open, initialTab, lote?.id]);
   const [processos, setProcessos] = useState<ClassificadorProcessoSummary[]>([]);
   const [procTotal, setProcTotal] = useState(0);
   const [procPage, setProcPage] = useState(1);
