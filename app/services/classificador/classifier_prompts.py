@@ -209,6 +209,67 @@ algum nome da lista).
 pelo Master, registra com nome dele. Aqui nao filtramos Marcos Delli
 (isso e' do bloco `patrocinio.outro_advogado_*`, nao deste).
 
+## Audiencias (NOVO — cla004)
+
+Bloco `audiencias`: LISTA de audiencias detectadas no processo,
+incluindo PASSADAS e FUTURAS. Cada elemento: data, hora, tipo,
+local_ou_link, status, comparecimentos, resultado, fonte.
+
+**Como identificar**:
+- Procure movimentacoes/peticoes com:
+  - *"audiencia designada para [DD/MM/AAAA] as [HH:MM]"*
+  - *"fica designada audiencia de [conciliacao|instrucao|una]"*
+  - *"redesigno a audiencia para..."* (use a NOVA data)
+  - *"ata de audiencia"* (sempre realizada — tem comparecimentos)
+  - *"audiencia cancelada"* / *"prejudicada a audiencia"*
+  - *"presentes:..."*, *"compareceu o advogado..."*, *"ausente o autor..."*
+- Pegue TODAS as audiencias do processo (passadas e futuras).
+
+**`status`** — escolha 1:
+- `agendada`: data futura, ainda nao realizada
+- `realizada`: ata juntada / comparecimento registrado / decisao na
+  audiencia
+- `cancelada`: cancelada/prejudicada definitivamente
+- `redesignada`: audiencia A foi remarcada pra audiencia B. Marque a
+  audiencia A como `cancelada` e crie nova entrada com a NOVA data
+  como `agendada` (ou `realizada` se a nova ja aconteceu).
+
+**`tipo`** — conciliacao | instrucao | una | outra (use `outra` quando
+nao for clarissimo).
+
+**`local_ou_link`**: pode ser endereco presencial (Sala N, Foro X) OU
+URL de videoconferencia (Meet, Zoom, Cisco). Capture a string literal.
+
+**`comparecimentos`** — SO' aplicavel quando `status=realizada`. Pra
+agendadas/canceladas/redesignadas, deixe lista VAZIA `[]`.
+
+Cada comparecimento:
+- `polo`: autor | reu (do lado de quem o advogado compareceu)
+- `advogado_nome`: nome COMPLETO conforme aparece na ata
+- `advogado_oab`: OAB com numero e UF (ex.: "OAB/BA 12345" ou "12345/BA")
+- `e_mdr_ou_vinculada`: TRUE se o advogado e' do MDR ou de vinculada
+  Master (cruze com a lista de vinculadas Master + Marcos Delli)
+- `parte_representada`: nome literal da parte representada
+
+⚠️ **REGRA CRITICA — comparecimento da parte versus do advogado**: capture
+APENAS comparecimento de ADVOGADO. A parte autora ou re (pessoa fisica)
+pode comparecer com seu advogado — registre apenas o ADVOGADO. Se a
+ata menciona "ausente o autor" sem mencionar advogado, ainda assim
+registre apenas o que pegou de advogados; mencione a ausencia em
+`resultado`.
+
+**`resultado`** — 1 frase resumindo o desfecho da audiencia realizada:
+- *"Sem acordo. Designada audiencia instrutoria."*
+- *"Acordo homologado por R$ 15.000,00."*
+- *"Revelia decretada — autor ausente sem justificativa."*
+- *"Audiencia adiada por ausencia justificada do advogado do reu."*
+
+**`fonte`** — trecho ou label da movimentacao (ex.: "Ata audiencia
+fls. 87" ou "Despacho designando audiencia 03/04/2026").
+
+**Se NAO HOUVER audiencias no processo**: deixe `audiencias: []` (lista
+vazia). NAO invente.
+
 ## Analise estrategica
 2-3 frases consolidando: prob. exito do MDR, tese principal,
 aprovisionamento total, alerta sobre pedidos `possivel` exigindo nota
@@ -264,6 +325,27 @@ explicativa.
     "existe": false, "advogado_nome": null, "advogado_oab": null,
     "escritorio_nome": null, "data_habilitacao": null, "parte_representada": null
   },
+  "audiencias": [
+    // Exemplo de elemento (deixe a LISTA VAZIA se nao houver audiencias):
+    // {
+    //   "data": "2026-06-15", "hora": "14:00", "tipo": "conciliacao",
+    //   "local_ou_link": "https://meet.google.com/abc-def-ghi",
+    //   "status": "agendada", "comparecimentos": [], "resultado": null,
+    //   "fonte": "Despacho designando audiencia 12/05/2026"
+    // },
+    // {
+    //   "data": "2026-04-01", "hora": "10:30", "tipo": "instrucao",
+    //   "local_ou_link": "Sala 3, Foro Central de SP",
+    //   "status": "realizada",
+    //   "comparecimentos": [
+    //     {"polo": "reu", "advogado_nome": "Marcos Delli Rocco",
+    //      "advogado_oab": "OAB/BA 12345", "e_mdr_ou_vinculada": true,
+    //      "parte_representada": "Banco Master S.A."}
+    //   ],
+    //   "resultado": "Sem acordo. Designada audiencia instrutoria.",
+    //   "fonte": "Ata audiencia fls. 87"
+    // }
+  ],
   "confianca_geral": "alta"
 }
 ```

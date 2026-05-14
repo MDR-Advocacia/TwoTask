@@ -376,6 +376,70 @@ export default function LoteVisaoTab({ loteId, active }: Props) {
         )}
       </div>
 
+      {/* ─── Audiências próximas ─── */}
+      {data.audiencias_resumo && data.audiencias_resumo.processos_com_audiencia > 0 && (
+        <div className="rounded-md border p-3">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-xs font-medium">
+              Audiências agendadas
+              <span className="ml-1 text-muted-foreground">
+                ({data.audiencias_resumo.processos_com_audiencia} processo
+                {data.audiencias_resumo.processos_com_audiencia === 1 ? "" : "s"})
+              </span>
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-2 mb-2">
+            <div className="rounded border p-2 text-center">
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">7 dias</div>
+              <div className="text-lg font-bold tabular-nums text-primary">
+                {data.audiencias_resumo.agendadas_proximos_7_dias}
+              </div>
+            </div>
+            <div className="rounded border p-2 text-center">
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">30 dias</div>
+              <div className="text-lg font-bold tabular-nums">
+                {data.audiencias_resumo.agendadas_proximos_30_dias}
+              </div>
+            </div>
+            <div className="rounded border p-2 text-center">
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">60 dias</div>
+              <div className="text-lg font-bold tabular-nums">
+                {data.audiencias_resumo.agendadas_proximos_60_dias}
+              </div>
+            </div>
+          </div>
+          {data.audiencias_resumo.proximas_lista && data.audiencias_resumo.proximas_lista.length > 0 && (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">
+                Ver lista ({data.audiencias_resumo.proximas_lista.length})
+              </summary>
+              <div className="mt-2 space-y-1 max-h-64 overflow-auto">
+                {data.audiencias_resumo.proximas_lista.map((a, i) => (
+                  <div key={i} className="flex items-baseline justify-between gap-2 text-[11px] py-1 border-b">
+                    <div className="flex-1 truncate">
+                      <span className="font-mono text-[10px]">{a.cnj_number || `#${a.processo_id}`}</span>
+                      {a.tipo && (
+                        <span className="ml-2 text-[10px] text-muted-foreground capitalize">{a.tipo}</span>
+                      )}
+                    </div>
+                    <div className="tabular-nums text-[10px]">
+                      {a.data?.split("-").reverse().join("/")}
+                      {a.hora && ` ${a.hora}`}
+                    </div>
+                    <Badge
+                      variant={a.dias_ate <= 7 ? "default" : "outline"}
+                      className="text-[9px] px-1.5 py-0"
+                    >
+                      {a.dias_ate === 0 ? "hoje" : a.dias_ate === 1 ? "amanhã" : `${a.dias_ate}d`}
+                    </Badge>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </div>
+      )}
+
       {/* ─── Qualidade técnica das contestações ─── */}
       {data.contestacoes_resumo && data.contestacoes_resumo.total_contestacoes > 0 && (
         <div className="rounded-md border p-3">

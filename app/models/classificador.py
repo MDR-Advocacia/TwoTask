@@ -275,6 +275,10 @@ class ClassificadorProcesso(Base):
     # Patrocinio (snapshot do calculo de _materialize_patrocinio)
     patrocinio_json = Column(JSON, nullable=True)
 
+    # Audiencias detectadas no processo (passadas + futuras). Lista de
+    # objetos com data, hora, tipo, status, comparecimentos. Ver cla004.
+    audiencias_json = Column(JSON, nullable=True)
+
     # ─── PDF storage + extracao mecanica (cla002) ────────────────────
     # PDF original do robo (ou upload manual). pdf_sha256 e' o
     # identificador estavel pra cache/dedup.

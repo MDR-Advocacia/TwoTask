@@ -511,6 +511,14 @@ class ClassificadorBatchClassifier:
                 mode="json"
             )
 
+        # Audiencias detectadas (cla004) — lista de objetos
+        # Sobrescreve sempre (mesmo se vazio) — reclassificacao limpa
+        # audiencias antigas e bota as novas. Lista vazia [] em vez de
+        # None pra UI conseguir checar .length sem fallback.
+        proc.audiencias_json = [
+            a.model_dump(mode="json") for a in (resp.audiencias or [])
+        ]
+
         # Pedidos — limpa antigos + recria.
         # DELETE via query (mais robusto que `for old in proc.pedidos`
         # — esse padrao confia no cache da relationship, que pode estar

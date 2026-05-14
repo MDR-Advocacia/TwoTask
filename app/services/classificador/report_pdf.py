@@ -628,7 +628,106 @@ def _build_contestacoes_qualidade(data: dict, styles: dict) -> list:
     return flow
 
 
-# ─── Page 6: Top 10 ───────────────────────────────────────────────────
+# ─── Page 6 (nova): Proximas Audiencias ──────────────────────────────
+
+
+def _build_audiencias_proximas(data: dict, styles: dict) -> list:
+    """Pagina com as proximas audiencias agendadas (top 20).
+
+    Pula a pagina inteira se nao ha audiencias detectadas no lote.
+    Mostra:
+      - KPIs (audiencias agendadas em 7/30/60 dias)
+      - Tabela top 20 com CNJ, data, hora, tipo, dias-ate
+      - Frase pro-MDR enfatizando atuacao ativa em campo
+    """
+    flow = []
+    aud = data.get("audiencias_resumo") or {}
+    total = aud.get("total_audiencias") or 0
+    if total == 0:
+        return flow
+
+    flow.append(Paragraph(
+        "Próximas Audiências Agendadas",
+        styles["Section"],
+    ))
+    flow.append(Paragraph(
+        f"<i>{_fmt_int(aud.get('processos_com_audiencia'))} processos com pelo "
+        f"menos uma audiência detectada — {_fmt_int(total)} audiências no total "
+        f"(agendadas, realizadas, redesignadas, canceladas). Foco abaixo: "
+        f"as próximas agendadas nos próximos dias.</i>",
+        styles["Small"],
+    ))
+    flow.append(Spacer(1, 0.4 * cm))
+
+    # KPI cards (linha horizontal)
+    kpi_rows = [
+        ["Próximos 7 dias", "Próximos 30 dias", "Próximos 60 dias"],
+        [
+            _fmt_int(aud.get("agendadas_proximos_7_dias")),
+            _fmt_int(aud.get("agendadas_proximos_30_dias")),
+            _fmt_int(aud.get("agendadas_proximos_60_dias")),
+        ],
+    ]
+    kt = Table(kpi_rows, colWidths=[6 * cm, 6 * cm, 6 * cm])
+    kt.setStyle(_table_style(len(kpi_rows)))
+    flow.append(kt)
+    flow.append(Spacer(1, 0.5 * cm))
+
+    # Tabela top 20 proximas
+    proximas = aud.get("proximas_lista") or []
+    if not proximas:
+        flow.append(Paragraph(
+            "<i>Nenhuma audiência agendada nos próximos dias.</i>",
+            styles["Body"],
+        ))
+        flow.append(PageBreak())
+        return flow
+
+    rows = [["Dias", "CNJ", "Data", "Hora", "Tipo"]]
+    for a in proximas:
+        rows.append([
+            str(a.get("dias_ate") or "—"),
+            str(a.get("cnj_number") or "—"),
+            str(a.get("data") or "—"),
+            str(a.get("hora") or "—"),
+            str(a.get("tipo") or "—")[:14],
+        ])
+    t = Table(rows, colWidths=[1.5 * cm, 5.5 * cm, 2.8 * cm, 1.8 * cm, 4 * cm])
+    t.setStyle(_table_style(len(rows)))
+    flow.append(t)
+    flow.append(Spacer(1, 0.4 * cm))
+
+    # Frase pro-MDR
+    n7 = aud.get("agendadas_proximos_7_dias") or 0
+    n30 = aud.get("agendadas_proximos_30_dias") or 0
+    if n7 > 0:
+        narrativa = (
+            f"<b>Atuação ativa do MDR em campo:</b> {n7} audiência(s) já confirmadas "
+            f"para os próximos 7 dias e {n30} para os próximos 30 dias. O escritório "
+            f"mantém presença operacional continuada em foros estratégicos, "
+            f"reforçando a expertise técnica do MDR em audiências de "
+            f"conciliação e instrução."
+        )
+    elif n30 > 0:
+        narrativa = (
+            f"<b>Calendário processual sob controle:</b> {n30} audiência(s) "
+            f"agendadas para os próximos 30 dias. Equipe MDR já se prepara "
+            f"para cada peça, garantindo defesa técnica robusta em todas as "
+            f"frentes."
+        )
+    else:
+        narrativa = (
+            "Carteira atualmente em fase escrita — sem audiências designadas "
+            "nos próximos 60 dias. Janela estratégica para o MDR consolidar "
+            "argumentação técnica em peças e prazos."
+        )
+    flow.append(Paragraph(narrativa, styles["BodyJustify"]))
+
+    flow.append(PageBreak())
+    return flow
+
+
+# ─── Page 7: Top 10 ───────────────────────────────────────────────────
 
 
 def _build_top10(data: dict, styles: dict) -> list:
@@ -697,6 +796,7 @@ def generate_pdf_report(data: dict) -> bytes:
     flow.extend(_build_geo_pedidos(data, styles))
     flow.extend(_build_analise(data, styles))
     flow.extend(_build_contestacoes_qualidade(data, styles))
+    flow.extend(_build_audiencias_proximas(data, styles))
     flow.extend(_build_top10(data, styles))
 
     doc.build(flow)

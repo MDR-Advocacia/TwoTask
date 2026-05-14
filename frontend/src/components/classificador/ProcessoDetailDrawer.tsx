@@ -39,6 +39,7 @@ import {
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
+  ClassificadorAudiencia,
   ClassificadorProcessoDetail,
   fetchClassificadorProcessoDetail,
 } from "@/services/api";
@@ -238,6 +239,166 @@ function PartesList({ value, polo }: { value: unknown; polo: "ativo" | "passivo"
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+
+// ─── Audiencias (passadas + futuras) ────────────────────────────────
+
+
+function fmtAudienciaData(dataIso: string | null, hora: string | null): string {
+  if (!dataIso) return "—";
+  const parts = dataIso.split("-");
+  if (parts.length !== 3) return dataIso;
+  const [y, m, d] = parts;
+  return hora ? `${d}/${m}/${y} às ${hora}` : `${d}/${m}/${y}`;
+}
+
+function diasAte(dataIso: string | null): number | null {
+  if (!dataIso) return null;
+  const [y, m, d] = dataIso.split("-").map(Number);
+  if (!y || !m || !d) return null;
+  const target = new Date(y, m - 1, d);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  target.setHours(0, 0, 0, 0);
+  const diff = Math.round((target.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+  return diff;
+}
+
+function statusBadgeVariant(status: string | null): "default" | "secondary" | "destructive" | "outline" {
+  if (status === "agendada") return "default";
+  if (status === "realizada") return "secondary";
+  if (status === "cancelada") return "destructive";
+  if (status === "redesignada") return "outline";
+  return "outline";
+}
+
+function AudienciasList({ audiencias }: { audiencias: ClassificadorAudiencia[] }) {
+  if (!audiencias || audiencias.length === 0) {
+    return (
+      <div className="text-muted-foreground italic text-xs">
+        Nenhuma audiência detectada.
+      </div>
+    );
+  }
+
+  // Ordena: agendadas primeiro (por data asc), depois realizadas/canceladas
+  const sorted = [...audiencias].sort((a, b) => {
+    const sa = a.status === "agendada" ? 0 : a.status === "redesignada" ? 1 : 2;
+    const sb = b.status === "agendada" ? 0 : b.status === "redesignada" ? 1 : 2;
+    if (sa !== sb) return sa - sb;
+    return (a.data || "9999").localeCompare(b.data || "9999");
+  });
+
+  return (
+    <div className="space-y-2">
+      {sorted.map((aud, i) => {
+        const dias = diasAte(aud.data);
+        const isProxima = aud.status === "agendada" && dias !== null && dias <= 30 && dias >= 0;
+        return (
+          <div
+            key={i}
+            className={`rounded border p-2.5 text-xs ${
+              isProxima ? "border-primary/30 bg-primary/5" : "bg-card"
+            }`}
+          >
+            <div className="flex items-baseline justify-between gap-2 mb-1.5">
+              <div className="flex items-center gap-2">
+                <CalendarCheck2 className="h-3.5 w-3.5 text-primary" />
+                <span className="font-medium">
+                  {fmtAudienciaData(aud.data, aud.hora)}
+                </span>
+                {isProxima && dias !== null && (
+                  <Badge variant="default" className="text-[9px] px-1.5 py-0">
+                    {dias === 0 ? "hoje" : dias === 1 ? "amanhã" : `em ${dias} dias`}
+                  </Badge>
+                )}
+              </div>
+              <div className="flex items-center gap-1">
+                {aud.tipo && (
+                  <Badge variant="outline" className="text-[9px] px-1.5 py-0 font-normal capitalize">
+                    {aud.tipo}
+                  </Badge>
+                )}
+                {aud.status && (
+                  <Badge variant={statusBadgeVariant(aud.status)} className="text-[9px] px-1.5 py-0 capitalize">
+                    {aud.status}
+                  </Badge>
+                )}
+              </div>
+            </div>
+            {aud.local_ou_link && (
+              <div className="text-[11px] text-muted-foreground mb-1">
+                <span className="font-medium">Local:</span>{" "}
+                {aud.local_ou_link.startsWith("http") ? (
+                  <a
+                    href={aud.local_ou_link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary underline break-all"
+                  >
+                    {aud.local_ou_link.length > 60 ? aud.local_ou_link.slice(0, 60) + "..." : aud.local_ou_link}
+                  </a>
+                ) : (
+                  <span className="break-words">{aud.local_ou_link}</span>
+                )}
+              </div>
+            )}
+            {aud.comparecimentos && aud.comparecimentos.length > 0 && (
+              <div className="mt-1.5">
+                <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
+                  Compareceram ({aud.comparecimentos.length})
+                </div>
+                <div className="space-y-1">
+                  {aud.comparecimentos.map((c, ci) => (
+                    <div key={ci} className="flex items-baseline gap-2 text-[11px]">
+                      <span className="font-medium">{c.advogado_nome || "(sem nome)"}</span>
+                      {c.advogado_oab && (
+                        <span className="text-muted-foreground font-mono text-[10px]">
+                          {c.advogado_oab}
+                        </span>
+                      )}
+                      {c.polo && (
+                        <Badge variant="outline" className="text-[9px] px-1.5 py-0 capitalize">
+                          {c.polo}
+                        </Badge>
+                      )}
+                      {c.e_mdr_ou_vinculada === true && (
+                        <Badge variant="default" className="text-[9px] px-1.5 py-0">
+                          MDR
+                        </Badge>
+                      )}
+                      {c.parte_representada && (
+                        <span className="text-[10px] text-muted-foreground italic">
+                          repr. {c.parte_representada}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {aud.resultado && (
+              <div className="mt-1.5 text-[11px]">
+                <span className="font-medium">Resultado:</span>{" "}
+                <span className="text-muted-foreground">{aud.resultado}</span>
+              </div>
+            )}
+            {aud.fonte && (
+              <details className="mt-1">
+                <summary className="cursor-pointer text-[9px] text-muted-foreground hover:text-foreground">
+                  Ver fonte
+                </summary>
+                <div className="mt-1 text-[10px] text-muted-foreground italic bg-muted/30 p-1.5 rounded">
+                  {aud.fonte}
+                </div>
+              </details>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -483,6 +644,11 @@ export default function ProcessoDetailDrawer({
                   <Field label="Justificativa" value={contestacao.justificativa as string} full />
                 </div>
               )}
+            </Section>
+
+            {/* ─── 6.5. Audiencias ─── */}
+            <Section icon={CalendarCheck2} title={`Audiências (${(data?.audiencias_json || []).length})`} defaultOpen={true}>
+              <AudienciasList audiencias={data?.audiencias_json || []} />
             </Section>
 
             {/* ─── 7. Sentenca + Transito ─── */}

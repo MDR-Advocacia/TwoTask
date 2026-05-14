@@ -24,7 +24,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Loader2, FileUp, Workflow, BarChart3, ScanSearch, Trash2, AlertCircle, FilePlus2, Sparkles, Eye, Inbox, Eraser, Users, RefreshCw } from "lucide-react";
+import { Loader2, FileUp, Workflow, BarChart3, ScanSearch, Trash2, AlertCircle, FilePlus2, Sparkles, Eye, Inbox, Eraser, Users, RefreshCw, CalendarClock } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
   ClassificadorLoteSummary,
@@ -33,6 +33,7 @@ import {
   cleanupClassificadorPedidosDuplicados,
   backfillClassificadorPartes,
   reExtractClassificadorPartes,
+  reExtractClassificadorAudiencias,
   createClassificadorLoteFromPi,
   createClassificadorLoteUpload,
   deleteClassificadorLote,
@@ -625,6 +626,7 @@ function LotesHistoricoTable({
   const [cleaningId, setCleaningId] = useState<number | null>(null);
   const [backfillingId, setBackfillingId] = useState<number | null>(null);
   const [reextractingId, setReextractingId] = useState<number | null>(null);
+  const [audienciasId, setAudienciasId] = useState<number | null>(null);
   const [uploadDialogLote, setUploadDialogLote] = useState<ClassificadorLoteSummary | null>(null);
   const [detailDialogLote, setDetailDialogLote] = useState<ClassificadorLoteSummary | null>(null);
 
@@ -692,6 +694,33 @@ function LotesHistoricoTable({
       alive = false;
     };
   }, [page, pageSize, reloadKey, toast]);
+
+  const handleReExtractAudiencias = async (lote: ClassificadorLoteSummary) => {
+    if (!confirm(
+      `Extrair audiências do lote #${lote.id} (${lote.nome}) via regex no texto cru?\n\n` +
+      `Util pra processos classificados ANTES do deploy de audiências. ` +
+      `Operação gratuita (sem IA). Cobertura ~70-80% dos casos óbvios.`
+    )) return;
+    setAudienciasId(lote.id);
+    try {
+      const r = await reExtractClassificadorAudiencias(lote.id);
+      toast({
+        title: "Audiências extraídas",
+        description:
+          `${r.total_audiencias_extraidas} audiência(s) detectada(s) em ${r.processos_com_audiencia} de ${r.total_processos_no_lote} processo(s).` +
+          (r.sem_texto > 0 ? ` ${r.sem_texto} sem texto cru.` : ""),
+      });
+      onChanged();
+    } catch (err) {
+      toast({
+        title: "Falha ao extrair audiências",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setAudienciasId(null);
+    }
+  };
 
   const handleReExtractPartes = async (lote: ClassificadorLoteSummary) => {
     if (!confirm(
@@ -923,6 +952,19 @@ function LotesHistoricoTable({
                                 <Loader2 className="h-4 w-4 animate-spin" />
                               ) : (
                                 <RefreshCw className="h-4 w-4" />
+                              )}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleReExtractAudiencias(lote)}
+                              disabled={audienciasId === lote.id}
+                              title="Extrair audiências do texto cru (regex mecânico — lotes antigos)"
+                            >
+                              {audienciasId === lote.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <CalendarClock className="h-4 w-4" />
                               )}
                             </Button>
                             <Button

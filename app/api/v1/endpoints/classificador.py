@@ -1226,6 +1226,7 @@ def get_processo_detail(
         # Bloco completo da IA (pra ler sentenca/transito/primeira_hab/etc)
         "classificacao_response_json": proc.classificacao_response_json,
         "contestacao_existente_json": proc.contestacao_existente_json,
+        "audiencias_json": proc.audiencias_json or [],
 
         # PDF + extracao mecanica
         "pdf_path": proc.pdf_path,
@@ -1928,6 +1929,80 @@ def re_extract_partes_lote(
         "atualizados": atualizados,
         "com_partes_extraidas": com_partes_extraidas,
         "com_capa_enriquecida": com_capa_enriquecida,
+        "sem_texto": sem_texto,
+    }
+
+
+@router.post("/lotes/{lote_id}/re-extract-audiencias-from-text")
+def re_extract_audiencias_lote(
+    lote_id: int,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth_security.get_current_user),
+):
+    """Backfill mecanico de audiencias via regex no texto cru.
+
+    Pra processos classificados ANTES do cla004 (sem audiencias no
+    JSON), roda regex em `integra_json.texto_cru` e popula
+    `proc.audiencias_json` com lista de audiencias detectadas.
+
+    Operacao gratuita (sem chamada IA). Cobertura ~70-80% dos casos
+    obvios (audiencia designada com data/hora explicitas). Casos
+    limites: operador pode reclassificar com IA depois.
+
+    Idempotente: pode rodar multiplas vezes — sempre re-extrai do
+    mesmo texto.
+    """
+    from app.services.classificador.audiencia_extractor import (
+        extract_audiencias_from_text,
+    )
+
+    lote = db.query(ClassificadorLote).filter(ClassificadorLote.id == lote_id).first()
+    if lote is None:
+        raise HTTPException(status_code=404, detail=f"Lote #{lote_id} nao encontrado.")
+
+    procs = (
+        db.query(ClassificadorProcesso)
+        .filter(ClassificadorProcesso.lote_id == lote_id)
+        .all()
+    )
+
+    atualizados = 0
+    com_audiencia = 0
+    sem_texto = 0
+    total_audiencias = 0
+    for p in procs:
+        texto = None
+        if isinstance(p.integra_json, dict):
+            texto = p.integra_json.get("texto_cru")
+        if not texto or len(texto) < 100:
+            sem_texto += 1
+            continue
+        try:
+            audiencias = extract_audiencias_from_text(texto)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Falha extract_audiencias_from_text proc=%s: %s",
+                p.id, exc,
+            )
+            continue
+        p.audiencias_json = audiencias
+        if audiencias:
+            com_audiencia += 1
+            total_audiencias += len(audiencias)
+        atualizados += 1
+
+    db.commit()
+    logger.info(
+        "Classificador: re-extract-audiencias lote=%s %d atualizados %d com_audiencia %d audiencias",
+        lote_id, atualizados, com_audiencia, total_audiencias,
+    )
+
+    return {
+        "lote_id": lote_id,
+        "total_processos_no_lote": len(procs),
+        "atualizados": atualizados,
+        "processos_com_audiencia": com_audiencia,
+        "total_audiencias_extraidas": total_audiencias,
         "sem_texto": sem_texto,
     }
 

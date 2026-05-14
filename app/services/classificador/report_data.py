@@ -34,7 +34,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -398,6 +398,75 @@ def build_report_data(db: Session, lote_id: int) -> dict:
         "outros_pct_genericas": _pct(cont_outros_generica, cont_outros_total),
     }
 
+    # ─── Audiencias — agregado (cla004) ───────────────────────────────
+    # KPIs: total processos com audiencia, total audiencias detectadas,
+    # audiencias nas proximas N dias (7/30/60), por tipo, por status.
+    # Lista "proximas" pro PDF: 10 audiencias agendadas com data mais
+    # proxima (ordenadas asc).
+    today = date.today()
+    in_7d = date.fromordinal(today.toordinal() + 7)
+    in_30d = date.fromordinal(today.toordinal() + 30)
+    in_60d = date.fromordinal(today.toordinal() + 60)
+
+    audi_total = 0
+    audi_procs_com = 0
+    audi_proximas_7 = 0
+    audi_proximas_30 = 0
+    audi_proximas_60 = 0
+    audi_por_status: dict[str, int] = {}
+    audi_por_tipo: dict[str, int] = {}
+    audi_proximas_lista: list[dict] = []
+    for p in processos:
+        lst = p.audiencias_json if isinstance(p.audiencias_json, list) else []
+        if not lst:
+            continue
+        audi_procs_com += 1
+        for a in lst:
+            audi_total += 1
+            status_a = a.get("status") or "agendada"
+            tipo_a = a.get("tipo") or "outra"
+            audi_por_status[status_a] = audi_por_status.get(status_a, 0) + 1
+            audi_por_tipo[tipo_a] = audi_por_tipo.get(tipo_a, 0) + 1
+
+            data_raw = a.get("data")
+            if not data_raw:
+                continue
+            try:
+                d_audi = date.fromisoformat(data_raw[:10])
+            except (ValueError, TypeError):
+                continue
+            if status_a != "agendada" or d_audi < today:
+                continue
+            if d_audi <= in_7d:
+                audi_proximas_7 += 1
+            if d_audi <= in_30d:
+                audi_proximas_30 += 1
+            if d_audi <= in_60d:
+                audi_proximas_60 += 1
+            audi_proximas_lista.append({
+                "processo_id": p.id,
+                "cnj_number": p.cnj_number,
+                "data": data_raw,
+                "hora": a.get("hora"),
+                "tipo": tipo_a,
+                "local_ou_link": a.get("local_ou_link"),
+                "dias_ate": (d_audi - today).days,
+            })
+    audi_proximas_lista.sort(
+        key=lambda x: (x["data"] or "9999-12-31", x.get("hora") or "23:59")
+    )
+
+    audiencias_resumo = {
+        "total_audiencias": audi_total,
+        "processos_com_audiencia": audi_procs_com,
+        "agendadas_proximos_7_dias": audi_proximas_7,
+        "agendadas_proximos_30_dias": audi_proximas_30,
+        "agendadas_proximos_60_dias": audi_proximas_60,
+        "por_status": audi_por_status,
+        "por_tipo": audi_por_tipo,
+        "proximas_lista": audi_proximas_lista[:20],  # top 20 mais proximas
+    }
+
     # ─── Detalhamento (1 row/processo) ───────────────────────────────
     processos_detalhe = []
     for p in processos:
@@ -501,6 +570,7 @@ def build_report_data(db: Session, lote_id: int) -> dict:
         "sentencas_resumo": sentencas_resumo,
         "transito_julgado_resumo": transito_julgado_resumo,
         "contestacoes_resumo": contestacoes_resumo,
+        "audiencias_resumo": audiencias_resumo,
         "processos": processos_detalhe,
         "pedidos": pedidos_detalhe,
         "analise_estrategica_carteira": lote.analise_estrategica_carteira,

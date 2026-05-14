@@ -17,9 +17,9 @@ Polimento do prompt vem na Fase 5 — esse schema e' o contrato estavel.
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, time
 from decimal import Decimal
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -346,6 +346,114 @@ class PrimeiraHabilitacaoMasterResponse(BaseModel):
                                field_name="primeira_habilitacao_master.existe")
 
 
+# ─── Audiencias (passadas + futuras com comparecimentos) ────────────
+
+
+_VALID_AUDIENCIA_TIPO = ("conciliacao", "instrucao", "una", "outra")
+_VALID_AUDIENCIA_STATUS = ("agendada", "realizada", "cancelada", "redesignada")
+_VALID_POLO_COMPARECIMENTO = ("autor", "reu")
+
+
+class ComparecimentoResponse(BaseModel):
+    """Quem compareceu (ou nao) numa audiencia realizada.
+
+    Aplicavel apenas pra audiencias `status=realizada`. Pra agendadas/
+    canceladas, a lista de comparecimentos deve ser vazia.
+    """
+
+    polo: Optional[Literal["autor", "reu"]] = Field(
+        default=None, description="Polo do comparente (autor ou reu)"
+    )
+    advogado_nome: Optional[str] = None
+    advogado_oab: Optional[str] = None
+    e_mdr_ou_vinculada: Optional[bool] = Field(
+        default=None,
+        description="True se o advogado e' do MDR ou de vinculada Master.",
+    )
+    parte_representada: Optional[str] = Field(
+        default=None,
+        description="Nome da parte que o advogado representou (ex.: Banco Master S.A.)",
+    )
+
+    @field_validator("polo", mode="before")
+    @classmethod
+    def _norm_polo(cls, v):
+        return _normalize_enum(
+            v, _VALID_POLO_COMPARECIMENTO, default=None,
+            field_name="audiencia.comparecimento.polo",
+        )
+
+    @field_validator("e_mdr_ou_vinculada", mode="before")
+    @classmethod
+    def _norm_e_mdr(cls, v):
+        return _normalize_bool_optional(
+            v, field_name="audiencia.comparecimento.e_mdr_ou_vinculada"
+        )
+
+
+class AudienciaResponse(BaseModel):
+    """Uma audiencia detectada no processo (passada OU futura).
+
+    Operador quer ver passadas (com comparecimento) E futuras
+    (agendadas pendentes). Pra cada uma, capturamos data, hora, tipo,
+    status, comparecimentos (se realizada) e resultado breve.
+    """
+
+    data: Optional[date] = None
+    hora: Optional[time] = None
+    tipo: Optional[Literal["conciliacao", "instrucao", "una", "outra"]] = None
+    local_ou_link: Optional[str] = Field(
+        default=None,
+        description="Endereco presencial OU URL de videoconferencia",
+    )
+    status: Optional[Literal[
+        "agendada", "realizada", "cancelada", "redesignada"
+    ]] = Field(
+        default=None,
+        description=(
+            "agendada=futura ainda nao realizada; realizada=ja aconteceu; "
+            "cancelada=cancelada definitivamente; redesignada=remarcada "
+            "(nesse caso, pegue a NOVA data como 'agendada')."
+        ),
+    )
+    comparecimentos: List[ComparecimentoResponse] = Field(
+        default_factory=list,
+        description=(
+            "Lista de advogados que compareceram. So' aplicavel quando "
+            "status=realizada. Pra agendadas/canceladas: lista vazia."
+        ),
+    )
+    resultado: Optional[str] = Field(
+        default=None,
+        description=(
+            "1 frase resumindo o que aconteceu (so' pra realizadas): "
+            "'Sem acordo. Audiencia instrutoria designada.', "
+            "'Acordo homologado por R$ 50.000', 'Revelia decretada — autor "
+            "ausente', etc."
+        ),
+    )
+    fonte: Optional[str] = Field(
+        default=None,
+        description="Trecho/movimentacao do processo que comprova a audiencia",
+    )
+
+    @field_validator("tipo", mode="before")
+    @classmethod
+    def _norm_tipo(cls, v):
+        return _normalize_enum(
+            v, _VALID_AUDIENCIA_TIPO, default=None,
+            field_name="audiencia.tipo",
+        )
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _norm_status(cls, v):
+        return _normalize_enum(
+            v, _VALID_AUDIENCIA_STATUS, default=None,
+            field_name="audiencia.status",
+        )
+
+
 # ─── Resposta principal ───────────────────────────────────────────────
 
 
@@ -395,6 +503,11 @@ class ClassificadorClassificationResponse(BaseModel):
     sentenca: Optional[SentencaResponse] = None
     transito_julgado: Optional[TransitoJulgadoResponse] = None
     primeira_habilitacao_master: Optional[PrimeiraHabilitacaoMasterResponse] = None
+
+    # ─── Audiencias (cla004, pedido pelo operador 2026-05-14) ──────────
+    # Lista de audiencias detectadas (passadas + futuras). Pra cada uma:
+    # data/hora/tipo/local/status/comparecimentos/resultado.
+    audiencias: List[AudienciaResponse] = Field(default_factory=list)
 
     # ─── Confianca global ────────────────────────────────────────────
     confianca_geral: Confianca = "alta"

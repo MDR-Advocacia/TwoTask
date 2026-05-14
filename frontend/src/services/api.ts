@@ -2179,6 +2179,24 @@ export interface ClassificadorDashboardData {
     outros_nao_genericas: number;
     outros_pct_genericas: number | null;
   };
+  audiencias_resumo?: {
+    total_audiencias: number;
+    processos_com_audiencia: number;
+    agendadas_proximos_7_dias: number;
+    agendadas_proximos_30_dias: number;
+    agendadas_proximos_60_dias: number;
+    por_status: Record<string, number>;
+    por_tipo: Record<string, number>;
+    proximas_lista: Array<{
+      processo_id: number;
+      cnj_number: string | null;
+      data: string;
+      hora: string | null;
+      tipo: string | null;
+      local_ou_link: string | null;
+      dias_ate: number;
+    }>;
+  };
   generated_at: string;
 }
 
@@ -2200,6 +2218,25 @@ export interface ClassificadorPedidoDetail {
   probabilidade_perda: string | null;
   aprovisionamento: number | null;
   fundamentacao_risco: string | null;
+}
+
+export interface ClassificadorComparecimento {
+  polo: "autor" | "reu" | null;
+  advogado_nome: string | null;
+  advogado_oab: string | null;
+  e_mdr_ou_vinculada: boolean | null;
+  parte_representada: string | null;
+}
+
+export interface ClassificadorAudiencia {
+  data: string | null;       // ISO YYYY-MM-DD
+  hora: string | null;       // HH:MM
+  tipo: "conciliacao" | "instrucao" | "una" | "outra" | null;
+  local_ou_link: string | null;
+  status: "agendada" | "realizada" | "cancelada" | "redesignada" | null;
+  comparecimentos: ClassificadorComparecimento[];
+  resultado: string | null;
+  fonte: string | null;
 }
 
 export interface ClassificadorProcessoDetail {
@@ -2231,6 +2268,7 @@ export interface ClassificadorProcessoDetail {
   confianca: number | null;
   classificacao_response_json: Record<string, unknown> | null;
   contestacao_existente_json: Record<string, unknown> | null;
+  audiencias_json: ClassificadorAudiencia[];
   pdf_path: string | null;
   pdf_sha256: string | null;
   pdf_bytes: number | null;
@@ -2456,6 +2494,23 @@ export async function backfillClassificadorPartes(
 }> {
   const res = await apiFetch(
     `/api/v1/classificador/lotes/${loteId}/backfill-partes`,
+    { method: "POST" },
+  );
+  return expectJson(res);
+}
+
+export async function reExtractClassificadorAudiencias(
+  loteId: number,
+): Promise<{
+  lote_id: number;
+  total_processos_no_lote: number;
+  atualizados: number;
+  processos_com_audiencia: number;
+  total_audiencias_extraidas: number;
+  sem_texto: number;
+}> {
+  const res = await apiFetch(
+    `/api/v1/classificador/lotes/${loteId}/re-extract-audiencias-from-text`,
     { method: "POST" },
   );
   return expectJson(res);
