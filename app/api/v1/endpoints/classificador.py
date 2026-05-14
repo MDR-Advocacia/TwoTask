@@ -155,8 +155,12 @@ def intake_pdf(
     content = file.file.read()
     if not content:
         raise HTTPException(status_code=400, detail="Arquivo vazio.")
-    if len(content) > 30 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Arquivo maior que 30MB.")
+    from app.core.config import settings as _s2
+    if len(content) > _s2.prazos_iniciais_max_pdf_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Arquivo maior que {_s2.prazos_iniciais_max_pdf_mb}MB.",
+        )
 
     # 1) Salva PDF no volume (valida magic bytes + tamanho)
     try:
@@ -512,15 +516,16 @@ def create_lote_upload(
 
     Validacoes:
     - Content-type aceito: xlsx + qualquer (UploadFile e' tolerante)
-    - Tamanho max: 30MB (matches base_processual)
+    - Tamanho max: settings.prazos_iniciais_max_pdf_mb (default 60MB)
     - Header obrigatorio: cnj (na linha 1 ou 2)
     """
-    # Limite de 30MB
+    # Limite de tamanho (reusa setting compartilhado)
     content = file.file.read()
-    if len(content) > 30 * 1024 * 1024:
+    from app.core.config import settings as _s
+    if len(content) > _s.prazos_iniciais_max_pdf_bytes:
         raise HTTPException(
             status_code=413,
-            detail="Arquivo maior que 30MB. Tente um arquivo menor.",
+            detail=f"Arquivo maior que {_s.prazos_iniciais_max_pdf_mb}MB.",
         )
 
     if not content:
@@ -1366,7 +1371,7 @@ def quick_pdf(
     informar) contendo um processo por PDF.
 
     Tolerante a falha: se um PDF nao for valido (vazio, sem magic bytes
-    ou >30MB), aquele e' marcado como ERRO_CAPTURA e os outros seguem.
+    ou maior que o limite), aquele e' marcado como ERRO_CAPTURA e os outros seguem.
     Se TODOS falharem, o lote e' deletado e a request retorna 400.
 
     Depois operador classifica via UI (botao ✨ no historico) ou worker.
@@ -1392,8 +1397,11 @@ def quick_pdf(
         if not content:
             pdfs.append((f.filename or "vazio.pdf", b"", "Arquivo vazio."))
             continue
-        if len(content) > 30 * 1024 * 1024:
-            pdfs.append((f.filename or "?.pdf", b"", "Arquivo > 30MB."))
+        if len(content) > _s.prazos_iniciais_max_pdf_bytes:
+            pdfs.append((
+                f.filename or "?.pdf", b"",
+                f"Arquivo > {_s.prazos_iniciais_max_pdf_mb}MB.",
+            ))
             continue
         pdfs.append((f.filename or "?.pdf", content, None))
 
@@ -1505,7 +1513,7 @@ def quick_pdf(
             status_code=400,
             detail=(
                 f"Nenhum PDF pode ser processado ({len(processos_out)} tentativas). "
-                "Verifique se os arquivos sao PDFs validos e <= 30MB."
+                f"Verifique se os arquivos sao PDFs validos e <= {_s.prazos_iniciais_max_pdf_mb}MB."
             ),
         )
 
@@ -1545,7 +1553,7 @@ def upload_pdf_to_lote(
     fora do HTTP.
 
     Form fields:
-    - `file` (obrig.): PDF (≤ tamanho max do settings.prazos_iniciais_max_pdf_mb)
+    - `file` (obrig.): PDF (<= settings.prazos_iniciais_max_pdf_mb, default 60MB)
     - `cnj_hint` (opc.): CNJ que o cliente afirma ser do processo. Usado
       como fallback se o extractor mecanico nao detectar.
     - `external_id` (opc.): id externo (cliente/robo)

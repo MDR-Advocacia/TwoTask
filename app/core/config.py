@@ -96,7 +96,11 @@ class Settings(BaseSettings):
     # Pasta raiz (dentro do volume persistente) onde os PDFs da habilitação
     # são guardados até o upload no GED do L1.
     prazos_iniciais_storage_path: str = "/app/data/prazos_iniciais"
-    prazos_iniciais_max_pdf_mb: int = 20
+    # Limite por PDF — compartilhado entre PI (habilitacao) e
+    # Classificador (processo completo). PI usa <5MB tipicamente; o
+    # Classificador pode receber autos grandes ate ~60MB. Override via
+    # env var PRAZOS_INICIAIS_MAX_PDF_MB no painel do Coolify se precisar.
+    prazos_iniciais_max_pdf_mb: int = 60
     # Upload manual via UI (USER_UPLOAD) — processos na íntegra costumam
     # ser bem maiores que o PDF de habilitação, então temos um limite
     # próprio. PDF do processo é descartado após extração ok pra não
@@ -130,6 +134,16 @@ class Settings(BaseSettings):
     classificador_pending_worker_interval_seconds: int = 60
     # Auto-classify: se True, dispara classify do lote logo apos criar.
     classificador_pending_auto_classify: bool = True
+
+    # ─── Classificador — compressao de PDF ─────────────────────────────
+    # Comprime PDFs antes de salvar via pikepdf (streams + dedup).
+    # Mantém 100% do texto. Reducao tipica 15-40% pra PDFs nativos.
+    classificador_compression_enabled: bool = True
+    # Skip arquivos abaixo desse limite (em KB) — nao vale a pena
+    # processar PDFs pequenos.
+    classificador_compression_min_kb: int = 2048  # 2MB
+    # Se compressao piorar OU pikepdf der erro, volta ao bytes originais
+    # silenciosamente. NAO bloqueia o intake.
 
     # ─── Classificador — webhook callback ──────────────────────────────
     # URL pra notificar quando lote vira CLASSIFICADO (robo de entrega

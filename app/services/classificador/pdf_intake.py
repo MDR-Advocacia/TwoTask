@@ -39,6 +39,7 @@ from app.models.classificador import (
     SOURCE_API_JSON,
     SOURCE_UPLOAD_XLSX,
 )
+from app.services.classificador.pdf_compressor import compress_pdf
 from app.services.prazos_iniciais.pdf_extractor import (
     ExtractionResult,
     extract,
@@ -114,20 +115,29 @@ def ingest_pdf(
             "Crie um novo lote pra continuar."
         )
 
-    # 2. Persiste PDF no volume (validacao de magic bytes + tamanho)
+    # 2. Comprime PDF (best-effort, mantem 100% do texto). Se falhar
+    # ou nao gerar ganho, usa bytes originais.
+    compression = compress_pdf(pdf_bytes)
+    final_bytes = compression.output_bytes
+
+    # 3. Persiste PDF (comprimido se houve ganho) no volume.
     try:
-        stored = save_pdf(pdf_bytes)
+        stored = save_pdf(final_bytes)
     except PdfValidationError:
         raise  # bubble pro endpoint (vai retornar 400)
 
     logger.info(
-        "Classificador.intake_pdf: lote=%s, sha256=%s, size=%dB, filename=%r",
-        lote_id, stored.sha256[:8], stored.size_bytes, pdf_filename,
+        "Classificador.intake_pdf: lote=%s, sha256=%s, size=%dB "
+        "(compress: %s -%.1f%%), filename=%r",
+        lote_id, stored.sha256[:8], stored.size_bytes,
+        compression.tool, compression.saved_pct, pdf_filename,
     )
 
-    # 3. Extracao mecanica (reusa motor do PI)
+    # 3. Extracao mecanica (reusa motor do PI) — usa bytes comprimidos
+    # ja que sao identicos textualmente ao original (pikepdf nao mexe
+    # em texto). Economia: 1 leitura a mais nao tem.
     try:
-        result: ExtractionResult = extract(pdf_bytes)
+        result: ExtractionResult = extract(final_bytes)
     except Exception as exc:  # noqa: BLE001
         # Defesa em profundidade — `extract` nunca deveria levantar
         # (`__init__.py` ja captura tudo e devolve fallback). Mas se
@@ -153,7 +163,10 @@ def ingest_pdf(
         error_msg = result.error_message
         pdf_extraction_failed = True
 
-    # 6. Persiste processo
+    # 6. Persiste processo — inclui stats de compressao no metadata
+    meta_final = dict(metadata or {})
+    meta_final["compression"] = compression.to_dict()
+
     proc = ClassificadorProcesso(
         lote_id=lote_id,
         source=source,
@@ -165,7 +178,7 @@ def ingest_pdf(
 
         capa_json=result.capa_json or {},
         integra_json=result.integra_json or {},
-        metadata_json=metadata,
+        metadata_json=meta_final,
 
         pdf_path=stored.relative_path,
         pdf_sha256=stored.sha256,

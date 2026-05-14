@@ -41,6 +41,11 @@ anthropic==0.40.0
 # ─── Extração de PDF (intake USER_UPLOAD) ─────────
 pdfplumber==0.11.4
 
+# ─── Compressão de PDF (Classificador motor de compressão) ─────
+# pikepdf = wrapper Python de qpdf; wheels já incluem qpdf, não precisa
+# de apt-get no Dockerfile. Reduz 15-40% recomprimindo streams + dedup.
+pikepdf==9.4.2
+
 # ─── Lock cross-process ───────────────────────────
 # filelock pro cache de cookie do legacy_task_http: serializa logins
 # entre os 4 workers Uvicorn e persiste o cookie em arquivo (volume

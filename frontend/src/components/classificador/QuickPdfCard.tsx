@@ -29,7 +29,13 @@ import {
   ClassificadorLoteSummary,
   ClassificadorQuickPdfResult,
   createClassificadorLoteFromPdf,
+  uploadClassificadorProcessoPdf,
 } from "@/services/api";
+
+
+// Limite por arquivo (deve casar com settings.prazos_iniciais_max_pdf_mb
+// no backend e client_max_body_size do nginx — atualmente 60MB).
+const MAX_BYTES_PER_FILE = 60 * 1024 * 1024;
 
 
 interface Props {
@@ -46,9 +52,11 @@ export default function QuickPdfCard({ onCreated }: Props) {
   const [observacao, setObservacao] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
   const [result, setResult] = useState<ClassificadorQuickPdfResult | null>(null);
 
-  const canSubmit = files.length > 0 && !submitting;
+  const oversized = files.filter(f => f.size > MAX_BYTES_PER_FILE);
+  const canSubmit = files.length > 0 && oversized.length === 0 && !submitting;
   const totalSize = files.reduce((s, f) => s + f.size, 0);
 
   const handleFilesChange = (selected: FileList | null) => {
@@ -71,24 +79,77 @@ export default function QuickPdfCard({ onCreated }: Props) {
     if (!canSubmit) return;
     setSubmitting(true);
     setResult(null);
+    setProgress({ current: 0, total: files.length });
+
+    const opts = {
+      nome: nome.trim() || undefined,
+      cliente_nome: clienteNome.trim() || undefined,
+      cnj_hint: cnjHint.trim() || undefined,
+      produto: produto.trim() || undefined,
+      observacao: observacao.trim() || undefined,
+    };
+
+    // Estrategia: N+1 requests sequenciais (1 PDF por request).
+    // Evita estourar limite de proxy (~35MB por payload) e isola falhas.
+    //   - 1ª req: createClassificadorLoteFromPdf (cria lote + sobe 1º PDF)
+    //   - 2ª..N: uploadClassificadorProcessoPdf (sobe PDF no lote criado)
+    const processos_out: ClassificadorQuickPdfResult["processos"] = [];
+    let lote: ClassificadorLoteSummary | null = null;
+
     try {
-      const r = await createClassificadorLoteFromPdf(files, {
-        nome: nome.trim() || undefined,
-        cliente_nome: clienteNome.trim() || undefined,
-        cnj_hint: cnjHint.trim() || undefined,
-        produto: produto.trim() || undefined,
-        observacao: observacao.trim() || undefined,
-      });
+      // 1º PDF — cria lote
+      try {
+        const r1 = await createClassificadorLoteFromPdf([files[0]], opts);
+        lote = r1.lote;
+        processos_out.push(...r1.processos);
+        setProgress({ current: 1, total: files.length });
+      } catch (err) {
+        // Falha catastrofica no 1º — aborta tudo
+        throw err;
+      }
+
+      // 2º..N — anexa no lote criado
+      for (let i = 1; i < files.length; i++) {
+        const file = files[i];
+        try {
+          const r = await uploadClassificadorProcessoPdf(lote.id, file, {
+            cnj_hint: opts.cnj_hint,
+            produto: opts.produto,
+            observacao: opts.observacao,
+          });
+          const p = r.processo;
+          const isWarning = p.pdf_extraction_failed || p.extraction_confidence === "low";
+          processos_out.push({
+            filename: file.name,
+            ok: !isWarning,
+            error_message: isWarning ? (p.error_message || "Extracao parcial — confidence low") : null,
+            processo: p,
+          });
+        } catch (err) {
+          processos_out.push({
+            filename: file.name,
+            ok: false,
+            error_message: err instanceof Error ? err.message : String(err),
+            processo: null,
+          });
+        }
+        setProgress({ current: i + 1, total: files.length });
+      }
+
+      // Resumo
+      const ok = processos_out.filter(p => p.ok).length;
+      const failed = processos_out.length - ok;
+      const summary = { total: processos_out.length, ok, failed };
+      const r: ClassificadorQuickPdfResult = { lote, processos: processos_out, summary };
       setResult(r);
+
       toast({
-        title: `Lote #${r.lote.id} criado`,
-        description: `${r.summary.ok} OK · ${r.summary.failed} com falha de ${r.summary.total} PDFs.`,
-        variant: r.summary.failed > 0 ? "destructive" : "default",
+        title: `Lote #${lote.id} criado`,
+        description: `${ok} OK · ${failed} com falha de ${processos_out.length} PDFs.`,
+        variant: failed > 0 ? "destructive" : "default",
       });
-      const ids = r.processos
-        .filter(p => p.ok && p.processo)
-        .map(p => p.processo!.id);
-      onCreated(r.lote, ids);
+      const ids = processos_out.filter(p => p.ok && p.processo).map(p => p.processo!.id);
+      onCreated(lote, ids);
     } catch (err) {
       toast({
         title: "Falha ao testar PDFs",
@@ -97,6 +158,7 @@ export default function QuickPdfCard({ onCreated }: Props) {
       });
     } finally {
       setSubmitting(false);
+      setProgress(null);
     }
   };
 
@@ -155,7 +217,25 @@ export default function QuickPdfCard({ onCreated }: Props) {
                 {files.length > 0 && (
                   <p className="text-xs text-muted-foreground">
                     {files.length} arquivo{files.length > 1 ? "s" : ""} · {(totalSize / 1024 / 1024).toFixed(2)} MB total
+                    {files.length > 1 && " · enviados 1 por vez"}
                   </p>
+                )}
+                {oversized.length > 0 && (
+                  <div className="rounded-md border border-red-300 bg-red-50 p-2 text-[11px] text-red-900 mt-1">
+                    <strong>{oversized.length} arquivo{oversized.length > 1 ? "s" : ""}</strong> excede{oversized.length === 1 ? "" : "m"} o
+                    limite de {(MAX_BYTES_PER_FILE / 1024 / 1024).toFixed(0)}MB por PDF:
+                    <ul className="list-disc pl-4 mt-1">
+                      {oversized.slice(0, 5).map((f, i) => (
+                        <li key={i} className="truncate">{f.name} — {(f.size / 1024 / 1024).toFixed(1)} MB</li>
+                      ))}
+                      {oversized.length > 5 && <li>+ {oversized.length - 5} mais</li>}
+                    </ul>
+                  </div>
+                )}
+                {progress && (
+                  <div className="text-xs text-muted-foreground">
+                    Enviando {progress.current} de {progress.total}...
+                  </div>
                 )}
               </div>
 
