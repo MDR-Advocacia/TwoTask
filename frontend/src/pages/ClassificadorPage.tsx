@@ -625,16 +625,23 @@ function LotesHistoricoTable({
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   const handleClassify = async (lote: ClassificadorLoteSummary) => {
+    const temErros = (lote.total_processos_com_erro || 0) > 0;
+    const includeErrors = temErros && confirm(
+      `Lote #${lote.id} tem ${lote.total_processos_com_erro} processo${lote.total_processos_com_erro > 1 ? "s" : ""} com erro de classificacao.\n\n` +
+      `OK = INCLUIR os processos com erro (resetar e reclassificar)\n` +
+      `Cancelar = NAO incluir (so' classifica os PRONTO)`,
+    );
+
     if (!confirm(
       `Classificar lote #${lote.id} (${lote.nome})?\n\n` +
-      `Vai submeter ${lote.total_processos_capturados} processos pra Sonnet ` +
-      `via Anthropic Batches API. Custo estimado e' o do PI por processo.\n\n` +
+      `Vai submeter ${lote.total_processos_capturados}${includeErrors ? ` + ${lote.total_processos_com_erro} em erro` : ""} processos pra Sonnet ` +
+      `via Anthropic Batches API.\n\n` +
       `Operacao async — pode levar minutos a horas. Worker do servidor ` +
       `acompanha automaticamente.`,
     )) return;
     setClassifyingId(lote.id);
     try {
-      const r = await classifyClassificadorLote(lote.id);
+      const r = await classifyClassificadorLote(lote.id, { includeErrors });
       toast({
         title: "Batch submetido",
         description: `Batch #${r.batch_id} (${r.total_records} processos) - ${r.status}. ` +
@@ -771,17 +778,16 @@ function LotesHistoricoTable({
                               onClick={() => handleClassify(lote)}
                               disabled={
                                 classifyingId === lote.id ||
-                                lote.total_processos_capturados === 0 ||
-                                lote.status === "CLASSIFICADO" ||
+                                (lote.total_processos_capturados === 0 && lote.total_processos_com_erro === 0) ||
                                 lote.status === "CLASSIFICANDO"
                               }
                               title={
-                                lote.total_processos_capturados === 0
+                                (lote.total_processos_capturados === 0 && lote.total_processos_com_erro === 0)
                                   ? "Suba PDFs antes de classificar"
-                                  : lote.status === "CLASSIFICADO"
-                                    ? "Lote ja classificado"
-                                    : lote.status === "CLASSIFICANDO"
-                                      ? "Lote em classificacao em curso"
+                                  : lote.status === "CLASSIFICANDO"
+                                    ? "Lote em classificacao em curso"
+                                    : lote.total_processos_com_erro > 0
+                                      ? `Classificar ${lote.total_processos_capturados} + ${lote.total_processos_com_erro} em erro (opcional)`
                                       : `Classificar ${lote.total_processos_capturados} processos via Sonnet`
                               }
                             >

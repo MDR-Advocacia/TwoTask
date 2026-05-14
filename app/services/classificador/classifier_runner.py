@@ -84,9 +84,37 @@ class ClassificadorBatchClassifier:
     # ──────────────────────────────────────────────────────────────────
 
     def collect_pending_processos(
-        self, lote_id: int, limit: Optional[int] = None,
+        self,
+        lote_id: int,
+        limit: Optional[int] = None,
+        include_errors: bool = False,
     ) -> List[ClassificadorProcesso]:
-        """Processos do lote em PRONTO_PARA_CLASSIFICAR com capa+integra."""
+        """Processos do lote em PRONTO_PARA_CLASSIFICAR com capa+integra.
+
+        Se `include_errors=True`, RESETA processos em ERRO_CLASSIFICACAO
+        pra PRONTO e inclui no batch — util pra recuperar processos que
+        falharam por bug de schema na IA.
+        """
+        if include_errors:
+            # Reset processos em erro IA pra rodar de novo
+            err_procs = (
+                self.db.query(ClassificadorProcesso)
+                .filter(ClassificadorProcesso.lote_id == lote_id)
+                .filter(ClassificadorProcesso.status == PROC_STATUS_ERROR_CLASSIFICATION)
+                .filter(ClassificadorProcesso.capa_json.isnot(None))
+                .filter(ClassificadorProcesso.integra_json.isnot(None))
+                .all()
+            )
+            for p in err_procs:
+                p.status = PROC_STATUS_READY
+                p.error_message = None
+            if err_procs:
+                self.db.commit()
+                logger.info(
+                    "Classificador.runner: resetou %d processos em erro pra READY no lote=%s",
+                    len(err_procs), lote_id,
+                )
+
         query = (
             self.db.query(ClassificadorProcesso)
             .filter(ClassificadorProcesso.lote_id == lote_id)

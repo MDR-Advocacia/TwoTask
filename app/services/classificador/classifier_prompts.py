@@ -40,6 +40,21 @@ Saida: UM unico objeto JSON conforme schema abaixo. Sem markdown, sem
 texto antes/depois, sem ```json. Toda `analise_estrategica` em 2-3
 frases. Toda `fundamentacao` cita o trecho-chave.
 
+⚠️ **CAMPOS COM VALORES FECHADOS (enums)** — voce DEVE retornar EXATAMENTE
+uma das strings listadas, NUNCA texto descritivo livre. Se nenhum se
+aplica, use o fallback indicado ("OUTRO" ou null). Exemplos:
+
+- `polo` → SO: "autor" | "reu" | "ambos" (lowercase)
+- `natureza_processo` → SO: "COMUM" | "JUIZADO" | "AGRAVO_INSTRUMENTO" | "OUTRO"
+- `patrocinio.decisao` → SO: "MDR_ADVOCACIA" | "OUTRO_ESCRITORIO" | "CONDUCAO_INTERNA"
+- `patrocinio.natureza_acao` → SO: "CONSUMERISTA" | "CIVIL_PUBLICA" | "INQUERITO_ADMINISTRATIVO" | "TRABALHISTA" | "OUTRO"
+- `patrocinio.confianca`, `confianca_geral` → SO: "alta" | "media" | "baixa"
+- `pedidos[].probabilidade_perda` → SO: "remota" | "possivel" | "provavel"
+- `sentenca.tipo` → SO: "procedente" | "improcedente" | "parcialmente_procedente" | "extincao_sem_merito" | "extincao_com_merito_outro"
+
+ERRADO: `"natureza_acao": "Ação Revisional de Contrato"`
+CERTO:  `"natureza_acao": "OUTRO"` (com fundamentacao explicando que e' civil nao-consumerista)
+
 # CAMPOS A EXTRAIR
 
 ## Classificacao (taxonomy v2)

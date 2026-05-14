@@ -16,11 +16,62 @@ Polimento do prompt vem na Fase 5 — esse schema e' o contrato estavel.
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from decimal import Decimal
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+logger = logging.getLogger(__name__)
+
+
+# ─── Helper de normalizacao tolerante pra campos Literal ──────────────
+# A IA (Sonnet) eventualmente devolve texto livre em campos que deveriam
+# ser enum (ex.: "Acao Revisional de Contrato" em natureza_acao). Em vez
+# de quebrar a classificacao inteira, normalizamos: se bate algum valor
+# valido (case-insensitive), usa; senao, cai no `default` (geralmente
+# o "OUTRO"/null mais conservador). Log warning pra rastrear caso a IA
+# repita o mesmo erro varias vezes — sinal de prompt fraco.
+
+
+def _normalize_enum(value, valid_values: tuple, default=None, *, field_name: str = ""):
+    """Normaliza string pra um dos valores validos (case-insensitive).
+
+    Se a entrada nao bater em nenhum valor valido, retorna `default` e
+    loga warning pra auditoria. None passa direto.
+    """
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        return default
+    normalized = value.strip()
+    # Match case-insensitive
+    for v in valid_values:
+        if v.upper() == normalized.upper():
+            return v
+    # Fallback — IA mandou texto livre ou valor invalido
+    logger.warning(
+        "classifier_schema: campo %r recebeu valor invalido %r — usando default %r",
+        field_name, normalized[:80], default,
+    )
+    return default
+
+
+# Tuplas de valores validos pra usar nos validators (sincronizadas com os Literal abaixo)
+_VALID_POLO = ("autor", "reu", "ambos")
+_VALID_NATUREZA_PROCESSO = ("COMUM", "JUIZADO", "AGRAVO_INSTRUMENTO", "OUTRO")
+_VALID_PROB_PERDA = ("remota", "possivel", "provavel")
+_VALID_CONFIANCA = ("alta", "media", "baixa")
+_VALID_PATROCINIO_DECISAO = ("MDR_ADVOCACIA", "OUTRO_ESCRITORIO", "CONDUCAO_INTERNA")
+_VALID_NATUREZA_ACAO = (
+    "CONSUMERISTA", "CIVIL_PUBLICA", "INQUERITO_ADMINISTRATIVO",
+    "TRABALHISTA", "OUTRO",
+)
+_VALID_SENTENCA_TIPO = (
+    "procedente", "improcedente", "parcialmente_procedente",
+    "extincao_sem_merito", "extincao_com_merito_outro",
+)
 
 
 # ─── Tipos e constantes reusadas do PI ────────────────────────────────
@@ -48,6 +99,12 @@ class PedidoResponse(BaseModel):
     aprovisionamento: Optional[Decimal] = Field(default=None, ge=0)
     fundamentacao_risco: Optional[str] = None
 
+    @field_validator("probabilidade_perda", mode="before")
+    @classmethod
+    def _norm_prob_perda(cls, v):
+        return _normalize_enum(v, _VALID_PROB_PERDA, default=None,
+                               field_name="pedidos.probabilidade_perda")
+
 
 # ─── Patrocinio (espelho do PI, mantem regras MDR/Master) ─────────────
 
@@ -74,6 +131,24 @@ class PatrocinioResponse(BaseModel):
     polo_passivo_observacao: Optional[str] = None
     confianca: Optional[Confianca] = None
     fundamentacao: Optional[str] = None
+
+    @field_validator("decisao", mode="before")
+    @classmethod
+    def _norm_decisao(cls, v):
+        return _normalize_enum(v, _VALID_PATROCINIO_DECISAO, default=None,
+                               field_name="patrocinio.decisao")
+
+    @field_validator("natureza_acao", mode="before")
+    @classmethod
+    def _norm_natureza_acao(cls, v):
+        return _normalize_enum(v, _VALID_NATUREZA_ACAO, default="OUTRO",
+                               field_name="patrocinio.natureza_acao")
+
+    @field_validator("confianca", mode="before")
+    @classmethod
+    def _norm_confianca(cls, v):
+        return _normalize_enum(v, _VALID_CONFIANCA, default=None,
+                               field_name="patrocinio.confianca")
 
 
 # ─── Contestacao existente (espelho do PI, pin021) ────────────────────
@@ -115,6 +190,12 @@ class SentencaResponse(BaseModel):
     # Valor da condenacao do MDR — preencher quando procedente/parcial
     valor_condenacao: Optional[Decimal] = Field(default=None, ge=0)
     fundamentacao: Optional[str] = None
+
+    @field_validator("tipo", mode="before")
+    @classmethod
+    def _norm_tipo(cls, v):
+        return _normalize_enum(v, _VALID_SENTENCA_TIPO, default=None,
+                               field_name="sentenca.tipo")
 
 
 # ─── Transito em julgado (NOVO) ──────────────────────────────────────
@@ -204,6 +285,23 @@ class ClassificadorClassificationResponse(BaseModel):
 
     # ─── Confianca global ────────────────────────────────────────────
     confianca_geral: Confianca = "alta"
+
+    @field_validator("polo", mode="before")
+    @classmethod
+    def _norm_polo(cls, v):
+        return _normalize_enum(v, _VALID_POLO, default=None, field_name="polo")
+
+    @field_validator("natureza_processo", mode="before")
+    @classmethod
+    def _norm_natureza_proc(cls, v):
+        return _normalize_enum(v, _VALID_NATUREZA_PROCESSO, default="OUTRO",
+                               field_name="natureza_processo")
+
+    @field_validator("confianca_geral", mode="before")
+    @classmethod
+    def _norm_confianca_geral(cls, v):
+        return _normalize_enum(v, _VALID_CONFIANCA, default="alta",
+                               field_name="confianca_geral")
 
     @field_validator("categoria_nome", "subcategoria_nome", "produto", mode="before")
     @classmethod

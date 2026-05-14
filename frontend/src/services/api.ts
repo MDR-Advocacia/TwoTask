@@ -2387,7 +2387,10 @@ export async function uploadClassificadorProcessoPdf(
   return expectJson<ClassificadorPdfIntakeResult>(res);
 }
 
-export async function classifyClassificadorLote(loteId: number): Promise<{
+export async function classifyClassificadorLote(
+  loteId: number,
+  opts?: { includeErrors?: boolean },
+): Promise<{
   batch_id: number;
   anthropic_batch_id: string | null;
   anthropic_status: string | null;
@@ -2396,8 +2399,9 @@ export async function classifyClassificadorLote(loteId: number): Promise<{
   model_used: string | null;
   submitted_at: string | null;
 }> {
+  const qs = opts?.includeErrors ? "?include_errors=true" : "";
   const res = await apiFetch(
-    `/api/v1/classificador/lotes/${loteId}/classify`,
+    `/api/v1/classificador/lotes/${loteId}/classify${qs}`,
     { method: "POST" },
   );
   return expectJson(res);

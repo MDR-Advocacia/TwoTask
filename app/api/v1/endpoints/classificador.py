@@ -1760,10 +1760,17 @@ def capture_l1(lote_id: int):
 @router.post("/lotes/{lote_id}/classify", status_code=status.HTTP_202_ACCEPTED)
 async def classify_lote(
     lote_id: int,
+    include_errors: bool = Query(
+        default=False,
+        description="Se True, reseta processos em ERRO_CLASSIFICACAO e inclui no batch",
+    ),
     db: Session = Depends(get_db),
     current_user: LegalOneUser = Depends(auth_security.get_current_user),
 ):
     """Dispara classificacao Sonnet (Batches API) pros processos PRONTO_PARA_CLASSIFICAR do lote.
+
+    Com `include_errors=true`, tambem reclassifica processos em
+    ERRO_CLASSIFICACAO (util pra recuperar erros de schema/prompt).
 
     Retorna 202 + batch_id. Status do batch e' atualizado pelo
     `classificador_poll_worker` (APScheduler) — polling a cada 30s.
@@ -1773,7 +1780,9 @@ async def classify_lote(
         raise HTTPException(status_code=404, detail=f"Lote #{lote_id} nao encontrado.")
 
     runner = ClassificadorBatchClassifier(db)
-    processos = runner.collect_pending_processos(lote_id=lote_id)
+    processos = runner.collect_pending_processos(
+        lote_id=lote_id, include_errors=include_errors,
+    )
     if not processos:
         raise HTTPException(
             status_code=400,
