@@ -98,9 +98,10 @@ class Settings(BaseSettings):
     prazos_iniciais_storage_path: str = "/app/data/prazos_iniciais"
     # Limite por PDF — compartilhado entre PI (habilitacao) e
     # Classificador (processo completo). PI usa <5MB tipicamente; o
-    # Classificador pode receber autos grandes ate ~60MB. Override via
-    # env var PRAZOS_INICIAIS_MAX_PDF_MB no painel do Coolify se precisar.
-    prazos_iniciais_max_pdf_mb: int = 60
+    # Classificador roda pikepdf compress no intake (reduz 15-40%),
+    # entao mesmo PDFs de 200MB no upload ficam menores apos persistir.
+    # Override via env var PRAZOS_INICIAIS_MAX_PDF_MB se precisar.
+    prazos_iniciais_max_pdf_mb: int = 200
     # Upload manual via UI (USER_UPLOAD) — processos na íntegra costumam
     # ser bem maiores que o PDF de habilitação, então temos um limite
     # próprio. PDF do processo é descartado após extração ok pra não

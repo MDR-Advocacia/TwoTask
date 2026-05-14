@@ -34,8 +34,9 @@ import {
 
 
 // Limite por arquivo (deve casar com settings.prazos_iniciais_max_pdf_mb
-// no backend e client_max_body_size do nginx — atualmente 60MB).
-const MAX_BYTES_PER_FILE = 60 * 1024 * 1024;
+// no backend e client_max_body_size do nginx — atualmente 200MB).
+// Backend roda pikepdf compress apos upload, reduzindo o que persiste.
+const MAX_BYTES_PER_FILE = 200 * 1024 * 1024;
 
 
 interface Props {
@@ -90,7 +91,7 @@ export default function QuickPdfCard({ onCreated }: Props) {
     };
 
     // Estrategia: N+1 requests sequenciais (1 PDF por request).
-    // Evita estourar limite de proxy (~35MB por payload) e isola falhas.
+    // Evita estourar limite de proxy (~210MB por payload) e isola falhas.
     //   - 1ª req: createClassificadorLoteFromPdf (cria lote + sobe 1º PDF)
     //   - 2ª..N: uploadClassificadorProcessoPdf (sobe PDF no lote criado)
     const processos_out: ClassificadorQuickPdfResult["processos"] = [];

@@ -516,7 +516,7 @@ def create_lote_upload(
 
     Validacoes:
     - Content-type aceito: xlsx + qualquer (UploadFile e' tolerante)
-    - Tamanho max: settings.prazos_iniciais_max_pdf_mb (default 60MB)
+    - Tamanho max: settings.prazos_iniciais_max_pdf_mb (default 200MB)
     - Header obrigatorio: cnj (na linha 1 ou 2)
     """
     # Limite de tamanho (reusa setting compartilhado)
@@ -1553,7 +1553,7 @@ def upload_pdf_to_lote(
     fora do HTTP.
 
     Form fields:
-    - `file` (obrig.): PDF (<= settings.prazos_iniciais_max_pdf_mb, default 60MB)
+    - `file` (obrig.): PDF (<= settings.prazos_iniciais_max_pdf_mb, default 200MB)
     - `cnj_hint` (opc.): CNJ que o cliente afirma ser do processo. Usado
       como fallback se o extractor mecanico nao detectar.
     - `external_id` (opc.): id externo (cliente/robo)
