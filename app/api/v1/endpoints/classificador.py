@@ -2428,10 +2428,6 @@ def update_analise_estrategica(
     }
 
 
-@router.post(
-    "/lotes/{lote_id}/relatorios",
-    status_code=status.HTTP_201_CREATED,
-)
 def _generate_report_background(relatorio_id: int, lote_id: int, formato: str) -> None:
     """Worker em background: gera o arquivo (XLSX ou PDF) e atualiza o
     registro pra PRONTO ou FALHOU.
@@ -2499,6 +2495,10 @@ def _generate_report_background(relatorio_id: int, lote_id: int, formato: str) -
         db.close()
 
 
+@router.post(
+    "/lotes/{lote_id}/relatorios",
+    status_code=status.HTTP_201_CREATED,
+)
 def create_relatorio(
     lote_id: int,
     payload: RelatorioCreatePayload,

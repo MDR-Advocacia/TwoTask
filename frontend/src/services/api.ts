@@ -70,7 +70,23 @@ import {
 async function expectJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+    // FastAPI/Pydantic 422 vem como `detail: [{loc, msg, type}, ...]`.
+    // Tem que serializar pra string legivel, senao vira "[object Object]".
+    let detail: string | undefined;
+    if (typeof errorData.detail === "string") {
+      detail = errorData.detail;
+    } else if (Array.isArray(errorData.detail)) {
+      detail = errorData.detail
+        .map((e: any) => {
+          const loc = Array.isArray(e?.loc) ? e.loc.join(".") : "";
+          const msg = e?.msg || e?.message || String(e);
+          return loc ? `${loc}: ${msg}` : msg;
+        })
+        .join("; ");
+    } else if (errorData.detail) {
+      detail = JSON.stringify(errorData.detail);
+    }
+    throw new Error(detail || `HTTP error! status: ${response.status}`);
   }
   return response.json();
 }
