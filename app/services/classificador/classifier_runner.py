@@ -336,6 +336,20 @@ class ClassificadorBatchClassifier:
                 lote.classificacao_finished_at = datetime.now(timezone.utc)
             self.db.commit()
 
+            # Dispara webhook callback se lote transicionou pra CLASSIFICADO
+            # (fire-and-forget em thread separada — nao bloqueia)
+            if lote.status == LOTE_STATUS_CLASSIFIED:
+                try:
+                    from app.services.classificador.webhook import (
+                        send_lote_classified_webhook,
+                    )
+                    send_lote_classified_webhook(lote.id)
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "Classificador.runner: falha disparando webhook lote=%s",
+                        lote.id,
+                    )
+
         logger.info(
             "Classificador: apply concluido batch=%s succeeded=%d failed=%d skipped=%d",
             batch.id, succeeded, failed, skipped,

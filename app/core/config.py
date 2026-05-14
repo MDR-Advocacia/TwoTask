@@ -130,6 +130,18 @@ class Settings(BaseSettings):
     classificador_pending_worker_interval_seconds: int = 60
     # Auto-classify: se True, dispara classify do lote logo apos criar.
     classificador_pending_auto_classify: bool = True
+
+    # ─── Classificador — webhook callback ──────────────────────────────
+    # URL pra notificar quando lote vira CLASSIFICADO (robo de entrega
+    # quer saber quando o resultado tá pronto). Vazio = desativa.
+    classificador_webhook_url: str | None = None
+    # Secret pra assinar payload (HMAC-SHA256 em header X-Classificador-Signature).
+    # Cliente valida pra rejeitar webhooks falsos.
+    classificador_webhook_secret: str | None = None
+    # Retries em caso de erro HTTP. Timeout: 5s/30s/2min.
+    classificador_webhook_max_retries: int = 3
+    # Timeout HTTP por tentativa (segundos).
+    classificador_webhook_timeout_seconds: int = 10
     # Worker periódico: agrega intakes PRONTO_PARA_CLASSIFICAR e dispara
     # batch + faz polling/apply dos batches pendentes.
     # Desligado por padrão em dev pra evitar gasto involuntário com Anthropic.

@@ -1912,6 +1912,75 @@ export async function fetchClassificadorLote(
   return expectJson<ClassificadorLoteSummary>(res);
 }
 
+// Fila do motor dormente (PDFs do robo)
+
+export interface ClassificadorPendingItem {
+  id: number;
+  pdf_filename_original: string | null;
+  pdf_sha256: string;
+  pdf_bytes: number;
+  cliente_nome: string | null;
+  external_id: string | null;
+  cnj_hint: string | null;
+  produto: string | null;
+  source: string;
+  status: string; // PENDENTE | ALOCADO | PROCESSADO | ERRO
+  lote_id: number | null;
+  processo_id: number | null;
+  error_message: string | null;
+  received_at: string | null;
+  allocated_at: string | null;
+  processed_at: string | null;
+}
+
+export interface ClassificadorPendingListResponse {
+  total: number;
+  items: ClassificadorPendingItem[];
+}
+
+export async function fetchClassificadorPending(params: {
+  status?: string;
+  cliente_nome?: string;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<ClassificadorPendingListResponse> {
+  const q = new URLSearchParams();
+  if (params.status) q.set("status", params.status);
+  if (params.cliente_nome) q.set("cliente_nome", params.cliente_nome);
+  if (params.limit != null) q.set("limit", String(params.limit));
+  if (params.offset != null) q.set("offset", String(params.offset));
+  const qs = q.toString();
+  const res = await apiFetch(`/api/v1/classificador/pending${qs ? `?${qs}` : ""}`);
+  return expectJson<ClassificadorPendingListResponse>(res);
+}
+
+export interface ClassificadorPendingMetrics {
+  status_counts: {
+    pendente: number;
+    alocado: number;
+    processado: number;
+    erro: number;
+  };
+  throughput: {
+    pdfs_hoje: number;
+    pdfs_7d: number;
+    pdfs_30d: number;
+    media_diaria_30d: number;
+  };
+  latencia_segundos: {
+    media_fila_para_lote: number | null;
+    media_lote_para_processado: number | null;
+    pendente_mais_antigo: number | null;
+  };
+  taxa_erro: number | null;
+  generated_at: string;
+}
+
+export async function fetchClassificadorPendingMetrics(): Promise<ClassificadorPendingMetrics> {
+  const res = await apiFetch("/api/v1/classificador/pending/metrics");
+  return expectJson<ClassificadorPendingMetrics>(res);
+}
+
 // Filter options + Dashboard Global (cross-lote)
 
 export interface ClassificadorFilterOptions {

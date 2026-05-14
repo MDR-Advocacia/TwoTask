@@ -24,7 +24,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Loader2, FileUp, Workflow, BarChart3, ScanSearch, Trash2, AlertCircle, FilePlus2, Sparkles, Eye } from "lucide-react";
+import { Loader2, FileUp, Workflow, BarChart3, ScanSearch, Trash2, AlertCircle, FilePlus2, Sparkles, Eye, Inbox } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
   ClassificadorLoteSummary,
@@ -40,6 +40,7 @@ import UploadPdfDialog from "@/components/classificador/UploadPdfDialog";
 import LoteDetailDialog from "@/components/classificador/LoteDetailDialog";
 import QuickPdfCard from "@/components/classificador/QuickPdfCard";
 import PainelGlobalTab from "@/components/classificador/PainelGlobalTab";
+import FilaTab from "@/components/classificador/FilaTab";
 
 
 // ─── Helpers ──────────────────────────────────────────────────────────
@@ -106,6 +107,10 @@ export default function ClassificadorPage() {
             <Workflow className="h-4 w-4" />
             Historico
           </TabsTrigger>
+          <TabsTrigger value="fila" className="gap-2">
+            <Inbox className="h-4 w-4" />
+            Fila do robô
+          </TabsTrigger>
           <TabsTrigger value="painel" className="gap-2">
             <BarChart3 className="h-4 w-4" />
             Painel
@@ -137,6 +142,10 @@ export default function ClassificadorPage() {
 
         <TabsContent value="historico" className="mt-4">
           <LotesHistoricoTable reloadKey={reloadKey} onChanged={refreshHistorico} />
+        </TabsContent>
+
+        <TabsContent value="fila" className="mt-4">
+          <FilaTab />
         </TabsContent>
 
         <TabsContent value="painel" className="mt-4">

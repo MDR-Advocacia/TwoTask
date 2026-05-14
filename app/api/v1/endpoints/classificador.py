@@ -222,6 +222,115 @@ def intake_pdf(
     }
 
 
+@router.get("/pending/metrics")
+def get_pending_metrics(db: Session = Depends(get_db)):
+    """Metricas da fila do motor dormente — PDFs/dia, tempo medio, status."""
+    from datetime import datetime as _dt, timedelta as _td
+    from sqlalchemy import func
+    from app.models.classificador import (
+        ClassificadorPdfPending,
+        PENDING_STATUS_ALOCADO,
+        PENDING_STATUS_ERRO,
+        PENDING_STATUS_PENDENTE,
+        PENDING_STATUS_PROCESSADO,
+    )
+
+    now = _dt.utcnow()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    d7 = now - _td(days=7)
+    d30 = now - _td(days=30)
+
+    # Counts por status
+    status_rows = (
+        db.query(ClassificadorPdfPending.status, func.count(ClassificadorPdfPending.id))
+        .group_by(ClassificadorPdfPending.status)
+        .all()
+    )
+    status_counts = {s: int(c) for s, c in status_rows}
+
+    # PDFs/dia (received_at)
+    pdfs_hoje = (
+        db.query(func.count(ClassificadorPdfPending.id))
+        .filter(ClassificadorPdfPending.received_at >= today_start)
+        .scalar() or 0
+    )
+    pdfs_7d = (
+        db.query(func.count(ClassificadorPdfPending.id))
+        .filter(ClassificadorPdfPending.received_at >= d7)
+        .scalar() or 0
+    )
+    pdfs_30d = (
+        db.query(func.count(ClassificadorPdfPending.id))
+        .filter(ClassificadorPdfPending.received_at >= d30)
+        .scalar() or 0
+    )
+
+    # Tempo medio: received → allocated (seg). So pega entries com allocated_at != null
+    rows_alloc = (
+        db.query(ClassificadorPdfPending.received_at, ClassificadorPdfPending.allocated_at)
+        .filter(ClassificadorPdfPending.allocated_at.isnot(None))
+        .filter(ClassificadorPdfPending.received_at >= d30)
+        .all()
+    )
+    if rows_alloc:
+        avg_alloc_sec = sum(
+            (alloc - rcv).total_seconds() for rcv, alloc in rows_alloc
+        ) / len(rows_alloc)
+    else:
+        avg_alloc_sec = None
+
+    # Tempo medio: allocated → processed
+    rows_proc = (
+        db.query(ClassificadorPdfPending.allocated_at, ClassificadorPdfPending.processed_at)
+        .filter(ClassificadorPdfPending.allocated_at.isnot(None))
+        .filter(ClassificadorPdfPending.processed_at.isnot(None))
+        .filter(ClassificadorPdfPending.received_at >= d30)
+        .all()
+    )
+    if rows_proc:
+        avg_proc_sec = sum(
+            (proc - alloc).total_seconds() for alloc, proc in rows_proc
+        ) / len(rows_proc)
+    else:
+        avg_proc_sec = None
+
+    # Taxa de erro = ERRO / (ERRO + PROCESSADO)
+    erro = status_counts.get(PENDING_STATUS_ERRO, 0)
+    proc = status_counts.get(PENDING_STATUS_PROCESSADO, 0)
+    total_finalizado = erro + proc
+    taxa_erro = (erro / total_finalizado) if total_finalizado > 0 else None
+
+    # Pendentes mais antigos (age max)
+    oldest = (
+        db.query(func.min(ClassificadorPdfPending.received_at))
+        .filter(ClassificadorPdfPending.status == PENDING_STATUS_PENDENTE)
+        .scalar()
+    )
+    oldest_age_sec = (now - oldest).total_seconds() if oldest else None
+
+    return {
+        "status_counts": {
+            "pendente": status_counts.get(PENDING_STATUS_PENDENTE, 0),
+            "alocado": status_counts.get(PENDING_STATUS_ALOCADO, 0),
+            "processado": status_counts.get(PENDING_STATUS_PROCESSADO, 0),
+            "erro": status_counts.get(PENDING_STATUS_ERRO, 0),
+        },
+        "throughput": {
+            "pdfs_hoje": int(pdfs_hoje),
+            "pdfs_7d": int(pdfs_7d),
+            "pdfs_30d": int(pdfs_30d),
+            "media_diaria_30d": round(pdfs_30d / 30, 1) if pdfs_30d else 0,
+        },
+        "latencia_segundos": {
+            "media_fila_para_lote": round(avg_alloc_sec, 1) if avg_alloc_sec else None,
+            "media_lote_para_processado": round(avg_proc_sec, 1) if avg_proc_sec else None,
+            "pendente_mais_antigo": round(oldest_age_sec, 1) if oldest_age_sec else None,
+        },
+        "taxa_erro": round(taxa_erro, 4) if taxa_erro is not None else None,
+        "generated_at": now.isoformat(),
+    }
+
+
 @router.get("/pending")
 def list_pending(
     status_filter: Optional[str] = Query(None, alias="status"),
