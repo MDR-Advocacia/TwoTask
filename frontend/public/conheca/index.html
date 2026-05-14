@@ -1,0 +1,985 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<meta name="theme-color" content="#0A1940" />
+<meta name="robots" content="noindex,nofollow" />
+<title>Flow — Inteligência operacional jurídica</title>
+<meta name="description" content="O Flow é a plataforma de IA + HITL + Legal One para classificar processos, tratar publicações e agendar prazos iniciais em escala." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Jura:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ==========================================================================
+   Flow — preview pública
+   Paleta DUNATECH (navy + blue elétrico) espelhada do design system real
+   ========================================================================== */
+:root{
+  --navy:#0A1940;
+  --navy-2:#142552;
+  --blue:#1E7BFF;
+  --blue-soft:#7AAEFF;
+  --blue-tint:#E8F1FF;
+  --bg:#F4F6FA;
+  --surface:#FFFFFF;
+  --border:#D6DCE7;
+  --border-strong:#B6C2D6;
+  --ink:#0A1940;
+  --ink-2:#2A3A66;
+  --muted:#5B6A87;
+  --muted-2:#8995AC;
+  --success:#1FA85A;
+  --success-bg:#E6F7EE;
+  --warning:#E0A012;
+  --warning-bg:#FFF6E1;
+  --amber:#C76A00;
+  --amber-bg:#FFEFD6;
+  --orange:#D9540E;
+  --orange-bg:#FFE6D2;
+  --error:#D9342B;
+  --error-bg:#FBE6E4;
+  --emerald:#0F9D58;
+  --emerald-bg:#E1F5EB;
+  --radius:16px;
+  --radius-sm:10px;
+  --radius-xs:6px;
+  --shadow-card:0 4px 20px rgba(10,25,64,.08);
+  --shadow-screen:0 30px 80px -20px rgba(10,25,64,.35), 0 8px 24px rgba(10,25,64,.12);
+}
+
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  font-family:'Inter',system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  font-size:16px;
+  line-height:1.55;
+  color:var(--ink);
+  background:
+    radial-gradient(900px 600px at 80% -10%, #DCE7FF 0%, transparent 60%),
+    radial-gradient(700px 500px at -10% 30%, #E8F1FF 0%, transparent 50%),
+    var(--bg);
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+}
+img,svg{display:block;max-width:100%}
+a{color:var(--blue);text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* ─── Layout ─────────────────────────────────────────────────────────── */
+.wrap{max-width:1120px;margin:0 auto;padding:0 20px}
+section{padding:72px 0;position:relative}
+@media (min-width:768px){section{padding:96px 0}}
+.eyebrow{
+  display:inline-block;font-family:'Jura',sans-serif;font-weight:600;
+  font-size:12px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--blue);background:var(--blue-tint);
+  padding:6px 12px;border-radius:999px;margin-bottom:18px;
+}
+h1,h2,h3,h4{font-family:'Jura',sans-serif;color:var(--navy);letter-spacing:-.01em;margin:0 0 12px}
+h1{font-size:clamp(34px,7vw,64px);font-weight:700;line-height:1.05;letter-spacing:-.02em}
+h2{font-size:clamp(26px,4.5vw,42px);font-weight:600;line-height:1.1}
+h3{font-size:clamp(18px,2.8vw,24px);font-weight:600}
+h4{font-size:16px;font-weight:600}
+p{margin:0 0 14px;color:var(--ink-2)}
+.lead{font-size:clamp(16px,2vw,19px);color:var(--ink-2);max-width:62ch}
+.muted{color:var(--muted)}
+.small{font-size:13px}
+.xs{font-size:11.5px}
+
+/* ─── Header / Capa ──────────────────────────────────────────────────── */
+.hero{
+  padding-top:64px;padding-bottom:48px;
+  position:relative;overflow:hidden;
+}
+.hero-inner{
+  display:grid;grid-template-columns:1fr;gap:32px;align-items:center;
+}
+@media(min-width:900px){.hero-inner{grid-template-columns:1.4fr .9fr;gap:48px}}
+.brand{
+  display:flex;align-items:center;gap:12px;margin-bottom:32px;
+}
+.brand-mark{
+  width:36px;height:36px;border-radius:10px;
+  background:linear-gradient(135deg,var(--navy) 0%,var(--blue) 100%);
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 4px 12px rgba(30,123,255,.35);
+}
+.brand-mark svg{width:20px;height:20px;color:#fff}
+.brand-name{
+  font-family:'Jura',sans-serif;font-weight:600;font-size:24px;letter-spacing:.02em;
+  background:linear-gradient(90deg,var(--navy) 0%,var(--blue) 100%);
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
+.brand-by{font-size:11px;color:var(--muted);font-weight:500;letter-spacing:.12em;text-transform:uppercase;margin-left:6px}
+.hero h1 .accent{
+  background:linear-gradient(90deg,var(--navy) 0%,var(--blue) 100%);
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
+.hero .lead{margin-top:20px}
+.hero-meta{margin-top:28px;display:flex;flex-wrap:wrap;gap:10px}
+.chip{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:7px 12px;border-radius:999px;font-size:13px;font-weight:500;
+  background:#fff;border:1px solid var(--border);color:var(--ink-2);
+}
+.chip .dot{width:6px;height:6px;border-radius:50%;background:var(--blue)}
+
+/* QR card */
+.qr-card{
+  background:#fff;border:1px solid var(--border);border-radius:var(--radius);
+  padding:20px;box-shadow:var(--shadow-card);
+  display:flex;flex-direction:column;align-items:center;gap:10px;
+  max-width:280px;margin:0 auto;
+}
+.qr-card svg{width:180px;height:180px}
+.qr-card .qr-label{font-size:12px;color:var(--muted);text-align:center;line-height:1.4}
+.qr-card .qr-url{
+  font-family:'Jura',monospace;font-size:11px;color:var(--ink-2);
+  background:var(--bg);padding:4px 8px;border-radius:6px;
+}
+
+/* ─── Cards genéricos ────────────────────────────────────────────────── */
+.card{
+  background:#fff;border:1px solid var(--border);border-radius:var(--radius);
+  padding:24px;box-shadow:var(--shadow-card);
+}
+.grid{display:grid;gap:20px}
+.grid-3{grid-template-columns:1fr}
+@media(min-width:768px){.grid-3{grid-template-columns:repeat(3,1fr)}}
+
+/* ─── Problema ───────────────────────────────────────────────────────── */
+.problema h2{margin-bottom:18px}
+.problema .grid-3{margin-top:36px}
+.pain-card{position:relative;padding-top:28px}
+.pain-card .pain-icon{
+  position:absolute;top:-18px;left:24px;width:40px;height:40px;border-radius:10px;
+  background:linear-gradient(135deg,#FFF1ED 0%,#FFE3D5 100%);
+  display:flex;align-items:center;justify-content:center;
+  border:1px solid #FFDABA;
+}
+.pain-card .pain-icon svg{width:20px;height:20px;color:#D9540E}
+
+/* ─── Pilares ────────────────────────────────────────────────────────── */
+.pilares .grid-3{margin-top:36px}
+.pillar{position:relative;text-align:left}
+.pillar .p-num{
+  font-family:'Jura',sans-serif;font-size:13px;font-weight:700;letter-spacing:.18em;
+  color:var(--blue);text-transform:uppercase;margin-bottom:8px;
+}
+.pillar h3{margin-bottom:8px}
+
+/* ─── Destaque ───────────────────────────────────────────────────────── */
+.destaque{
+  background:linear-gradient(180deg,transparent 0%,#fff 12%,#fff 88%,transparent 100%);
+}
+.destaque-header{max-width:760px}
+.badge-star{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:6px 12px;border-radius:999px;font-size:12px;font-weight:600;
+  background:linear-gradient(90deg,var(--navy) 0%,var(--blue) 100%);
+  color:#fff;letter-spacing:.05em;margin-bottom:18px;text-transform:uppercase;
+}
+
+/* ─── App screenshot mock ────────────────────────────────────────────── */
+.screen{
+  margin:36px 0;border-radius:var(--radius);overflow:hidden;
+  border:1px solid var(--border-strong);background:#fff;
+  box-shadow:var(--shadow-screen);
+}
+.screen .chrome{
+  display:flex;align-items:center;gap:10px;padding:12px 14px;
+  background:#EEF2F7;border-bottom:1px solid var(--border);
+}
+.chrome .dots{display:flex;gap:6px}
+.chrome .dot{width:10px;height:10px;border-radius:50%}
+.chrome .d-r{background:#FF5F57}
+.chrome .d-y{background:#FEBC2E}
+.chrome .d-g{background:#28C840}
+.chrome .urlbar{
+  flex:1;background:#fff;border:1px solid var(--border);border-radius:6px;
+  padding:5px 10px;font-family:'Jura',monospace;font-size:12px;color:var(--muted);
+  display:flex;align-items:center;gap:6px;
+}
+.chrome .urlbar svg{width:12px;height:12px;color:var(--success)}
+.app-shell{display:flex;min-height:520px;background:#FAFBFD}
+
+/* Sidebar mock */
+.sidebar{
+  width:240px;flex:0 0 240px;background:#fff;border-right:1px solid var(--border);
+  padding:16px 12px;font-size:13px;display:none;
+}
+@media(min-width:900px){.sidebar{display:block}}
+.sb-brand{display:flex;align-items:center;gap:8px;padding:6px 10px 16px;border-bottom:1px solid var(--border);margin-bottom:12px}
+.sb-brand .bm{width:24px;height:24px;border-radius:6px;background:linear-gradient(135deg,var(--navy),var(--blue))}
+.sb-brand .bn{font-family:'Jura',sans-serif;font-weight:600;font-size:16px;background:linear-gradient(90deg,var(--navy),var(--blue));-webkit-background-clip:text;background-clip:text;color:transparent}
+.sb-section{margin-top:14px}
+.sb-title{font-size:10px;font-weight:700;letter-spacing:.16em;color:var(--muted-2);text-transform:uppercase;padding:0 10px 6px}
+.sb-item{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:8px;color:var(--ink-2);cursor:default}
+.sb-item svg{width:14px;height:14px;color:var(--muted)}
+.sb-item.active{background:var(--blue-tint);color:var(--blue);font-weight:600}
+.sb-item.active svg{color:var(--blue)}
+
+/* Main */
+.app-main{flex:1;padding:20px 22px;overflow-x:auto}
+.page-title{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.page-title svg{width:22px;height:22px;color:var(--blue)}
+.page-title h1{font-size:22px;margin:0}
+.page-sub{color:var(--muted);font-size:13px;margin-bottom:18px;max-width:560px}
+
+/* Tabs */
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:18px;overflow-x:auto}
+.tab{display:flex;align-items:center;gap:6px;padding:8px 14px;font-size:13px;color:var(--muted);cursor:default;white-space:nowrap;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab svg{width:13px;height:13px}
+.tab.active{color:var(--blue);border-bottom-color:var(--blue);font-weight:600}
+
+/* Tabela */
+table.t{width:100%;border-collapse:collapse;font-size:13px;background:#fff;border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden}
+table.t th,table.t td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--border)}
+table.t th{background:#F4F6FA;font-weight:600;color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.06em}
+table.t tr:last-child td{border-bottom:0}
+table.t tr:hover td{background:#FAFBFD}
+
+/* Badges (espelho dos badges shadcn do projeto) */
+.badge{
+  display:inline-flex;align-items:center;gap:4px;
+  padding:3px 9px;border-radius:6px;font-size:11.5px;font-weight:500;
+  background:#fff;border:1px solid var(--border);color:var(--ink-2);
+  white-space:nowrap;
+}
+.badge svg{width:11px;height:11px}
+.badge.success{background:var(--success-bg);border-color:#B7E6CA;color:var(--success)}
+.badge.warning{background:var(--warning-bg);border-color:#FFE3A8;color:#9C6500}
+.badge.amber{background:var(--amber-bg);border-color:#FFD7A0;color:var(--amber)}
+.badge.orange{background:var(--orange-bg);border-color:#FFC8A0;color:var(--orange)}
+.badge.error{background:var(--error-bg);border-color:#F5C2BC;color:var(--error)}
+.badge.info{background:var(--blue-tint);border-color:#BFD7FF;color:var(--blue)}
+.badge.emerald{background:var(--emerald-bg);border-color:#A8E0C2;color:var(--emerald)}
+.badge.slate{background:#F1F4F9;border-color:#D6DCE7;color:var(--muted)}
+.badge.solid-blue{background:var(--blue);border-color:var(--blue);color:#fff}
+
+/* KPI cards (Painel) */
+.kpis{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:18px}
+@media(min-width:768px){.kpis{grid-template-columns:repeat(4,1fr)}}
+.kpi{background:#fff;border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px}
+.kpi .lbl{font-size:10.5px;color:var(--muted);font-weight:600;letter-spacing:.1em;text-transform:uppercase;margin-bottom:4px}
+.kpi .val{font-family:'Jura',sans-serif;font-size:22px;font-weight:700;color:var(--navy);line-height:1.1}
+.kpi .sub{font-size:11px;color:var(--muted);margin-top:2px}
+.kpi.accent .val{color:var(--blue)}
+
+/* Drawer mock */
+.drawer-frame{display:grid;grid-template-columns:1fr;gap:18px;padding:18px;background:#F4F6FA;border-radius:var(--radius-sm)}
+@media(min-width:900px){.drawer-frame{grid-template-columns:1fr 460px}}
+.drawer-frame .behind{
+  background:#fff;border:1px solid var(--border);border-radius:var(--radius-sm);
+  padding:14px;font-size:12px;color:var(--muted-2);min-height:200px;
+  display:flex;align-items:center;justify-content:center;text-align:center;
+}
+.drawer{
+  background:#fff;border:1px solid var(--border);border-radius:var(--radius-sm);
+  box-shadow:var(--shadow-card);padding:18px;
+}
+.drawer-header{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px}
+.drawer-header h3{margin:0;font-size:16px}
+.cnj{font-family:'Jura',monospace;font-size:12.5px;color:var(--muted);letter-spacing:.02em}
+
+/* Bloco do drawer (espelho do ContestacaoExistentePanel) */
+.panel{border-radius:var(--radius-sm);padding:14px;margin-bottom:14px;background:#fff;border:2px solid var(--border)}
+.panel.amber{border-color:#FFD7A0}
+.panel.orange{border-color:#FFC8A0;background:#FFFAF4}
+.panel.emerald{border-color:#A8E0C2}
+.panel-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:8px}
+.panel-head svg{width:15px;height:15px;color:var(--muted)}
+.panel-head h4{margin:0;font-size:13.5px;font-family:'Inter',sans-serif;color:var(--ink)}
+.panel-desc{font-size:11.5px;color:var(--muted);margin-bottom:10px}
+.panel hr.sep{border:0;border-top:1px solid var(--border);margin:10px 0}
+.kv-grid{display:grid;grid-template-columns:1fr;gap:10px}
+@media(min-width:520px){.kv-grid{grid-template-columns:1fr 1fr}}
+.kv .k{font-size:10.5px;letter-spacing:.1em;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:3px}
+.kv .v{font-size:13px;color:var(--ink)}
+.kv .v .small-note{color:var(--orange);font-size:11px;margin-left:6px}
+.callout-warn{
+  background:var(--orange-bg);color:#7A2C00;border:1px solid #FFC8A0;
+  padding:8px 10px;border-radius:6px;font-size:12px;display:flex;gap:8px;align-items:flex-start;
+}
+.callout-warn svg{width:14px;height:14px;color:var(--orange);flex:0 0 14px;margin-top:2px}
+
+/* Lista de pedidos */
+.pedido-row{
+  display:grid;grid-template-columns:1fr auto auto auto;gap:10px;align-items:center;
+  padding:10px;border:1px solid var(--border);border-radius:var(--radius-xs);
+  background:#FAFBFD;margin-bottom:6px;font-size:12.5px;
+}
+.pedido-row .nm{font-weight:600;color:var(--ink)}
+.pedido-row .vv{color:var(--muted);font-family:'Jura',monospace;font-size:12px}
+@media(max-width:520px){.pedido-row{grid-template-columns:1fr 1fr;}}
+
+/* Análise estratégica box */
+.note-box{
+  background:var(--blue-tint);border:1px solid #BFD7FF;border-radius:var(--radius-xs);
+  padding:10px 12px;font-size:12.5px;color:var(--navy);line-height:1.5;
+}
+
+/* ─── Diagrama de arquitetura ────────────────────────────────────────── */
+.arch{
+  display:grid;grid-template-columns:1fr;gap:24px;margin-top:36px;align-items:center;
+}
+@media(min-width:768px){.arch{grid-template-columns:1fr 60px 1fr 60px 1fr}}
+.arch-card{background:#fff;border:1px solid var(--border);border-radius:var(--radius);padding:20px;text-align:center;box-shadow:var(--shadow-card)}
+.arch-card .iconw{
+  width:48px;height:48px;border-radius:12px;margin:0 auto 10px;
+  background:linear-gradient(135deg,var(--blue-tint),#fff);
+  display:flex;align-items:center;justify-content:center;border:1px solid var(--border)
+}
+.arch-card .iconw svg{width:22px;height:22px;color:var(--blue)}
+.arch-card h4{margin-bottom:6px}
+.arch-arrow{display:flex;justify-content:center;color:var(--blue);font-size:24px;font-weight:700;font-family:'Jura',sans-serif}
+@media(max-width:767px){.arch-arrow{transform:rotate(90deg)}}
+
+/* Métricas / ganhos */
+.metricas .grid-3{margin-top:30px}
+.metric{text-align:center;background:linear-gradient(180deg,#fff,#F8FAFE);border:1px solid var(--border);border-radius:var(--radius);padding:28px 20px}
+.metric .big{font-family:'Jura',sans-serif;font-size:48px;font-weight:700;line-height:1;background:linear-gradient(90deg,var(--navy),var(--blue));-webkit-background-clip:text;background-clip:text;color:transparent}
+.metric .sub{font-size:13px;color:var(--muted);margin-top:8px;font-weight:500}
+.metric .ph{font-size:11px;color:var(--muted-2);margin-top:6px;font-style:italic}
+
+/* Footer */
+footer{padding:48px 0;border-top:1px solid var(--border);margin-top:64px;background:rgba(255,255,255,.6)}
+.footer-grid{display:grid;grid-template-columns:1fr;gap:32px;align-items:center}
+@media(min-width:768px){.footer-grid{grid-template-columns:1.5fr 1fr}}
+.footer-grid p{margin-bottom:6px}
+.disclaimer{font-size:11.5px;color:var(--muted-2);margin-top:16px;max-width:640px;line-height:1.5}
+
+/* Section divider */
+.divider{display:flex;align-items:center;gap:14px;margin:8px 0 0;color:var(--muted-2);font-size:11px;letter-spacing:.18em;text-transform:uppercase;font-weight:600}
+.divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--border)}
+
+/* Step ribbon (cada fluxo) */
+.steps{display:grid;grid-template-columns:1fr;gap:14px;margin-top:24px}
+@media(min-width:768px){.steps{grid-template-columns:repeat(4,1fr)}}
+.step{position:relative;padding:18px 16px 16px;background:#fff;border:1px solid var(--border);border-radius:var(--radius-sm);box-shadow:var(--shadow-card)}
+.step .n{font-family:'Jura',sans-serif;font-size:11px;font-weight:700;letter-spacing:.14em;color:var(--blue);margin-bottom:6px;text-transform:uppercase}
+.step h4{margin-bottom:4px;font-size:14.5px}
+.step p{font-size:12.5px;margin:0;color:var(--muted)}
+
+/* Print-friendly tweaks */
+@media print{
+  .qr-card,.screen{break-inside:avoid}
+  body{background:#fff}
+}
+</style>
+</head>
+<body>
+
+<!-- ═══════════════ CAPA ═══════════════ -->
+<header class="hero wrap">
+  <div class="brand">
+    <span class="brand-name">Flow</span>
+  </div>
+
+  <div class="hero-inner">
+    <div>
+      <span class="eyebrow">Preview · Conheça o produto</span>
+      <h1>Inteligência operacional<br><span class="accent">para a rotina jurídica</span></h1>
+      <p class="lead">O Flow combina <strong>IA generativa</strong>, <strong>operador no loop</strong> e a <strong>integração nativa com o Legal One</strong> para fazer em escala o que antes consumia centenas de horas de leitura, classificação e cadastro manual.</p>
+      <div class="hero-meta">
+        <span class="chip"><span class="dot"></span> Motor de classificação especializado</span>
+        <span class="chip"><span class="dot"></span> Integração Legal One</span>
+        
+        <span class="chip"><span class="dot"></span> Brasil · LGPD</span>
+      </div>
+    </div>
+    <div>
+      <div class="qr-card">
+        <svg viewBox="0 0 33 33" xmlns="http://www.w3.org/2000/svg" aria-label="QR Code para flow.mdradvocacia.com/conheca"><rect width="33" height="33" fill="#fff"/><path d="M2,2H3V3H2zM3,2H4V3H3zM4,2H5V3H4zM5,2H6V3H5zM6,2H7V3H6zM7,2H8V3H7zM8,2H9V3H8zM12,2H13V3H12zM13,2H14V3H13zM16,2H17V3H16zM17,2H18V3H17zM20,2H21V3H20zM21,2H22V3H21zM24,2H25V3H24zM25,2H26V3H25zM26,2H27V3H26zM27,2H28V3H27zM28,2H29V3H28zM29,2H30V3H29zM30,2H31V3H30zM2,3H3V4H2zM8,3H9V4H8zM12,3H13V4H12zM13,3H14V4H13zM14,3H15V4H14zM17,3H18V4H17zM22,3H23V4H22zM24,3H25V4H24zM30,3H31V4H30zM2,4H3V5H2zM4,4H5V5H4zM5,4H6V5H5zM6,4H7V5H6zM8,4H9V5H8zM11,4H12V5H11zM13,4H14V5H13zM14,4H15V5H14zM16,4H17V5H16zM17,4H18V5H17zM18,4H19V5H18zM19,4H20V5H19zM24,4H25V5H24zM26,4H27V5H26zM27,4H28V5H27zM28,4H29V5H28zM30,4H31V5H30zM2,5H3V6H2zM4,5H5V6H4zM5,5H6V6H5zM6,5H7V6H6zM8,5H9V6H8zM11,5H12V6H11zM13,5H14V6H13zM15,5H16V6H15zM17,5H18V6H17zM20,5H21V6H20zM21,5H22V6H21zM24,5H25V6H24zM26,5H27V6H26zM27,5H28V6H27zM28,5H29V6H28zM30,5H31V6H30zM2,6H3V7H2zM4,6H5V7H4zM5,6H6V7H5zM6,6H7V7H6zM8,6H9V7H8zM12,6H13V7H12zM13,6H14V7H13zM16,6H17V7H16zM17,6H18V7H17zM18,6H19V7H18zM19,6H20V7H19zM20,6H21V7H20zM24,6H25V7H24zM26,6H27V7H26zM27,6H28V7H27zM28,6H29V7H28zM30,6H31V7H30zM2,7H3V8H2zM8,7H9V8H8zM10,7H11V8H10zM11,7H12V8H11zM12,7H13V8H12zM13,7H14V8H13zM14,7H15V8H14zM17,7H18V8H17zM18,7H19V8H18zM21,7H22V8H21zM24,7H25V8H24zM30,7H31V8H30zM2,8H3V9H2zM3,8H4V9H3zM4,8H5V9H4zM5,8H6V9H5zM6,8H7V9H6zM7,8H8V9H7zM8,8H9V9H8zM10,8H11V9H10zM12,8H13V9H12zM14,8H15V9H14zM16,8H17V9H16zM18,8H19V9H18zM20,8H21V9H20zM22,8H23V9H22zM24,8H25V9H24zM25,8H26V9H25zM26,8H27V9H26zM27,8H28V9H27zM28,8H29V9H28zM29,8H30V9H29zM30,8H31V9H30zM12,9H13V10H12zM14,9H15V10H14zM15,9H16V10H15zM17,9H18V10H17zM19,9H20V10H19zM20,9H21V10H20zM21,9H22V10H21zM2,10H3V11H2zM5,10H6V11H5zM7,10H8V11H7zM8,10H9V11H8zM10,10H11V11H10zM12,10H13V11H12zM14,10H15V11H14zM16,10H17V11H16zM18,10H19V11H18zM23,10H24V11H23zM25,10H26V11H25zM2,11H3V12H2zM5,11H6V12H5zM9,11H10V12H9zM10,11H11V12H10zM12,11H13V12H12zM13,11H14V12H13zM14,11H15V12H14zM15,11H16V12H15zM18,11H19V12H18zM19,11H20V12H19zM22,11H23V12H22zM23,11H24V12H23zM24,11H25V12H24zM25,11H26V12H25zM27,11H28V12H27zM30,11H31V12H30zM2,12H3V13H2zM4,12H5V13H4zM5,12H6V13H5zM8,12H9V13H8zM11,12H12V13H11zM13,12H14V13H13zM15,12H16V13H15zM16,12H17V13H16zM20,12H21V13H20zM21,12H22V13H21zM23,12H24V13H23zM24,12H25V13H24zM25,12H26V13H25zM27,12H28V13H27zM28,12H29V13H28zM29,12H30V13H29zM3,13H4V14H3zM4,13H5V14H4zM6,13H7V14H6zM7,13H8V14H7zM12,13H13V14H12zM13,13H14V14H13zM14,13H15V14H14zM15,13H16V14H15zM17,13H18V14H17zM20,13H21V14H20zM23,13H24V14H23zM24,13H25V14H24zM25,13H26V14H25zM28,13H29V14H28zM29,13H30V14H29zM2,14H3V15H2zM8,14H9V15H8zM10,14H11V15H10zM12,14H13V15H12zM13,14H14V15H13zM16,14H17V15H16zM17,14H18V15H17zM18,14H19V15H18zM19,14H20V15H19zM20,14H21V15H20zM21,14H22V15H21zM22,14H23V15H22zM23,14H24V15H23zM24,14H25V15H24zM25,14H26V15H25zM27,14H28V15H27zM29,14H30V15H29zM30,14H31V15H30zM3,15H4V16H3zM4,15H5V16H4zM10,15H11V16H10zM11,15H12V16H11zM12,15H13V16H12zM13,15H14V16H13zM15,15H16V16H15zM16,15H17V16H16zM21,15H22V16H21zM22,15H23V16H22zM23,15H24V16H23zM2,16H3V17H2zM3,16H4V17H3zM5,16H6V17H5zM6,16H7V17H6zM8,16H9V17H8zM9,16H10V17H9zM11,16H12V17H11zM12,16H13V17H12zM15,16H16V17H15zM16,16H17V17H16zM18,16H19V17H18zM23,16H24V17H23zM27,16H28V17H27zM28,16H29V17H28zM29,16H30V17H29zM30,16H31V17H30zM4,17H5V18H4zM6,17H7V18H6zM7,17H8V18H7zM9,17H10V18H9zM10,17H11V18H10zM11,17H12V18H11zM12,17H13V18H12zM13,17H14V18H13zM18,17H19V18H18zM19,17H20V18H19zM22,17H23V18H22zM26,17H27V18H26zM27,17H28V18H27zM29,17H30V18H29zM6,18H7V19H6zM7,18H8V19H7zM8,18H9V19H8zM9,18H10V19H9zM11,18H12V19H11zM13,18H14V19H13zM14,18H15V19H14zM15,18H16V19H15zM17,18H18V19H17zM19,18H20V19H19zM21,18H22V19H21zM23,18H24V19H23zM29,18H30V19H29zM3,19H4V20H3zM6,19H7V20H6zM7,19H8V20H7zM9,19H10V20H9zM15,19H16V20H15zM16,19H17V20H16zM18,19H19V20H18zM23,19H24V20H23zM24,19H25V20H24zM25,19H26V20H25zM27,19H28V20H27zM30,19H31V20H30zM2,20H3V21H2zM4,20H5V21H4zM5,20H6V21H5zM6,20H7V21H6zM7,20H8V21H7zM8,20H9V21H8zM9,20H10V21H9zM12,20H13V21H12zM16,20H17V21H16zM19,20H20V21H19zM20,20H21V21H20zM22,20H23V21H22zM23,20H24V21H23zM24,20H25V21H24zM26,20H27V21H26zM29,20H30V21H29zM30,20H31V21H30zM4,21H5V22H4zM12,21H13V22H12zM14,21H15V22H14zM16,21H17V22H16zM19,21H20V22H19zM20,21H21V22H20zM22,21H23V22H22zM23,21H24V22H23zM24,21H25V22H24zM26,21H27V22H26zM29,21H30V22H29zM30,21H31V22H30zM2,22H3V23H2zM6,22H7V23H6zM8,22H9V23H8zM9,22H10V23H9zM11,22H12V23H11zM12,22H13V23H12zM17,22H18V23H17zM18,22H19V23H18zM22,22H23V23H22zM23,22H24V23H23zM24,22H25V23H24zM25,22H26V23H25zM26,22H27V23H26zM28,22H29V23H28zM10,23H11V24H10zM11,23H12V24H11zM12,23H13V24H12zM16,23H17V24H16zM18,23H19V24H18zM21,23H22V24H21zM22,23H23V24H22zM26,23H27V24H26zM28,23H29V24H28zM29,23H30V24H29zM30,23H31V24H30zM2,24H3V25H2zM3,24H4V25H3zM4,24H5V25H4zM5,24H6V25H5zM6,24H7V25H6zM7,24H8V25H7zM8,24H9V25H8zM14,24H15V25H14zM18,24H19V25H18zM19,24H20V25H19zM22,24H23V25H22zM24,24H25V25H24zM26,24H27V25H26zM29,24H30V25H29zM2,25H3V26H2zM8,25H9V26H8zM10,25H11V26H10zM11,25H12V26H11zM12,25H13V26H12zM13,25H14V26H13zM14,25H15V26H14zM16,25H17V26H16zM20,25H21V26H20zM22,25H23V26H22zM26,25H27V26H26zM27,25H28V26H27zM28,25H29V26H28zM2,26H3V27H2zM4,26H5V27H4zM5,26H6V27H5zM6,26H7V27H6zM8,26H9V27H8zM12,26H13V27H12zM14,26H15V27H14zM18,26H19V27H18zM19,26H20V27H19zM22,26H23V27H22zM23,26H24V27H23zM24,26H25V27H24zM25,26H26V27H25zM26,26H27V27H26zM29,26H30V27H29zM30,26H31V27H30zM2,27H3V28H2zM4,27H5V28H4zM5,27H6V28H5zM6,27H7V28H6zM8,27H9V28H8zM10,27H11V28H10zM11,27H12V28H11zM12,27H13V28H12zM14,27H15V28H14zM21,27H22V28H21zM24,27H25V28H24zM25,27H26V28H25zM26,27H27V28H26zM27,27H28V28H27zM28,27H29V28H28zM29,27H30V28H29zM2,28H3V29H2zM4,28H5V29H4zM5,28H6V29H5zM6,28H7V29H6zM8,28H9V29H8zM12,28H13V29H12zM15,28H16V29H15zM19,28H20V29H19zM23,28H24V29H23zM26,28H27V29H26zM27,28H28V29H27zM28,28H29V29H28zM30,28H31V29H30zM2,29H3V30H2zM8,29H9V30H8zM11,29H12V30H11zM12,29H13V30H12zM18,29H19V30H18zM19,29H20V30H19zM20,29H21V30H20zM21,29H22V30H21zM22,29H23V30H22zM23,29H24V30H23zM25,29H26V30H25zM26,29H27V30H26zM29,29H30V30H29zM2,30H3V31H2zM3,30H4V31H3zM4,30H5V31H4zM5,30H6V31H5zM6,30H7V31H6zM7,30H8V31H7zM8,30H9V31H8zM10,30H11V31H10zM16,30H17V31H16zM17,30H18V31H17zM19,30H20V31H19zM20,30H21V31H20zM22,30H23V31H22zM24,30H25V31H24zM25,30H26V31H25zM26,30H27V31H26zM27,30H28V31H27zM29,30H30V31H29z" id="qr-path" fill="#000000" fill-opacity="1" fill-rule="nonzero" stroke="none"/></svg>
+        <p class="qr-label">Aponte a câmera do celular<br>para abrir esta apresentação</p>
+        <span class="qr-url">flow.mdradvocacia.com/conheca</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ═══════════════ PROBLEMA ═══════════════ -->
+<section class="problema wrap">
+  <div class="divider">Por que existe</div>
+  <h2 style="margin-top:24px">O volume hoje pede mais do que tempo de equipe.</h2>
+  <p class="lead">Toda semana entram <strong>centenas de publicações</strong>, dezenas de <strong>prazos iniciais</strong> e milhares de <strong>andamentos de processos da carteira</strong>. Tudo precisa ser lido, classificado, cadastrado no Legal One — e a equipe que faz isso é a mesma que precisa, no fim do dia, advogar.</p>
+  <div class="grid grid-3">
+    <div class="card pain-card">
+      <div class="pain-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div>
+      <h3>Carteira sem diagnóstico</h3>
+      <p>Milhares de processos passivos da carteira sem visão atualizada de pedidos, valores estimados, probabilidade de êxito e provisão. Cliente cobra e o número não está pronto.</p>
+    </div>
+    <div class="card pain-card">
+      <div class="pain-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+      <h3>Prazo perdido = risco real</h3>
+      <p>Publicação mal classificada, intimação inicial sem agendamento no Legal One ou habilitação por outro escritório não detectada — qualquer falha vira processo perdido ou indenização.</p>
+    </div>
+    <div class="card pain-card">
+      <div class="pain-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
+      <h3>Trabalho repetitivo demais</h3>
+      <p>Boa parte do que a equipe faz é triagem mecânica: lê, identifica intenção, cria tarefa, anexa GED, fecha. É exatamente o tipo de trabalho que IA pode acelerar, com a equipe validando.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ COMO FUNCIONA ═══════════════ -->
+<section class="pilares wrap">
+  <div class="divider">Como o Flow resolve</div>
+  <h2 style="margin-top:24px">Três engrenagens, trabalhando juntas.</h2>
+  <p class="lead">A IA não substitui o advogado, e o advogado não faz mais o trabalho de IA. Cada um faz o que é melhor — e o Legal One continua sendo a fonte da verdade.</p>
+  <div class="grid grid-3">
+    <div class="card pillar">
+      <span class="p-num">01 · IA</span>
+      <h3>O motor lê tudo</h3>
+      <p>Para cada documento (PDF de intimação inicial, publicação, capa de processo), o modelo extrai os dados estruturados: pedidos, valores, polo, sentença, contestações, habilitações, audiências. Schema validado, não texto livre.</p>
+    </div>
+    <div class="card pillar">
+      <span class="p-num">02 · Human-in-the-loop</span>
+      <h3>Operador valida o que importa</h3>
+      <p>O resultado da IA vai pra uma fila com sugestões. O operador confirma, ajusta ou rejeita. Casos limpos passam em segundos; casos sensíveis (contestação genérica, habilitação por outro advogado, etc.) ficam em destaque.</p>
+    </div>
+    <div class="card pillar">
+      <span class="p-num">03 · Legal One</span>
+      <h3>Cadastro em 1 clique</h3>
+      <p>Depois do "OK" do operador, o Flow cria a tarefa no Legal One, anexa o GED, agenda os prazos e marca os responsáveis — usando a API oficial Thomson Reuters quando dá, e automação onde a API não cobre.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ DESTAQUE: DIAGNÓSTICO DE CARTEIRA ═══════════════ -->
+<section class="destaque wrap">
+  <div class="destaque-header">
+    <span class="badge-star">★ Em destaque · Hoje é o motor principal</span>
+    <h2>Diagnóstico de Carteira</h2>
+    <p class="lead">Sobe a carteira (em lote) e o Flow devolve, processo por processo, o que importa pra decidir: <strong>pedidos do autor, valor estimado, probabilidade de êxito, contestações já apresentadas, habilitação por outro advogado, sentenças e trânsito</strong>. Em segundos por processo, com o operador validando antes de virar relatório de cliente.</p>
+  </div>
+
+  <!-- Tela 1: histórico de lotes -->
+  <figure class="screen">
+    <div class="chrome">
+      <div class="dots"><span class="dot d-r"></span><span class="dot d-y"></span><span class="dot d-g"></span></div>
+      <div class="urlbar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        flow.mdradvocacia.com/classificador
+      </div>
+    </div>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="sb-brand"><div class="bm"></div><div class="bn">flow</div></div>
+        <div class="sb-section">
+          <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12 12 3l9 9"/><path d="M5 10v10h14V10"/></svg>Dashboard</div>
+        </div>
+        <div class="sb-section">
+          <div class="sb-title">Tratamento</div>
+          <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22h16V2H8L4 6z"/></svg>Publicações</div>
+          <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>Prazos Iniciais</div>
+          <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg>AJUS — Andamentos</div>
+        </div>
+        <div class="sb-section">
+          <div class="sb-title">Classificador</div>
+          <div class="sb-item active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>Diagnóstico de Carteira</div>
+        </div>
+      </aside>
+      <div class="app-main">
+        <div class="page-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <h1>Classificador</h1>
+        </div>
+        <p class="page-sub">Diagnóstico de carteira processual — captura, classifica e gera relatório executivo pra cliente. Reaproveita intakes já tratados em Prazos Iniciais ou aceita carteiras avulsas via XLSX.</p>
+        <div class="tabs">
+          <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg>Novo lote</div>
+          <div class="tab active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg>Histórico</div>
+          <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>Fila do robô</div>
+          <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21V3M3 21h18M7 17v-6M12 17V8M17 17v-3"/></svg>Painel</div>
+        </div>
+        <table class="t">
+          <thead>
+            <tr>
+              <th>Lote</th>
+              <th>Origem</th>
+              <th>Status</th>
+              <th style="text-align:right">Processos</th>
+              <th>Criado em</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Carteira Cliente A — Q2/2026</strong></td>
+              <td>PI · 1.248 intakes</td>
+              <td><span class="badge success">Classificado</span></td>
+              <td style="text-align:right;font-family:'Jura',monospace">1.248</td>
+              <td>12/05/2026 09:14</td>
+              <td><span class="badge info">Abrir painel</span></td>
+            </tr>
+            <tr>
+              <td><strong>Diagnóstico Cliente A · Filial BA</strong></td>
+              <td>XLSX · upload manual</td>
+              <td><span class="badge info">Classificando · 412/680</span></td>
+              <td style="text-align:right;font-family:'Jura',monospace">680</td>
+              <td>13/05/2026 16:42</td>
+              <td><span class="badge slate">Acompanhar</span></td>
+            </tr>
+            <tr>
+              <td><strong>Revisão Carteira CDC — Maio</strong></td>
+              <td>L1 · escritório SP</td>
+              <td><span class="badge warning">Pronto p/ classificar</span></td>
+              <td style="text-align:right;font-family:'Jura',monospace">312</td>
+              <td>13/05/2026 11:08</td>
+              <td><span class="badge slate">Subir PDFs</span></td>
+            </tr>
+            <tr>
+              <td><strong>Diagnóstico Trabalhista — Abril</strong></td>
+              <td>PI · 89 intakes</td>
+              <td><span class="badge success">Classificado</span></td>
+              <td style="text-align:right;font-family:'Jura',monospace">89</td>
+              <td>30/04/2026 18:21</td>
+              <td><span class="badge info">Abrir painel</span></td>
+            </tr>
+            <tr>
+              <td><strong>Carteira Cliente A — Q1/2026</strong></td>
+              <td>XLSX · 1.604 linhas</td>
+              <td><span class="badge success">Classificado</span></td>
+              <td style="text-align:right;font-family:'Jura',monospace">1.604</td>
+              <td>22/03/2026 14:05</td>
+              <td><span class="badge info">Abrir painel</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </figure>
+
+  <div class="steps">
+    <div class="step"><div class="n">Passo 1</div><h4>Sobe o lote</h4><p>XLSX da carteira ou reaproveita intakes do PI. O Flow puxa capa, partes e íntegra do Legal One.</p></div>
+    <div class="step"><div class="n">Passo 2</div><h4>Motor classifica</h4><p>Cada processo vai pra um batch do motor. Schema rígido: pedidos, valores, polo, sentença, contestação, habilitação.</p></div>
+    <div class="step"><div class="n">Passo 3</div><h4>Operador valida</h4><p>Casos com sinal forte (contestação genérica, habilitação por outro advogado, sentença adversa) ficam em destaque na fila.</p></div>
+    <div class="step"><div class="n">Passo 4</div><h4>Relatório pronto</h4><p>Painel global agregado + XLSX/PDF executivo para o cliente. Dados ficam no Flow e atualizam quando o L1 muda.</p></div>
+  </div>
+
+  <!-- Tela 2: Painel Global do lote -->
+  <figure class="screen">
+    <div class="chrome">
+      <div class="dots"><span class="dot d-r"></span><span class="dot d-y"></span><span class="dot d-g"></span></div>
+      <div class="urlbar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        flow.mdradvocacia.com/classificador/lote/142/painel
+      </div>
+    </div>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="sb-brand"><div class="bm"></div><div class="bn">flow</div></div>
+        <div class="sb-section">
+          <div class="sb-title">Classificador</div>
+          <div class="sb-item active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>Diagnóstico de Carteira</div>
+        </div>
+      </aside>
+      <div class="app-main">
+        <div class="page-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V3M3 21h18M7 17v-6M12 17V8M17 17v-3"/></svg>
+          <h1>Painel · Carteira Cliente A — Q2/2026</h1>
+        </div>
+        <p class="page-sub">1.248 processos classificados · 12/05/2026 · taxonomia v2 · IA especializada + revisão humana</p>
+
+        <div class="kpis">
+          <div class="kpi"><div class="lbl">Processos</div><div class="val">1.248</div><div class="sub">100% classificados</div></div>
+          <div class="kpi accent"><div class="lbl">Prob. êxito média</div><div class="val">71,4%</div><div class="sub">↑ 4 p.p. vs. Q1</div></div>
+          <div class="kpi"><div class="lbl">Valor estimado total</div><div class="val">R$ 38,2 mi</div><div class="sub">soma dos pedidos</div></div>
+          <div class="kpi"><div class="lbl">Aprovisionamento</div><div class="val">R$ 6,1 mi</div><div class="sub">pcond_total</div></div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr;gap:14px">
+          <div class="card" style="padding:16px">
+            <h4 style="margin-bottom:10px">Sinais de atenção detectados pela IA</h4>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12.5px">
+              <div style="padding:10px;background:var(--orange-bg);border:1px solid #FFC8A0;border-radius:8px"><strong style="color:var(--orange)">73 processos</strong> · contestação assinada por outro escritório<br><span class="muted xs">⤷ sinal forte de devolução pra revisão</span></div>
+              <div style="padding:10px;background:var(--amber-bg);border:1px solid #FFD7A0;border-radius:8px"><strong style="color:var(--amber)">119 processos</strong> · contestação do escritório classificada como genérica<br><span class="muted xs">⤷ candidatos a aditamento</span></div>
+              <div style="padding:10px;background:var(--orange-bg);border:1px solid #FFC8A0;border-radius:8px"><strong style="color:var(--orange)">28 processos</strong> · habilitação anterior de outro advogado<br><span class="muted xs">⤷ verificar substabelecimento</span></div>
+              <div style="padding:10px;background:var(--error-bg);border:1px solid #F5C2BC;border-radius:8px"><strong style="color:var(--error)">14 processos</strong> · sentença adversa em trânsito<br><span class="muted xs">⤷ aprovisionamento integral</span></div>
+            </div>
+          </div>
+
+          <div class="card" style="padding:0">
+            <div style="padding:14px 16px 6px"><h4>Top 5 processos por prob. de condenação</h4></div>
+            <table class="t" style="border:0;border-radius:0">
+              <thead><tr><th>CNJ</th><th>Parte ativa</th><th>Pedido principal</th><th style="text-align:right">Pcond</th><th>Prob.</th></tr></thead>
+              <tbody>
+                <tr><td class="cnj">0034521-89.2024.8.05.0001</td><td>M. S. Silva</td><td>Indenização — dano moral majorado</td><td style="text-align:right;font-family:'Jura',monospace">R$ 180.000</td><td><span class="badge error">Provável</span></td></tr>
+                <tr><td class="cnj">0051902-44.2023.8.05.0001</td><td>J. R. Pereira</td><td>Repetição de indébito + dano moral</td><td style="text-align:right;font-family:'Jura',monospace">R$ 96.400</td><td><span class="badge error">Provável</span></td></tr>
+                <tr><td class="cnj">0008812-12.2025.8.05.0103</td><td>A. C. Santos</td><td>Restituição de valores indevidos</td><td style="text-align:right;font-family:'Jura',monospace">R$ 72.500</td><td><span class="badge warning">Possível</span></td></tr>
+                <tr><td class="cnj">0027033-67.2024.8.05.0001</td><td>L. F. Costa</td><td>Cancelamento de débito + danos</td><td style="text-align:right;font-family:'Jura',monospace">R$ 58.000</td><td><span class="badge warning">Possível</span></td></tr>
+                <tr><td class="cnj">0017760-25.2023.8.05.0274</td><td>P. H. Almeida</td><td>Restituição em dobro (CDC art. 42)</td><td style="text-align:right;font-family:'Jura',monospace">R$ 48.200</td><td><span class="badge warning">Possível</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </figure>
+
+  <!-- Tela 3: Detalhe do processo (a estrela — features que o cliente pediu) -->
+  <figure class="screen">
+    <div class="chrome">
+      <div class="dots"><span class="dot d-r"></span><span class="dot d-y"></span><span class="dot d-g"></span></div>
+      <div class="urlbar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        flow.mdradvocacia.com/classificador/processo/8472
+      </div>
+    </div>
+    <div class="drawer-frame">
+      <div class="behind">
+        <div>
+          <div style="font-size:11px;color:var(--muted-2);letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px">Lote · Carteira Cliente A Q2/2026</div>
+          <div style="font-size:13px;color:var(--ink)">1.248 processos · lista paginada à esquerda</div>
+          <div style="font-size:11px;color:var(--muted-2);margin-top:10px">Clique em qualquer processo da tabela<br>para abrir este drawer com o diagnóstico completo</div>
+        </div>
+      </div>
+      <div class="drawer">
+        <div class="drawer-header">
+          <div>
+            <h3>Cliente A × M. S. Silva</h3>
+            <div class="cnj">CNJ 0034521-89.2024.8.05.0001 · 3ª Vara Cível de Salvador/BA</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+            <span class="badge solid-blue">Réu</span>
+            <span class="badge slate">Comum cível</span>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 16px">
+          <span class="badge success">Classificado</span>
+          <span class="badge info">Confiança alta</span>
+          <span class="badge slate">Categoria · Consumerista</span>
+          <span class="badge slate">Subcategoria · Cobrança indevida</span>
+        </div>
+
+        <!-- Painel 1: Patrocínio — habilitação por outro advogado -->
+        <div class="panel orange">
+          <div class="panel-head">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            <h4>Patrocínio &amp; habilitação</h4>
+            <span class="badge orange"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>Outro escritório se habilitou primeiro</span>
+            <span class="badge error">Suspeita de devolução</span>
+          </div>
+          <p class="panel-desc">A IA detectou um advogado externo habilitado em nome de vinculada do cliente anteriormente. Caso candidato à devolução de patrocínio.</p>
+          <hr class="sep">
+          <div class="kv-grid">
+            <div class="kv">
+              <div class="k">Advogado habilitado primeiro</div>
+              <div class="v">Dr. R. M. Andrade <span class="muted small">· OAB/BA 12.345</span></div>
+            </div>
+            <div class="kv">
+              <div class="k">Escritório</div>
+              <div class="v">Andrade &amp; Lima Advogados Associados</div>
+            </div>
+            <div class="kv">
+              <div class="k">Data da habilitação</div>
+              <div class="v">12/03/2025</div>
+            </div>
+            <div class="kv">
+              <div class="k">Parte representada</div>
+              <div class="v">Cliente A</div>
+            </div>
+          </div>
+          <div class="callout-warn" style="margin-top:12px">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            <span>Verifique se houve <strong>substabelecimento</strong> ou se houve nova procuração posterior. A IA não diferencia automaticamente — operador decide.</span>
+          </div>
+        </div>
+
+        <!-- Painel 2: Contestação existente -->
+        <div class="panel orange">
+          <div class="panel-head">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg>
+            <h4>Contestação já apresentada</h4>
+            <span class="badge orange">Outro escritório</span>
+            <span class="badge amber">Genérica</span>
+          </div>
+          <p class="panel-desc">A IA detectou contestação na íntegra anteriormente. Use pra decidir se complementa, refaz ou confirma sem providência.</p>
+          <hr class="sep">
+          <div class="kv-grid">
+            <div class="kv">
+              <div class="k">Assinada por</div>
+              <div class="v">Dr. R. M. Andrade · OAB/BA 12.345</div>
+            </div>
+            <div class="kv">
+              <div class="k">Data de apresentação</div>
+              <div class="v">28/03/2025</div>
+            </div>
+            <div class="kv" style="grid-column:1/-1">
+              <div class="k">Defendendo</div>
+              <div class="v">Cliente A <span class="small-note">(não é o(a) advogado(a) titular — verifique se essa contestação é de outro escritório / outro réu)</span></div>
+            </div>
+          </div>
+          <div style="margin-top:10px">
+            <div class="kv"><div class="k">Análise de qualidade</div>
+              <div class="v" style="margin-top:4px">Peça padrão de impugnação genérica à inicial: nega responsabilidade civil em tese, não enfrenta o pedido específico de dano moral majorado por inscrição indevida nem o cálculo de repetição de indébito. Sem prova documental anexa. <strong>Candidata a aditamento de contestação</strong>.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Painel 3: Sentença -->
+        <div class="panel emerald">
+          <div class="panel-head">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M6 6v14a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V6"/></svg>
+            <h4>Sentença detectada</h4>
+            <span class="badge emerald">Improcedente · 02/04/2026</span>
+            <span class="badge slate">Sem trânsito ainda</span>
+          </div>
+          <div class="kv-grid">
+            <div class="kv">
+              <div class="k">Tipo</div>
+              <div class="v">Improcedente</div>
+            </div>
+            <div class="kv">
+              <div class="k">Valor da condenação</div>
+              <div class="v">— (não houve)</div>
+            </div>
+            <div class="kv" style="grid-column:1/-1">
+              <div class="k">Resumo</div>
+              <div class="v">Sentença julgou improcedente o pedido de indenização por dano moral por ausência de prova do fato constitutivo do direito. Honorários sucumbenciais arbitrados em 10% sobre o valor da causa. Apelação ainda no prazo recursal.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Painel 4: Pedidos -->
+        <div class="panel">
+          <div class="panel-head">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+            <h4>Pedidos extraídos da inicial</h4>
+            <span class="badge info">Prob. êxito global · 68%</span>
+          </div>
+          <div class="pedido-row">
+            <span class="nm">Indenização por danos morais</span>
+            <span class="vv">R$ 50.000</span>
+            <span class="badge error">Provável</span>
+            <span class="vv">prov. R$ 28.000</span>
+          </div>
+          <div class="pedido-row">
+            <span class="nm">Repetição de indébito (CDC art. 42)</span>
+            <span class="vv">R$ 12.480</span>
+            <span class="badge warning">Possível</span>
+            <span class="vv">prov. R$ 6.240</span>
+          </div>
+          <div class="pedido-row">
+            <span class="nm">Inversão do ônus + cancelamento</span>
+            <span class="vv">declaratório</span>
+            <span class="badge success">Remota</span>
+            <span class="vv">prov. —</span>
+          </div>
+        </div>
+
+        <!-- Painel 5: Análise estratégica -->
+        <div class="panel">
+          <div class="panel-head">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            <h4>Análise estratégica · gerada pela IA</h4>
+          </div>
+          <div class="note-box">
+            Caso de consumerista padrão com pedido principal de dano moral por inscrição em cadastro restritivo. Sentença foi favorável ao Cliente A em 1º grau, mas o autor tem prazo recursal aberto. Risco médio em recurso por inversão de ônus probatório; o aprovisionamento total recomendado é R$ 34.240, equivalente a 55% do valor estimado de condenação. <strong>Recomenda-se aditamento da contestação anterior antes da fase recursal</strong>.
+          </div>
+        </div>
+      </div>
+    </div>
+  </figure>
+</section>
+
+<!-- ═══════════════ FLUXO: PUBLICAÇÕES ═══════════════ -->
+<section class="wrap">
+  <div class="divider">Outros fluxos do Flow</div>
+  <span class="eyebrow" style="margin-top:24px">Fluxo · Publicações</span>
+  <h2>Tratamento de Publicações</h2>
+  <p class="lead">Toda publicação que entra pelo Legal One é classificada e roteada automaticamente. O operador só vê o que precisa de decisão — o resto vira tarefa sozinho.</p>
+
+  <div class="steps">
+    <div class="step"><div class="n">Passo 1</div><h4>Captura L1</h4><p>Worker periódico puxa publicações novas via API Thomson Reuters.</p></div>
+    <div class="step"><div class="n">Passo 2</div><h4>Motor classifica</h4><p>Intenção da publicação (intimação, despacho, decisão, sentença, etc.) com nível de confiança.</p></div>
+    <div class="step"><div class="n">Passo 3</div><h4>HITL valida</h4><p>Operador confirma na tela "Tratamento Web". Casos de baixa confiança em destaque.</p></div>
+    <div class="step"><div class="n">Passo 4</div><h4>Tarefa no L1</h4><p>Cria a tarefa, anexa GED, define responsável e prazo. Tudo via automação de UI onde a API não cobre.</p></div>
+  </div>
+
+  <figure class="screen">
+    <div class="chrome">
+      <div class="dots"><span class="dot d-r"></span><span class="dot d-y"></span><span class="dot d-g"></span></div>
+      <div class="urlbar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        flow.mdradvocacia.com/publications/treatment
+      </div>
+    </div>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="sb-brand"><div class="bm"></div><div class="bn">flow</div></div>
+        <div class="sb-section">
+          <div class="sb-title">Tratamento</div>
+          <div class="sb-item active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22h16V2H8L4 6z"/></svg>Publicações</div>
+          <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/></svg>Prazos Iniciais</div>
+          <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg>AJUS — Andamentos</div>
+        </div>
+      </aside>
+      <div class="app-main">
+        <div class="page-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 22h16V2H8L4 6z"/></svg><h1>Tratamento de Publicações</h1></div>
+        <p class="page-sub">Fila de publicações classificadas pela IA aguardando confirmação do operador.</p>
+        <table class="t">
+          <thead><tr><th>Data</th><th>Processo</th><th>Resumo</th><th>Classificação IA</th><th>Confiança</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td>14/05</td><td class="cnj">0021034-12.2025.8.05.0001</td><td>Intimação para contestar em 15 dias úteis</td><td><span class="badge info">Citação · Contestar</span></td><td><span class="badge success">94%</span></td><td><span class="badge warning">Aguarda HITL</span></td></tr>
+            <tr><td>14/05</td><td class="cnj">0038921-44.2024.8.05.0274</td><td>Despacho determinando emenda à inicial</td><td><span class="badge info">Despacho · Sem providência</span></td><td><span class="badge success">88%</span></td><td><span class="badge success">Tarefa L1 criada</span></td></tr>
+            <tr><td>14/05</td><td class="cnj">0007712-09.2025.8.05.0001</td><td>Sentença · improcedente · honorários 10%</td><td><span class="badge error">Sentença · Prazo recursal</span></td><td><span class="badge warning">71%</span></td><td><span class="badge warning">Aguarda HITL</span></td></tr>
+            <tr><td>13/05</td><td class="cnj">0044501-87.2024.8.05.0103</td><td>Designação de audiência de conciliação</td><td><span class="badge info">Audiência · Agendar</span></td><td><span class="badge success">96%</span></td><td><span class="badge success">Tarefa L1 criada</span></td></tr>
+            <tr><td>13/05</td><td class="cnj">0019820-33.2023.8.05.0001</td><td>Decisão acolhe parcialmente embargos</td><td><span class="badge warning">Decisão · Avaliar recurso</span></td><td><span class="badge warning">62%</span></td><td><span class="badge warning">Aguarda HITL</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </figure>
+</section>
+
+<!-- ═══════════════ FLUXO: PRAZOS INICIAIS ═══════════════ -->
+<section class="wrap">
+  <span class="eyebrow">Fluxo · Prazos Iniciais</span>
+  <h2>Agendamento de Prazos Iniciais</h2>
+  <p class="lead">Quando entra uma intimação inicial nova, o Flow lê o PDF, sugere tipo de tarefa, responsável e prazo — e ainda valida se a habilitação no processo está coerente, antes de agendar no Legal One em 3 passos.</p>
+
+  <div class="steps">
+    <div class="step"><div class="n">Passo 1</div><h4>Ingestão</h4><p>API externa do robô de captura + PDF da intimação. Sanitização pré-IA reduz ~19% dos tokens.</p></div>
+    <div class="step"><div class="n">Passo 2</div><h4>Classifica + valida</h4><p>O motor sugere tipo + responsável + data. <strong>Heurística confere a habilitação</strong> no PDF (procuração, substabelecimento, CNJ).</p></div>
+    <div class="step"><div class="n">Passo 3</div><h4>HITL</h4><p>Operador valida ou ajusta. Casos com habilitação suspeita ficam destacados em vermelho.</p></div>
+    <div class="step"><div class="n">Passo 4</div><h4>Agendamento L1</h4><p>3 passos no Legal One: cria tarefa, anexa GED, marca responsáveis. Tudo via automação de UI onde a API não cobre.</p></div>
+  </div>
+
+  <figure class="screen">
+    <div class="chrome">
+      <div class="dots"><span class="dot d-r"></span><span class="dot d-y"></span><span class="dot d-g"></span></div>
+      <div class="urlbar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        flow.mdradvocacia.com/prazos-iniciais/treatment/8821
+      </div>
+    </div>
+    <div class="app-shell">
+      <div class="app-main" style="padding:18px">
+        <div class="page-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18M8 2v4M16 2v4"/></svg><h1>Prazo Inicial #8821 · Cliente A</h1></div>
+        <p class="page-sub">Intimação para contestar · CNJ 0021034-12.2025.8.05.0001 · 7ª Vara Cível de Lauro de Freitas/BA</p>
+
+        <div style="display:grid;grid-template-columns:1fr;gap:14px;margin-top:8px">
+          <div class="panel emerald">
+            <div class="panel-head">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+              <h4>Conferência da habilitação</h4>
+              <span class="badge emerald">Habilitação OK</span>
+              <span class="muted small">Verificado em 14/05/2026 09:21</span>
+            </div>
+            <p class="panel-desc">Todos os checks passaram.</p>
+            <hr class="sep">
+            <div style="display:grid;gap:6px;font-size:12.5px">
+              <div style="display:flex;align-items:center;gap:8px"><span class="badge success">OK</span><span>CNJ do PDF confere com o cadastro</span></div>
+              <div style="display:flex;align-items:center;gap:8px"><span class="badge success">OK</span><span>Cliente identificado como parte (Cliente A)</span></div>
+              <div style="display:flex;align-items:center;gap:8px"><span class="badge success">OK</span><span>Pedido de publicações exclusivas em nome do titular presente</span></div>
+              <div style="display:flex;align-items:center;gap:8px"><span class="badge success">OK</span><span>Procuração + substabelecimento anexos válidos</span></div>
+              <div style="display:flex;align-items:center;gap:8px"><span class="badge slate">Pulado</span><span>Verificação de dupla habilitação (não aplicável)</span></div>
+            </div>
+          </div>
+
+          <div class="card" style="padding:14px">
+            <h4 style="margin-bottom:8px">Sugestão da IA · Confiança alta</h4>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;font-size:13px">
+              <div><div class="muted xs" style="text-transform:uppercase;letter-spacing:.08em">Tipo</div><strong>Contestar</strong></div>
+              <div><div class="muted xs" style="text-transform:uppercase;letter-spacing:.08em">Prazo</div><strong>04/06/2026</strong> <span class="muted small">(15 dias úteis)</span></div>
+              <div><div class="muted xs" style="text-transform:uppercase;letter-spacing:.08em">Responsável</div><strong>Dr. F. Almeida</strong></div>
+              <div><div class="muted xs" style="text-transform:uppercase;letter-spacing:.08em">Template</div><strong>CDC · Contestar padrão</strong></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </figure>
+</section>
+
+<!-- ═══════════════ FLUXO: AJUS ═══════════════ -->
+<section class="wrap">
+  <span class="eyebrow">Fluxo · AJUS</span>
+  <h2>AJUS — Classificação de Andamentos</h2>
+  <p class="lead">Os andamentos dos processos do Legal One precisam ser interpretados em escala: o Flow conecta a múltiplas contas, lê os movimentos e classifica em código padrão da casa — sem operador ter que abrir conta por conta.</p>
+
+  <div class="steps">
+    <div class="step"><div class="n">Passo 1</div><h4>Login multi-conta</h4><p>Sessões persistidas em volume Docker. Cada conta tem storage state isolado.</p></div>
+    <div class="step"><div class="n">Passo 2</div><h4>Coleta de andamentos</h4><p>A automação navega no Legal One e captura andamentos novos por CNJ.</p></div>
+    <div class="step"><div class="n">Passo 3</div><h4>Motor classifica</h4><p>Cada movimento vira código (CIT, JUL, PUB, etc.) com nível de confiança.</p></div>
+    <div class="step"><div class="n">Passo 4</div><h4>Painel + alertas</h4><p>Operador vê só os andamentos críticos. Resto fica registrado.</p></div>
+  </div>
+</section>
+
+<!-- ═══════════════ MÉTRICAS / GANHOS ═══════════════ -->
+<section class="wrap metricas">
+  <div class="divider">Impacto operacional</div>
+  <h2 style="margin-top:24px">O que o Flow muda no dia a dia.</h2>
+  <p class="lead">Resultados qualitativos observados em operação. Os números reais variam conforme volume e tipo de carteira.</p>
+  <div class="grid grid-3">
+    <div class="metric">
+      <div class="big">Mais rápido</div>
+      <div class="sub">tratamento de publicações com IA + revisão humana</div>
+      <div class="ph">ciclo encurtado vs. fluxo 100% manual</div>
+    </div>
+    <div class="metric">
+      <div class="big">Em escala</div>
+      <div class="sub">carteira inteira diagnosticada em lote</div>
+      <div class="ph">processos lidos e classificados em paralelo</div>
+    </div>
+    <div class="metric">
+      <div class="big">Sem fricção</div>
+      <div class="sub">do diagnóstico à tarefa no Legal One</div>
+      <div class="ph">cria tarefa, anexa GED, marca responsável</div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ ARQUITETURA ═══════════════ -->
+<section class="wrap">
+  <div class="divider">Arquitetura</div>
+  <h2 style="margin-top:24px">Onde cada peça vive.</h2>
+  <p class="lead">Stack moderna, segura e auditável. O Legal One continua sendo a fonte da verdade — o Flow é a camada de inteligência operacional que sustenta a rotina.</p>
+  <div class="arch">
+    <div class="arch-card">
+      <div class="iconw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg></div>
+      <h4>Legal One</h4>
+      <p class="small muted">Fonte da verdade · Thomson Reuters · integração nativa via API + automação de UI onde necessário.</p>
+    </div>
+    <div class="arch-arrow">⇄</div>
+    <div class="arch-card" style="border-color:var(--blue);box-shadow:0 4px 20px rgba(30,123,255,.25)">
+      <div class="iconw" style="background:linear-gradient(135deg,var(--navy),var(--blue));border:0"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg></div>
+      <h4 style="color:var(--blue)">Flow</h4>
+      <p class="small muted">Plataforma proprietária · containerizada · execução em nuvem privada · jobs agendados periódicos.</p>
+    </div>
+    <div class="arch-arrow">⇄</div>
+    <div class="arch-card">
+      <div class="iconw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></div>
+      <h4>Motor de IA</h4>
+      <p class="small muted">Motor de classificação especializado · extração estruturada e processamento em batches. Schema rígido validado.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ FOOTER ═══════════════ -->
+<footer>
+  <div class="wrap footer-grid">
+    <div>
+      <div class="brand" style="margin-bottom:16px">
+        <span class="brand-name">Flow</span>
+      </div>
+      <p>Plataforma de inteligência operacional jurídica.</p>
+      <p class="disclaimer">Esta é uma demonstração das funcionalidades do Flow. Todos os dados exibidos nas telas — CNJs, nomes de partes, valores e análises — são <strong>fictícios</strong> e foram criados exclusivamente para fins ilustrativos. Logos e nomes de terceiros mencionados pertencem aos seus respectivos titulares.</p>
+    </div>
+    <div>
+      <div class="qr-card" id="qr-footer">
+        <!-- QR Code real é injetado via JS abaixo -->
+        <svg viewBox="0 0 33 33" id="qr-svg-footer" xmlns="http://www.w3.org/2000/svg"><rect width="33" height="33" fill="#fff"/><path d="M2,2H3V3H2zM3,2H4V3H3zM4,2H5V3H4zM5,2H6V3H5zM6,2H7V3H6zM7,2H8V3H7zM8,2H9V3H8zM12,2H13V3H12zM13,2H14V3H13zM16,2H17V3H16zM17,2H18V3H17zM20,2H21V3H20zM21,2H22V3H21zM24,2H25V3H24zM25,2H26V3H25zM26,2H27V3H26zM27,2H28V3H27zM28,2H29V3H28zM29,2H30V3H29zM30,2H31V3H30zM2,3H3V4H2zM8,3H9V4H8zM12,3H13V4H12zM13,3H14V4H13zM14,3H15V4H14zM17,3H18V4H17zM22,3H23V4H22zM24,3H25V4H24zM30,3H31V4H30zM2,4H3V5H2zM4,4H5V5H4zM5,4H6V5H5zM6,4H7V5H6zM8,4H9V5H8zM11,4H12V5H11zM13,4H14V5H13zM14,4H15V5H14zM16,4H17V5H16zM17,4H18V5H17zM18,4H19V5H18zM19,4H20V5H19zM24,4H25V5H24zM26,4H27V5H26zM27,4H28V5H27zM28,4H29V5H28zM30,4H31V5H30zM2,5H3V6H2zM4,5H5V6H4zM5,5H6V6H5zM6,5H7V6H6zM8,5H9V6H8zM11,5H12V6H11zM13,5H14V6H13zM15,5H16V6H15zM17,5H18V6H17zM20,5H21V6H20zM21,5H22V6H21zM24,5H25V6H24zM26,5H27V6H26zM27,5H28V6H27zM28,5H29V6H28zM30,5H31V6H30zM2,6H3V7H2zM4,6H5V7H4zM5,6H6V7H5zM6,6H7V7H6zM8,6H9V7H8zM12,6H13V7H12zM13,6H14V7H13zM16,6H17V7H16zM17,6H18V7H17zM18,6H19V7H18zM19,6H20V7H19zM20,6H21V7H20zM24,6H25V7H24zM26,6H27V7H26zM27,6H28V7H27zM28,6H29V7H28zM30,6H31V7H30zM2,7H3V8H2zM8,7H9V8H8zM10,7H11V8H10zM11,7H12V8H11zM12,7H13V8H12zM13,7H14V8H13zM14,7H15V8H14zM17,7H18V8H17zM18,7H19V8H18zM21,7H22V8H21zM24,7H25V8H24zM30,7H31V8H30zM2,8H3V9H2zM3,8H4V9H3zM4,8H5V9H4zM5,8H6V9H5zM6,8H7V9H6zM7,8H8V9H7zM8,8H9V9H8zM10,8H11V9H10zM12,8H13V9H12zM14,8H15V9H14zM16,8H17V9H16zM18,8H19V9H18zM20,8H21V9H20zM22,8H23V9H22zM24,8H25V9H24zM25,8H26V9H25zM26,8H27V9H26zM27,8H28V9H27zM28,8H29V9H28zM29,8H30V9H29zM30,8H31V9H30zM12,9H13V10H12zM14,9H15V10H14zM15,9H16V10H15zM17,9H18V10H17zM19,9H20V10H19zM20,9H21V10H20zM21,9H22V10H21zM2,10H3V11H2zM5,10H6V11H5zM7,10H8V11H7zM8,10H9V11H8zM10,10H11V11H10zM12,10H13V11H12zM14,10H15V11H14zM16,10H17V11H16zM18,10H19V11H18zM23,10H24V11H23zM25,10H26V11H25zM2,11H3V12H2zM5,11H6V12H5zM9,11H10V12H9zM10,11H11V12H10zM12,11H13V12H12zM13,11H14V12H13zM14,11H15V12H14zM15,11H16V12H15zM18,11H19V12H18zM19,11H20V12H19zM22,11H23V12H22zM23,11H24V12H23zM24,11H25V12H24zM25,11H26V12H25zM27,11H28V12H27zM30,11H31V12H30zM2,12H3V13H2zM4,12H5V13H4zM5,12H6V13H5zM8,12H9V13H8zM11,12H12V13H11zM13,12H14V13H13zM15,12H16V13H15zM16,12H17V13H16zM20,12H21V13H20zM21,12H22V13H21zM23,12H24V13H23zM24,12H25V13H24zM25,12H26V13H25zM27,12H28V13H27zM28,12H29V13H28zM29,12H30V13H29zM3,13H4V14H3zM4,13H5V14H4zM6,13H7V14H6zM7,13H8V14H7zM12,13H13V14H12zM13,13H14V14H13zM14,13H15V14H14zM15,13H16V14H15zM17,13H18V14H17zM20,13H21V14H20zM23,13H24V14H23zM24,13H25V14H24zM25,13H26V14H25zM28,13H29V14H28zM29,13H30V14H29zM2,14H3V15H2zM8,14H9V15H8zM10,14H11V15H10zM12,14H13V15H12zM13,14H14V15H13zM16,14H17V15H16zM17,14H18V15H17zM18,14H19V15H18zM19,14H20V15H19zM20,14H21V15H20zM21,14H22V15H21zM22,14H23V15H22zM23,14H24V15H23zM24,14H25V15H24zM25,14H26V15H25zM27,14H28V15H27zM29,14H30V15H29zM30,14H31V15H30zM3,15H4V16H3zM4,15H5V16H4zM10,15H11V16H10zM11,15H12V16H11zM12,15H13V16H12zM13,15H14V16H13zM15,15H16V16H15zM16,15H17V16H16zM21,15H22V16H21zM22,15H23V16H22zM23,15H24V16H23zM2,16H3V17H2zM3,16H4V17H3zM5,16H6V17H5zM6,16H7V17H6zM8,16H9V17H8zM9,16H10V17H9zM11,16H12V17H11zM12,16H13V17H12zM15,16H16V17H15zM16,16H17V17H16zM18,16H19V17H18zM23,16H24V17H23zM27,16H28V17H27zM28,16H29V17H28zM29,16H30V17H29zM30,16H31V17H30zM4,17H5V18H4zM6,17H7V18H6zM7,17H8V18H7zM9,17H10V18H9zM10,17H11V18H10zM11,17H12V18H11zM12,17H13V18H12zM13,17H14V18H13zM18,17H19V18H18zM19,17H20V18H19zM22,17H23V18H22zM26,17H27V18H26zM27,17H28V18H27zM29,17H30V18H29zM6,18H7V19H6zM7,18H8V19H7zM8,18H9V19H8zM9,18H10V19H9zM11,18H12V19H11zM13,18H14V19H13zM14,18H15V19H14zM15,18H16V19H15zM17,18H18V19H17zM19,18H20V19H19zM21,18H22V19H21zM23,18H24V19H23zM29,18H30V19H29zM3,19H4V20H3zM6,19H7V20H6zM7,19H8V20H7zM9,19H10V20H9zM15,19H16V20H15zM16,19H17V20H16zM18,19H19V20H18zM23,19H24V20H23zM24,19H25V20H24zM25,19H26V20H25zM27,19H28V20H27zM30,19H31V20H30zM2,20H3V21H2zM4,20H5V21H4zM5,20H6V21H5zM6,20H7V21H6zM7,20H8V21H7zM8,20H9V21H8zM9,20H10V21H9zM12,20H13V21H12zM16,20H17V21H16zM19,20H20V21H19zM20,20H21V21H20zM22,20H23V21H22zM23,20H24V21H23zM24,20H25V21H24zM26,20H27V21H26zM29,20H30V21H29zM30,20H31V21H30zM4,21H5V22H4zM12,21H13V22H12zM14,21H15V22H14zM16,21H17V22H16zM19,21H20V22H19zM20,21H21V22H20zM22,21H23V22H22zM23,21H24V22H23zM24,21H25V22H24zM26,21H27V22H26zM29,21H30V22H29zM30,21H31V22H30zM2,22H3V23H2zM6,22H7V23H6zM8,22H9V23H8zM9,22H10V23H9zM11,22H12V23H11zM12,22H13V23H12zM17,22H18V23H17zM18,22H19V23H18zM22,22H23V23H22zM23,22H24V23H23zM24,22H25V23H24zM25,22H26V23H25zM26,22H27V23H26zM28,22H29V23H28zM10,23H11V24H10zM11,23H12V24H11zM12,23H13V24H12zM16,23H17V24H16zM18,23H19V24H18zM21,23H22V24H21zM22,23H23V24H22zM26,23H27V24H26zM28,23H29V24H28zM29,23H30V24H29zM30,23H31V24H30zM2,24H3V25H2zM3,24H4V25H3zM4,24H5V25H4zM5,24H6V25H5zM6,24H7V25H6zM7,24H8V25H7zM8,24H9V25H8zM14,24H15V25H14zM18,24H19V25H18zM19,24H20V25H19zM22,24H23V25H22zM24,24H25V25H24zM26,24H27V25H26zM29,24H30V25H29zM2,25H3V26H2zM8,25H9V26H8zM10,25H11V26H10zM11,25H12V26H11zM12,25H13V26H12zM13,25H14V26H13zM14,25H15V26H14zM16,25H17V26H16zM20,25H21V26H20zM22,25H23V26H22zM26,25H27V26H26zM27,25H28V26H27zM28,25H29V26H28zM2,26H3V27H2zM4,26H5V27H4zM5,26H6V27H5zM6,26H7V27H6zM8,26H9V27H8zM12,26H13V27H12zM14,26H15V27H14zM18,26H19V27H18zM19,26H20V27H19zM22,26H23V27H22zM23,26H24V27H23zM24,26H25V27H24zM25,26H26V27H25zM26,26H27V27H26zM29,26H30V27H29zM30,26H31V27H30zM2,27H3V28H2zM4,27H5V28H4zM5,27H6V28H5zM6,27H7V28H6zM8,27H9V28H8zM10,27H11V28H10zM11,27H12V28H11zM12,27H13V28H12zM14,27H15V28H14zM21,27H22V28H21zM24,27H25V28H24zM25,27H26V28H25zM26,27H27V28H26zM27,27H28V28H27zM28,27H29V28H28zM29,27H30V28H29zM2,28H3V29H2zM4,28H5V29H4zM5,28H6V29H5zM6,28H7V29H6zM8,28H9V29H8zM12,28H13V29H12zM15,28H16V29H15zM19,28H20V29H19zM23,28H24V29H23zM26,28H27V29H26zM27,28H28V29H27zM28,28H29V29H28zM30,28H31V29H30zM2,29H3V30H2zM8,29H9V30H8zM11,29H12V30H11zM12,29H13V30H12zM18,29H19V30H18zM19,29H20V30H19zM20,29H21V30H20zM21,29H22V30H21zM22,29H23V30H22zM23,29H24V30H23zM25,29H26V30H25zM26,29H27V30H26zM29,29H30V30H29zM2,30H3V31H2zM3,30H4V31H3zM4,30H5V31H4zM5,30H6V31H5zM6,30H7V31H6zM7,30H8V31H7zM8,30H9V31H8zM10,30H11V31H10zM16,30H17V31H16zM17,30H18V31H17zM19,30H20V31H19zM20,30H21V31H20zM22,30H23V31H22zM24,30H25V31H24zM25,30H26V31H25zM26,30H27V31H26zM27,30H28V31H27zM29,30H30V31H29z" id="qr-path" fill="#000000" fill-opacity="1" fill-rule="nonzero" stroke="none"/></svg>
+        <p class="qr-label">flow.mdradvocacia.com/conheca</p>
+      </div>
+    </div>
+  </div>
+</footer>
+
+
+
+</body>
+</html>
