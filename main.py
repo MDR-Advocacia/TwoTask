@@ -224,6 +224,19 @@ async def lifespan(_: FastAPI):
             "Falha ao registrar motor dormente do Classificador no startup."
         )
 
+    # Worker de geracao de relatorios em background (substitui
+    # BackgroundTasks do FastAPI que se mostrou instavel).
+    try:
+        from app.services.classificador.report_worker import (
+            register_classificador_report_job,
+        )
+
+        register_classificador_report_job(scheduler)
+    except Exception:
+        logger.exception(
+            "Falha ao registrar report_worker do Classificador no startup."
+        )
+
     # Cron diário de cleanup dos PDFs da habilitação (Onda 3).
     # Pega resíduos: intakes já uplodados pro GED mas com pdf_path != None,
     # e também arquivos antigos (retenção) de intakes que travaram fora

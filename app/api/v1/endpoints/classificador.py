@@ -26,7 +26,6 @@ from typing import Optional
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -2428,71 +2427,10 @@ def update_analise_estrategica(
     }
 
 
-def _generate_report_background(relatorio_id: int, lote_id: int, formato: str) -> None:
-    """Worker em background: gera o arquivo (XLSX ou PDF) e atualiza o
-    registro pra PRONTO ou FALHOU.
-
-    Roda em sessao DB propria (BackgroundTasks nao compartilha session do
-    request). Suporta carteiras grandes (5000-7000 processos) sem
-    travar o request HTTP.
-    """
-    from datetime import datetime as _dt
-    from app.core.database import SessionLocal
-    from app.models.classificador import (
-        REL_FORMAT_XLSX,
-        REL_STATUS_FALHOU,
-        REL_STATUS_PRONTO,
-    )
-
-    db = SessionLocal()
-    try:
-        rel = (
-            db.query(ClassificadorRelatorio)
-            .filter(ClassificadorRelatorio.id == relatorio_id)
-            .first()
-        )
-        if rel is None:
-            logger.error("Classificador.report: relatorio #%s sumiu antes do worker rodar", relatorio_id)
-            return
-
-        try:
-            logger.info(
-                "Classificador.report: iniciando geracao bg relatorio=%s lote=%s formato=%s",
-                relatorio_id, lote_id, formato,
-            )
-            data = build_report_data(db, lote_id)
-            if formato == REL_FORMAT_XLSX:
-                file_bytes = generate_xlsx_report(data)
-                ext = "xlsx"
-            else:
-                file_bytes = generate_pdf_report(data)
-                ext = "pdf"
-            stored = save_report(file_bytes, extension=ext)
-            rel.status = REL_STATUS_PRONTO
-            rel.file_path = stored.relative_path
-            rel.file_bytes = stored.size_bytes
-            rel.file_sha256 = stored.sha256
-            rel.finished_at = _dt.utcnow()
-            rel.params_json = {
-                "totals": data.get("kpis"),
-                "qtd_processos": data["kpis"].get("total_processos"),
-            }
-            db.commit()
-            logger.info(
-                "Classificador.report: gerado relatorio=%s lote=%s formato=%s bytes=%d",
-                relatorio_id, lote_id, formato, rel.file_bytes or 0,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception(
-                "Classificador.report: falha ao gerar %s lote=%s relatorio=%s",
-                formato, lote_id, relatorio_id,
-            )
-            rel.status = REL_STATUS_FALHOU
-            rel.error_message = f"{type(exc).__name__}: {exc}"[:1000]
-            rel.finished_at = _dt.utcnow()
-            db.commit()
-    finally:
-        db.close()
+# Worker de geracao de relatorios moveu pra
+# `app/services/classificador/report_worker.py` (APScheduler tick 10s)
+# — substituiu o BackgroundTasks que se mostrou instavel em producao
+# (tasks ficavam orfas quando o worker do gunicorn era reciclado).
 
 
 @router.post(
@@ -2502,17 +2440,17 @@ def _generate_report_background(relatorio_id: int, lote_id: int, formato: str) -
 def create_relatorio(
     lote_id: int,
     payload: RelatorioCreatePayload,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: LegalOneUser = Depends(auth_security.get_current_user),
 ):
-    """Gera relatorio XLSX ou PDF em BACKGROUND.
+    """Enfileira geraçao de relatório XLSX ou PDF.
 
-    Retorna 201 IMEDIATAMENTE com status=PROCESSANDO. Worker processa
-    em background (FastAPI BackgroundTasks) e atualiza pra PRONTO/FALHOU.
+    Retorna 201 IMEDIATAMENTE com status=PROCESSANDO. O worker APScheduler
+    `classificador_report_worker` (tick 10s) pega o relatorio e gera em
+    background — atualiza status pra PRONTO ou FALHOU.
 
-    Frontend deve fazer polling em GET /lotes/{id}/relatorios pra detectar
-    quando o status muda.
+    Frontend faz polling em GET /lotes/{id}/relatorios pra detectar
+    transiçao de status (UI ja' implementa isso).
 
     Suporta carteiras grandes (5000-7000 processos) sem timeout de HTTP.
     """
@@ -2547,15 +2485,6 @@ def create_relatorio(
     db.commit()
     db.refresh(rel)
 
-    # Dispara geracao em background — request retorna ja imediato.
-    # O worker abre sessao DB propria pra evitar conflito.
-    background_tasks.add_task(
-        _generate_report_background,
-        relatorio_id=rel.id,
-        lote_id=lote_id,
-        formato=formato,
-    )
-
     return {
         "id": rel.id,
         "lote_id": rel.lote_id,
@@ -2566,7 +2495,7 @@ def create_relatorio(
         "requested_at": rel.requested_at.isoformat() if rel.requested_at else None,
         "started_at": rel.started_at.isoformat() if rel.started_at else None,
         "finished_at": None,
-        "message": "Geracao iniciada em background. Poll GET /lotes/{id}/relatorios pra status.",
+        "message": "Enfileirado. Worker pega em ate 10s. Poll GET /lotes/{id}/relatorios pra status.",
     }
 
 

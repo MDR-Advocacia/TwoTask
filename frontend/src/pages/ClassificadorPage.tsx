@@ -668,6 +668,14 @@ function LotesHistoricoTable({
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   const handleClassify = async (lote: ClassificadorLoteSummary) => {
+    // Pendentes = capturados - classificados - erro (processos em
+    // PRONTO_PARA_CLASSIFICAR aguardando IA)
+    const pendentes = Math.max(
+      0,
+      (lote.total_processos_capturados || 0)
+        - (lote.total_processos_classificados || 0)
+        - (lote.total_processos_com_erro || 0),
+    );
     const temErros = (lote.total_processos_com_erro || 0) > 0;
     const includeErrors = temErros && confirm(
       `Lote #${lote.id} tem ${lote.total_processos_com_erro} processo${lote.total_processos_com_erro > 1 ? "s" : ""} com erro de classificacao.\n\n` +
@@ -677,7 +685,7 @@ function LotesHistoricoTable({
 
     if (!confirm(
       `Classificar lote #${lote.id} (${lote.nome})?\n\n` +
-      `Vai submeter ${lote.total_processos_capturados}${includeErrors ? ` + ${lote.total_processos_com_erro} em erro` : ""} processos pra Sonnet ` +
+      `Vai submeter ${pendentes} pendente${pendentes === 1 ? "" : "s"}${includeErrors ? ` + ${lote.total_processos_com_erro} em erro` : ""} processo${pendentes === 1 && !includeErrors ? "" : "s"} pra Sonnet ` +
       `via Anthropic Batches API.\n\n` +
       `Operacao async — pode levar minutos a horas. Worker do servidor ` +
       `acompanha automaticamente.`,
@@ -936,17 +944,31 @@ function LotesHistoricoTable({
                               onClick={() => handleClassify(lote)}
                               disabled={
                                 classifyingId === lote.id ||
-                                (lote.total_processos_capturados === 0 && lote.total_processos_com_erro === 0) ||
+                                (
+                                  (lote.total_processos_capturados || 0)
+                                    - (lote.total_processos_classificados || 0)
+                                    - (lote.total_processos_com_erro || 0) <= 0
+                                  && (lote.total_processos_com_erro || 0) === 0
+                                ) ||
                                 lote.status === "CLASSIFICANDO"
                               }
                               title={
-                                (lote.total_processos_capturados === 0 && lote.total_processos_com_erro === 0)
-                                  ? "Suba PDFs antes de classificar"
-                                  : lote.status === "CLASSIFICANDO"
-                                    ? "Lote em classificacao em curso"
-                                    : lote.total_processos_com_erro > 0
-                                      ? `Classificar ${lote.total_processos_capturados} + ${lote.total_processos_com_erro} em erro (opcional)`
-                                      : `Classificar ${lote.total_processos_capturados} processos via Sonnet`
+                                (() => {
+                                  const pendentes = Math.max(
+                                    0,
+                                    (lote.total_processos_capturados || 0)
+                                      - (lote.total_processos_classificados || 0)
+                                      - (lote.total_processos_com_erro || 0),
+                                  );
+                                  if (pendentes === 0 && (lote.total_processos_com_erro || 0) === 0) {
+                                    return "Sem pendentes pra classificar (tudo CLASSIFICADO)";
+                                  }
+                                  if (lote.status === "CLASSIFICANDO") return "Lote em classificacao em curso";
+                                  if (lote.total_processos_com_erro > 0) {
+                                    return `Classificar ${pendentes} pendente${pendentes === 1 ? "" : "s"} + ${lote.total_processos_com_erro} em erro (opcional)`;
+                                  }
+                                  return `Classificar ${pendentes} processo${pendentes === 1 ? "" : "s"} pendente${pendentes === 1 ? "" : "s"} via Sonnet`;
+                                })()
                               }
                             >
                               {classifyingId === lote.id ? (
