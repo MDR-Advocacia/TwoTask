@@ -26,6 +26,7 @@ from typing import Optional
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -2190,34 +2191,187 @@ class RelatorioCreatePayload(BaseModel):
     formato: str = Field(default="XLSX", description="XLSX (Fase 4 Round 1) ou PDF (Round 2)")
 
 
+@router.post("/lotes/{lote_id}/gerar-analise-estrategica")
+def gerar_analise_estrategica(
+    lote_id: int,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth_security.get_current_user),
+):
+    """Gera analise estrategica executiva da carteira via Sonnet (sincrono).
+
+    Chamada DIRETA Messages API (nao batch) — operador espera ~10-30s.
+    Grava o texto em `lote.analise_estrategica_carteira` (sobrescreve se
+    ja tinha). Pode ser regerada quantas vezes precisar.
+
+    Texto gerado: ~400 palavras, tom executivo BCG/McKinsey, estrutura
+    fixa em 4 paragrafos (Visao Geral, Pontos Fortes, Oportunidades,
+    Recomendacoes). Tonalidade FAVORAVEL ao escritorio MDR — reframe
+    sistematico de metricas neutras como pontos de valor agregado.
+    """
+    from app.services.classificador.analise_carteira import (
+        generate_analise_carteira,
+    )
+
+    lote = db.query(ClassificadorLote).filter(ClassificadorLote.id == lote_id).first()
+    if lote is None:
+        raise HTTPException(status_code=404, detail=f"Lote #{lote_id} nao encontrado.")
+
+    try:
+        texto = generate_analise_carteira(db, lote_id, save_to_lote=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Falha ao gerar analise estrategica lote=%s", lote_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao gerar analise: {type(exc).__name__}: {exc}",
+        )
+
+    return {
+        "lote_id": lote_id,
+        "analise_estrategica": texto,
+        "tamanho_chars": len(texto),
+    }
+
+
+@router.patch("/lotes/{lote_id}/analise-estrategica")
+def update_analise_estrategica(
+    lote_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth_security.get_current_user),
+):
+    """Edita manualmente o texto da analise estrategica da carteira.
+
+    Util pra refinar o output da IA antes de exportar pro PDF/XLSX.
+    Operador pode reescrever, ajustar tom, adicionar paragrafos custom.
+
+    Body: {"analise_estrategica": "texto markdown..."}
+    Aceita string vazia "" pra limpar.
+    """
+    lote = db.query(ClassificadorLote).filter(ClassificadorLote.id == lote_id).first()
+    if lote is None:
+        raise HTTPException(status_code=404, detail=f"Lote #{lote_id} nao encontrado.")
+
+    novo = payload.get("analise_estrategica")
+    if novo is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Campo 'analise_estrategica' e' obrigatorio no body.",
+        )
+    if not isinstance(novo, str):
+        raise HTTPException(
+            status_code=400,
+            detail="Campo 'analise_estrategica' deve ser string.",
+        )
+    if len(novo) > 20000:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Texto muito longo ({len(novo)} chars). Maximo 20.000.",
+        )
+
+    lote.analise_estrategica_carteira = novo.strip() or None
+    db.commit()
+
+    return {
+        "lote_id": lote_id,
+        "analise_estrategica": lote.analise_estrategica_carteira,
+        "tamanho_chars": len(lote.analise_estrategica_carteira or ""),
+    }
+
+
 @router.post(
     "/lotes/{lote_id}/relatorios",
     status_code=status.HTTP_201_CREATED,
 )
+def _generate_report_background(relatorio_id: int, lote_id: int, formato: str) -> None:
+    """Worker em background: gera o arquivo (XLSX ou PDF) e atualiza o
+    registro pra PRONTO ou FALHOU.
+
+    Roda em sessao DB propria (BackgroundTasks nao compartilha session do
+    request). Suporta carteiras grandes (5000-7000 processos) sem
+    travar o request HTTP.
+    """
+    from datetime import datetime as _dt
+    from app.core.database import SessionLocal
+    from app.models.classificador import (
+        REL_FORMAT_XLSX,
+        REL_STATUS_FALHOU,
+        REL_STATUS_PRONTO,
+    )
+
+    db = SessionLocal()
+    try:
+        rel = (
+            db.query(ClassificadorRelatorio)
+            .filter(ClassificadorRelatorio.id == relatorio_id)
+            .first()
+        )
+        if rel is None:
+            logger.error("Classificador.report: relatorio #%s sumiu antes do worker rodar", relatorio_id)
+            return
+
+        try:
+            logger.info(
+                "Classificador.report: iniciando geracao bg relatorio=%s lote=%s formato=%s",
+                relatorio_id, lote_id, formato,
+            )
+            data = build_report_data(db, lote_id)
+            if formato == REL_FORMAT_XLSX:
+                file_bytes = generate_xlsx_report(data)
+                ext = "xlsx"
+            else:
+                file_bytes = generate_pdf_report(data)
+                ext = "pdf"
+            stored = save_report(file_bytes, extension=ext)
+            rel.status = REL_STATUS_PRONTO
+            rel.file_path = stored.relative_path
+            rel.file_bytes = stored.size_bytes
+            rel.file_sha256 = stored.sha256
+            rel.finished_at = _dt.utcnow()
+            rel.params_json = {
+                "totals": data.get("kpis"),
+                "qtd_processos": data["kpis"].get("total_processos"),
+            }
+            db.commit()
+            logger.info(
+                "Classificador.report: gerado relatorio=%s lote=%s formato=%s bytes=%d",
+                relatorio_id, lote_id, formato, rel.file_bytes or 0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Classificador.report: falha ao gerar %s lote=%s relatorio=%s",
+                formato, lote_id, relatorio_id,
+            )
+            rel.status = REL_STATUS_FALHOU
+            rel.error_message = f"{type(exc).__name__}: {exc}"[:1000]
+            rel.finished_at = _dt.utcnow()
+            db.commit()
+    finally:
+        db.close()
+
+
 def create_relatorio(
     lote_id: int,
     payload: RelatorioCreatePayload,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: LegalOneUser = Depends(auth_security.get_current_user),
 ):
-    """Gera relatorio XLSX (sincrono) ou PDF (Round 2 — ainda stub).
+    """Gera relatorio XLSX ou PDF em BACKGROUND.
 
-    Fluxo:
-    1. Valida lote
-    2. Monta payload via report_data.build_report_data
-    3. Gera xlsx em memoria (openpyxl)
-    4. Salva no volume via report_storage
-    5. Cria registro em classificador_relatorio (status=PRONTO)
+    Retorna 201 IMEDIATAMENTE com status=PROCESSANDO. Worker processa
+    em background (FastAPI BackgroundTasks) e atualiza pra PRONTO/FALHOU.
 
-    XLSX <5s pra carteira <10k processos. Acima disso, mover pra async
-    (worker APScheduler). Atualmente sincrono.
+    Frontend deve fazer polling em GET /lotes/{id}/relatorios pra detectar
+    quando o status muda.
+
+    Suporta carteiras grandes (5000-7000 processos) sem timeout de HTTP.
     """
     from datetime import datetime as _dt
     from app.models.classificador import (
         REL_FORMAT_PDF,
         REL_FORMAT_XLSX,
-        REL_STATUS_FALHOU,
-        REL_STATUS_PRONTO,
         REL_STATUS_PROCESSANDO,
     )
 
@@ -2232,7 +2386,6 @@ def create_relatorio(
             detail=f"Formato invalido: {formato!r}. Use XLSX ou PDF.",
         )
 
-    # 1) Cria registro em PROCESSANDO
     now = _dt.utcnow()
     rel = ClassificadorRelatorio(
         lote_id=lote_id,
@@ -2243,54 +2396,29 @@ def create_relatorio(
         started_at=now,
     )
     db.add(rel)
-    db.flush()
+    db.commit()
+    db.refresh(rel)
 
-    try:
-        # 2) Monta payload agregado
-        data = build_report_data(db, lote_id)
-        # 3) Gera arquivo conforme formato
-        if formato == REL_FORMAT_XLSX:
-            file_bytes = generate_xlsx_report(data)
-            ext = "xlsx"
-        else:
-            # REL_FORMAT_PDF
-            file_bytes = generate_pdf_report(data)
-            ext = "pdf"
-        # 4) Salva no volume
-        stored = save_report(file_bytes, extension=ext)
-        # 5) Persiste
-        rel.status = REL_STATUS_PRONTO
-        rel.file_path = stored.relative_path
-        rel.file_bytes = stored.size_bytes
-        rel.file_sha256 = stored.sha256
-        rel.finished_at = _dt.utcnow()
-        rel.params_json = {
-            "totals": data.get("kpis"),
-            "qtd_processos": data["kpis"].get("total_processos"),
-        }
-        db.commit()
-        db.refresh(rel)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Classificador.report: falha ao gerar %s lote=%s", formato, lote_id)
-        rel.status = REL_STATUS_FALHOU
-        rel.error_message = f"{type(exc).__name__}: {exc}"
-        rel.finished_at = _dt.utcnow()
-        db.commit()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro ao gerar relatorio: {type(exc).__name__}: {exc}",
-        )
+    # Dispara geracao em background — request retorna ja imediato.
+    # O worker abre sessao DB propria pra evitar conflito.
+    background_tasks.add_task(
+        _generate_report_background,
+        relatorio_id=rel.id,
+        lote_id=lote_id,
+        formato=formato,
+    )
 
     return {
         "id": rel.id,
         "lote_id": rel.lote_id,
         "formato": rel.formato,
-        "status": rel.status,
-        "file_bytes": rel.file_bytes,
-        "file_sha256": rel.file_sha256,
+        "status": rel.status,  # PROCESSANDO
+        "file_bytes": None,
+        "file_sha256": None,
         "requested_at": rel.requested_at.isoformat() if rel.requested_at else None,
         "started_at": rel.started_at.isoformat() if rel.started_at else None,
-        "finished_at": rel.finished_at.isoformat() if rel.finished_at else None,
+        "finished_at": None,
+        "message": "Geracao iniciada em background. Poll GET /lotes/{id}/relatorios pra status.",
     }
 
 

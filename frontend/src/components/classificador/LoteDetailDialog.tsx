@@ -257,6 +257,20 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
     return () => clearInterval(timer);
   }, [open, hasActiveBatch, tab, loadBatches]);
 
+  // Auto-refresh quando ha relatorio em PROCESSANDO (background task ainda rodando)
+  const hasProcessingRelatorio = useMemo(
+    () => relatorios.some(r => r.status === "PROCESSANDO"),
+    [relatorios],
+  );
+
+  useEffect(() => {
+    if (!open || !hasProcessingRelatorio || tab !== "relatorios") return;
+    const timer = setInterval(() => {
+      loadRelatorios();
+    }, 5000); // 5s — relatorio costuma terminar mais rapido que batch IA
+    return () => clearInterval(timer);
+  }, [open, hasProcessingRelatorio, tab, loadRelatorios]);
+
   const handleRefreshBatch = async (batchId: number) => {
     setRefreshingBatch(batchId);
     try {

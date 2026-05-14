@@ -12,13 +12,16 @@ import {
   Legend, Pie, PieChart, ResponsiveContainer,
   Tooltip, XAxis, YAxis,
 } from "recharts";
-import { Loader2, RefreshCw, Sparkles } from "lucide-react";
+import { Loader2, RefreshCw, Sparkles, Pencil, Check, X, Wand2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import {
   ClassificadorDashboardData,
   fetchClassificadorDashboardData,
+  gerarAnaliseEstrategica,
+  updateAnaliseEstrategica,
 } from "@/services/api";
 
 
@@ -106,6 +109,12 @@ export default function LoteVisaoTab({ loteId, active }: Props) {
   const [data, setData] = useState<ClassificadorDashboardData | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // Analise estrategica — gerar/editar inline
+  const [gerandoAnalise, setGerandoAnalise] = useState(false);
+  const [editandoAnalise, setEditandoAnalise] = useState(false);
+  const [analiseDraft, setAnaliseDraft] = useState("");
+  const [salvandoAnalise, setSalvandoAnalise] = useState(false);
+
   const load = async () => {
     if (!loteId) return;
     setLoading(true);
@@ -121,6 +130,61 @@ export default function LoteVisaoTab({ loteId, active }: Props) {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleGerarAnalise = async () => {
+    if (!loteId) return;
+    if (data?.lote.analise_estrategica_carteira) {
+      if (!confirm(
+        "Ja existe analise estrategica neste lote. Regerar vai SOBRESCREVER o texto atual (~R$ 0,30 por geração via Sonnet). Continuar?"
+      )) return;
+    }
+    setGerandoAnalise(true);
+    try {
+      const r = await gerarAnaliseEstrategica(loteId);
+      toast({
+        title: "Análise gerada",
+        description: `${r.tamanho_chars} caracteres. Reload do dashboard...`,
+      });
+      await load();
+    } catch (err) {
+      toast({
+        title: "Falha ao gerar análise",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setGerandoAnalise(false);
+    }
+  };
+
+  const handleStartEditAnalise = () => {
+    setAnaliseDraft(data?.lote.analise_estrategica_carteira || "");
+    setEditandoAnalise(true);
+  };
+
+  const handleSaveAnalise = async () => {
+    if (!loteId) return;
+    setSalvandoAnalise(true);
+    try {
+      await updateAnaliseEstrategica(loteId, analiseDraft);
+      toast({ title: "Análise salva" });
+      setEditandoAnalise(false);
+      await load();
+    } catch (err) {
+      toast({
+        title: "Falha ao salvar",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setSalvandoAnalise(false);
+    }
+  };
+
+  const handleCancelEditAnalise = () => {
+    setEditandoAnalise(false);
+    setAnaliseDraft("");
   };
 
   useEffect(() => {
@@ -218,16 +282,99 @@ export default function LoteVisaoTab({ loteId, active }: Props) {
         />
       </div>
 
-      {/* ─── Análise estratégica da carteira (se houver) ─── */}
-      {data.lote.analise_estrategica_carteira && (
-        <div className="rounded-md border bg-muted/30 p-3 flex gap-2">
-          <Sparkles className="h-4 w-4 text-primary shrink-0 mt-0.5" />
-          <div className="text-xs leading-relaxed">
-            <div className="font-medium mb-1">Síntese da carteira</div>
-            <div className="text-muted-foreground">{data.lote.analise_estrategica_carteira}</div>
+      {/* ─── Análise estratégica da carteira ─── */}
+      <div className="rounded-md border bg-muted/30 p-3">
+        <div className="flex items-start justify-between gap-2 mb-2">
+          <div className="flex items-center gap-1.5">
+            <Sparkles className="h-4 w-4 text-primary" />
+            <div className="text-xs font-medium">Análise estratégica da carteira</div>
           </div>
+          {!editandoAnalise && (
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-[11px]"
+                onClick={handleGerarAnalise}
+                disabled={gerandoAnalise}
+                title={
+                  data.lote.analise_estrategica_carteira
+                    ? "Regerar análise via Sonnet (sobrescreve)"
+                    : "Gerar análise via Sonnet (~10-30s)"
+                }
+              >
+                {gerandoAnalise ? (
+                  <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                ) : (
+                  <Wand2 className="h-3 w-3 mr-1" />
+                )}
+                {data.lote.analise_estrategica_carteira ? "Regerar" : "Gerar análise IA"}
+              </Button>
+              {data.lote.analise_estrategica_carteira && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-[11px]"
+                  onClick={handleStartEditAnalise}
+                  title="Editar manualmente"
+                >
+                  <Pencil className="h-3 w-3 mr-1" />
+                  Editar
+                </Button>
+              )}
+            </div>
+          )}
         </div>
-      )}
+        {editandoAnalise ? (
+          <div className="space-y-2">
+            <Textarea
+              value={analiseDraft}
+              onChange={e => setAnaliseDraft(e.target.value)}
+              rows={12}
+              className="text-xs font-mono leading-relaxed"
+              placeholder="Cole ou digite a análise estratégica..."
+            />
+            <div className="flex items-center justify-between">
+              <div className="text-[10px] text-muted-foreground">
+                {analiseDraft.length} caracteres · markdown light suportado (**negrito**, bullets `-`)
+              </div>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-[11px]"
+                  onClick={handleCancelEditAnalise}
+                  disabled={salvandoAnalise}
+                >
+                  <X className="h-3 w-3 mr-1" />
+                  Cancelar
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-7 px-2 text-[11px]"
+                  onClick={handleSaveAnalise}
+                  disabled={salvandoAnalise}
+                >
+                  {salvandoAnalise ? (
+                    <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                  ) : (
+                    <Check className="h-3 w-3 mr-1" />
+                  )}
+                  Salvar
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : data.lote.analise_estrategica_carteira ? (
+          <div className="text-xs leading-relaxed text-foreground whitespace-pre-wrap">
+            {data.lote.analise_estrategica_carteira}
+          </div>
+        ) : (
+          <div className="text-xs italic text-muted-foreground">
+            Nenhuma análise estratégica gerada ainda. Clique em "Gerar análise IA" pra criar.
+          </div>
+        )}
+      </div>
 
       {/* ─── Grid de gráficos ─── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">

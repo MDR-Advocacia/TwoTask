@@ -2455,6 +2455,39 @@ export async function reExtractClassificadorPartes(
   return expectJson(res);
 }
 
+export async function gerarAnaliseEstrategica(
+  loteId: number,
+): Promise<{
+  lote_id: number;
+  analise_estrategica: string;
+  tamanho_chars: number;
+}> {
+  const res = await apiFetch(
+    `/api/v1/classificador/lotes/${loteId}/gerar-analise-estrategica`,
+    { method: "POST" },
+  );
+  return expectJson(res);
+}
+
+export async function updateAnaliseEstrategica(
+  loteId: number,
+  texto: string,
+): Promise<{
+  lote_id: number;
+  analise_estrategica: string | null;
+  tamanho_chars: number;
+}> {
+  const res = await apiFetch(
+    `/api/v1/classificador/lotes/${loteId}/analise-estrategica`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ analise_estrategica: texto }),
+    },
+  );
+  return expectJson(res);
+}
+
 export async function fetchClassificadorBatches(
   loteId: number,
 ): Promise<{ total: number; items: ClassificadorBatchSummary[] }> {
