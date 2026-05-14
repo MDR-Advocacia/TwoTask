@@ -328,6 +328,8 @@ function ImportFromPiCard({ onCreated }: { onCreated: (lote: ClassificadorLoteSu
   // Modo UPSERT: se selecionou um candidato pra atualizar
   const [mergeLoteId, setMergeLoteId] = useState<number | null>(null);
   const [resetClassif, setResetClassif] = useState(false);
+  // Default TRUE — modo incremental, importa so' os intakes novos
+  const [onlyNew, setOnlyNew] = useState(true);
 
   const filtros = useMemo(() => ({
     data_inicio: dataInicio || null,
@@ -367,11 +369,16 @@ function ImportFromPiCard({ onCreated }: { onCreated: (lote: ClassificadorLoteSu
         filtros,
         merge_into_lote_id: mergeLoteId ?? undefined,
         reset_classification: mergeLoteId !== null ? resetClassif : undefined,
+        only_new: mergeLoteId !== null ? onlyNew : undefined,
       });
       if (result.merge_stats) {
+        const ign = result.merge_stats.ignorados_ja_no_lote || 0;
+        const desc = result.merge_stats.only_new
+          ? `${result.merge_stats.criados} novo${result.merge_stats.criados === 1 ? "" : "s"} importado${result.merge_stats.criados === 1 ? "" : "s"} (${ign} ignorado${ign === 1 ? "" : "s"} — já no lote).`
+          : `${result.merge_stats.atualizados} atualizado${result.merge_stats.atualizados === 1 ? "" : "s"} · ${result.merge_stats.criados} novo${result.merge_stats.criados === 1 ? "" : "s"}${result.merge_stats.reclassificar ? " · reclassificando" : ""}.`;
         toast({
           title: `Lote #${result.lote.id} atualizado`,
-          description: `${result.merge_stats.atualizados} atualizados · ${result.merge_stats.criados} novos${result.merge_stats.reclassificar ? " · reclassificando" : ""}.`,
+          description: desc,
         });
       } else {
         toast({
@@ -388,6 +395,7 @@ function ImportFromPiCard({ onCreated }: { onCreated: (lote: ClassificadorLoteSu
       setPreview(null);
       setMergeLoteId(null);
       setResetClassif(false);
+      setOnlyNew(true);
       onCreated(result.lote);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -569,17 +577,43 @@ function ImportFromPiCard({ onCreated }: { onCreated: (lote: ClassificadorLoteSu
                   </div>
 
                   {mergeLoteId !== null && (
-                    <label className="flex items-center gap-2 text-amber-900 mt-2">
-                      <input
-                        type="checkbox"
-                        checked={resetClassif}
-                        onChange={e => setResetClassif(e.target.checked)}
-                      />
-                      <span>
-                        Reclassificar via IA após atualizar
-                        <span className="text-amber-700"> (limpa categoria/valor/pedidos atuais e marca pra rodar Sonnet de novo)</span>
-                      </span>
-                    </label>
+                    <div className="space-y-2 mt-2">
+                      <label className="flex items-start gap-2 text-amber-900">
+                        <input
+                          type="checkbox"
+                          checked={onlyNew}
+                          onChange={e => {
+                            setOnlyNew(e.target.checked);
+                            // Se marcou "só novos", não faz sentido reclassificar
+                            if (e.target.checked) setResetClassif(false);
+                          }}
+                          className="mt-0.5"
+                        />
+                        <span>
+                          <strong>Apenas intakes novos</strong> (recomendado)
+                          <div className="text-amber-700 text-[11px]">
+                            Importa só os intakes que ainda não estão neste lote.
+                            Preserva os processos antigos sem mexer (não re-atualiza
+                            capa/integra/classificação). Ideal quando só entraram
+                            poucos intakes desde a última importação.
+                          </div>
+                        </span>
+                      </label>
+                      {!onlyNew && (
+                        <label className="flex items-start gap-2 text-amber-900">
+                          <input
+                            type="checkbox"
+                            checked={resetClassif}
+                            onChange={e => setResetClassif(e.target.checked)}
+                            className="mt-0.5"
+                          />
+                          <span>
+                            Reclassificar via IA após atualizar
+                            <span className="text-amber-700"> (limpa categoria/valor/pedidos atuais e marca pra rodar Sonnet de novo)</span>
+                          </span>
+                        </label>
+                      )}
+                    </div>
                   )}
                 </div>
               )}

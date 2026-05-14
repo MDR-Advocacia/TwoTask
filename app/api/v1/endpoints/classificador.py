@@ -410,14 +410,22 @@ class FromPrazosIniciaisPayload(BaseModel):
     cliente_nome: Optional[str] = Field(default=None, max_length=255)
     descricao: Optional[str] = None
     filtros: FromPrazosIniciaisFiltros
-    # Modo UPSERT: se informado, atualiza esse lote existente em vez de criar
+    # Modo UPSERT/incremental: se informado, atualiza esse lote existente em vez de criar
     merge_into_lote_id: Optional[int] = Field(
         default=None,
-        description="Se preenchido, atualiza esse lote em vez de criar novo (UPSERT por source_intake_id)",
+        description="Se preenchido, atualiza esse lote em vez de criar novo",
     )
     reset_classification: bool = Field(
         default=False,
         description="Quando merge: limpa campos da IA e marca PRONTO_PARA_CLASSIFICAR",
+    )
+    only_new: bool = Field(
+        default=True,
+        description=(
+            "Quando merge: TRUE (default) so' importa intakes ainda nao "
+            "no lote (incremental — preserva os antigos sem mexer). FALSE "
+            "faz UPSERT classico (atualiza existentes + cria novos)."
+        ),
     )
 
 
@@ -591,6 +599,7 @@ def create_lote_from_prazos_iniciais_endpoint(
             created_by_user_id=current_user.id if current_user else None,
             merge_into_lote_id=payload.merge_into_lote_id,
             reset_classification=payload.reset_classification,
+            only_new=payload.only_new,
         )
     except IntakeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

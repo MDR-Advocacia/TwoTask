@@ -1905,13 +1905,16 @@ export async function createClassificadorLoteFromPi(payload: {
   filtros: ClassificadorFromPiFiltros;
   merge_into_lote_id?: number;
   reset_classification?: boolean;
+  only_new?: boolean;
 }): Promise<{
   lote: ClassificadorLoteSummary;
   merge_stats?: {
     atualizados: number;
     criados: number;
+    ignorados_ja_no_lote?: number;
     total_no_lote: number;
     reclassificar: boolean;
+    only_new?: boolean;
   };
 }> {
   const res = await apiFetch(

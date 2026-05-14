@@ -308,23 +308,32 @@ def merge_into_existing_lote(
     lote_id: int,
     intakes: list[PrazoInicialIntake],
     reset_classification: bool = False,
+    only_new: bool = True,
 ) -> tuple[ClassificadorLote, dict]:
-    """UPSERT: atualiza processos existentes ou cria novos no lote alvo.
+    """UPSERT (ou INSERT-only) de intakes num lote existente.
 
     Pra cada intake nos filtros:
-    - Se ja existe `ClassificadorProcesso` com (lote_id, source_intake_id) →
-      ATUALIZA campos de identificacao (cnj_number, lawsuit_id, external_id)
+    - Se ja existe `ClassificadorProcesso` com (lote_id, source_intake_id):
+      * `only_new=True` (default): IGNORA (incremental — preserva
+        processos antigos sem mexer)
+      * `only_new=False`: ATUALIZA campos (cnj/capa/integra/partes) —
+        comportamento UPSERT classico
     - Se nao existe → CRIA novo `ClassificadorProcesso` no lote
 
+    `only_new=True` resolve o caso comum: operador ja importou 717
+    intakes, entraram +8 novos no PI, agora quer pegar SO' os 8 sem
+    tocar nos 717 antigos. Default escolhido porque e' o comportamento
+    intuitivo do "aproveitar intakes".
+
     Processos do lote que NAO aparecem mais nos intakes ficam intactos
-    (operador apaga manualmente se quiser — nao deleta automaticamente
-    pra preservar review humano).
+    (operador apaga manualmente se quiser).
 
-    Por default PRESERVA classificacao IA existente (categoria, polo,
-    valor_estimado, etc.). Se `reset_classification=True`, limpa esses
-    campos e marca status=PRONTO_PARA_CLASSIFICAR pra reclassificar.
+    Por default PRESERVA classificacao IA existente. Se
+    `reset_classification=True` (so' faz sentido com `only_new=False`),
+    limpa esses campos e marca status=PRONTO_PARA_CLASSIFICAR pra
+    reclassificar nos processos atualizados.
 
-    Retorna (lote, stats) com counts de atualizados/criados/ignorados.
+    Retorna (lote, stats) com counts.
     """
     lote = db.query(ClassificadorLote).filter(ClassificadorLote.id == lote_id).first()
     if lote is None:
@@ -349,10 +358,17 @@ def merge_into_existing_lote(
     atualizados = 0
     criados = 0
     capturados_novos = 0
+    ignorados_ja_no_lote = 0  # so' incrementa quando only_new=True
 
     for intake_id, intake in intake_by_id.items():
         existing = existing_by_intake.get(intake_id)
         has_data = bool(intake.capa_json or intake.integra_json)
+        if existing and only_new:
+            # Modo incremental — ja existe no lote, NAO mexe (preserva
+            # classificacao IA + dados do intake antigo). Operador pode
+            # rodar com only_new=False se quiser forcar re-import.
+            ignorados_ja_no_lote += 1
+            continue
         if existing:
             # UPSERT: atualiza campos de identificacao + capa+integra do PI
             existing.cnj_number = intake.cnj_number
@@ -436,14 +452,17 @@ def merge_into_existing_lote(
     stats = {
         "atualizados": atualizados,
         "criados": criados,
+        "ignorados_ja_no_lote": ignorados_ja_no_lote,
         "capturados_novos": capturados_novos,
         "total_no_lote": lote.total_processos,
         "reclassificar": reset_classification,
+        "only_new": only_new,
     }
     logger.info(
-        "Classificador: lote #%s atualizado via PRAZOS_INICIAIS (UPSERT: "
-        "+%d novos, ~%d atualizados, reset_classification=%s)",
-        lote_id, criados, atualizados, reset_classification,
+        "Classificador: lote #%s merge via PRAZOS_INICIAIS (only_new=%s: "
+        "+%d novos, ~%d atualizados, %d ignorados, reset_classification=%s)",
+        lote_id, only_new, criados, atualizados, ignorados_ja_no_lote,
+        reset_classification,
     )
     return lote, stats
 
@@ -462,18 +481,21 @@ def create_lote_from_prazos_iniciais(
     created_by_user_id: Optional[int],
     merge_into_lote_id: Optional[int] = None,
     reset_classification: bool = False,
+    only_new: bool = True,
 ) -> tuple[ClassificadorLote, Optional[dict]]:
-    """Cria lote OU atualiza existente (UPSERT) espelhando intakes do PI.
+    """Cria lote OU atualiza existente espelhando intakes do PI.
 
     Se `merge_into_lote_id` informado → atualiza lote existente via
-    `merge_into_existing_lote`. Identifica processos por
-    (lote_id, source_intake_id). Retorna (lote, stats) com counts.
+    `merge_into_existing_lote`. Comportamento depende de `only_new`:
+    - `only_new=True` (default): SO' importa intakes ainda nao no lote
+      (modo incremental — preserva os 717 antigos sem mexer)
+    - `only_new=False`: UPSERT classico — atualiza existentes + cria novos
 
     Se NAO informado → cria lote novo (snapshot). Retorna (lote, None).
 
     `reset_classification=True` limpa os campos da IA dos processos
-    atualizados e marca PRONTO_PARA_CLASSIFICAR (usar quando dados do PI
-    mudaram significativamente).
+    atualizados e marca PRONTO_PARA_CLASSIFICAR. Implicitamente requer
+    `only_new=False`, pois processos ignorados nao serao atualizados.
     """
     if not nome or not nome.strip():
         raise IntakeError("Nome do lote e' obrigatorio.")
@@ -494,13 +516,14 @@ def create_lote_from_prazos_iniciais(
             "Nenhum intake de Prazos Iniciais casa com esses filtros."
         )
 
-    # ─── CAMINHO UPSERT (atualiza lote existente) ─────────────────────
+    # ─── CAMINHO UPSERT/INCREMENTAL (atualiza lote existente) ─────────
     if merge_into_lote_id is not None:
         lote, stats = merge_into_existing_lote(
             db,
             lote_id=merge_into_lote_id,
             intakes=intakes,
             reset_classification=reset_classification,
+            only_new=only_new,
         )
         return lote, stats
 
