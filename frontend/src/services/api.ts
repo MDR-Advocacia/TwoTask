@@ -2164,6 +2164,21 @@ export interface ClassificadorDashboardData {
   }>;
   sentencas_resumo: Record<string, number>;
   transito_julgado_resumo: { transitados: number; nao_transitados: number };
+  contestacoes_resumo?: {
+    total_contestacoes: number;
+    genericas: number;
+    nao_genericas: number;
+    indeterminadas: number;
+    pct_genericas: number | null;
+    mdr_total: number;
+    mdr_genericas: number;
+    mdr_nao_genericas: number;
+    mdr_pct_genericas: number | null;
+    outros_total: number;
+    outros_genericas: number;
+    outros_nao_genericas: number;
+    outros_pct_genericas: number | null;
+  };
   generated_at: string;
 }
 
@@ -2254,6 +2269,9 @@ export async function fetchClassificadorProcessos(
     produto?: string;
     natureza_processo?: string;
     patrocinio?: string;
+    contestacao_existe?: boolean;
+    contestacao_generica?: string;  // "true" | "false" | "indeterminada"
+    contestacao_apresentada_por_mdr?: boolean;
     limit?: number;
     offset?: number;
   } = {},
@@ -2267,6 +2285,11 @@ export async function fetchClassificadorProcessos(
   if (params.produto) q.set("produto", params.produto);
   if (params.natureza_processo) q.set("natureza_processo", params.natureza_processo);
   if (params.patrocinio) q.set("patrocinio", params.patrocinio);
+  if (params.contestacao_existe != null) q.set("contestacao_existe", String(params.contestacao_existe));
+  if (params.contestacao_generica) q.set("contestacao_generica", params.contestacao_generica);
+  if (params.contestacao_apresentada_por_mdr != null) {
+    q.set("contestacao_apresentada_por_mdr", String(params.contestacao_apresentada_por_mdr));
+  }
   if (params.limit != null) q.set("limit", String(params.limit));
   if (params.offset != null) q.set("offset", String(params.offset));
   const qs = q.toString();

@@ -98,6 +98,11 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [sourceFilter, setSourceFilter] = useState<string>("");
   const [poloFilter, setPoloFilter] = useState<string>("");
+  const [contestacaoFilter, setContestacaoFilter] = useState<string>("");
+  // "" = todos | "existe" = so com contestacao | "sem" = sem contestacao
+  // | "generica" = contestacao generica | "nao_generica" = robusta
+  // | "indeterminada" = generica=null | "mdr" = MDR apresentou
+  // | "outros" = outros escritorios apresentaram
   const [categoriaFilter, setCategoriaFilter] = useState<string>("");
   const [patrocinioFilter, setPatrocinioFilter] = useState<string>("");
 
@@ -130,7 +135,7 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
   useEffect(() => {
     setProcPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cnjQueryDebounced, statusFilter, sourceFilter, poloFilter, categoriaFilter, patrocinioFilter]);
+  }, [cnjQueryDebounced, statusFilter, sourceFilter, poloFilter, categoriaFilter, patrocinioFilter, contestacaoFilter]);
 
   const PAGE_SIZE = 50;
   const procTotalPages = Math.max(1, Math.ceil(procTotal / PAGE_SIZE));
@@ -139,6 +144,19 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
     if (!lote) return;
     setLoadingProc(true);
     try {
+      // Traduz contestacaoFilter (UI) -> params da API
+      let cont_existe: boolean | undefined;
+      let cont_generica: string | undefined;
+      let cont_por_mdr: boolean | undefined;
+      switch (contestacaoFilter) {
+        case "existe": cont_existe = true; break;
+        case "sem": cont_existe = false; break;
+        case "generica": cont_generica = "true"; break;
+        case "nao_generica": cont_generica = "false"; break;
+        case "indeterminada": cont_generica = "indeterminada"; break;
+        case "mdr": cont_por_mdr = true; break;
+        case "outros": cont_por_mdr = false; break;
+      }
       const r = await fetchClassificadorProcessos(lote.id, {
         limit: PAGE_SIZE,
         offset: (procPage - 1) * PAGE_SIZE,
@@ -148,6 +166,9 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
         polo: poloFilter || undefined,
         categoria_id: categoriaFilter ? Number(categoriaFilter) : undefined,
         patrocinio: patrocinioFilter || undefined,
+        contestacao_existe: cont_existe,
+        contestacao_generica: cont_generica,
+        contestacao_apresentada_por_mdr: cont_por_mdr,
       });
       setProcessos(r.items);
       setProcTotal(r.total);
@@ -160,7 +181,7 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
     } finally {
       setLoadingProc(false);
     }
-  }, [lote, procPage, cnjQueryDebounced, statusFilter, sourceFilter, poloFilter, categoriaFilter, patrocinioFilter, toast]);
+  }, [lote, procPage, cnjQueryDebounced, statusFilter, sourceFilter, poloFilter, categoriaFilter, patrocinioFilter, contestacaoFilter, toast]);
 
   const loadBatches = useCallback(async () => {
     if (!lote) return;
@@ -405,7 +426,22 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
                   <option key={p} value={p}>{p}</option>
                 ))}
               </select>
-              {(cnjQueryDebounced || statusFilter || sourceFilter || poloFilter || categoriaFilter || patrocinioFilter) && (
+              <select
+                value={contestacaoFilter}
+                onChange={e => setContestacaoFilter(e.target.value)}
+                className="h-8 rounded border bg-background px-2 text-xs"
+                title="Filtra processos pela contestação detectada"
+              >
+                <option value="">Contestação (todos)</option>
+                <option value="existe">Com contestação</option>
+                <option value="sem">Sem contestação</option>
+                <option value="generica">Contestação genérica</option>
+                <option value="nao_generica">Contestação tec. robusta</option>
+                <option value="indeterminada">Generica indeterminada</option>
+                <option value="mdr">Apresentada pelo MDR</option>
+                <option value="outros">Apresentada por outros</option>
+              </select>
+              {(cnjQueryDebounced || statusFilter || sourceFilter || poloFilter || categoriaFilter || patrocinioFilter || contestacaoFilter) && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -416,6 +452,7 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
                     setPoloFilter("");
                     setCategoriaFilter("");
                     setPatrocinioFilter("");
+                    setContestacaoFilter("");
                   }}
                 >
                   Limpar

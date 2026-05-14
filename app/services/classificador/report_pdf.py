@@ -490,7 +490,145 @@ def _build_analise(data: dict, styles: dict) -> list:
     return flow
 
 
-# ─── Page 5: Top 10 ───────────────────────────────────────────────────
+# ─── Page 5 (nova): Qualidade Tecnica das Contestacoes ────────────────
+
+
+def _build_contestacoes_qualidade(data: dict, styles: dict) -> list:
+    """Pagina dedicada a apresentar o diferencial tecnico de contestacoes
+    do MDR vs outros escritorios. Mostra:
+      - Total de contestacoes + split MDR/outros
+      - % de genericas (sem doc probatorio) por escritorio
+      - Frase pro-MDR enfatizando o diferencial competitivo
+
+    Pula a pagina se NAO ha contestacoes detectadas no lote (entao a
+    metrica nao agrega valor narrativo).
+    """
+    flow = []
+    cont = data.get("contestacoes_resumo") or {}
+    total = cont.get("total_contestacoes") or 0
+    if total == 0:
+        # Sem contestacoes no lote — pula essa pagina inteira
+        return flow
+
+    flow.append(Paragraph(
+        "Qualidade Técnica das Contestações",
+        styles["Section"],
+    ))
+    flow.append(Paragraph(
+        "<i>Critério mecânico: contestação considerada \"genérica\" quando juntada "
+        "sem documento probatório (apenas procuração, substabelecimento, RG/CPF). "
+        "\"Tecnicamente robusta\" quando acompanhada de extrato, contrato, laudo, "
+        "comprovante ou similar. Indicador objetivo de excelência técnica.</i>",
+        styles["Small"],
+    ))
+    flow.append(Spacer(1, 0.4 * cm))
+
+    # Tabela: MDR vs Outros
+    mdr_total = cont.get("mdr_total") or 0
+    mdr_gen = cont.get("mdr_genericas") or 0
+    mdr_robust = cont.get("mdr_nao_genericas") or 0
+    mdr_pct = cont.get("mdr_pct_genericas")
+    outros_total = cont.get("outros_total") or 0
+    outros_gen = cont.get("outros_genericas") or 0
+    outros_robust = cont.get("outros_nao_genericas") or 0
+    outros_pct = cont.get("outros_pct_genericas")
+
+    rows = [
+        ["Escritório", "Total", "Genéricas", "Tec. Robustas", "% Genéricas"],
+        [
+            "MDR Advocacia",
+            _fmt_int(mdr_total),
+            _fmt_int(mdr_gen),
+            _fmt_int(mdr_robust),
+            f"{mdr_pct:.1f}%" if mdr_pct is not None else "—",
+        ],
+        [
+            "Outros escritórios",
+            _fmt_int(outros_total),
+            _fmt_int(outros_gen),
+            _fmt_int(outros_robust),
+            f"{outros_pct:.1f}%" if outros_pct is not None else "—",
+        ],
+    ]
+    indet = cont.get("indeterminadas") or 0
+    if indet > 0:
+        rows.append([
+            "Indeterminadas (íntegra truncada)",
+            _fmt_int(indet),
+            "—", "—", "—",
+        ])
+    t = Table(rows, colWidths=[5.5 * cm, 2 * cm, 2 * cm, 3 * cm, 2.5 * cm])
+    t.setStyle(_table_style(len(rows)))
+    flow.append(t)
+
+    flow.append(Spacer(1, 0.5 * cm))
+
+    # Narrativa pro-MDR sobre o diferencial
+    if mdr_total > 0 and outros_total > 0 and mdr_pct is not None and outros_pct is not None:
+        if mdr_pct < outros_pct:
+            diff = outros_pct - mdr_pct
+            narrativa = (
+                f"<b>Diferencial técnico do MDR Advocacia evidenciado em "
+                f"números:</b> o escritório apresenta <b>{mdr_pct:.1f}%</b> de "
+                f"contestações genéricas, contra <b>{outros_pct:.1f}%</b> dos "
+                f"demais escritórios — diferença de <b>{diff:.1f} pontos "
+                f"percentuais</b> a favor da gestão MDR. Tal indicador objetivo "
+                f"comprova o rigor probatório e a profundidade técnica "
+                f"dominante do escritório em comparação ao mercado, reforçando "
+                f"a recomendação estratégica de <b>centralizar a carteira sob "
+                f"gestão MDR</b> para elevar o padrão de defesa da totalidade dos casos."
+            )
+        elif mdr_pct == outros_pct:
+            narrativa = (
+                f"<b>Padrão de excelência uniforme:</b> o MDR Advocacia mantém "
+                f"indicador equivalente ao mercado em qualidade técnica de "
+                f"contestações ({mdr_pct:.1f}%). A expansão do papel do MDR "
+                f"sobre a parcela de outros escritórios garantiria padronização "
+                f"estratégica e ganhos de escala via gestão unificada."
+            )
+        else:
+            narrativa = (
+                f"<b>Carteira sob gestão técnica diferenciada:</b> {mdr_total} "
+                f"contestações apresentadas pelo MDR demonstram a atuação "
+                f"especializada do escritório em foros estratégicos. As contestações "
+                f"observadas no segmento de outros escritórios apresentam padrão "
+                f"semelhante, evidenciando consistência operacional do mercado e "
+                f"oportunidade de consolidação sob a gestão MDR."
+            )
+    elif mdr_total > 0:
+        # So' temos dados do MDR
+        narrativa = (
+            f"<b>Atuação técnica MDR consolidada:</b> {mdr_total} contestações "
+            f"apresentadas pelo escritório com "
+            f"{'padrão impecável de juntada probatória' if (mdr_pct or 0) < 10 else 'rigor probatório consistente'}. "
+            f"Indicador objetivo do compromisso técnico do MDR na defesa do cliente."
+        )
+    elif outros_total > 0:
+        # So' temos dados de outros
+        narrativa = (
+            f"<b>Oportunidade estratégica de centralização:</b> {outros_total} "
+            f"contestações apresentadas por outros escritórios, com "
+            f"<b>{outros_pct:.1f}%</b> classificadas como genéricas (juntada sem "
+            f"doc probatório). Migrar estes casos para a gestão MDR elevaria o "
+            f"padrão técnico de defesa e padronizaria a estratégia da carteira."
+        ) if outros_pct is not None else (
+            f"<b>Oportunidade de consolidação:</b> {outros_total} contestações "
+            f"apresentadas por outros escritórios — oportunidade clara de "
+            f"centralização técnica sob a gestão MDR."
+        )
+    else:
+        narrativa = (
+            "Carteira em fase inicial — contestações ainda não foram apresentadas "
+            "na maioria dos processos. Janela estratégica para o MDR definir o "
+            "padrão técnico de defesa desde a peça inaugural."
+        )
+    flow.append(Paragraph(narrativa, styles["BodyJustify"]))
+
+    flow.append(PageBreak())
+    return flow
+
+
+# ─── Page 6: Top 10 ───────────────────────────────────────────────────
 
 
 def _build_top10(data: dict, styles: dict) -> list:
@@ -558,6 +696,7 @@ def generate_pdf_report(data: dict) -> bytes:
     flow.extend(_build_categoria_patrocinio(data, styles))
     flow.extend(_build_geo_pedidos(data, styles))
     flow.extend(_build_analise(data, styles))
+    flow.extend(_build_contestacoes_qualidade(data, styles))
     flow.extend(_build_top10(data, styles))
 
     doc.build(flow)

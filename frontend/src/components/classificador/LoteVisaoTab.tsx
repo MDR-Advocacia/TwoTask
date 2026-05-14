@@ -376,6 +376,118 @@ export default function LoteVisaoTab({ loteId, active }: Props) {
         )}
       </div>
 
+      {/* ─── Qualidade técnica das contestações ─── */}
+      {data.contestacoes_resumo && data.contestacoes_resumo.total_contestacoes > 0 && (
+        <div className="rounded-md border p-3">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-xs font-medium">
+              Qualidade técnica das contestações
+              <span className="ml-1 text-muted-foreground">
+                ({data.contestacoes_resumo.total_contestacoes} apresentadas)
+              </span>
+            </div>
+            <div className="text-[10px] text-muted-foreground italic">
+              Critério mecânico: presença de doc probatório na juntada
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {/* Card MDR */}
+            <div className="rounded border p-2.5 bg-primary/5">
+              <div className="flex items-baseline justify-between mb-1.5">
+                <div className="text-[11px] font-semibold text-primary">MDR Advocacia</div>
+                <div className="text-[10px] text-muted-foreground tabular-nums">
+                  {fmtInt(data.contestacoes_resumo.mdr_total)} total
+                </div>
+              </div>
+              <div className="flex items-baseline gap-3 text-xs">
+                <div>
+                  <span className="text-muted-foreground">Tec. robustas:</span>{" "}
+                  <span className="font-medium tabular-nums">
+                    {fmtInt(data.contestacoes_resumo.mdr_nao_genericas)}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Genéricas:</span>{" "}
+                  <span className="font-medium tabular-nums">
+                    {fmtInt(data.contestacoes_resumo.mdr_genericas)}
+                  </span>
+                </div>
+              </div>
+              <div className="mt-1.5 text-[11px]">
+                <span className="text-muted-foreground">% genéricas:</span>{" "}
+                <span className="font-bold tabular-nums text-primary">
+                  {data.contestacoes_resumo.mdr_pct_genericas != null
+                    ? `${data.contestacoes_resumo.mdr_pct_genericas.toFixed(1)}%`
+                    : "—"}
+                </span>
+              </div>
+            </div>
+            {/* Card Outros */}
+            <div className="rounded border p-2.5 bg-muted/30">
+              <div className="flex items-baseline justify-between mb-1.5">
+                <div className="text-[11px] font-semibold text-muted-foreground">Outros escritórios</div>
+                <div className="text-[10px] text-muted-foreground tabular-nums">
+                  {fmtInt(data.contestacoes_resumo.outros_total)} total
+                </div>
+              </div>
+              <div className="flex items-baseline gap-3 text-xs">
+                <div>
+                  <span className="text-muted-foreground">Tec. robustas:</span>{" "}
+                  <span className="font-medium tabular-nums">
+                    {fmtInt(data.contestacoes_resumo.outros_nao_genericas)}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Genéricas:</span>{" "}
+                  <span className="font-medium tabular-nums">
+                    {fmtInt(data.contestacoes_resumo.outros_genericas)}
+                  </span>
+                </div>
+              </div>
+              <div className="mt-1.5 text-[11px]">
+                <span className="text-muted-foreground">% genéricas:</span>{" "}
+                <span className="font-bold tabular-nums">
+                  {data.contestacoes_resumo.outros_pct_genericas != null
+                    ? `${data.contestacoes_resumo.outros_pct_genericas.toFixed(1)}%`
+                    : "—"}
+                </span>
+              </div>
+            </div>
+          </div>
+          {/* Indicador comparativo: diferença a favor do MDR */}
+          {(() => {
+            const mdr_pct = data.contestacoes_resumo.mdr_pct_genericas;
+            const outros_pct = data.contestacoes_resumo.outros_pct_genericas;
+            if (mdr_pct == null || outros_pct == null) return null;
+            const diff = outros_pct - mdr_pct;
+            if (diff > 0) {
+              return (
+                <div className="mt-2 text-[11px] text-primary font-medium">
+                  ▲ Diferencial técnico do MDR: <span className="font-bold">{diff.toFixed(1)} p.p.</span> a menos de contestações genéricas vs. outros escritórios.
+                </div>
+              );
+            }
+            if (diff < 0) {
+              return (
+                <div className="mt-2 text-[11px] text-muted-foreground italic">
+                  Indicador equiparado ao mercado — oportunidade de elevar padrão via expansão MDR.
+                </div>
+              );
+            }
+            return (
+              <div className="mt-2 text-[11px] text-muted-foreground italic">
+                Indicador equivalente entre MDR e outros escritórios.
+              </div>
+            );
+          })()}
+          {data.contestacoes_resumo.indeterminadas > 0 && (
+            <div className="mt-1.5 text-[10px] text-muted-foreground italic">
+              {data.contestacoes_resumo.indeterminadas} contestação(ões) com generica indeterminada (íntegra truncada).
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ─── Grid de gráficos ─── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
 

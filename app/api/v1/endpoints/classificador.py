@@ -1277,13 +1277,27 @@ def list_processos(
         None,
         description="MDR_ADVOCACIA|OUTRO_ESCRITORIO|CONDUCAO_INTERNA|NAO_APLICAVEL",
     ),
+    contestacao_existe: Optional[bool] = Query(
+        None,
+        description="True = so processos com contestacao detectada; False = so sem",
+    ),
+    contestacao_generica: Optional[str] = Query(
+        None,
+        description="true|false|indeterminada — filtra qualidade tecnica da contestacao",
+    ),
+    contestacao_apresentada_por_mdr: Optional[bool] = Query(
+        None,
+        description="True = apresentada pelo MDR; False = por outro escritorio",
+    ),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
     """Lista paginada de processos do lote.
 
-    Filtros: status, source, categoria, polo, cnj, produto, natureza, patrocinio.
+    Filtros: status, source, categoria, polo, cnj, produto, natureza,
+    patrocinio, contestacao_existe, contestacao_generica,
+    contestacao_apresentada_por_mdr.
     """
     from sqlalchemy import or_
 
@@ -1325,6 +1339,56 @@ def list_processos(
                 ClassificadorProcesso.patrocinio_json.op("->>")("decisao")
                 == patrocinio
             )
+    # Filtros de contestacao — via JSON op('->>')
+    if contestacao_existe is not None:
+        valor_esperado = "true" if contestacao_existe else "false"
+        if contestacao_existe:
+            q = q.filter(
+                ClassificadorProcesso.contestacao_existente_json.op("->>")("existe")
+                == valor_esperado
+            )
+        else:
+            # "False" tambem cobre null/sem-contestacao
+            q = q.filter(
+                or_(
+                    ClassificadorProcesso.contestacao_existente_json.is_(None),
+                    ClassificadorProcesso.contestacao_existente_json.op("->>")("existe")
+                    == "false",
+                )
+            )
+    if contestacao_generica is not None:
+        gen_normalizado = contestacao_generica.strip().lower()
+        if gen_normalizado in ("true", "false"):
+            q = q.filter(
+                ClassificadorProcesso.contestacao_existente_json.op("->>")("existe")
+                == "true"
+            )
+            q = q.filter(
+                ClassificadorProcesso.contestacao_existente_json.op("->>")("generica")
+                == gen_normalizado
+            )
+        elif gen_normalizado in ("indeterminada", "null", "none"):
+            q = q.filter(
+                ClassificadorProcesso.contestacao_existente_json.op("->>")("existe")
+                == "true"
+            )
+            q = q.filter(
+                or_(
+                    ClassificadorProcesso.contestacao_existente_json.op("->>")("generica").is_(None),
+                    ClassificadorProcesso.contestacao_existente_json.op("->>")("generica")
+                    == "null",
+                )
+            )
+    if contestacao_apresentada_por_mdr is not None:
+        q = q.filter(
+            ClassificadorProcesso.contestacao_existente_json.op("->>")("existe")
+            == "true"
+        )
+        valor_esperado = "true" if contestacao_apresentada_por_mdr else "false"
+        q = q.filter(
+            ClassificadorProcesso.contestacao_existente_json.op("->>")("apresentada_por_mdr")
+            == valor_esperado
+        )
 
     total = q.count()
     items = q.limit(limit).offset(offset).all()

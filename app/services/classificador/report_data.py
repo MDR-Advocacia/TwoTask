@@ -332,6 +332,72 @@ def build_report_data(db: Session, lote_id: int) -> dict:
         "nao_transitados": total_proc - transit_count,
     }
 
+    # ─── Contestacoes — qualidade tecnica (genericas vs nao genericas) ──
+    # Metrica de qualidade tecnica de contestacoes apresentadas: criterio
+    # MECANICO baseado em presenca de doc probatorio na juntada (vide
+    # classifier_prompts.py linhas 143-163).
+    #   generica=true  -> juntada sem doc probatorio (so' burocraticos)
+    #   generica=false -> juntada com pelo menos 1 doc probatorio
+    #   generica=null  -> integra truncada / nao foi possivel apurar
+    # Split por quem apresentou (MDR vs outros) pra evidenciar o
+    # diferencial competitivo do escritorio.
+    cont_total = 0
+    cont_generica_true = 0
+    cont_generica_false = 0
+    cont_generica_null = 0
+    cont_mdr_total = 0
+    cont_mdr_generica = 0
+    cont_mdr_nao_generica = 0
+    cont_outros_total = 0
+    cont_outros_generica = 0
+    cont_outros_nao_generica = 0
+    for p in processos:
+        cont = p.contestacao_existente_json if isinstance(p.contestacao_existente_json, dict) else {}
+        if not cont.get("existe"):
+            continue
+        cont_total += 1
+        gen = cont.get("generica")
+        por_mdr = cont.get("apresentada_por_mdr")
+        if gen is True:
+            cont_generica_true += 1
+        elif gen is False:
+            cont_generica_false += 1
+        else:
+            cont_generica_null += 1
+        if por_mdr is True:
+            cont_mdr_total += 1
+            if gen is True:
+                cont_mdr_generica += 1
+            elif gen is False:
+                cont_mdr_nao_generica += 1
+        elif por_mdr is False:
+            cont_outros_total += 1
+            if gen is True:
+                cont_outros_generica += 1
+            elif gen is False:
+                cont_outros_nao_generica += 1
+
+    def _pct(num: int, den: int):
+        if not den:
+            return None
+        return round(num / den * 100, 1)
+
+    contestacoes_resumo = {
+        "total_contestacoes": cont_total,
+        "genericas": cont_generica_true,
+        "nao_genericas": cont_generica_false,
+        "indeterminadas": cont_generica_null,
+        "pct_genericas": _pct(cont_generica_true, cont_total),
+        "mdr_total": cont_mdr_total,
+        "mdr_genericas": cont_mdr_generica,
+        "mdr_nao_genericas": cont_mdr_nao_generica,
+        "mdr_pct_genericas": _pct(cont_mdr_generica, cont_mdr_total),
+        "outros_total": cont_outros_total,
+        "outros_genericas": cont_outros_generica,
+        "outros_nao_genericas": cont_outros_nao_generica,
+        "outros_pct_genericas": _pct(cont_outros_generica, cont_outros_total),
+    }
+
     # ─── Detalhamento (1 row/processo) ───────────────────────────────
     processos_detalhe = []
     for p in processos:
@@ -434,6 +500,7 @@ def build_report_data(db: Session, lote_id: int) -> dict:
         "pedidos_por_tipo": pedidos_por_tipo,
         "sentencas_resumo": sentencas_resumo,
         "transito_julgado_resumo": transito_julgado_resumo,
+        "contestacoes_resumo": contestacoes_resumo,
         "processos": processos_detalhe,
         "pedidos": pedidos_detalhe,
         "analise_estrategica_carteira": lote.analise_estrategica_carteira,

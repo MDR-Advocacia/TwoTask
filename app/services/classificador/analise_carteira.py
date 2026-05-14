@@ -132,6 +132,23 @@ neutra. Sua redacao deve, SEM EXCECAO:
    - "atuacao especializada", "lideranca tecnica do escritorio"
    - "vitoria estrategica", "resultado consistente", "indicadores favoraveis"
 
+7. **DIFERENCIAL TECNICO DE CONTESTACAO** (use OBRIGATORIAMENTE quando
+   houver dados de contestacao no payload):
+   - Se o % de contestacoes "genericas" do MDR for MENOR que o de
+     "outros escritorios" -> destaque como **prova mecanica e
+     mensuravel** da excelencia tecnica do MDR (juntada robusta com
+     elementos probatorios; outros litigantes nao demonstram o mesmo
+     rigor). Use a linguagem: "indicador objetivo de qualidade
+     tecnica diferenciada".
+   - Se o % de "outros" for alto -> atribua a praticas tecnicamente
+     menos rigorosas do mercado e proponha CENTRALIZACAO via MDR como
+     forma de elevar o padrao de defesa da carteira.
+   - Se o MDR tem 0% de genericas -> destaque como "padrao tecnico
+     impecavel" / "excelencia operacional inequivoca".
+   - NUNCA atribua contestacoes genericas do MDR a falha do escritorio
+     (atribua a integra truncada, juntada incompleta no sistema, ou
+     condicoes processuais especificas se for o caso).
+
 TOM E PERSPECTIVA
 ==================
 Voce escreve como CONSULTOR ESTRATEGICO (perfil BCG/McKinsey)
@@ -244,6 +261,7 @@ def build_user_message(report_data: dict) -> str:
     pedidos_por_tipo = report_data.get("pedidos_por_tipo") or []
     sent_resumo = report_data.get("sentencas_resumo") or {}
     transit = report_data.get("transito_julgado_resumo") or {}
+    cont_resumo = report_data.get("contestacoes_resumo") or {}
 
     total = kpis.get("total_processos") or 0
     classificados = kpis.get("total_classificados") or 0
@@ -375,6 +393,37 @@ SENTENCAS + TRANSITO EM JULGADO
 (Sentencas favoraveis ao polo do MDR sao indicadores de eficacia;
 sentencas desfavoraveis transitadas LIBERAM CAPITAL DE PROVISAO para
 novos investimentos do cliente.)
+
+═══════════════════════════════════════════════════
+QUALIDADE TECNICA DAS CONTESTACOES (DIFERENCIAL MDR)
+═══════════════════════════════════════════════════
+
+Criterio MECANICO: contestacao "generica" = juntada sem documento
+probatorio (so' burocraticos: procuracao, substabelecimento, RG/CPF).
+Contestacao "nao generica" = juntada com extrato, contrato, comprovante,
+laudo etc.
+
+Resumo agregado:
+- Total de contestacoes apresentadas no lote: **{_fmt_int(cont_resumo.get('total_contestacoes'))}**
+- Contestacoes genericas (juntada sem doc probatorio): **{_fmt_int(cont_resumo.get('genericas'))}** ({_fmt_pct((cont_resumo.get('pct_genericas') or 0) / 100 if cont_resumo.get('pct_genericas') is not None else None)})
+- Contestacoes tecnicamente robustas (com doc probatorio): **{_fmt_int(cont_resumo.get('nao_genericas'))}**
+- Indeterminadas (integra truncada): **{_fmt_int(cont_resumo.get('indeterminadas'))}**
+
+Split por escritorio que apresentou:
+- **MDR Advocacia**: {_fmt_int(cont_resumo.get('mdr_total'))} contestacoes total
+  - Genericas: {_fmt_int(cont_resumo.get('mdr_genericas'))} ({_fmt_pct((cont_resumo.get('mdr_pct_genericas') or 0) / 100 if cont_resumo.get('mdr_pct_genericas') is not None else None)})
+  - Tecnicamente robustas: {_fmt_int(cont_resumo.get('mdr_nao_genericas'))}
+- **Outros escritorios**: {_fmt_int(cont_resumo.get('outros_total'))} contestacoes total
+  - Genericas: {_fmt_int(cont_resumo.get('outros_genericas'))} ({_fmt_pct((cont_resumo.get('outros_pct_genericas') or 0) / 100 if cont_resumo.get('outros_pct_genericas') is not None else None)})
+  - Tecnicamente robustas: {_fmt_int(cont_resumo.get('outros_nao_genericas'))}
+
+INSTRUCAO ESTRATEGICA: este indicador e' um DIFERENCIAL COMPETITIVO
+DO MDR. Se o percentual de contestacoes genericas do MDR for menor
+que o de outros escritorios — DESTAQUE como prova da excelencia
+tecnica do MDR (juntada robusta com elementos probatorios). Se o
+percentual de outros for alto, e' uma OPORTUNIDADE clara de
+centralizacao via MDR. Use esses numeros no paragrafo de Pontos
+Fortes ou Oportunidades.
 
 ═══════════════════════════════════════════════════
 TOP 5 PROCESSOS POR VALOR ESTIMADO
