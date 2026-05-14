@@ -1912,6 +1912,92 @@ export async function fetchClassificadorLote(
   return expectJson<ClassificadorLoteSummary>(res);
 }
 
+// Filter options + Dashboard Global (cross-lote)
+
+export interface ClassificadorFilterOptions {
+  categorias: Array<{ id: number; nome: string }>;
+  produtos: string[];
+  naturezas: string[];
+  patrocinios: string[];
+}
+
+export async function fetchClassificadorFilterOptions(
+  loteId: number,
+): Promise<ClassificadorFilterOptions> {
+  const res = await apiFetch(`/api/v1/classificador/lotes/${loteId}/filter-options`);
+  return expectJson<ClassificadorFilterOptions>(res);
+}
+
+export interface ClassificadorDashboardGlobal {
+  total_lotes: number;
+  kpis: {
+    total_processos: number;
+    total_classificados: number;
+    total_com_erro: number;
+    valor_total_causa: number | null;
+    valor_total_estimado: number | null;
+    pcond_total: number | null;
+    prob_exito_medio: number | null;
+  };
+  por_categoria: Array<{
+    label: string;
+    qtd: number;
+    valor_estimado: number | null;
+    pcond: number | null;
+    prob_exito_medio: number | null;
+  }>;
+  por_patrocinio: Array<{
+    label: string;
+    qtd: number;
+    valor_estimado: number | null;
+    pcond: number | null;
+  }>;
+  lotes: Array<{
+    id: number;
+    nome: string;
+    cliente_nome: string | null;
+    status: string;
+    total_processos: number;
+    total_classificados: number;
+    valor_total_estimado: number | null;
+    pcond_total: number | null;
+    prob_exito_medio: number | null;
+    created_at: string | null;
+  }>;
+  timeline: Array<{
+    date: string;
+    qtd_lotes: number;
+    qtd_processos: number;
+    valor: number;
+    pcond: number;
+  }>;
+  generated_at: string;
+  filtros: {
+    cliente_nome: string | null;
+    start: string | null;
+    end: string | null;
+    only_classified: boolean;
+  };
+}
+
+export async function fetchClassificadorDashboardGlobal(params: {
+  cliente_nome?: string;
+  start?: string;
+  end?: string;
+  only_classified?: boolean;
+} = {}): Promise<ClassificadorDashboardGlobal> {
+  const q = new URLSearchParams();
+  if (params.cliente_nome) q.set("cliente_nome", params.cliente_nome);
+  if (params.start) q.set("start", params.start);
+  if (params.end) q.set("end", params.end);
+  if (params.only_classified) q.set("only_classified", "true");
+  const qs = q.toString();
+  const res = await apiFetch(
+    `/api/v1/classificador/dashboard-global${qs ? `?${qs}` : ""}`,
+  );
+  return expectJson<ClassificadorDashboardGlobal>(res);
+}
+
 // Dashboard agregado por lote (pro aba "Visao geral")
 export interface ClassificadorDashboardKpis {
   total_processos: number;
@@ -2054,6 +2140,9 @@ export async function fetchClassificadorProcessos(
     categoria_id?: number;
     polo?: string;
     cnj_match?: string;
+    produto?: string;
+    natureza_processo?: string;
+    patrocinio?: string;
     limit?: number;
     offset?: number;
   } = {},
@@ -2064,6 +2153,9 @@ export async function fetchClassificadorProcessos(
   if (params.categoria_id != null) q.set("categoria_id", String(params.categoria_id));
   if (params.polo) q.set("polo", params.polo);
   if (params.cnj_match) q.set("cnj_match", params.cnj_match);
+  if (params.produto) q.set("produto", params.produto);
+  if (params.natureza_processo) q.set("natureza_processo", params.natureza_processo);
+  if (params.patrocinio) q.set("patrocinio", params.patrocinio);
   if (params.limit != null) q.set("limit", String(params.limit));
   if (params.offset != null) q.set("offset", String(params.offset));
   const qs = q.toString();

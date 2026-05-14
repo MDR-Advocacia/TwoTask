@@ -39,6 +39,7 @@ import {
 import UploadPdfDialog from "@/components/classificador/UploadPdfDialog";
 import LoteDetailDialog from "@/components/classificador/LoteDetailDialog";
 import QuickPdfCard from "@/components/classificador/QuickPdfCard";
+import PainelGlobalTab from "@/components/classificador/PainelGlobalTab";
 
 
 // ─── Helpers ──────────────────────────────────────────────────────────
@@ -139,20 +140,7 @@ export default function ClassificadorPage() {
         </TabsContent>
 
         <TabsContent value="painel" className="mt-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Painel agregado</CardTitle>
-              <CardDescription>
-                Visao consolidada de todas as carteiras classificadas. Disponivel
-                na Fase 4 (graficos com recharts).
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="py-12 text-center text-sm text-muted-foreground">
-                Em construcao — Fase 4.
-              </div>
-            </CardContent>
-          </Card>
+          <PainelGlobalTab />
         </TabsContent>
       </Tabs>
     </div>

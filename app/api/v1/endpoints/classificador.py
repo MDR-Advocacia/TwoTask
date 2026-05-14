@@ -21,7 +21,7 @@ Fase 4:
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
 from fastapi import (
@@ -359,6 +359,279 @@ def delete_lote(
     db.commit()
 
 
+@router.get("/lotes/{lote_id}/filter-options")
+def get_filter_options(lote_id: int, db: Session = Depends(get_db)):
+    """Lista valores DISTINCT presentes nos processos do lote — pra popular
+    selects de filtro na UI (categoria, produto, natureza, patrocinio).
+
+    Patrocinio e' extraido de patrocinio_json.decisao em Python (JSON
+    nao indexado em distinct facil).
+    """
+    from sqlalchemy import distinct, func
+
+    from app.models.classification_taxonomy import ClassificationCategory
+
+    lote = db.query(ClassificadorLote).filter(ClassificadorLote.id == lote_id).first()
+    if lote is None:
+        raise HTTPException(status_code=404, detail=f"Lote #{lote_id} nao encontrado.")
+
+    # Categorias distintas presentes (JOIN pra ter o nome)
+    cat_rows = (
+        db.query(
+            ClassificadorProcesso.categoria_id,
+            ClassificationCategory.name,
+        )
+        .join(
+            ClassificationCategory,
+            ClassificationCategory.id == ClassificadorProcesso.categoria_id,
+        )
+        .filter(ClassificadorProcesso.lote_id == lote_id)
+        .filter(ClassificadorProcesso.categoria_id.isnot(None))
+        .distinct()
+        .order_by(ClassificationCategory.name)
+        .all()
+    )
+    categorias = [
+        {"id": r[0], "nome": r[1]} for r in cat_rows
+    ]
+
+    # Produtos / naturezas distintos (campos diretos)
+    produtos = [
+        r[0]
+        for r in db.query(distinct(ClassificadorProcesso.produto))
+        .filter(ClassificadorProcesso.lote_id == lote_id)
+        .filter(ClassificadorProcesso.produto.isnot(None))
+        .order_by(ClassificadorProcesso.produto)
+        .all()
+    ]
+    naturezas = [
+        r[0]
+        for r in db.query(distinct(ClassificadorProcesso.natureza_processo))
+        .filter(ClassificadorProcesso.lote_id == lote_id)
+        .filter(ClassificadorProcesso.natureza_processo.isnot(None))
+        .order_by(ClassificadorProcesso.natureza_processo)
+        .all()
+    ]
+
+    # Patrocinio: extrai de patrocinio_json
+    patrocinios_set = set()
+    rows = (
+        db.query(ClassificadorProcesso.patrocinio_json)
+        .filter(ClassificadorProcesso.lote_id == lote_id)
+        .filter(ClassificadorProcesso.patrocinio_json.isnot(None))
+        .all()
+    )
+    for (p_json,) in rows:
+        if isinstance(p_json, dict):
+            if not p_json.get("aplicavel"):
+                patrocinios_set.add("NAO_APLICAVEL")
+            elif p_json.get("decisao"):
+                patrocinios_set.add(p_json["decisao"])
+    # Default sempre presente pra dar opcao mesmo sem dado
+    patrocinios = sorted(patrocinios_set)
+
+    return {
+        "categorias": categorias,
+        "produtos": produtos,
+        "naturezas": naturezas,
+        "patrocinios": patrocinios,
+    }
+
+
+@router.get("/dashboard-global")
+def get_dashboard_global(
+    cliente_nome: Optional[str] = Query(None),
+    start: Optional[date] = Query(None, description="created_at >="),
+    end: Optional[date] = Query(None, description="created_at <="),
+    only_classified: bool = Query(False, description="se true, so lotes CLASSIFICADO"),
+    db: Session = Depends(get_db),
+):
+    """Dashboard agregado CROSS-LOTE — somatorio de todos os lotes que
+    casam com os filtros.
+
+    Otimizado via SQL aggregates (sum/count/avg) — nao carrega processos
+    individuais em Python. Pra carteira de 100 lotes × 6k processos =
+    600k rows, fica em ~300ms.
+    """
+    from datetime import timedelta as _td
+
+    from sqlalchemy import and_, func
+
+    # Query base — lotes que casam com filtros
+    q_lote = db.query(ClassificadorLote)
+    if cliente_nome:
+        q_lote = q_lote.filter(
+            ClassificadorLote.cliente_nome.ilike(f"%{cliente_nome}%")
+        )
+    if start:
+        q_lote = q_lote.filter(ClassificadorLote.created_at >= start)
+    if end:
+        q_lote = q_lote.filter(
+            ClassificadorLote.created_at < (end + _td(days=1))
+        )
+    if only_classified:
+        q_lote = q_lote.filter(ClassificadorLote.status == "CLASSIFICADO")
+
+    lotes = q_lote.order_by(ClassificadorLote.created_at.desc()).all()
+    if not lotes:
+        return {
+            "total_lotes": 0,
+            "kpis": {},
+            "por_categoria": [],
+            "por_patrocinio": [],
+            "lotes": [],
+            "timeline": [],
+            "generated_at": datetime.utcnow().isoformat(),
+        }
+
+    lote_ids = [l.id for l in lotes]
+
+    # KPIs globais (soma das somas)
+    kpi = (
+        db.query(
+            func.sum(ClassificadorLote.total_processos),
+            func.sum(ClassificadorLote.total_processos_classificados),
+            func.sum(ClassificadorLote.total_processos_com_erro),
+            func.sum(ClassificadorLote.valor_total_causa),
+            func.sum(ClassificadorLote.valor_total_estimado),
+            func.sum(ClassificadorLote.pcond_total),
+            func.avg(ClassificadorLote.prob_exito_medio),
+        )
+        .filter(ClassificadorLote.id.in_(lote_ids))
+        .first()
+    )
+
+    def _f(v):
+        return float(v) if v is not None else None
+
+    kpis = {
+        "total_processos": int(kpi[0] or 0),
+        "total_classificados": int(kpi[1] or 0),
+        "total_com_erro": int(kpi[2] or 0),
+        "valor_total_causa": _f(kpi[3]),
+        "valor_total_estimado": _f(kpi[4]),
+        "pcond_total": _f(kpi[5]),
+        "prob_exito_medio": _f(kpi[6]),
+    }
+
+    # Por categoria (cross-lote, agregado em SQL)
+    from app.models.classification_taxonomy import ClassificationCategory
+
+    cat_rows = (
+        db.query(
+            ClassificationCategory.name,
+            func.count(ClassificadorProcesso.id),
+            func.sum(ClassificadorProcesso.valor_estimado),
+            func.sum(ClassificadorProcesso.pcond_sugerido),
+            func.avg(ClassificadorProcesso.prob_exito),
+        )
+        .outerjoin(
+            ClassificationCategory,
+            ClassificationCategory.id == ClassificadorProcesso.categoria_id,
+        )
+        .filter(ClassificadorProcesso.lote_id.in_(lote_ids))
+        .group_by(ClassificationCategory.name)
+        .order_by(func.count(ClassificadorProcesso.id).desc())
+        .all()
+    )
+    por_categoria = [
+        {
+            "label": r[0] or "(sem categoria)",
+            "qtd": int(r[1] or 0),
+            "valor_estimado": _f(r[2]),
+            "pcond": _f(r[3]),
+            "prob_exito_medio": _f(r[4]),
+        }
+        for r in cat_rows
+    ]
+
+    # Por patrocinio — itera em Python (JSON em SQLite sem indice)
+    from collections import defaultdict
+    patroc_acc: dict[str, dict] = defaultdict(
+        lambda: {"qtd": 0, "valor_estimado": 0.0, "pcond": 0.0}
+    )
+    rows = (
+        db.query(
+            ClassificadorProcesso.patrocinio_json,
+            ClassificadorProcesso.valor_estimado,
+            ClassificadorProcesso.pcond_sugerido,
+        )
+        .filter(ClassificadorProcesso.lote_id.in_(lote_ids))
+        .all()
+    )
+    for (p_json, ve, pc) in rows:
+        if isinstance(p_json, dict) and p_json.get("aplicavel"):
+            label = p_json.get("decisao") or "INDETERMINADO"
+        else:
+            label = "NAO_APLICAVEL"
+        d = patroc_acc[label]
+        d["qtd"] += 1
+        if ve is not None:
+            d["valor_estimado"] += float(ve)
+        if pc is not None:
+            d["pcond"] += float(pc)
+    por_patrocinio = [
+        {"label": k, "qtd": v["qtd"],
+         "valor_estimado": v["valor_estimado"], "pcond": v["pcond"]}
+        for k, v in sorted(
+            patroc_acc.items(), key=lambda kv: -kv[1]["qtd"],
+        )
+    ]
+
+    # Lista de lotes (ranking)
+    lotes_payload = [
+        {
+            "id": l.id,
+            "nome": l.nome,
+            "cliente_nome": l.cliente_nome,
+            "status": l.status,
+            "total_processos": l.total_processos or 0,
+            "total_classificados": l.total_processos_classificados or 0,
+            "valor_total_estimado": _f(l.valor_total_estimado),
+            "pcond_total": _f(l.pcond_total),
+            "prob_exito_medio": _f(l.prob_exito_medio),
+            "created_at": l.created_at.isoformat() if l.created_at else None,
+        }
+        for l in lotes
+    ]
+
+    # Timeline — lotes por dia
+    timeline_map: dict[str, dict] = defaultdict(
+        lambda: {"qtd_lotes": 0, "qtd_processos": 0, "valor": 0.0, "pcond": 0.0}
+    )
+    for l in lotes:
+        if not l.created_at:
+            continue
+        key = l.created_at.date().isoformat()
+        d = timeline_map[key]
+        d["qtd_lotes"] += 1
+        d["qtd_processos"] += l.total_processos or 0
+        if l.valor_total_estimado is not None:
+            d["valor"] += float(l.valor_total_estimado)
+        if l.pcond_total is not None:
+            d["pcond"] += float(l.pcond_total)
+    timeline = [
+        {"date": k, **v}
+        for k, v in sorted(timeline_map.items())
+    ]
+
+    return {
+        "total_lotes": len(lotes),
+        "kpis": kpis,
+        "por_categoria": por_categoria,
+        "por_patrocinio": por_patrocinio,
+        "lotes": lotes_payload,
+        "timeline": timeline,
+        "generated_at": datetime.utcnow().isoformat(),
+        "filtros": {
+            "cliente_nome": cliente_nome,
+            "start": start.isoformat() if start else None,
+            "end": end.isoformat() if end else None,
+            "only_classified": only_classified,
+        },
+    }
+
+
 @router.get("/lotes/{lote_id}/dashboard-data")
 def get_dashboard_data(
     lote_id: int,
@@ -534,11 +807,22 @@ def list_processos(
     categoria_id: Optional[int] = Query(None),
     polo: Optional[str] = Query(None),
     cnj_match: Optional[str] = Query(None),
+    produto: Optional[str] = Query(None),
+    natureza_processo: Optional[str] = Query(None),
+    patrocinio: Optional[str] = Query(
+        None,
+        description="MDR_ADVOCACIA|OUTRO_ESCRITORIO|CONDUCAO_INTERNA|NAO_APLICAVEL",
+    ),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
-    """Lista paginada de processos do lote. Filtros: status, source, categoria, polo, cnj."""
+    """Lista paginada de processos do lote.
+
+    Filtros: status, source, categoria, polo, cnj, produto, natureza, patrocinio.
+    """
+    from sqlalchemy import or_
+
     lote = db.query(ClassificadorLote).filter(ClassificadorLote.id == lote_id).first()
     if lote is None:
         raise HTTPException(status_code=404, detail=f"Lote #{lote_id} nao encontrado.")
@@ -558,6 +842,25 @@ def list_processos(
         q = q.filter(ClassificadorProcesso.polo == polo)
     if cnj_match:
         q = q.filter(ClassificadorProcesso.cnj_number.ilike(f"%{cnj_match}%"))
+    if produto:
+        q = q.filter(ClassificadorProcesso.produto == produto)
+    if natureza_processo:
+        q = q.filter(ClassificadorProcesso.natureza_processo == natureza_processo)
+    if patrocinio:
+        # Patrocinio.json e' JSON — extrai via op('->>') (Postgres + SQLite OK)
+        if patrocinio == "NAO_APLICAVEL":
+            q = q.filter(
+                or_(
+                    ClassificadorProcesso.patrocinio_json.is_(None),
+                    ClassificadorProcesso.patrocinio_json.op("->>")("aplicavel")
+                    == "false",
+                )
+            )
+        else:
+            q = q.filter(
+                ClassificadorProcesso.patrocinio_json.op("->>")("decisao")
+                == patrocinio
+            )
 
     total = q.count()
     items = q.limit(limit).offset(offset).all()

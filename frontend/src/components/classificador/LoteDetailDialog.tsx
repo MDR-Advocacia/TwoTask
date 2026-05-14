@@ -33,6 +33,10 @@ import {
 } from "@/services/api";
 import ProcessoDetailDrawer from "@/components/classificador/ProcessoDetailDrawer";
 import LoteVisaoTab from "@/components/classificador/LoteVisaoTab";
+import {
+  ClassificadorFilterOptions,
+  fetchClassificadorFilterOptions,
+} from "@/services/api";
 
 
 interface LoteDetailDialogProps {
@@ -94,9 +98,27 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [sourceFilter, setSourceFilter] = useState<string>("");
   const [poloFilter, setPoloFilter] = useState<string>("");
+  const [categoriaFilter, setCategoriaFilter] = useState<string>("");
+  const [patrocinioFilter, setPatrocinioFilter] = useState<string>("");
+
+  // Filter options carregadas via /filter-options
+  const [filterOptions, setFilterOptions] = useState<ClassificadorFilterOptions | null>(null);
 
   // Drawer de detalhe do processo
   const [drawerProcessoId, setDrawerProcessoId] = useState<number | null>(null);
+
+  // Carrega filter options quando o lote abre (1x)
+  useEffect(() => {
+    if (!open || !lote) {
+      setFilterOptions(null);
+      return;
+    }
+    let alive = true;
+    fetchClassificadorFilterOptions(lote.id)
+      .then(opts => { if (alive) setFilterOptions(opts); })
+      .catch(() => { /* falha silenciosa — selects ficam sem opcoes */ });
+    return () => { alive = false; };
+  }, [open, lote]);
 
   // Debounce do CNJ search (300ms)
   useEffect(() => {
@@ -108,7 +130,7 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
   useEffect(() => {
     setProcPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cnjQueryDebounced, statusFilter, sourceFilter, poloFilter]);
+  }, [cnjQueryDebounced, statusFilter, sourceFilter, poloFilter, categoriaFilter, patrocinioFilter]);
 
   const PAGE_SIZE = 50;
   const procTotalPages = Math.max(1, Math.ceil(procTotal / PAGE_SIZE));
@@ -124,6 +146,8 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
         status: statusFilter || undefined,
         source: sourceFilter || undefined,
         polo: poloFilter || undefined,
+        categoria_id: categoriaFilter ? Number(categoriaFilter) : undefined,
+        patrocinio: patrocinioFilter || undefined,
       });
       setProcessos(r.items);
       setProcTotal(r.total);
@@ -136,7 +160,7 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
     } finally {
       setLoadingProc(false);
     }
-  }, [lote, procPage, cnjQueryDebounced, statusFilter, sourceFilter, poloFilter, toast]);
+  }, [lote, procPage, cnjQueryDebounced, statusFilter, sourceFilter, poloFilter, categoriaFilter, patrocinioFilter, toast]);
 
   const loadBatches = useCallback(async () => {
     if (!lote) return;
@@ -347,7 +371,27 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
                 <option value="reu">Réu</option>
                 <option value="ambos">Ambos</option>
               </select>
-              {(cnjQueryDebounced || statusFilter || sourceFilter || poloFilter) && (
+              <select
+                value={categoriaFilter}
+                onChange={e => setCategoriaFilter(e.target.value)}
+                className="h-8 rounded border bg-background px-2 text-xs max-w-[220px]"
+              >
+                <option value="">Categoria (todas)</option>
+                {(filterOptions?.categorias || []).map(c => (
+                  <option key={c.id} value={c.id}>{c.nome}</option>
+                ))}
+              </select>
+              <select
+                value={patrocinioFilter}
+                onChange={e => setPatrocinioFilter(e.target.value)}
+                className="h-8 rounded border bg-background px-2 text-xs"
+              >
+                <option value="">Patrocínio (todos)</option>
+                {(filterOptions?.patrocinios || []).map(p => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+              {(cnjQueryDebounced || statusFilter || sourceFilter || poloFilter || categoriaFilter || patrocinioFilter) && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -356,6 +400,8 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
                     setStatusFilter("");
                     setSourceFilter("");
                     setPoloFilter("");
+                    setCategoriaFilter("");
+                    setPatrocinioFilter("");
                   }}
                 >
                   Limpar
