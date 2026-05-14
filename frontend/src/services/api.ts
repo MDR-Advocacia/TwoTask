@@ -1985,17 +1985,40 @@ export async function fetchClassificadorDashboardGlobal(params: {
   start?: string;
   end?: string;
   only_classified?: boolean;
+  categoria_id?: number;
+  produto?: string;
+  uf?: string;
+  patrocinio?: string;
 } = {}): Promise<ClassificadorDashboardGlobal> {
   const q = new URLSearchParams();
   if (params.cliente_nome) q.set("cliente_nome", params.cliente_nome);
   if (params.start) q.set("start", params.start);
   if (params.end) q.set("end", params.end);
   if (params.only_classified) q.set("only_classified", "true");
+  if (params.categoria_id != null) q.set("categoria_id", String(params.categoria_id));
+  if (params.produto) q.set("produto", params.produto);
+  if (params.uf) q.set("uf", params.uf);
+  if (params.patrocinio) q.set("patrocinio", params.patrocinio);
   const qs = q.toString();
   const res = await apiFetch(
     `/api/v1/classificador/dashboard-global${qs ? `?${qs}` : ""}`,
   );
   return expectJson<ClassificadorDashboardGlobal>(res);
+}
+
+export interface ClassificadorGlobalFilterOptions {
+  categorias: Array<{ id: number; nome: string }>;
+  produtos: string[];
+  naturezas: string[];
+  ufs: string[];
+  tribunais: string[];
+  patrocinios: string[];
+  clientes: string[];
+}
+
+export async function fetchClassificadorGlobalFilterOptions(): Promise<ClassificadorGlobalFilterOptions> {
+  const res = await apiFetch("/api/v1/classificador/dashboard-global/filter-options");
+  return expectJson<ClassificadorGlobalFilterOptions>(res);
 }
 
 // Dashboard agregado por lote (pro aba "Visao geral")

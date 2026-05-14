@@ -114,6 +114,22 @@ class Settings(BaseSettings):
     # Modelo Anthropic usado na classificação (Sonnet — mais sensível).
     prazos_iniciais_classifier_model: str = "claude-sonnet-4-6"
     prazos_iniciais_classifier_max_tokens: int = 4096
+
+    # ─── Classificador — motor dormente (cla003) ───────────────────────
+    # API keys aceitas no endpoint publico POST /classificador/intake/pdf
+    # (separadas por virgula no .env). Vazio = endpoint desativado.
+    classificador_api_key: str | None = None
+    # Tamanho do batch que o worker dormente agrupa antes de criar lote.
+    classificador_batch_size: int = 50
+    # Timeout em minutos — se passar disso sem atingir batch_size, cria lote
+    # mesmo assim com o que tiver (evita PDFs ficarem presos na fila).
+    classificador_batch_timeout_minutes: int = 30
+    # Worker desligado por default em dev pra evitar surpresas.
+    classificador_pending_worker_enabled: bool = False
+    # Intervalo entre ticks do worker (segundos).
+    classificador_pending_worker_interval_seconds: int = 60
+    # Auto-classify: se True, dispara classify do lote logo apos criar.
+    classificador_pending_auto_classify: bool = True
     # Worker periódico: agrega intakes PRONTO_PARA_CLASSIFICAR e dispara
     # batch + faz polling/apply dos batches pendentes.
     # Desligado por padrão em dev pra evitar gasto involuntário com Anthropic.
@@ -257,6 +273,12 @@ class Settings(BaseSettings):
     def prazos_iniciais_api_keys(self) -> set[str]:
         """Chaves válidas para autenticar a automação externa (aceita rotação)."""
         raw = self.prazos_iniciais_api_key or ""
+        return {key.strip() for key in raw.split(",") if key.strip()}
+
+    @property
+    def classificador_api_keys(self) -> set[str]:
+        """Chaves válidas pro endpoint público do Classificador (rotação)."""
+        raw = self.classificador_api_key or ""
         return {key.strip() for key in raw.split(",") if key.strip()}
 
     @property

@@ -109,6 +109,19 @@ REL_STATUSES_VALID = frozenset({
     REL_STATUS_FALHOU,
 })
 
+# ─── Status do PDF pending (motor dormente, cla003) ──────────────────
+PENDING_STATUS_PENDENTE = "PENDENTE"
+PENDING_STATUS_ALOCADO = "ALOCADO"
+PENDING_STATUS_PROCESSADO = "PROCESSADO"
+PENDING_STATUS_ERRO = "ERRO"
+
+PENDING_STATUSES_VALID = frozenset({
+    PENDING_STATUS_PENDENTE,
+    PENDING_STATUS_ALOCADO,
+    PENDING_STATUS_PROCESSADO,
+    PENDING_STATUS_ERRO,
+})
+
 # ─── Status do batch Anthropic (espelhado do PI) ──────────────────────
 BATCH_STATUS_SUBMITTED = "ENVIADO"
 BATCH_STATUS_IN_PROGRESS = "EM_PROCESSAMENTO"
@@ -503,3 +516,60 @@ class ClassificadorBatch(Base):
     submitted_at = Column(DateTime(timezone=True), nullable=True)
     ended_at = Column(DateTime(timezone=True), nullable=True)
     applied_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class ClassificadorPdfPending(Base):
+    """Fila de PDFs recebidos pelo intake automatico (robo de entrega).
+
+    Worker `pending_worker` agrupa em batches de 50 por cliente_nome
+    quando atinge BATCH_SIZE OU passa do BATCH_TIMEOUT, cria lote e
+    dispara ingest_pdf + classify automaticamente.
+
+    Ver migration cla003.
+    """
+
+    __tablename__ = "classificador_pdf_pending"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Storage do PDF
+    pdf_path = Column(String(512), nullable=False)
+    pdf_sha256 = Column(String(64), nullable=False, index=True)
+    pdf_bytes = Column(BigInteger, nullable=False)
+    pdf_filename_original = Column(String(255), nullable=True)
+
+    # Metadata do request
+    cliente_nome = Column(String(255), nullable=True, index=True)
+    external_id = Column(String(128), nullable=True)
+    cnj_hint = Column(String(64), nullable=True)
+    produto = Column(String(128), nullable=True)
+    observacao = Column(Text, nullable=True)
+    source = Column(String(32), nullable=False)
+    metadata_json = Column(JSON, nullable=True)
+
+    # Estado
+    status = Column(
+        String(32),
+        nullable=False,
+        default=PENDING_STATUS_PENDENTE,
+        server_default=PENDING_STATUS_PENDENTE,
+        index=True,
+    )
+    lote_id = Column(
+        Integer,
+        ForeignKey("classificador_lote.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    processo_id = Column(Integer, nullable=True)
+    error_message = Column(Text, nullable=True)
+
+    # Timestamps
+    received_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        index=True,
+    )
+    allocated_at = Column(DateTime(timezone=True), nullable=True)
+    processed_at = Column(DateTime(timezone=True), nullable=True)

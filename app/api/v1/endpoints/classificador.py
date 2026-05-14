@@ -29,6 +29,7 @@ from fastapi import (
     Depends,
     File,
     Form,
+    Header,
     HTTPException,
     Query,
     UploadFile,
@@ -79,6 +80,193 @@ from app.services.prazos_iniciais.storage import PdfValidationError
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/classificador", tags=["Classificador"])
+
+# Router separado pro intake publico — SEM dependencies JWT, auth via
+# header X-Classificador-Api-Key. Registrado em main.py SEM
+# protected_dependencies pra nao herdar JWT requirement.
+intake_router = APIRouter(prefix="/classificador", tags=["Classificador - Intake API"])
+
+
+def _validate_classificador_api_key(
+    x_api_key: Optional[str] = Header(default=None, alias="X-Classificador-Api-Key"),
+) -> str:
+    """Dependency que valida X-Classificador-Api-Key contra settings.
+
+    Aceita multiplas chaves (rotacao sem downtime) via env var
+    CLASSIFICADOR_API_KEY (separadas por virgula).
+    """
+    from app.core.config import settings
+
+    valid_keys = settings.classificador_api_keys
+    if not valid_keys:
+        logger.error("CLASSIFICADOR_API_KEY nao configurada — intake rejeitado.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Endpoint de intake do Classificador nao configurado.",
+        )
+    if not x_api_key or x_api_key not in valid_keys:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API key invalida ou ausente.",
+        )
+    return x_api_key
+
+
+@intake_router.post(
+    "/intake/pdf",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Recebe 1 PDF de processo do robo de entrega (fila dormente).",
+)
+def intake_pdf(
+    file: UploadFile = File(..., description="PDF do processo completo"),
+    cliente_nome: Optional[str] = Form(default=None),
+    external_id: Optional[str] = Form(default=None),
+    cnj_hint: Optional[str] = Form(default=None),
+    produto: Optional[str] = Form(default=None),
+    observacao: Optional[str] = Form(default=None),
+    metadata_json: Optional[str] = Form(
+        default=None, description="JSON serializado pra contexto livre"
+    ),
+    _: str = Depends(_validate_classificador_api_key),
+    db: Session = Depends(get_db),
+):
+    """Recebe 1 PDF e insere na fila do worker dormente.
+
+    NAO cria lote imediatamente — o worker `pending_worker` agrupa em
+    batches de 50 (por cliente_nome) e dispara ingest_pdf + classify
+    automaticamente.
+
+    Retorna 202 Accepted + pending_id pra rastreabilidade.
+
+    Idempotencia opcional via pdf_sha256 — se mesmo sha ja chegou em
+    PENDENTE/ALOCADO, devolve o pending_id existente.
+    """
+    import json as _json
+    from app.models.classificador import (
+        ClassificadorPdfPending,
+        PENDING_STATUS_PENDENTE,
+    )
+    from app.services.classificador.pdf_intake import SOURCE_PDF_ROBOT_API
+    from app.services.prazos_iniciais.storage import (
+        PdfValidationError,
+        save_pdf,
+    )
+
+    content = file.file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Arquivo vazio.")
+    if len(content) > 30 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Arquivo maior que 30MB.")
+
+    # 1) Salva PDF no volume (valida magic bytes + tamanho)
+    try:
+        stored = save_pdf(content)
+    except PdfValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # 2) Idempotencia por sha256 — devolve o pending existente se ja vier
+    existing = (
+        db.query(ClassificadorPdfPending)
+        .filter(ClassificadorPdfPending.pdf_sha256 == stored.sha256)
+        .filter(ClassificadorPdfPending.status.in_({"PENDENTE", "ALOCADO"}))
+        .order_by(ClassificadorPdfPending.id.desc())
+        .first()
+    )
+    if existing:
+        return {
+            "pending_id": existing.id,
+            "status": existing.status,
+            "duplicate": True,
+            "received_at": existing.received_at.isoformat() if existing.received_at else None,
+        }
+
+    # 3) Parse metadata_json (opcional)
+    meta_dict = None
+    if metadata_json:
+        try:
+            meta_dict = _json.loads(metadata_json)
+        except _json.JSONDecodeError:
+            raise HTTPException(
+                status_code=400,
+                detail="metadata_json invalido (nao e' JSON valido).",
+            )
+
+    # 4) Insere na fila
+    pending = ClassificadorPdfPending(
+        pdf_path=stored.relative_path,
+        pdf_sha256=stored.sha256,
+        pdf_bytes=stored.size_bytes,
+        pdf_filename_original=file.filename or "pending.pdf",
+        cliente_nome=(cliente_nome or "").strip() or None,
+        external_id=(external_id or "").strip() or None,
+        cnj_hint=(cnj_hint or "").strip() or None,
+        produto=(produto or "").strip() or None,
+        observacao=(observacao or "").strip() or None,
+        source=SOURCE_PDF_ROBOT_API,
+        metadata_json=meta_dict,
+        status=PENDING_STATUS_PENDENTE,
+    )
+    db.add(pending)
+    db.commit()
+    db.refresh(pending)
+
+    logger.info(
+        "Classificador.intake: pending=#%s sha=%s cliente=%r (fila aguardando worker)",
+        pending.id, stored.sha256[:8], pending.cliente_nome,
+    )
+    return {
+        "pending_id": pending.id,
+        "status": pending.status,
+        "duplicate": False,
+        "received_at": pending.received_at.isoformat() if pending.received_at else None,
+    }
+
+
+@router.get("/pending")
+def list_pending(
+    status_filter: Optional[str] = Query(None, alias="status"),
+    cliente_nome: Optional[str] = Query(None),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """Lista a fila de PDFs pendentes (operador vê o que o robô entregou)."""
+    from app.models.classificador import ClassificadorPdfPending
+
+    q = db.query(ClassificadorPdfPending).order_by(
+        ClassificadorPdfPending.received_at.desc()
+    )
+    if status_filter:
+        q = q.filter(ClassificadorPdfPending.status == status_filter)
+    if cliente_nome:
+        q = q.filter(ClassificadorPdfPending.cliente_nome.ilike(f"%{cliente_nome}%"))
+
+    total = q.count()
+    items = q.limit(limit).offset(offset).all()
+    return {
+        "total": total,
+        "items": [
+            {
+                "id": p.id,
+                "pdf_filename_original": p.pdf_filename_original,
+                "pdf_sha256": p.pdf_sha256,
+                "pdf_bytes": p.pdf_bytes,
+                "cliente_nome": p.cliente_nome,
+                "external_id": p.external_id,
+                "cnj_hint": p.cnj_hint,
+                "produto": p.produto,
+                "source": p.source,
+                "status": p.status,
+                "lote_id": p.lote_id,
+                "processo_id": p.processo_id,
+                "error_message": p.error_message,
+                "received_at": p.received_at.isoformat() if p.received_at else None,
+                "allocated_at": p.allocated_at.isoformat() if p.allocated_at else None,
+                "processed_at": p.processed_at.isoformat() if p.processed_at else None,
+            }
+            for p in items
+        ],
+    }
 
 
 # ─── Pydantic schemas (request bodies) ────────────────────────────────
@@ -438,16 +626,116 @@ def get_filter_options(lote_id: int, db: Session = Depends(get_db)):
     }
 
 
+@router.get("/dashboard-global/filter-options")
+def get_global_filter_options(db: Session = Depends(get_db)):
+    """Distintos GLOBAIS (cross-lote) pra popular selects do painel global.
+
+    Inclui categorias, produtos, naturezas, ufs (extraidos do tribunal) e
+    patrocinios (das decisoes em patrocinio_json).
+    """
+    import re
+    from sqlalchemy import distinct
+    from app.models.classification_taxonomy import ClassificationCategory
+
+    cat_rows = (
+        db.query(ClassificadorProcesso.categoria_id, ClassificationCategory.name)
+        .join(ClassificationCategory,
+              ClassificationCategory.id == ClassificadorProcesso.categoria_id)
+        .filter(ClassificadorProcesso.categoria_id.isnot(None))
+        .distinct()
+        .order_by(ClassificationCategory.name)
+        .all()
+    )
+    categorias = [{"id": r[0], "nome": r[1]} for r in cat_rows]
+
+    produtos = [
+        r[0] for r in db.query(distinct(ClassificadorProcesso.produto))
+        .filter(ClassificadorProcesso.produto.isnot(None))
+        .order_by(ClassificadorProcesso.produto)
+        .all()
+    ]
+
+    naturezas = [
+        r[0] for r in db.query(distinct(ClassificadorProcesso.natureza_processo))
+        .filter(ClassificadorProcesso.natureza_processo.isnot(None))
+        .order_by(ClassificadorProcesso.natureza_processo)
+        .all()
+    ]
+
+    # UFs / tribunais — extrai da capa
+    _tj_re = re.compile(r"^TJ([A-Z]{2})$", re.IGNORECASE)
+    ufs_set = set()
+    tribunais_set = set()
+    rows = (
+        db.query(ClassificadorProcesso.capa_json)
+        .filter(ClassificadorProcesso.capa_json.isnot(None))
+        .all()
+    )
+    for (capa,) in rows:
+        if isinstance(capa, dict):
+            trib = (capa.get("tribunal") or "").strip().upper()
+            if trib:
+                tribunais_set.add(trib)
+                m = _tj_re.match(trib)
+                if m:
+                    ufs_set.add(m.group(1))
+                elif trib.startswith("TR") or trib in ("TST", "STJ", "STF"):
+                    ufs_set.add(trib)
+    ufs = sorted(ufs_set)
+    tribunais = sorted(tribunais_set)
+
+    # Patrocinios distintos
+    patroc_set = set()
+    rows = (
+        db.query(ClassificadorProcesso.patrocinio_json)
+        .filter(ClassificadorProcesso.patrocinio_json.isnot(None))
+        .all()
+    )
+    for (p_json,) in rows:
+        if isinstance(p_json, dict):
+            if not p_json.get("aplicavel"):
+                patroc_set.add("NAO_APLICAVEL")
+            elif p_json.get("decisao"):
+                patroc_set.add(p_json["decisao"])
+    patrocinios = sorted(patroc_set)
+
+    # Clientes distintos
+    clientes = [
+        r[0] for r in db.query(distinct(ClassificadorLote.cliente_nome))
+        .filter(ClassificadorLote.cliente_nome.isnot(None))
+        .order_by(ClassificadorLote.cliente_nome)
+        .all()
+    ]
+
+    return {
+        "categorias": categorias,
+        "produtos": produtos,
+        "naturezas": naturezas,
+        "ufs": ufs,
+        "tribunais": tribunais,
+        "patrocinios": patrocinios,
+        "clientes": clientes,
+    }
+
+
 @router.get("/dashboard-global")
 def get_dashboard_global(
     cliente_nome: Optional[str] = Query(None),
     start: Optional[date] = Query(None, description="created_at >="),
     end: Optional[date] = Query(None, description="created_at <="),
     only_classified: bool = Query(False, description="se true, so lotes CLASSIFICADO"),
+    categoria_id: Optional[int] = Query(None),
+    produto: Optional[str] = Query(None),
+    uf: Optional[str] = Query(None),
+    patrocinio: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
     """Dashboard agregado CROSS-LOTE — somatorio de todos os lotes que
     casam com os filtros.
+
+    Filtros de LOTE: cliente_nome, start/end (created_at), only_classified.
+    Filtros de PROCESSO (afetam as agregacoes mas mantem lista de lotes):
+    categoria_id, produto, uf, patrocinio.
 
     Otimizado via SQL aggregates (sum/count/avg) — nao carrega processos
     individuais em Python. Pra carteira de 100 lotes × 6k processos =
@@ -455,7 +743,7 @@ def get_dashboard_global(
     """
     from datetime import timedelta as _td
 
-    from sqlalchemy import and_, func
+    from sqlalchemy import and_, func, or_
 
     # Query base — lotes que casam com filtros
     q_lote = db.query(ClassificadorLote)
@@ -517,7 +805,39 @@ def get_dashboard_global(
     # Por categoria (cross-lote, agregado em SQL)
     from app.models.classification_taxonomy import ClassificationCategory
 
-    cat_rows = (
+    # Filtros opcionais a nivel de processo
+    def _apply_proc_filters(query):
+        if categoria_id is not None:
+            query = query.filter(ClassificadorProcesso.categoria_id == categoria_id)
+        if produto:
+            query = query.filter(ClassificadorProcesso.produto == produto)
+        if patrocinio:
+            if patrocinio == "NAO_APLICAVEL":
+                query = query.filter(
+                    or_(
+                        ClassificadorProcesso.patrocinio_json.is_(None),
+                        ClassificadorProcesso.patrocinio_json.op("->>")("aplicavel")
+                        == "false",
+                    )
+                )
+            else:
+                query = query.filter(
+                    ClassificadorProcesso.patrocinio_json.op("->>")("decisao")
+                    == patrocinio
+                )
+        # UF: filtra pelo prefixo do tribunal (TJSP, TJRJ, etc.) ou tribunal direto
+        if uf:
+            uf_upper = uf.upper()
+            # Tenta capa_json->>'tribunal' = TJ<UF> ou == tribunal
+            query = query.filter(
+                or_(
+                    ClassificadorProcesso.capa_json.op("->>")("tribunal") == f"TJ{uf_upper}",
+                    ClassificadorProcesso.capa_json.op("->>")("tribunal") == uf_upper,
+                )
+            )
+        return query
+
+    cat_q = (
         db.query(
             ClassificationCategory.name,
             func.count(ClassificadorProcesso.id),
@@ -530,6 +850,10 @@ def get_dashboard_global(
             ClassificationCategory.id == ClassificadorProcesso.categoria_id,
         )
         .filter(ClassificadorProcesso.lote_id.in_(lote_ids))
+    )
+    cat_q = _apply_proc_filters(cat_q)
+    cat_rows = (
+        cat_q
         .group_by(ClassificationCategory.name)
         .order_by(func.count(ClassificadorProcesso.id).desc())
         .all()
@@ -550,15 +874,16 @@ def get_dashboard_global(
     patroc_acc: dict[str, dict] = defaultdict(
         lambda: {"qtd": 0, "valor_estimado": 0.0, "pcond": 0.0}
     )
-    rows = (
+    patroc_q = (
         db.query(
             ClassificadorProcesso.patrocinio_json,
             ClassificadorProcesso.valor_estimado,
             ClassificadorProcesso.pcond_sugerido,
         )
         .filter(ClassificadorProcesso.lote_id.in_(lote_ids))
-        .all()
     )
+    patroc_q = _apply_proc_filters(patroc_q)
+    rows = patroc_q.all()
     for (p_json, ve, pc) in rows:
         if isinstance(p_json, dict) and p_json.get("aplicavel"):
             label = p_json.get("decisao") or "INDETERMINADO"

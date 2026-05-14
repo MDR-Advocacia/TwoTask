@@ -212,6 +212,18 @@ async def lifespan(_: FastAPI):
             "Falha ao registrar worker do Classificador no startup."
         )
 
+    # Motor dormente do Classificador — agrupa PDFs do robo em batches.
+    try:
+        from app.services.classificador.pending_worker import (
+            register_classificador_pending_job,
+        )
+
+        register_classificador_pending_job(scheduler)
+    except Exception:
+        logger.exception(
+            "Falha ao registrar motor dormente do Classificador no startup."
+        )
+
     # Cron diário de cleanup dos PDFs da habilitação (Onda 3).
     # Pega resíduos: intakes já uplodados pro GED mas com pdf_path != None,
     # e também arquivos antigos (retenção) de intakes que travaram fora
@@ -283,6 +295,9 @@ app.include_router(classifier.router, prefix="/api/v1/classifier", tags=["Classi
 # Classificador (diagnostico de carteira) — modulo paralelo a Prazos Iniciais.
 # Ver memory project_classificador.md. Fase 1 = esqueleto com endpoints stub.
 app.include_router(classificador.router, prefix="/api/v1", tags=["Classificador - Diagnostico"], dependencies=protected_dependencies)
+# Intake publico do Classificador (motor dormente) — auth via X-Classificador-Api-Key.
+# Sem JWT. Robo de entrega POSTa aqui, worker dormente agrupa em batches de 50.
+app.include_router(classificador.intake_router, prefix="/api/v1")
 app.include_router(publications.router, prefix="/api/v1/publications", tags=["Publicações"], dependencies=protected_dependencies)
 app.include_router(publication_treatment.router, prefix="/api/v1/publications", tags=["Publicações"], dependencies=protected_dependencies)
 # Intake externo: autenticado por API key (header X-Intake-Api-Key), SEM JWT.

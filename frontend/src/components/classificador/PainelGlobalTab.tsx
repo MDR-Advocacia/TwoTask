@@ -19,7 +19,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { useToast } from "@/components/ui/use-toast";
 import {
   ClassificadorDashboardGlobal,
+  ClassificadorGlobalFilterOptions,
   fetchClassificadorDashboardGlobal,
+  fetchClassificadorGlobalFilterOptions,
 } from "@/services/api";
 
 
@@ -96,6 +98,13 @@ export default function PainelGlobalTab() {
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
   const [onlyClassified, setOnlyClassified] = useState(false);
+  // Filtros novos
+  const [categoriaId, setCategoriaId] = useState<string>("");
+  const [produto, setProduto] = useState<string>("");
+  const [uf, setUf] = useState<string>("");
+  const [patrocinio, setPatrocinio] = useState<string>("");
+  // Filter options globais
+  const [filterOpts, setFilterOpts] = useState<ClassificadorGlobalFilterOptions | null>(null);
   const [data, setData] = useState<ClassificadorDashboardGlobal | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -107,6 +116,10 @@ export default function PainelGlobalTab() {
         start: start || undefined,
         end: end || undefined,
         only_classified: onlyClassified || undefined,
+        categoria_id: categoriaId ? Number(categoriaId) : undefined,
+        produto: produto || undefined,
+        uf: uf || undefined,
+        patrocinio: patrocinio || undefined,
       });
       setData(r);
     } catch (err) {
@@ -120,9 +133,12 @@ export default function PainelGlobalTab() {
     }
   };
 
-  // 1ª carga sem filtros
+  // 1ª carga sem filtros + filter options
   useEffect(() => {
     load();
+    fetchClassificadorGlobalFilterOptions()
+      .then(setFilterOpts)
+      .catch(() => { /* silencioso */ });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -220,6 +236,67 @@ export default function PainelGlobalTab() {
               </label>
             </div>
           </div>
+
+          {/* Segunda linha — filtros por processo */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+            <div>
+              <Label htmlFor="g-cat" className="text-[10px]">Categoria</Label>
+              <select
+                id="g-cat"
+                value={categoriaId}
+                onChange={e => setCategoriaId(e.target.value)}
+                className="h-8 w-full rounded border bg-background px-2 text-xs"
+              >
+                <option value="">Todas</option>
+                {(filterOpts?.categorias || []).map(c => (
+                  <option key={c.id} value={c.id}>{c.nome}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <Label htmlFor="g-prod" className="text-[10px]">Produto</Label>
+              <select
+                id="g-prod"
+                value={produto}
+                onChange={e => setProduto(e.target.value)}
+                className="h-8 w-full rounded border bg-background px-2 text-xs"
+              >
+                <option value="">Todos</option>
+                {(filterOpts?.produtos || []).map(p => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <Label htmlFor="g-uf" className="text-[10px]">UF / Tribunal</Label>
+              <select
+                id="g-uf"
+                value={uf}
+                onChange={e => setUf(e.target.value)}
+                className="h-8 w-full rounded border bg-background px-2 text-xs"
+              >
+                <option value="">Todas</option>
+                {(filterOpts?.ufs || []).map(u => (
+                  <option key={u} value={u}>{u}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <Label htmlFor="g-pat" className="text-[10px]">Patrocínio</Label>
+              <select
+                id="g-pat"
+                value={patrocinio}
+                onChange={e => setPatrocinio(e.target.value)}
+                className="h-8 w-full rounded border bg-background px-2 text-xs"
+              >
+                <option value="">Todos</option>
+                {(filterOpts?.patrocinios || []).map(p => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
           <div className="flex gap-2 mt-3">
             <Button size="sm" onClick={load} disabled={loading}>
               {loading && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}
@@ -230,6 +307,7 @@ export default function PainelGlobalTab() {
               variant="ghost"
               onClick={() => {
                 setClienteNome(""); setStart(""); setEnd(""); setOnlyClassified(false);
+                setCategoriaId(""); setProduto(""); setUf(""); setPatrocinio("");
                 setTimeout(load, 0);
               }}
             >

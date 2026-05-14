@@ -45,6 +45,7 @@ from .base_processual import (
 from .classificador import (
     ClassificadorBatch,
     ClassificadorLote,
+    ClassificadorPdfPending,
     ClassificadorPedido,
     ClassificadorProcesso,
     ClassificadorRelatorio,
