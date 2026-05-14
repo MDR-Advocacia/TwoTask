@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -78,6 +79,83 @@ def _should_flush_group(pending_list: list[ClassificadorPdfPending],
     return age.total_seconds() >= timeout_minutes * 60
 
 
+def _process_one_pdf(pending_id: int, lote_id: int) -> bool:
+    """Processa 1 PDF do pending — funcao roda em thread separada.
+
+    CADA thread tem sua propria DB session (SessionLocal). Retorna True
+    se processou com sucesso (ingest_pdf OK), False se falhou.
+
+    Tolerante a falha — qualquer excecao vira status=ERRO no pending
+    com error_message, sem propagar.
+    """
+    db = SessionLocal()
+    try:
+        pending = (
+            db.query(ClassificadorPdfPending)
+            .filter(ClassificadorPdfPending.id == pending_id)
+            .first()
+        )
+        if not pending:
+            logger.warning("pending_worker: pending=%s nao encontrado", pending_id)
+            return False
+
+        # Le bytes do storage
+        pdf_bytes = _read_pdf_from_storage(pending.pdf_path)
+        if not pdf_bytes:
+            pending.status = PENDING_STATUS_ERRO
+            pending.error_message = f"PDF nao encontrado no volume: {pending.pdf_path}"
+            pending.processed_at = datetime.now(timezone.utc)
+            db.commit()
+            return False
+
+        # Processa via ingest_pdf
+        try:
+            proc = ingest_pdf(
+                db,
+                lote_id=lote_id,
+                pdf_bytes=pdf_bytes,
+                pdf_filename=pending.pdf_filename_original or "pending.pdf",
+                source=SOURCE_PDF_ROBOT_API,
+                cnj_hint=pending.cnj_hint,
+                external_id=pending.external_id,
+                produto=pending.produto,
+                metadata={
+                    "observacao_operador": pending.observacao,
+                    "pending_id": pending.id,
+                    **(pending.metadata_json or {}),
+                } if pending.observacao or pending.metadata_json
+                else {"pending_id": pending.id},
+            )
+            pending.status = PENDING_STATUS_PROCESSADO
+            pending.processo_id = proc.id
+            pending.processed_at = datetime.now(timezone.utc)
+            db.commit()
+
+            # Descarta PDF original do pending storage (era staging
+            # temporario; ingest_pdf criou copia propria no volume).
+            try:
+                if pending.pdf_path:
+                    delete_pdf(pending.pdf_path)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "pending_worker: falha deletando staging PDF %s: %s",
+                    pending.pdf_path, exc,
+                )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "pending_worker: ingest_pdf falhou pending=%s: %s",
+                pending_id, exc,
+            )
+            pending.status = PENDING_STATUS_ERRO
+            pending.error_message = f"{type(exc).__name__}: {exc}"
+            pending.processed_at = datetime.now(timezone.utc)
+            db.commit()
+            return False
+    finally:
+        db.close()
+
+
 def _process_group(
     db, pending_list: list[ClassificadorPdfPending], batch_size: int,
 ) -> Optional[int]:
@@ -120,57 +198,38 @@ def _process_group(
         p.allocated_at = now
     db.commit()
 
-    # 3. Pra cada PDF: le bytes + ingest_pdf
-    sucessos = 0
-    for p in pending_list:
-        pdf_bytes = _read_pdf_from_storage(p.pdf_path)
-        if not pdf_bytes:
-            p.status = PENDING_STATUS_ERRO
-            p.error_message = f"PDF nao encontrado no volume: {p.pdf_path}"
-            p.processed_at = datetime.now(timezone.utc)
-            db.commit()
-            continue
+    # 3. Pra cada PDF: le bytes + ingest_pdf — em PARALELO via ThreadPoolExecutor
+    # Cada thread tem sua propria DB session (SQLAlchemy nao e' thread-safe).
+    # Concorrencia configuravel via setting classificador_pending_worker_concurrency.
+    pending_ids = [p.id for p in pending_list]
+    concurrency = max(1, settings.classificador_pending_worker_concurrency)
+    t0 = datetime.now(timezone.utc)
 
-        try:
-            proc = ingest_pdf(
-                db,
-                lote_id=lote.id,
-                pdf_bytes=pdf_bytes,
-                pdf_filename=p.pdf_filename_original or "pending.pdf",
-                source=SOURCE_PDF_ROBOT_API,
-                cnj_hint=p.cnj_hint,
-                external_id=p.external_id,
-                produto=p.produto,
-                metadata={"observacao_operador": p.observacao,
-                          "pending_id": p.id,
-                          **(p.metadata_json or {})} if p.observacao or p.metadata_json
-                else {"pending_id": p.id},
-            )
-            p.status = PENDING_STATUS_PROCESSADO
-            p.processo_id = proc.id
-            p.processed_at = datetime.now(timezone.utc)
-            sucessos += 1
-            # Descarta o PDF do pending storage (ja foi processado +
-            # ingest_pdf criou copia propria no volume com seu sha;
-            # esse aqui era so' staging temporario).
+    results: list[bool] = []
+    with ThreadPoolExecutor(max_workers=concurrency,
+                             thread_name_prefix="pending-worker") as pool:
+        futures = {
+            pool.submit(_process_one_pdf, pid, lote.id): pid
+            for pid in pending_ids
+        }
+        for fut in as_completed(futures):
+            pid = futures[fut]
             try:
-                if p.pdf_path:
-                    delete_pdf(p.pdf_path)
+                ok = fut.result()
+                results.append(ok)
             except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "pending_worker: falha deletando pending PDF %s: %s",
-                    p.pdf_path, exc,
+                logger.exception(
+                    "pending_worker: thread crashou pending=%s: %s", pid, exc,
                 )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("pending_worker: ingest_pdf falhou pra pending=%s", p.id)
-            p.status = PENDING_STATUS_ERRO
-            p.error_message = f"{type(exc).__name__}: {exc}"
-            p.processed_at = datetime.now(timezone.utc)
-        db.commit()
+                results.append(False)
 
+    sucessos = sum(1 for r in results if r)
+    elapsed = (datetime.now(timezone.utc) - t0).total_seconds()
     logger.info(
-        "pending_worker: lote #%s — %d/%d PDFs processados OK",
-        lote.id, sucessos, len(pending_list),
+        "pending_worker: lote #%s — %d/%d PDFs OK em %.1fs (%d threads, "
+        "%.1fs/PDF avg)",
+        lote.id, sucessos, len(pending_list), elapsed, concurrency,
+        elapsed / max(1, len(pending_list)),
     )
 
     # 4. Auto-classify se habilitado E houver algo pra classificar
@@ -271,9 +330,11 @@ def register_classificador_pending_job(scheduler: BackgroundScheduler) -> None:
         next_run_time=datetime.now(timezone.utc),
     )
     logger.info(
-        "pending_worker: registrado (interval=%ds, batch_size=%d, timeout=%dmin, auto_classify=%s)",
+        "pending_worker: registrado (interval=%ds, batch_size=%d, timeout=%dmin, "
+        "concurrency=%d, auto_classify=%s)",
         interval,
         settings.classificador_batch_size,
         settings.classificador_batch_timeout_minutes,
+        settings.classificador_pending_worker_concurrency,
         settings.classificador_pending_auto_classify,
     )

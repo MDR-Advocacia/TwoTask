@@ -133,6 +133,13 @@ class Settings(BaseSettings):
     classificador_pending_worker_enabled: bool = False
     # Intervalo entre ticks do worker (segundos).
     classificador_pending_worker_interval_seconds: int = 60
+    # Concorrencia interna do worker: quantos PDFs processa em paralelo
+    # dentro de UM mesmo lote. Cada thread = 1 PDF (extract + compress
+    # + save). Padrao 4 e' conservador pra nao estourar CPU em PDFs
+    # grandes; pode subir pra 8-12 se tiver mais cpu disponivel.
+    # IMPORTANTE: cada thread cria sua propria SessionLocal — DB nao
+    # bottleneca, mas memoria sim (cada PDF de 30MB ocupa RAM).
+    classificador_pending_worker_concurrency: int = 4
     # Auto-classify: se True, dispara classify do lote logo apos criar.
     classificador_pending_auto_classify: bool = True
 
