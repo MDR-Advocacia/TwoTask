@@ -24,7 +24,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Loader2, FileUp, Workflow, BarChart3, ScanSearch, Trash2, AlertCircle, FilePlus2, Sparkles, Eye, Inbox, Eraser, Users } from "lucide-react";
+import { Loader2, FileUp, Workflow, BarChart3, ScanSearch, Trash2, AlertCircle, FilePlus2, Sparkles, Eye, Inbox, Eraser, Users, RefreshCw } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
   ClassificadorLoteSummary,
@@ -32,6 +32,7 @@ import {
   classifyClassificadorLote,
   cleanupClassificadorPedidosDuplicados,
   backfillClassificadorPartes,
+  reExtractClassificadorPartes,
   createClassificadorLoteFromPi,
   createClassificadorLoteUpload,
   deleteClassificadorLote,
@@ -623,6 +624,7 @@ function LotesHistoricoTable({
   const [classifyingId, setClassifyingId] = useState<number | null>(null);
   const [cleaningId, setCleaningId] = useState<number | null>(null);
   const [backfillingId, setBackfillingId] = useState<number | null>(null);
+  const [reextractingId, setReextractingId] = useState<number | null>(null);
   const [uploadDialogLote, setUploadDialogLote] = useState<ClassificadorLoteSummary | null>(null);
   const [detailDialogLote, setDetailDialogLote] = useState<ClassificadorLoteSummary | null>(null);
 
@@ -690,6 +692,36 @@ function LotesHistoricoTable({
       alive = false;
     };
   }, [page, pageSize, reloadKey, toast]);
+
+  const handleReExtractPartes = async (lote: ClassificadorLoteSummary) => {
+    if (!confirm(
+      `Re-extrair partes (e classe/vara/valor) do lote #${lote.id} (${lote.nome})?\n\n` +
+      `Util pra processos cujo PDF foi subido ANTES do deploy que adicionou ` +
+      `capa rica (capa_json antigo so' tinha 'tribunal'). Re-extrai do texto ` +
+      `cru armazenado em integra_json. Operacao segura: nao re-processa PDF.`
+    )) return;
+    setReextractingId(lote.id);
+    try {
+      const r = await reExtractClassificadorPartes(lote.id);
+      toast({
+        title: "Re-extracao concluida",
+        description:
+          `${r.atualizados}/${r.total_processos_no_lote} processo${r.atualizados === 1 ? "" : "s"} ` +
+          `com partes extraidas. ${r.com_capa_enriquecida} capa${r.com_capa_enriquecida === 1 ? "" : "s"} ` +
+          `enriquecida${r.com_capa_enriquecida === 1 ? "" : "s"}.` +
+          (r.sem_texto > 0 ? ` ${r.sem_texto} sem texto cru.` : ""),
+      });
+      onChanged();
+    } catch (err) {
+      toast({
+        title: "Falha na re-extracao",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setReextractingId(null);
+    }
+  };
 
   const handleBackfillPartes = async (lote: ClassificadorLoteSummary) => {
     if (!confirm(
@@ -878,6 +910,19 @@ function LotesHistoricoTable({
                                 <Loader2 className="h-4 w-4 animate-spin" />
                               ) : (
                                 <Users className="h-4 w-4" />
+                              )}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleReExtractPartes(lote)}
+                              disabled={reextractingId === lote.id}
+                              title="Re-extrair partes do texto cru (PDFs subidos antes do deploy de capa rica)"
+                            >
+                              {reextractingId === lote.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <RefreshCw className="h-4 w-4" />
                               )}
                             </Button>
                             <Button

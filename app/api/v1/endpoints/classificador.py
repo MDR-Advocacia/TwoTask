@@ -1760,6 +1760,113 @@ def recapture_lote_from_pi(
     }
 
 
+@router.post("/lotes/{lote_id}/re-extract-partes")
+def re_extract_partes_lote(
+    lote_id: int,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth_security.get_current_user),
+):
+    """Re-extrai polo_ativo / polo_passivo do texto cru ja armazenado.
+
+    Hotfix pra processos cujos PDFs foram subidos ANTES do deploy que
+    adicionou capa rica no EsajExtractor. Esses processos tem:
+      - capa_json antigo (so' `{"tribunal": "TJSP"}`) → backfill nao ajuda
+      - integra_json.texto_cru com o texto bruto da peca → temos onde extrair
+
+    Esse endpoint roda os helpers `_extract_polo_ativo` / `_extract_polo_passivo`
+    do EsajExtractor em cima do `texto_cru` e SOBRESCREVE proc.polo_ativo
+    e proc.polo_passivo. NAO mexe em capa_json (preserva snapshot original).
+
+    Idempotente: pode rodar varias vezes — sempre re-extrai do mesmo texto.
+    """
+    from app.services.prazos_iniciais.pdf_extractor.extractors.esaj import (
+        _extract_polo_ativo,
+        _extract_polo_passivo,
+        _extract_vara,
+        _extract_classe,
+        _extract_valor_causa,
+    )
+
+    lote = db.query(ClassificadorLote).filter(ClassificadorLote.id == lote_id).first()
+    if lote is None:
+        raise HTTPException(status_code=404, detail=f"Lote #{lote_id} nao encontrado.")
+
+    procs = (
+        db.query(ClassificadorProcesso)
+        .filter(ClassificadorProcesso.lote_id == lote_id)
+        .all()
+    )
+
+    atualizados = 0
+    sem_texto = 0
+    com_partes_extraidas = 0
+    com_capa_enriquecida = 0
+    for p in procs:
+        # Pega texto cru do integra_json
+        texto = None
+        if isinstance(p.integra_json, dict):
+            texto = p.integra_json.get("texto_cru")
+        if not texto or len(texto) < 100:
+            sem_texto += 1
+            continue
+
+        # Re-extrai partes
+        pa = _extract_polo_ativo(texto)
+        pp = _extract_polo_passivo(texto)
+        if pa or pp:
+            p.polo_ativo = pa or p.polo_ativo
+            p.polo_passivo = pp or p.polo_passivo
+            com_partes_extraidas += 1
+
+        # Enriquece capa_json com classe/vara/valor se estiverem faltando
+        if isinstance(p.capa_json, dict):
+            nova_capa = dict(p.capa_json)
+            enriqueceu = False
+            if not nova_capa.get("classe"):
+                classe = _extract_classe(texto)
+                if classe:
+                    nova_capa["classe"] = classe
+                    enriqueceu = True
+            if not nova_capa.get("vara"):
+                vara = _extract_vara(texto)
+                if vara:
+                    nova_capa["vara"] = vara
+                    enriqueceu = True
+            if not nova_capa.get("valor_causa"):
+                valor = _extract_valor_causa(texto)
+                if valor:
+                    nova_capa["valor_causa"] = valor
+                    enriqueceu = True
+            # Reforca polo_*  no proprio capa_json (consistencia)
+            if pa is not None and not nova_capa.get("polo_ativo"):
+                nova_capa["polo_ativo"] = pa
+                enriqueceu = True
+            if pp is not None and not nova_capa.get("polo_passivo"):
+                nova_capa["polo_passivo"] = pp
+                enriqueceu = True
+            if enriqueceu:
+                p.capa_json = nova_capa
+                com_capa_enriquecida += 1
+
+        if pa or pp:
+            atualizados += 1
+
+    db.commit()
+    logger.info(
+        "Classificador: re-extract-partes lote=%s, %d processos atualizados (%d sem texto, %d capa enriquecida)",
+        lote_id, atualizados, sem_texto, com_capa_enriquecida,
+    )
+
+    return {
+        "lote_id": lote_id,
+        "total_processos_no_lote": len(procs),
+        "atualizados": atualizados,
+        "com_partes_extraidas": com_partes_extraidas,
+        "com_capa_enriquecida": com_capa_enriquecida,
+        "sem_texto": sem_texto,
+    }
+
+
 @router.post("/lotes/{lote_id}/backfill-partes")
 def backfill_partes_lote(
     lote_id: int,

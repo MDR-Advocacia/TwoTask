@@ -149,6 +149,99 @@ function JsonPre({ value }: { value: unknown }) {
   );
 }
 
+// ─── Apresentacao de Partes (polo ativo/passivo) ────────────────────
+// Aceita list[{nome, documento, papel, advogados, pareamento_mecanico?}],
+// string legacy ("NOMES: ... | CNPJs: ..."), ou null. Renderiza tabela
+// limpa em vez de JSON cru.
+
+type ParteItem = {
+  nome?: string | null;
+  documento?: string | null;
+  papel?: string | null;
+  advogados?: string[] | null;
+  pareamento_mecanico?: string | null;
+};
+
+function PartesList({ value, polo }: { value: unknown; polo: "ativo" | "passivo" }) {
+  // Normaliza pra array
+  let items: ParteItem[] = [];
+  let raw_string: string | null = null;
+
+  if (value === null || value === undefined) {
+    items = [];
+  } else if (typeof value === "string") {
+    raw_string = value;
+  } else if (Array.isArray(value)) {
+    items = value as ParteItem[];
+  } else {
+    raw_string = JSON.stringify(value);
+  }
+
+  if (raw_string) {
+    return (
+      <div className="text-xs text-muted-foreground italic">
+        {raw_string}
+      </div>
+    );
+  }
+
+  if (items.length === 0) {
+    return (
+      <div className="text-xs text-muted-foreground italic">
+        Nao informado.
+      </div>
+    );
+  }
+
+  // Detecta se algum item tem pareamento incerto (eSAJ layout bagunca)
+  const algumIncerto = items.some(
+    p => p.pareamento_mecanico === "nome_isolado" || p.pareamento_mecanico === "cnpj_isolado"
+  );
+
+  return (
+    <div>
+      {algumIncerto && (
+        <div className="text-[10px] text-amber-600 italic mb-1">
+          Pareamento nome/CNPJ incerto (layout 2-colunas eSAJ). Confira pela lista Master.
+        </div>
+      )}
+      <div className="space-y-1">
+        {items.map((p, i) => (
+          <div
+            key={i}
+            className="flex items-baseline gap-2 rounded border bg-card px-2 py-1.5 text-xs"
+          >
+            <span className="flex-1 truncate">
+              {p.nome ? (
+                <span className="font-medium">{p.nome}</span>
+              ) : (
+                <span className="italic text-muted-foreground">(sem nome)</span>
+              )}
+              {p.advogados && p.advogados.length > 0 && (
+                <span className="ml-2 text-[10px] text-muted-foreground">
+                  · adv: {p.advogados.slice(0, 3).join(", ")}
+                  {p.advogados.length > 3 ? ` +${p.advogados.length - 3}` : ""}
+                </span>
+              )}
+            </span>
+            <span className="font-mono text-[10px] text-muted-foreground tabular-nums">
+              {p.documento || "—"}
+            </span>
+            {p.papel && (
+              <Badge
+                variant="outline"
+                className="text-[9px] px-1.5 py-0 font-normal"
+              >
+                {p.papel}
+              </Badge>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 
 // ─── Componente principal ────────────────────────────────────────────
 
@@ -262,15 +355,21 @@ export default function ProcessoDetailDrawer({
             </Section>
 
             {/* ─── 2. Partes ─── */}
-            <Section icon={User} title="Partes" defaultOpen={false}>
-              <div className="space-y-2">
+            <Section icon={User} title="Partes" defaultOpen={true}>
+              <div className="space-y-3">
                 <div>
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Polo ativo</div>
-                  <JsonPre value={data.polo_ativo} />
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1.5">
+                    Polo ativo {Array.isArray(data.polo_ativo) && data.polo_ativo.length > 0
+                      ? `(${data.polo_ativo.length})` : ""}
+                  </div>
+                  <PartesList value={data.polo_ativo} polo="ativo" />
                 </div>
                 <div>
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Polo passivo</div>
-                  <JsonPre value={data.polo_passivo} />
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1.5">
+                    Polo passivo {Array.isArray(data.polo_passivo) && data.polo_passivo.length > 0
+                      ? `(${data.polo_passivo.length})` : ""}
+                  </div>
+                  <PartesList value={data.polo_passivo} polo="passivo" />
                 </div>
               </div>
             </Section>

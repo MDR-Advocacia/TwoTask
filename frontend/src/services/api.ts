@@ -2438,6 +2438,23 @@ export async function backfillClassificadorPartes(
   return expectJson(res);
 }
 
+export async function reExtractClassificadorPartes(
+  loteId: number,
+): Promise<{
+  lote_id: number;
+  total_processos_no_lote: number;
+  atualizados: number;
+  com_partes_extraidas: number;
+  com_capa_enriquecida: number;
+  sem_texto: number;
+}> {
+  const res = await apiFetch(
+    `/api/v1/classificador/lotes/${loteId}/re-extract-partes`,
+    { method: "POST" },
+  );
+  return expectJson(res);
+}
+
 export async function fetchClassificadorBatches(
   loteId: number,
 ): Promise<{ total: number; items: ClassificadorBatchSummary[] }> {
