@@ -16,7 +16,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Loader2, RefreshCw, FileText, Sparkles, FileSpreadsheet, Download } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Loader2, RefreshCw, FileText, Sparkles, FileSpreadsheet, Download, Search, X } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
   ClassificadorBatchSummary,
@@ -30,6 +31,7 @@ import {
   generateClassificadorRelatorio,
   refreshClassificadorBatch,
 } from "@/services/api";
+import ProcessoDetailDrawer from "@/components/classificador/ProcessoDetailDrawer";
 
 
 interface LoteDetailDialogProps {
@@ -85,6 +87,28 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
   const [generatingRel, setGeneratingRel] = useState<"XLSX" | "PDF" | null>(null);
   const [downloadingRel, setDownloadingRel] = useState<number | null>(null);
 
+  // Filtros + busca por CNJ
+  const [cnjQuery, setCnjQuery] = useState("");
+  const [cnjQueryDebounced, setCnjQueryDebounced] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string>("");
+  const [sourceFilter, setSourceFilter] = useState<string>("");
+  const [poloFilter, setPoloFilter] = useState<string>("");
+
+  // Drawer de detalhe do processo
+  const [drawerProcessoId, setDrawerProcessoId] = useState<number | null>(null);
+
+  // Debounce do CNJ search (300ms)
+  useEffect(() => {
+    const t = setTimeout(() => setCnjQueryDebounced(cnjQuery.trim()), 300);
+    return () => clearTimeout(t);
+  }, [cnjQuery]);
+
+  // Reset page quando filtro muda
+  useEffect(() => {
+    setProcPage(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cnjQueryDebounced, statusFilter, sourceFilter, poloFilter]);
+
   const PAGE_SIZE = 50;
   const procTotalPages = Math.max(1, Math.ceil(procTotal / PAGE_SIZE));
 
@@ -95,6 +119,10 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
       const r = await fetchClassificadorProcessos(lote.id, {
         limit: PAGE_SIZE,
         offset: (procPage - 1) * PAGE_SIZE,
+        cnj_match: cnjQueryDebounced || undefined,
+        status: statusFilter || undefined,
+        source: sourceFilter || undefined,
+        polo: poloFilter || undefined,
       });
       setProcessos(r.items);
       setProcTotal(r.total);
@@ -107,7 +135,7 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
     } finally {
       setLoadingProc(false);
     }
-  }, [lote, procPage, toast]);
+  }, [lote, procPage, cnjQueryDebounced, statusFilter, sourceFilter, poloFilter, toast]);
 
   const loadBatches = useCallback(async () => {
     if (!lote) return;
@@ -255,6 +283,76 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
 
           {/* ─── Processos ─── */}
           <TabsContent value="processos" className="flex-1 overflow-auto mt-3">
+            {/* Barra de busca + filtros */}
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              <div className="relative flex-1 min-w-[200px]">
+                <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                <Input
+                  value={cnjQuery}
+                  onChange={e => setCnjQuery(e.target.value)}
+                  placeholder="Buscar por CNJ..."
+                  className="h-8 pl-7 pr-7 text-xs"
+                />
+                {cnjQuery && (
+                  <button
+                    onClick={() => setCnjQuery("")}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+              <select
+                value={statusFilter}
+                onChange={e => setStatusFilter(e.target.value)}
+                className="h-8 rounded border bg-background px-2 text-xs"
+              >
+                <option value="">Status (todos)</option>
+                <option value="PENDENTE">Pendente</option>
+                <option value="CAPTURANDO_L1">Capturando</option>
+                <option value="PRONTO_PARA_CLASSIFICAR">Pronto</option>
+                <option value="CLASSIFICADO">Classificado</option>
+                <option value="ERRO_CAPTURA">Erro captura</option>
+                <option value="ERRO_CLASSIFICACAO">Erro IA</option>
+              </select>
+              <select
+                value={sourceFilter}
+                onChange={e => setSourceFilter(e.target.value)}
+                className="h-8 rounded border bg-background px-2 text-xs"
+              >
+                <option value="">Source (todos)</option>
+                <option value="PDF_UPLOAD">PDF Upload</option>
+                <option value="PDF_ROBOT_API">PDF Robot</option>
+                <option value="UPLOAD_XLSX">XLSX</option>
+                <option value="PRAZOS_INICIAIS">Prazos Iniciais</option>
+                <option value="API_JSON">API JSON</option>
+              </select>
+              <select
+                value={poloFilter}
+                onChange={e => setPoloFilter(e.target.value)}
+                className="h-8 rounded border bg-background px-2 text-xs"
+              >
+                <option value="">Polo (todos)</option>
+                <option value="autor">Autor</option>
+                <option value="reu">Réu</option>
+                <option value="ambos">Ambos</option>
+              </select>
+              {(cnjQueryDebounced || statusFilter || sourceFilter || poloFilter) && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setCnjQuery("");
+                    setStatusFilter("");
+                    setSourceFilter("");
+                    setPoloFilter("");
+                  }}
+                >
+                  Limpar
+                </Button>
+              )}
+            </div>
+
             {loadingProc && processos.length === 0 ? (
               <div className="py-12 text-center text-sm text-muted-foreground">
                 <Loader2 className="inline h-4 w-4 animate-spin mr-2" />
@@ -287,7 +385,12 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
                           label: p.status, variant: "outline" as const,
                         };
                         return (
-                          <tr key={p.id} className="border-b hover:bg-muted/30">
+                          <tr
+                            key={p.id}
+                            className="border-b hover:bg-muted/40 cursor-pointer"
+                            onClick={() => setDrawerProcessoId(p.id)}
+                            title="Click pra ver detalhe completo"
+                          >
                             <td className="py-1.5 pr-2 font-mono">#{p.id}</td>
                             <td className="py-1.5 pr-2 font-mono">{p.cnj_number || "—"}</td>
                             <td className="py-1.5 pr-2 text-muted-foreground">{p.source}</td>
@@ -533,6 +636,15 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
           </TabsContent>
         </Tabs>
       </DialogContent>
+
+      {/* Drawer de detalhe de processo (fora do DialogContent pra evitar
+          conflito de overlay) */}
+      <ProcessoDetailDrawer
+        loteId={lote?.id ?? null}
+        processoId={drawerProcessoId}
+        open={drawerProcessoId !== null}
+        onOpenChange={(v) => !v && setDrawerProcessoId(null)}
+      />
     </Dialog>
   );
 }

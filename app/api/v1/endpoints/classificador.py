@@ -359,6 +359,139 @@ def delete_lote(
     db.commit()
 
 
+@router.get("/lotes/{lote_id}/processos/{processo_id}")
+def get_processo_detail(
+    lote_id: int,
+    processo_id: int,
+    db: Session = Depends(get_db),
+):
+    """Detalhe completo de 1 processo dentro do lote — com pedidos +
+    nomes resolvidos de categoria/subcategoria (JOIN).
+
+    Reuso da estrutura do `_serialize_lote` mas pra processos. Retorna
+    TODOS os campos pro Drawer renderizar agrupado por secao.
+    """
+    from app.models.classificador import ClassificadorPedido
+    from app.models.classification_taxonomy import (
+        ClassificationCategory,
+        ClassificationSubcategory,
+    )
+
+    proc = (
+        db.query(ClassificadorProcesso)
+        .filter(ClassificadorProcesso.lote_id == lote_id)
+        .filter(ClassificadorProcesso.id == processo_id)
+        .first()
+    )
+    if proc is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Processo #{processo_id} nao encontrado no lote #{lote_id}.",
+        )
+
+    # Resolve nomes categoria/subcategoria
+    cat_nome = None
+    if proc.categoria_id:
+        cat = (
+            db.query(ClassificationCategory)
+            .filter(ClassificationCategory.id == proc.categoria_id)
+            .first()
+        )
+        cat_nome = cat.name if cat else None
+    sub_nome = None
+    if proc.subcategoria_id:
+        sub = (
+            db.query(ClassificationSubcategory)
+            .filter(ClassificationSubcategory.id == proc.subcategoria_id)
+            .first()
+        )
+        sub_nome = sub.name if sub else None
+
+    # Pedidos 1:N
+    pedidos = (
+        db.query(ClassificadorPedido)
+        .filter(ClassificadorPedido.processo_id == processo_id)
+        .order_by(ClassificadorPedido.id.asc())
+        .all()
+    )
+
+    def _f(v):
+        return float(v) if v is not None else None
+
+    return {
+        "id": proc.id,
+        "lote_id": proc.lote_id,
+        "source": proc.source,
+        "source_intake_id": proc.source_intake_id,
+        "cnj_number": proc.cnj_number,
+        "lawsuit_id": proc.lawsuit_id,
+        "external_id": proc.external_id,
+
+        # Capa + integra
+        "capa_json": proc.capa_json,
+        "polo_ativo": proc.polo_ativo,
+        "polo_passivo": proc.polo_passivo,
+        "integra_json": proc.integra_json,
+        "metadata_json": proc.metadata_json,
+        "natureza_processo": proc.natureza_processo,
+        "produto": proc.produto,
+
+        # Patrocinio (snapshot)
+        "patrocinio_json": proc.patrocinio_json,
+
+        # Classificacao IA
+        "categoria_id": proc.categoria_id,
+        "categoria_nome": cat_nome,
+        "subcategoria_id": proc.subcategoria_id,
+        "subcategoria_nome": sub_nome,
+        "polo": proc.polo,
+        "valor_estimado": _f(proc.valor_estimado),
+        "pcond_sugerido": _f(proc.pcond_sugerido),
+        "prob_exito": _f(proc.prob_exito),
+        "justificativa": proc.justificativa,
+        "analise_estrategica": proc.analise_estrategica,
+        "confianca": _f(proc.confianca),
+
+        # Bloco completo da IA (pra ler sentenca/transito/primeira_hab/etc)
+        "classificacao_response_json": proc.classificacao_response_json,
+        "contestacao_existente_json": proc.contestacao_existente_json,
+
+        # PDF + extracao mecanica
+        "pdf_path": proc.pdf_path,
+        "pdf_sha256": proc.pdf_sha256,
+        "pdf_bytes": proc.pdf_bytes,
+        "pdf_filename_original": proc.pdf_filename_original,
+        "pdf_extraction_failed": proc.pdf_extraction_failed,
+        "extractor_used": proc.extractor_used,
+        "extraction_confidence": proc.extraction_confidence,
+
+        # Status + timestamps
+        "status": proc.status,
+        "error_message": proc.error_message,
+        "classification_batch_id": proc.classification_batch_id,
+        "data_captura_l1": proc.data_captura_l1.isoformat() if proc.data_captura_l1 else None,
+        "data_classificacao": proc.data_classificacao.isoformat() if proc.data_classificacao else None,
+        "created_at": proc.created_at.isoformat() if proc.created_at else None,
+        "updated_at": proc.updated_at.isoformat() if proc.updated_at else None,
+
+        # Pedidos (1:N)
+        "pedidos": [
+            {
+                "id": p.id,
+                "tipo_pedido": p.tipo_pedido,
+                "natureza": p.natureza,
+                "valor_indicado": _f(p.valor_indicado),
+                "valor_estimado": _f(p.valor_estimado),
+                "fundamentacao_valor": p.fundamentacao_valor,
+                "probabilidade_perda": p.probabilidade_perda,
+                "aprovisionamento": _f(p.aprovisionamento),
+                "fundamentacao_risco": p.fundamentacao_risco,
+            }
+            for p in pedidos
+        ],
+    }
+
+
 @router.get("/lotes/{lote_id}/processos")
 def list_processos(
     lote_id: int,

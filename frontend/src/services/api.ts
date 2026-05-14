@@ -1912,6 +1912,75 @@ export async function fetchClassificadorLote(
   return expectJson<ClassificadorLoteSummary>(res);
 }
 
+// Detalhe completo do processo (pro Drawer)
+export interface ClassificadorPedidoDetail {
+  id: number;
+  tipo_pedido: string;
+  natureza: string | null;
+  valor_indicado: number | null;
+  valor_estimado: number | null;
+  fundamentacao_valor: string | null;
+  probabilidade_perda: string | null;
+  aprovisionamento: number | null;
+  fundamentacao_risco: string | null;
+}
+
+export interface ClassificadorProcessoDetail {
+  id: number;
+  lote_id: number;
+  source: string;
+  source_intake_id: number | null;
+  cnj_number: string | null;
+  lawsuit_id: number | null;
+  external_id: string | null;
+  capa_json: Record<string, unknown> | null;
+  polo_ativo: unknown | null;
+  polo_passivo: unknown | null;
+  integra_json: Record<string, unknown> | null;
+  metadata_json: Record<string, unknown> | null;
+  natureza_processo: string | null;
+  produto: string | null;
+  patrocinio_json: Record<string, unknown> | null;
+  categoria_id: number | null;
+  categoria_nome: string | null;
+  subcategoria_id: number | null;
+  subcategoria_nome: string | null;
+  polo: string | null;
+  valor_estimado: number | null;
+  pcond_sugerido: number | null;
+  prob_exito: number | null;
+  justificativa: string | null;
+  analise_estrategica: string | null;
+  confianca: number | null;
+  classificacao_response_json: Record<string, unknown> | null;
+  contestacao_existente_json: Record<string, unknown> | null;
+  pdf_path: string | null;
+  pdf_sha256: string | null;
+  pdf_bytes: number | null;
+  pdf_filename_original: string | null;
+  pdf_extraction_failed: boolean;
+  extractor_used: string | null;
+  extraction_confidence: string | null;
+  status: string;
+  error_message: string | null;
+  classification_batch_id: number | null;
+  data_captura_l1: string | null;
+  data_classificacao: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  pedidos: ClassificadorPedidoDetail[];
+}
+
+export async function fetchClassificadorProcessoDetail(
+  loteId: number,
+  processoId: number,
+): Promise<ClassificadorProcessoDetail> {
+  const res = await apiFetch(
+    `/api/v1/classificador/lotes/${loteId}/processos/${processoId}`,
+  );
+  return expectJson<ClassificadorProcessoDetail>(res);
+}
+
 export async function fetchClassificadorProcessos(
   loteId: number,
   params: {
