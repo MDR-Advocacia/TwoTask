@@ -1912,6 +1912,71 @@ export async function fetchClassificadorLote(
   return expectJson<ClassificadorLoteSummary>(res);
 }
 
+// Dashboard agregado por lote (pro aba "Visao geral")
+export interface ClassificadorDashboardKpis {
+  total_processos: number;
+  total_classificados: number;
+  total_com_erro: number;
+  valor_total_causa: number | null;
+  valor_total_estimado: number | null;
+  pcond_total: number | null;
+  prob_exito_medio: number | null;
+}
+
+export interface ClassificadorDashboardBucket {
+  label: string;
+  qtd: number;
+  valor_estimado: number | null;
+  pcond: number | null;
+  prob_exito_medio: number | null;
+}
+
+export interface ClassificadorDashboardTopProcesso {
+  id: number;
+  cnj_number: string | null;
+  tribunal: string | null;
+  valor_estimado: number | null;
+  pcond_sugerido: number | null;
+  prob_exito: number | null;
+  categoria: string | null;
+}
+
+export interface ClassificadorDashboardData {
+  lote: {
+    id: number;
+    nome: string;
+    cliente_nome: string | null;
+    status: string;
+    snapshot_at: string | null;
+    analise_estrategica_carteira: string | null;
+  };
+  kpis: ClassificadorDashboardKpis;
+  por_categoria: ClassificadorDashboardBucket[];
+  por_subcategoria: ClassificadorDashboardBucket[];
+  por_patrocinio: ClassificadorDashboardBucket[];
+  por_produto: ClassificadorDashboardBucket[];
+  por_uf: ClassificadorDashboardBucket[];
+  por_tribunal: ClassificadorDashboardBucket[];
+  top_n_valor: ClassificadorDashboardTopProcesso[];
+  pedidos_por_tipo: Array<{
+    tipo_pedido: string;
+    qtd: number;
+    valor_indicado: number | null;
+    valor_estimado: number | null;
+    pcond: number | null;
+  }>;
+  sentencas_resumo: Record<string, number>;
+  transito_julgado_resumo: { transitados: number; nao_transitados: number };
+  generated_at: string;
+}
+
+export async function fetchClassificadorDashboardData(
+  loteId: number,
+): Promise<ClassificadorDashboardData> {
+  const res = await apiFetch(`/api/v1/classificador/lotes/${loteId}/dashboard-data`);
+  return expectJson<ClassificadorDashboardData>(res);
+}
+
 // Detalhe completo do processo (pro Drawer)
 export interface ClassificadorPedidoDetail {
   id: number;

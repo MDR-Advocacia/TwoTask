@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
-import { Loader2, RefreshCw, FileText, Sparkles, FileSpreadsheet, Download, Search, X } from "lucide-react";
+import { Loader2, RefreshCw, FileText, Sparkles, FileSpreadsheet, Download, Search, X, LayoutDashboard } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
   ClassificadorBatchSummary,
@@ -32,6 +32,7 @@ import {
   refreshClassificadorBatch,
 } from "@/services/api";
 import ProcessoDetailDrawer from "@/components/classificador/ProcessoDetailDrawer";
+import LoteVisaoTab from "@/components/classificador/LoteVisaoTab";
 
 
 interface LoteDetailDialogProps {
@@ -74,7 +75,7 @@ function fmtDateTime(iso: string | null | undefined): string {
 
 export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetailDialogProps) {
   const { toast } = useToast();
-  const [tab, setTab] = useState<string>("processos");
+  const [tab, setTab] = useState<string>("visao");
   const [processos, setProcessos] = useState<ClassificadorProcessoSummary[]>([]);
   const [procTotal, setProcTotal] = useState(0);
   const [procPage, setProcPage] = useState(1);
@@ -267,6 +268,10 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
 
         <Tabs value={tab} onValueChange={setTab} className="flex-1 overflow-hidden flex flex-col">
           <TabsList>
+            <TabsTrigger value="visao" className="gap-2">
+              <LayoutDashboard className="h-4 w-4" />
+              Visão geral
+            </TabsTrigger>
             <TabsTrigger value="processos" className="gap-2">
               <FileText className="h-4 w-4" />
               Processos ({procTotal || lote.total_processos})
@@ -280,6 +285,11 @@ export default function LoteDetailDialog({ lote, open, onOpenChange }: LoteDetai
               Relatorios ({relatorios.length})
             </TabsTrigger>
           </TabsList>
+
+          {/* ─── Visão geral (dashboard) ─── */}
+          <TabsContent value="visao" className="flex-1 overflow-auto mt-3">
+            <LoteVisaoTab loteId={lote?.id ?? null} active={tab === "visao"} />
+          </TabsContent>
 
           {/* ─── Processos ─── */}
           <TabsContent value="processos" className="flex-1 overflow-auto mt-3">

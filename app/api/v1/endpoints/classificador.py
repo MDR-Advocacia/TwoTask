@@ -359,6 +359,40 @@ def delete_lote(
     db.commit()
 
 
+@router.get("/lotes/{lote_id}/dashboard-data")
+def get_dashboard_data(
+    lote_id: int,
+    db: Session = Depends(get_db),
+):
+    """Payload agregado pro Dashboard interativo (recharts) do lote.
+
+    Reusa `report_data.build_report_data` (mesmo agregador usado pro
+    XLSX/PDF) — retorna KPIs + recortes por categoria/patrocinio/produto/
+    UF/tribunal + top 10 + pedidos por tipo + sentencas/transito.
+
+    Sem cache — payload e' barato (<200ms pra carteira de 6k processos).
+    Se ficar lento em prod, adicionar cache em redis com TTL 60s.
+    """
+    lote = db.query(ClassificadorLote).filter(ClassificadorLote.id == lote_id).first()
+    if lote is None:
+        raise HTTPException(status_code=404, detail=f"Lote #{lote_id} nao encontrado.")
+
+    try:
+        data = build_report_data(db, lote_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Classificador.dashboard: falha agregando lote=%s", lote_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao agregar dados: {type(exc).__name__}: {exc}",
+        )
+
+    # Remove campos pesados que nao sao usados pelo dashboard (economiza
+    # bytes na resposta; usuario pode acessar via processos/detalhe).
+    data.pop("processos", None)
+    data.pop("pedidos", None)
+    return data
+
+
 @router.get("/lotes/{lote_id}/processos/{processo_id}")
 def get_processo_detail(
     lote_id: int,
