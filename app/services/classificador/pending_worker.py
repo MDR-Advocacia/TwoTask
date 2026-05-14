@@ -108,7 +108,9 @@ def _process_one_pdf(pending_id: int, lote_id: int) -> bool:
             db.commit()
             return False
 
-        # Processa via ingest_pdf
+        # Processa via ingest_pdf — ATIVA dedup_by_cnj porque robo pode
+        # reenviar PDFs do mesmo processo (carteira atualizada). Se ja
+        # existe processo ativo com mesmo CNJ em qualquer lote, atualiza.
         try:
             proc = ingest_pdf(
                 db,
@@ -125,6 +127,7 @@ def _process_one_pdf(pending_id: int, lote_id: int) -> bool:
                     **(pending.metadata_json or {}),
                 } if pending.observacao or pending.metadata_json
                 else {"pending_id": pending.id},
+                dedup_by_cnj=True,
             )
             pending.status = PENDING_STATUS_PROCESSADO
             pending.processo_id = proc.id

@@ -31,6 +31,7 @@ from app.models.classificador import (
     ClassificadorProcesso,
     LOTE_STATUS_RASCUNHO,
     PROC_STATUS_PENDENTE,
+    PROC_STATUS_READY,
     SOURCE_PRAZOS_INICIAIS,
     SOURCE_UPLOAD_XLSX,
 )
@@ -323,14 +324,20 @@ def merge_into_existing_lote(
 
     atualizados = 0
     criados = 0
+    capturados_novos = 0
 
     for intake_id, intake in intake_by_id.items():
         existing = existing_by_intake.get(intake_id)
+        has_data = bool(intake.capa_json or intake.integra_json)
         if existing:
-            # UPSERT: atualiza campos de identificacao + capa basica do PI
+            # UPSERT: atualiza campos de identificacao + capa+integra do PI
             existing.cnj_number = intake.cnj_number
             existing.lawsuit_id = intake.lawsuit_id
             existing.external_id = intake.external_id
+            existing.capa_json = intake.capa_json or {}
+            existing.integra_json = intake.integra_json or {}
+            existing.natureza_processo = getattr(intake, "natureza_processo", None)
+            existing.produto = getattr(intake, "produto", None)
             if reset_classification:
                 existing.categoria_id = None
                 existing.subcategoria_id = None
@@ -343,12 +350,12 @@ def merge_into_existing_lote(
                 existing.confianca = None
                 existing.classificacao_response_json = None
                 existing.contestacao_existente_json = None
-                existing.status = PROC_STATUS_PENDENTE
+                existing.status = PROC_STATUS_READY if has_data else PROC_STATUS_PENDENTE
                 existing.data_classificacao = None
                 existing.error_message = None
             atualizados += 1
         else:
-            # Cria novo
+            # Cria novo (copia capa+integra do PI tambem — ja extraidos la)
             proc = ClassificadorProcesso(
                 lote_id=lote_id,
                 source=SOURCE_PRAZOS_INICIAIS,
@@ -356,10 +363,16 @@ def merge_into_existing_lote(
                 cnj_number=intake.cnj_number,
                 lawsuit_id=intake.lawsuit_id,
                 external_id=intake.external_id,
-                status=PROC_STATUS_PENDENTE,
+                capa_json=intake.capa_json or {},
+                integra_json=intake.integra_json or {},
+                natureza_processo=getattr(intake, "natureza_processo", None),
+                produto=getattr(intake, "produto", None),
+                status=PROC_STATUS_READY if has_data else PROC_STATUS_PENDENTE,
             )
             db.add(proc)
             criados += 1
+            if has_data:
+                capturados_novos += 1
 
     # Atualiza contadores desnormalizados (recount manual pra ficar coerente)
     from sqlalchemy import func
@@ -369,6 +382,10 @@ def merge_into_existing_lote(
         .scalar()
     ) or 0
     lote.total_processos = total + criados  # criados ainda nao commitaram
+    # Recalcula capturados (count de processos PRONTO/CLASSIFICADO no lote)
+    lote.total_processos_capturados = (
+        (lote.total_processos_capturados or 0) + capturados_novos
+    )
 
     # Atualiza source_summary
     ss = dict(lote.source_summary or {})
@@ -387,6 +404,7 @@ def merge_into_existing_lote(
     stats = {
         "atualizados": atualizados,
         "criados": criados,
+        "capturados_novos": capturados_novos,
         "total_no_lote": lote.total_processos,
         "reclassificar": reset_classification,
     }
@@ -477,7 +495,12 @@ def create_lote_from_prazos_iniciais(
     db.add(lote)
     db.flush()
 
+    capturados = 0
     for intake in intakes:
+        # Os intakes do PI ja tem capa_json + integra_json no DB
+        # (extraidos pelo motor mecanico do PI). Copia direto e marca
+        # PRONTO_PARA_CLASSIFICAR — pula a fase de refresh L1 (que e' stub).
+        has_data = bool(intake.capa_json or intake.integra_json)
         proc = ClassificadorProcesso(
             lote_id=lote.id,
             source=SOURCE_PRAZOS_INICIAIS,
@@ -485,15 +508,27 @@ def create_lote_from_prazos_iniciais(
             cnj_number=intake.cnj_number,
             lawsuit_id=intake.lawsuit_id,
             external_id=intake.external_id,
-            status=PROC_STATUS_PENDENTE,
+            # Copia dados do PI direto — eles ja foram extraidos mecanicamente la
+            capa_json=intake.capa_json or {},
+            integra_json=intake.integra_json or {},
+            natureza_processo=getattr(intake, "natureza_processo", None),
+            produto=getattr(intake, "produto", None),
+            status=PROC_STATUS_READY if has_data else PROC_STATUS_PENDENTE,
         )
         db.add(proc)
+        if has_data:
+            capturados += 1
+
+    # Atualiza contador de processos capturados (pra UI mostrar 717/717
+    # em vez de 0/717 e habilitar o botao Classificar)
+    lote.total_processos_capturados = capturados
 
     db.commit()
     db.refresh(lote)
     logger.info(
-        "Classificador: lote #%s criado via PRAZOS_INICIAIS (%s intakes)",
+        "Classificador: lote #%s criado via PRAZOS_INICIAIS (%s intakes, %s capturados)",
         lote.id,
         len(intakes),
+        capturados,
     )
     return lote, None

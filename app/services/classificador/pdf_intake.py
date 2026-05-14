@@ -77,12 +77,16 @@ def ingest_pdf(
     produto: Optional[str] = None,
     metadata: Optional[dict] = None,
     created_by_user_id: Optional[int] = None,
+    dedup_by_cnj: bool = False,
 ) -> ClassificadorProcesso:
     """Persiste PDF + extracao mecanica como ClassificadorProcesso.
 
     Args:
         db: sessao SQLAlchemy aberta
-        lote_id: lote ao qual o processo pertence (FK obrigatoria)
+        lote_id: lote ao qual o processo pertence (FK obrigatoria) — se
+                 dedup_by_cnj=True e ja existe processo ativo com mesmo
+                 CNJ em outro lote, esse lote_id pode ficar sem o processo
+                 (e o processo original e' atualizado no seu lote original).
         pdf_bytes: conteudo do PDF (validado por magic bytes + tamanho)
         pdf_filename: nome original do arquivo (auditoria)
         source: PDF_UPLOAD (manual) ou PDF_ROBOT_API (adapter futuro)
@@ -95,6 +99,13 @@ def ingest_pdf(
                  IA pode sobrescrever na classificacao.
         metadata: dict livre — origem, observacao, etc.
         created_by_user_id: usuario logado (opcional)
+        dedup_by_cnj: se True, busca processo ATIVO (status nao-CANCELADO)
+                       em qualquer lote com mesmo cnj_number e ATUALIZA
+                       em vez de criar novo. Reaproveita lote original
+                       (preserva localizacao do processo na carteira).
+                       Default False — quick-pdf nao dedupa (operador
+                       testa explicitamente). Worker dormente passa True
+                       (robo pode reenviar PDFs do mesmo processo).
 
     Returns:
         ClassificadorProcesso persistido + commitado
@@ -169,6 +180,63 @@ def ingest_pdf(
 
     # 5. Resolve CNJ final — extractor > hint > None
     cnj_final = result.cnj_number or cnj_hint or None
+
+    # 5b. DEDUP por CNJ — se ja existe processo ATIVO com mesmo CNJ em
+    # qualquer lote nao-cancelado, ATUALIZA em vez de criar novo.
+    # Reaproveita lote original (preserva localizacao do processo).
+    if dedup_by_cnj and cnj_final:
+        existing = (
+            db.query(ClassificadorProcesso)
+            .filter(ClassificadorProcesso.cnj_number == cnj_final)
+            .join(ClassificadorLote)
+            .filter(ClassificadorLote.status != "CANCELADO")
+            .order_by(ClassificadorProcesso.id.desc())
+            .first()
+        )
+        if existing:
+            logger.info(
+                "Classificador.intake_pdf: DEDUP por CNJ — atualizando "
+                "processo #%s no lote #%s (CNJ=%s)",
+                existing.id, existing.lote_id, cnj_final,
+            )
+            # Atualiza dados de capa/integra/metadata (mantem lote_id +
+            # source_intake_id + classificacao IA por default)
+            existing.capa_json = result.capa_json or existing.capa_json or {}
+            existing.integra_json = result.integra_json or existing.integra_json or {}
+            existing.lawsuit_id = (
+                getattr(existing.capa_json, "get", lambda k: None)("lawsuit_id")
+                if isinstance(existing.capa_json, dict) else existing.lawsuit_id
+            ) or existing.lawsuit_id
+            # Atualiza metadata com info da nova captura
+            existing_meta = dict(existing.metadata_json or {})
+            existing_meta.setdefault("dedup_history", []).append({
+                "captured_at": datetime.utcnow().isoformat(),
+                "incoming_lote_id": lote_id,
+                "incoming_filename": pdf_filename,
+                "incoming_sha256": stored.sha256,
+                "compression": compression.to_dict(),
+            })
+            existing.metadata_json = existing_meta
+            existing.extractor_used = result.extractor_used or existing.extractor_used
+            existing.extraction_confidence = (
+                result.confidence or existing.extraction_confidence
+            )
+            existing.data_captura_l1 = datetime.utcnow()
+            # Status: se estava em ERRO_CAPTURA mas agora deu certo, volta pra READY
+            if result.success and existing.status == PROC_STATUS_ERROR_CAPTURE:
+                existing.status = PROC_STATUS_READY
+                existing.error_message = None
+            db.commit()
+
+            # Cleanup do PDF novo (nao precisamos mais — usaremos o existing)
+            if not settings.classificador_keep_pdf_after_success:
+                try:
+                    delete_pdf(stored.relative_path)
+                except Exception:  # noqa: BLE001
+                    pass
+
+            db.refresh(existing)
+            return existing
 
     # 6. Decide status inicial do processo
     if result.success:

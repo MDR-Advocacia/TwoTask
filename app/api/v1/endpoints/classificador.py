@@ -1648,6 +1648,103 @@ def upload_pdf_to_lote(
 # ─── Stubs Fase 3 round 2 / Fase 4 ───────────────────────────────────
 
 
+@router.post("/lotes/{lote_id}/recapture-from-pi")
+def recapture_lote_from_pi(
+    lote_id: int,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth_security.get_current_user),
+):
+    """Re-popula capa_json + integra_json dos processos do lote a partir dos
+    intakes do PI (source_intake_id). Util pra lotes antigos criados antes
+    do fix que ja vinham com 0/717 capturados.
+
+    Pra cada ClassificadorProcesso do lote com source=PRAZOS_INICIAIS:
+    - Busca PrazoInicialIntake pelo source_intake_id
+    - Copia capa_json + integra_json
+    - Marca status=PRONTO_PARA_CLASSIFICAR se tiver dados
+
+    Recalcula total_processos_capturados do lote.
+    """
+    from app.models.classificador import (
+        PROC_STATUS_PENDENTE,
+        PROC_STATUS_READY,
+        SOURCE_PRAZOS_INICIAIS,
+    )
+    from app.models.prazo_inicial import PrazoInicialIntake
+
+    lote = db.query(ClassificadorLote).filter(ClassificadorLote.id == lote_id).first()
+    if lote is None:
+        raise HTTPException(status_code=404, detail=f"Lote #{lote_id} nao encontrado.")
+
+    procs = (
+        db.query(ClassificadorProcesso)
+        .filter(ClassificadorProcesso.lote_id == lote_id)
+        .filter(ClassificadorProcesso.source == SOURCE_PRAZOS_INICIAIS)
+        .filter(ClassificadorProcesso.source_intake_id.isnot(None))
+        .all()
+    )
+    if not procs:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Lote #{lote_id} nao tem processos vindos de Prazos Iniciais.",
+        )
+
+    intake_ids = [p.source_intake_id for p in procs]
+    intakes = (
+        db.query(PrazoInicialIntake)
+        .filter(PrazoInicialIntake.id.in_(intake_ids))
+        .all()
+    )
+    intake_by_id = {i.id: i for i in intakes}
+
+    atualizados = 0
+    capturados = 0
+    nao_encontrados = 0
+    for p in procs:
+        intake = intake_by_id.get(p.source_intake_id)
+        if not intake:
+            nao_encontrados += 1
+            continue
+        has_data = bool(intake.capa_json or intake.integra_json)
+        p.capa_json = intake.capa_json or {}
+        p.integra_json = intake.integra_json or {}
+        p.natureza_processo = getattr(intake, "natureza_processo", None)
+        p.produto = getattr(intake, "produto", None)
+        # So' marca PRONTO se tem dados E ainda nao foi classificado
+        if has_data and p.status == PROC_STATUS_PENDENTE:
+            p.status = PROC_STATUS_READY
+            capturados += 1
+        atualizados += 1
+
+    # Recalcula capturados no lote (todos com status >= READY)
+    from sqlalchemy import func
+    total_cap = (
+        db.query(func.count(ClassificadorProcesso.id))
+        .filter(ClassificadorProcesso.lote_id == lote_id)
+        .filter(ClassificadorProcesso.status.in_({
+            PROC_STATUS_READY,
+            "CLASSIFICADO",
+            "ERRO_CLASSIFICACAO",
+        }))
+        .scalar()
+    ) or 0
+    lote.total_processos_capturados = total_cap
+
+    db.commit()
+    logger.info(
+        "Classificador: lote #%s recapture-from-pi (%d atualizados, %d novos capturados, %d nao_encontrados)",
+        lote_id, atualizados, capturados, nao_encontrados,
+    )
+
+    return {
+        "lote_id": lote_id,
+        "atualizados": atualizados,
+        "novos_capturados": capturados,
+        "nao_encontrados": nao_encontrados,
+        "total_capturados_no_lote": total_cap,
+    }
+
+
 @router.post(
     "/lotes/{lote_id}/capture-l1",
     status_code=status.HTTP_501_NOT_IMPLEMENTED,
