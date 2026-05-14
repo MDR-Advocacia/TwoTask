@@ -23,20 +23,78 @@ logger = logging.getLogger(__name__)
 
 # ─── Regex de detecao de audiencia ──────────────────────────────────────
 
-# Padrao 1: "audiencia designada para DD/MM/AAAA as HH:MM"
-# Variantes capturadas:
+# Padrao 1 (DESPACHO/DECISAO formato A): "audiencia designada para DD/MM/AAAA"
 #   "audiencia designada para 12/05/2026 as 14:30"
-#   "audiencia designada para o dia 12/05/2026 as 14h30"
 #   "audiencia marcada para 12 de maio de 2026 as 14:30"
 #   "fica designada audiencia de instrucao para 12/05/2026 as 14:30"
 _RE_AUDIENCIA_DESIGNADA = re.compile(
-    r"audi[eê]ncia[^\n]{0,30}"  # "audiencia [de tipo]" (até 30 chars de ruído)
-    r"(?:designada|marcada|aprazada|aprasada|redesignada)"
+    r"audi[eê]ncia[^\n]{0,30}"
+    r"(?:designada|marcada|aprazada|aprasada|redesignada|prevista|aprazo|incluida)"
     r"[^\n]{0,40}?"
     r"(?:para|em|no\s+dia)\s+(?:o\s+dia\s+)?"
-    r"(\d{1,2})/(\d{1,2})/(\d{4})"  # data DD/MM/AAAA
+    r"(\d{1,2})/(\d{1,2})/(\d{4})"
     r"[^\n]{0,40}?"
-    r"(?:\s+(?:as|às|às)\s+(\d{1,2})[h:](\d{2}))?",  # hora HH:MM (opcional)
+    r"(?:\s+(?:as|às|as)\s+(\d{1,2})[h:](\d{2}))?",
+    re.IGNORECASE,
+)
+
+# Padrao 1B (DESPACHO/DECISAO formato B — verbo PRIMEIRO):
+#   "Designo audiencia de conciliacao para o dia DD/MM/AAAA as HH:MM"
+#   "Redesigno a audiencia de instrucao para DD/MM/AAAA"
+_RE_AUDIENCIA_VERBO_PRIMEIRO = re.compile(
+    r"(?:redesigno|designo|determino|determinar)"
+    r"[^\n]{0,30}?audi[eê]ncia[^\n]{0,40}?"
+    r"(?:para|em|no\s+dia)\s+(?:o\s+dia\s+)?"
+    r"(\d{1,2})/(\d{1,2})/(\d{4})"
+    r"[^\n]{0,40}?"
+    r"(?:\s+(?:as|às|as)\s+(\d{1,2})[h:](\d{2}))?",
+    re.IGNORECASE,
+)
+
+# Padrao 2 (MOVIMENTACAO CHAPADA do sistema — PJe/eproc/eSAJ/PROJUDI):
+# rotulos curtos da linha do tempo, "audiencia" + qualquer ruido < 60 chars
+# + data + hora. Tolerante a:
+#   "Audiencia designada — 15/06/2026 14:00"
+#   "Audiencia de conciliacao — 12/05/2026 09:30"
+#   "Audiencia (conciliacao) 12/05/2026 - 14:00"
+#   "Audiencia de Conciliacao (Civel) 30/06/2026 14:30"
+#   "Designacao de audiencia — Audiencia de conciliacao - 15/06/2026 10:00"
+# O ruido `[^\d\n]{0,60}?` aceita QUALQUER coisa exceto digito/quebra de
+# linha — evita pular pra outra movimentacao mas tolera palavras
+# arbitrarias ("designada", "marcada", "(Civel)", etc).
+_RE_AUDIENCIA_MOVIMENTACAO = re.compile(
+    r"(?:designa[çc][aã]o\s+de\s+)?"
+    r"audi[eê]ncia\b"
+    r"[^\d\n]{0,60}?"
+    r"(\d{1,2})/(\d{1,2})/(\d{4})"
+    r"(?:[\s\-—,]+(?:as|às|as)?\s*(\d{1,2})[h:](\d{2}))?",
+    re.IGNORECASE,
+)
+
+# Padrao 2B (PAUTA INVERTIDA — data ANTES de "audiencia"):
+#   "12/06/2026 09:30 - Audiencia de conciliacao - Sala 1"
+#   "DD/MM/AAAA HH:MM - Audiencia [tipo]"
+# Usado em pautas/grade horaria de varas/foros.
+_RE_AUDIENCIA_PAUTA_DATA_PRIMEIRO = re.compile(
+    r"(\d{1,2})/(\d{1,2})/(\d{4})"
+    r"\s+(\d{1,2}):(\d{2})"
+    r"\s*[-—:]\s*"
+    r"audi[eê]ncia",
+    re.IGNORECASE,
+)
+
+# Padrao 3 (EVENTO especifico em movimentacao):
+# "Audiencia redesignada para 20/06/2026"
+# "Audiencia realizada em 12/05/2026"
+# "Audiencia cancelada — 12/05/2026"
+# RESTRITIVO: a data DEVE estar a no maximo 30 chars depois do evento
+# (evita pegar data de outra movimentacao mais a frente)
+_RE_AUDIENCIA_EVENTO = re.compile(
+    r"audi[eê]ncia\s+"
+    r"(redesignada|realizada|cancelada|prejudicada|adiada|suspensa|n[aã]o\s+realizada)"
+    r"[\s\-—,:]{0,30}?(?:para|em|no\s+dia|—|-|:)?\s*"
+    r"(\d{1,2})/(\d{1,2})/(\d{4})"
+    r"(?:[\s\-—,]+(?:as|às|as)?\s*(\d{1,2})[h:](\d{2}))?",
     re.IGNORECASE,
 )
 
@@ -213,33 +271,66 @@ def extract_audiencias_from_text(
         today = date.today()
 
     audiencias: list[dict] = []
-    seen_keys: set[tuple] = set()  # dedup por (data, hora) — evita repeticoes
+    # Dedup inteligente: indexado por data; quando ja existe entrada com hora,
+    # nao adiciona nova entrada sem hora pra mesma data (e vice-versa).
+    by_data: dict[str, list[dict]] = {}
 
-    for m in _RE_AUDIENCIA_DESIGNADA.finditer(texto_cru):
-        d = _parse_data(m.group(1), m.group(2), m.group(3))
-        if not d:
-            continue
-        t = _parse_hora(m.group(4), m.group(5))
-        key = (d.isoformat(), t.isoformat() if t else None)
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
+    def _check_dedup(d: date, t: Optional[time]) -> bool:
+        """Retorna True se ja existe entrada compativel — pula.
 
-        # Janela de contexto: 200 chars antes + window_chars depois
-        start = max(0, m.start() - 200)
-        end = min(len(texto_cru), m.end() + window_chars)
-        snippet = texto_cru[start:end]
+        Tambem REMOVE entries sem hora quando uma com hora chega depois
+        (consolida pra entry mais informativa).
+        """
+        key = d.isoformat()
+        existing = by_data.get(key) or []
+        if not existing:
+            return False
+        new_hora = t.isoformat()[:5] if t else None
+        for e in existing:
+            e_hora = e.get("hora")
+            if e_hora == new_hora:
+                return True  # match exato → skipa
+        # Se chegou aqui, ja tem entry(s) pra mesma data mas hora diferente:
+        # - entrada NOVA sem hora + existente com hora → skipa nova (existente vence)
+        # - entrada NOVA com hora + existente(s) sem hora → remove existentes sem hora
+        if new_hora is None:
+            # so' skipa se TODAS as existentes tem hora preenchida
+            if all(e.get("hora") for e in existing):
+                return True
+            # senao deixa entrar (pode ser audiencia em outro dia/hora)
+            return False
+        # NOVA tem hora — remove existentes SEM hora pra mesma data
+        # (consolida pra entry mais informativa)
+        by_data[key] = [e for e in existing if e.get("hora")]
+        return False
 
-        tipo = _classify_tipo(snippet)
-        cancelada = _is_cancelada(snippet)
-        if cancelada:
-            status = "cancelada"
-        elif d < today:
-            status = "realizada"  # passada — assumimos que rolou
+    def _build_entry(
+        d: date,
+        t: Optional[time],
+        snippet: str,
+        match_start: int,
+        match_end: int,
+        forced_status: Optional[str] = None,
+        forced_tipo: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Constroi 1 entrada de audiencia + checa dedup."""
+        if _check_dedup(d, t):
+            return None
+
+        tipo = forced_tipo or _classify_tipo(snippet)
+
+        if forced_status:
+            status = forced_status
         else:
-            status = "agendada"
+            cancelada = _is_cancelada(snippet)
+            if cancelada:
+                status = "cancelada"
+            elif d < today:
+                status = "realizada"  # passada — assumimos que rolou
+            else:
+                status = "agendada"
 
-        comparecimentos = []
+        comparecimentos: list[dict] = []
         if status == "realizada" or _is_ata(snippet):
             comparecimentos = _extract_comparecimentos(snippet)
             status = "realizada"  # forca pra realizada quando tem ata
@@ -247,8 +338,8 @@ def extract_audiencias_from_text(
         local = _extract_local(snippet)
 
         # Snippet limpo pra fonte (1 frase com os ~150 chars ao redor)
-        fonte_start = max(0, m.start() - 50)
-        fonte_end = min(len(texto_cru), m.end() + 100)
+        fonte_start = max(0, match_start - 50)
+        fonte_end = min(len(texto_cru), match_end + 100)
         fonte = (
             texto_cru[fonte_start:fonte_end]
             .replace("\n", " ")
@@ -256,7 +347,7 @@ def extract_audiencias_from_text(
         )
         fonte = re.sub(r"\s+", " ", fonte)[:200]
 
-        audiencias.append({
+        entry = {
             "data": d.isoformat(),
             "hora": t.isoformat()[:5] if t else None,  # HH:MM
             "tipo": tipo,
@@ -265,7 +356,85 @@ def extract_audiencias_from_text(
             "comparecimentos": comparecimentos,
             "resultado": None,
             "fonte": fonte,
-        })
+        }
+        by_data.setdefault(d.isoformat(), []).append(entry)
+        return entry
+
+    # PADRAO 3 (EVENTO especifico) — rodado PRIMEIRO porque tem status
+    # forcado (cancelada/redesignada/realizada). Se rodasse depois,
+    # padroes mais genericos pegariam com status errado.
+    _STATUS_MAP = {
+        "redesignada": "agendada",  # a NOVA data e' a que conta
+        "realizada": "realizada",
+        "cancelada": "cancelada",
+        "prejudicada": "cancelada",
+        "adiada": "cancelada",
+        "suspensa": "cancelada",
+        "nao realizada": "cancelada",
+        "não realizada": "cancelada",
+    }
+    for m in _RE_AUDIENCIA_EVENTO.finditer(texto_cru):
+        evento = m.group(1).lower().strip()
+        evento = re.sub(r"\s+", " ", evento)
+        forced_status = _STATUS_MAP.get(evento)
+        if not forced_status:
+            continue
+        d = _parse_data(m.group(2), m.group(3), m.group(4))
+        if not d:
+            continue
+        t = _parse_hora(m.group(5), m.group(6))
+        start = max(0, m.start() - 150)
+        end = min(len(texto_cru), m.end() + 400)
+        _build_entry(
+            d, t, texto_cru[start:end],
+            m.start(), m.end(),
+            forced_status=forced_status,
+        )
+
+    # PADRAO 1: despacho/decisao "audiencia designada para DD/MM/AAAA"
+    for m in _RE_AUDIENCIA_DESIGNADA.finditer(texto_cru):
+        d = _parse_data(m.group(1), m.group(2), m.group(3))
+        if not d:
+            continue
+        t = _parse_hora(m.group(4), m.group(5))
+        start = max(0, m.start() - 200)
+        end = min(len(texto_cru), m.end() + window_chars)
+        _build_entry(d, t, texto_cru[start:end], m.start(), m.end())
+
+    # PADRAO 1B: verbo primeiro — "Designo audiencia ... para DD/MM/AAAA"
+    for m in _RE_AUDIENCIA_VERBO_PRIMEIRO.finditer(texto_cru):
+        d = _parse_data(m.group(1), m.group(2), m.group(3))
+        if not d:
+            continue
+        t = _parse_hora(m.group(4), m.group(5))
+        start = max(0, m.start() - 100)
+        end = min(len(texto_cru), m.end() + window_chars)
+        _build_entry(d, t, texto_cru[start:end], m.start(), m.end())
+
+    # PADRAO 2B: pauta invertida — "DD/MM/AAAA HH:MM - Audiencia ..."
+    for m in _RE_AUDIENCIA_PAUTA_DATA_PRIMEIRO.finditer(texto_cru):
+        d = _parse_data(m.group(1), m.group(2), m.group(3))
+        if not d:
+            continue
+        t = _parse_hora(m.group(4), m.group(5))
+        start = max(0, m.start() - 50)
+        end = min(len(texto_cru), m.end() + 300)
+        _build_entry(d, t, texto_cru[start:end], m.start(), m.end())
+
+    # PADRAO 2: movimentacao chapada — RODA POR ULTIMO porque e' o mais
+    # permissivo (pode dar falso positivo em datas soltas com "audiencia"
+    # por perto)
+    for m in _RE_AUDIENCIA_MOVIMENTACAO.finditer(texto_cru):
+        d = _parse_data(m.group(1), m.group(2), m.group(3))
+        if not d:
+            continue
+        t = _parse_hora(m.group(4), m.group(5))
+        start = max(0, m.start() - 100)
+        end = min(len(texto_cru), m.end() + 300)
+        _build_entry(d, t, texto_cru[start:end], m.start(), m.end())
+
+    # Recolhe entries (preserva ordem de insercao dentro do by_data)
+    audiencias = [e for entries in by_data.values() for e in entries]
 
     # Ordena por data (mais antigas primeiro)
     audiencias.sort(key=lambda a: a.get("data") or "")

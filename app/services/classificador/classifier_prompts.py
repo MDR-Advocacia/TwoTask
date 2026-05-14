@@ -215,15 +215,58 @@ Bloco `audiencias`: LISTA de audiencias detectadas no processo,
 incluindo PASSADAS e FUTURAS. Cada elemento: data, hora, tipo,
 local_ou_link, status, comparecimentos, resultado, fonte.
 
-**Como identificar**:
-- Procure movimentacoes/peticoes com:
-  - *"audiencia designada para [DD/MM/AAAA] as [HH:MM]"*
-  - *"fica designada audiencia de [conciliacao|instrucao|una]"*
-  - *"redesigno a audiencia para..."* (use a NOVA data)
-  - *"ata de audiencia"* (sempre realizada — tem comparecimentos)
-  - *"audiencia cancelada"* / *"prejudicada a audiencia"*
-  - *"presentes:..."*, *"compareceu o advogado..."*, *"ausente o autor..."*
-- Pegue TODAS as audiencias do processo (passadas e futuras).
+**Onde procurar — TODAS as fontes possiveis** (audiencias APARECEM em
+muitos lugares, nao apenas em decisoes/despachos):
+
+1. **MOVIMENTACOES AUTOMATICAS DO SISTEMA** (PJe/eproc/eSAJ/PROJUDI)
+   — sao rotulos curtos na linha do tempo do processo, normalmente
+   uma frase de 5-15 palavras com a data junto. **NAO IGNORE**:
+   - *"Audiencia designada — 15/06/2026 14:00"*
+   - *"Audiencia [de conciliacao|instrucao|una] designada — DD/MM/AAAA HH:MM"*
+   - *"Designacao de audiencia — DD/MM/AAAA"*
+   - *"Audiencia redesignada para DD/MM/AAAA"* / *"Redesignacao de audiencia"*
+   - *"Audiencia realizada"* / *"Realizacao de audiencia — DD/MM/AAAA"*
+   - *"Audiencia cancelada"* / *"Audiencia prejudicada"*
+   - *"Audiencia adiada"* / *"Audiencia suspensa"*
+   - *"Audiencia nao realizada"*
+   Essas movimentacoes geralmente vem CHAPADAS no fluxo de eventos do
+   processo — sem texto longo, so' rotulo + data. CADA UMA dessas
+   linhas vira UMA entrada em `audiencias`.
+
+2. **PAUTA DE AUDIENCIAS** (alguns sistemas listam todas juntas):
+   - *"Pauta de audiencias: DD/MM/AAAA HH:MM - tipo - sala/link"*
+
+3. **DECISOES E DESPACHOS** (texto longo do juiz designando):
+   - *"Designo audiencia de conciliacao para o dia DD/MM/AAAA as HH:MM"*
+   - *"Fica designada audiencia de instrucao para..."*
+   - *"Redesigno a audiencia para..."* (use a NOVA data)
+   - *"...incluindo audiencia de tentativa de conciliacao em DD/MM/AAAA..."*
+
+4. **ATAS DE AUDIENCIA** (sempre status=realizada — extrair
+   comparecimentos):
+   - Cabecalho *"ATA DE AUDIENCIA - DD/MM/AAAA"* ou
+     *"Termo de Audiencia"*
+   - Trechos com *"presentes:..."*, *"compareceu o advogado..."*,
+     *"ausente o autor..."*, *"declarado revel..."*
+
+5. **CERTIDOES DE AUDIENCIA** ou *"Certidao de adiamento"*: indica
+   audiencia cancelada/adiada.
+
+6. **INTIMACOES** que citam audiencia em curso:
+   - *"...intimacao para audiencia designada em DD/MM/AAAA..."*
+
+**REGRA CRITICA — extraia TODAS, mesmo que repetida**: se a mesma
+audiencia aparece em movimentacao (rotulo curto) E numa decisao
+(texto longo), e' UMA audiencia so' — use a fonte MAIS DETALHADA
+(decisao tem mais contexto pra preencher tipo/local). Mas NAO PERCA
+audiencias que aparecem APENAS na movimentacao curta — sao a
+maioria dos casos. Pegue tudo: passadas e futuras.
+
+**DEDUP**: se duas fontes mencionam a mesma audiencia (mesma
+data+hora), consolide em UMA entrada — pegue a fonte com mais
+informacao. Se uma audiencia foi designada (movimentacao A) e depois
+redesignada (movimentacao B), crie DUAS entradas: A=cancelada,
+B=agendada/realizada.
 
 **`status`** — escolha 1:
 - `agendada`: data futura, ainda nao realizada
