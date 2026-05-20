@@ -261,6 +261,52 @@ class ScheduledAutomationService:
                 pass
 
     def _execute_automation(self, automation_id: int) -> None:
+        """Execute an automation, protegido por advisory lock no Postgres.
+
+        Garante que apenas UMA instancia rode por vez mesmo quando multiplos
+        workers do uvicorn (ou replicas do container) tem cada um seu proprio
+        APScheduler in-memory disparando o mesmo cron em paralelo. Workers
+        derrotados na disputa do lock logam e abortam imediatamente em ~5ms,
+        sem criar ScheduledAutomationRun.
+
+        Causa raiz do bug: scheduler em app/core/scheduler.py:11 e instanciado
+        a nivel de modulo, entao com UVICORN_WORKERS>1 cada processo carrega
+        um BackgroundScheduler independente (MemoryJobStore default) e
+        dispara o mesmo cron sem coordenacao. max_instances=1 do APScheduler
+        so protege dentro de UM processo, nao entre processos.
+        """
+        from sqlalchemy import text as _sql_text
+        from app.db.session import engine as _engine
+
+        _LOCK_NAMESPACE = 4242
+        lock_conn = _engine.connect()
+        try:
+            got_lock = lock_conn.execute(
+                _sql_text("SELECT pg_try_advisory_lock(:k1, :k2)"),
+                {"k1": _LOCK_NAMESPACE, "k2": automation_id},
+            ).scalar()
+            if not got_lock:
+                logger.info(
+                    "Automation %d: outro worker/container ja esta executando "
+                    "esta automation - abortando esta instancia.",
+                    automation_id,
+                )
+                return
+            self._execute_automation_inner(automation_id)
+        finally:
+            try:
+                lock_conn.execute(
+                    _sql_text("SELECT pg_advisory_unlock(:k1, :k2)"),
+                    {"k1": _LOCK_NAMESPACE, "k2": automation_id},
+                )
+            except Exception:
+                logger.exception(
+                    "Falha ao liberar advisory lock da automation %d",
+                    automation_id,
+                )
+            lock_conn.close()
+
+    def _execute_automation_inner(self, automation_id: int) -> None:
         """Execute an automation (called by scheduler)."""
         logger.info("Executing automation %d", automation_id)
 
