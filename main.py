@@ -15,6 +15,7 @@ from app.api.v1.endpoints import (
     base_processual_api_keys,
     base_processual_backfill,
     base_processual_bulk,
+    base_processual_conversao,
     base_processual_exports,
     base_processual_public,
     capture_health,
@@ -33,6 +34,7 @@ from app.api.v1.endpoints import (
     taxonomy_admin,
     user_feedback,
     users,
+    varredura,
 )
 from app.core import auth as auth_security
 from app.core.config import settings
@@ -344,10 +346,22 @@ app.include_router(base_processual_backfill.router, prefix="/api/v1", dependenci
 app.include_router(base_processual_exports.router, prefix="/api/v1", dependencies=protected_dependencies)
 # API keys admin CRUD (Chunk 6) — JWT obrigatorio + role admin via require_admin.
 app.include_router(base_processual_api_keys.router, prefix="/api/v1", dependencies=protected_dependencies)
+# Conversao Listagem AJUS -> XLSX de migracao Legal One (POST /conversao-l1).
+app.include_router(base_processual_conversao.router, prefix="/api/v1", dependencies=protected_dependencies)
 # API publica (Chunk 6) — SEM JWT. Auth via header X-Base-Processual-Key.
 # Cuidado: NAO adicionar protected_dependencies aqui — quebraria o uso externo.
 app.include_router(base_processual_public.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Autenticacao"])
+# Varredura de andamentos (modulo incidental — sem deploy em main).
+# Roda local no docker: operador escolhe offices passivos e o RPA
+# raspa DetailsAndamentos atras de eventos relevantes (audiencias,
+# sentenca, revelia, etc.).
+app.include_router(
+    varredura.router,
+    prefix="/api/v1",
+    tags=["Varredura"],
+    dependencies=protected_dependencies,
+)
 
 
 @app.get(

@@ -687,3 +687,38 @@ export async function revokeApiKey(keyId: number): Promise<ApiKeyOut> {
   if (!r.ok) throw await formatError(r);
   return r.json();
 }
+
+// --- Conversao Listagem AJUS -> Planilha de migracao L1 ---
+
+/**
+ * Envia o XLSX da Listagem de Acoes Judiciais (saida AJUS) e recebe de
+ * volta o XLSX no formato MODELO LEGAL ONE. O nome sugerido vem do
+ * header Content-Disposition; se vier ausente cai no fallback fixo.
+ */
+export async function converterListagemL1(
+  file: File,
+): Promise<{ blob: Blob; filename: string }> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const r = await apiFetch(`${BASE}/conversao-l1`, {
+    method: "POST",
+    body: fd,
+  });
+  if (!r.ok) throw await formatError(r);
+  const blob = await r.blob();
+  const cd = r.headers.get("content-disposition") || "";
+  let filename = "PLANILHA_MIGRACAO_COMPLETA.xlsx";
+  // tenta filename*=UTF-8''<encoded> primeiro (RFC 5987)
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+  if (star?.[1]) {
+    try {
+      filename = decodeURIComponent(star[1]);
+    } catch {
+      // ignora
+    }
+  } else {
+    const plain = /filename="?([^"]+)"?/i.exec(cd);
+    if (plain?.[1]) filename = plain[1];
+  }
+  return { blob, filename };
+}

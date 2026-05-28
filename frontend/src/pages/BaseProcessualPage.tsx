@@ -12,6 +12,7 @@
 
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ApiKeysTab } from "@/components/base-processual/ApiKeysTab";
+import { ConversaoL1Tab } from "@/components/base-processual/ConversaoL1Tab";
 import { EventosTab } from "@/components/base-processual/EventosTab";
 import { ProcessosTab } from "@/components/base-processual/ProcessosTab";
 import { RelatoriosTab } from "@/components/base-processual/RelatoriosTab";
@@ -39,6 +40,7 @@ export function BaseProcessualPage() {
           <TabsTrigger value="processos">Processos</TabsTrigger>
           <TabsTrigger value="eventos">Eventos</TabsTrigger>
           <TabsTrigger value="relatorios">Relatórios</TabsTrigger>
+          <TabsTrigger value="conversao-l1">Conversão L1</TabsTrigger>
           <TabsTrigger value="api-keys">API Keys</TabsTrigger>
         </TabsList>
 
@@ -56,6 +58,9 @@ export function BaseProcessualPage() {
         </TabsContent>
         <TabsContent value="relatorios" className="mt-4">
           <RelatoriosTab />
+        </TabsContent>
+        <TabsContent value="conversao-l1" className="mt-4">
+          <ConversaoL1Tab />
         </TabsContent>
         <TabsContent value="api-keys" className="mt-4">
           <ApiKeysTab />
