@@ -139,9 +139,26 @@ class BatchTaskCreationService:
             return ""
         return str(cnj_number).strip()
 
-    def _preload_lawsuits_by_cnj(self, cnj_numbers: list[Any]) -> tuple[dict[str, dict[str, Any]], set[str]]:
-        normalized_numbers = []
-        seen_numbers = set()
+    def _preload_lawsuits_chunked(
+        self,
+        cnj_numbers: list[Any],
+        execution_id: int,
+        worker_id: str,
+        *,
+        chunk_size: int = 300,
+    ) -> tuple[dict[str, dict[str, Any]], set[str], str | None]:
+        # Precarrega processos por CNJ em blocos, emitindo heartbeat e
+        # checando o sinal de controle entre cada bloco. Em lotes grandes
+        # o preload em chamada unica estourava o lease (o heartbeat so
+        # rodava no loop de itens, que so comeca depois do preload), o que
+        # disparava re-claim por outra replica e travava o lote em
+        # PROCESSANDO 0/0 indefinidamente.
+        #
+        # Retorna (lawsuit_lookup, prefetched_cnj_numbers, stop_signal).
+        # stop_signal != None => o chamador deve abortar e finalizar
+        # conforme o sinal (cancelado/pausado/perdido).
+        normalized_numbers: list[str] = []
+        seen_numbers: set[str] = set()
         for cnj_number in cnj_numbers:
             normalized = self._normalize_cnj_number(cnj_number)
             if not normalized or normalized in seen_numbers:
@@ -149,11 +166,32 @@ class BatchTaskCreationService:
             normalized_numbers.append(normalized)
             seen_numbers.add(normalized)
 
+        lawsuit_lookup: dict[str, dict[str, Any]] = {}
+        prefetched = set(normalized_numbers)
         if not normalized_numbers or self.client is None:
-            return {}, set(normalized_numbers)
+            return lawsuit_lookup, prefetched, None
 
-        lawsuit_lookup = self.client.search_lawsuits_by_cnj_numbers(normalized_numbers)
-        return lawsuit_lookup, set(normalized_numbers)
+        for start in range(0, len(normalized_numbers), chunk_size):
+            signal = self._get_control_signal(execution_id, worker_id)
+            if signal != BATCH_STATUS_PROCESSING:
+                return lawsuit_lookup, prefetched, signal
+            if not self.heartbeat_execution(execution_id, worker_id):
+                return lawsuit_lookup, prefetched, "LOST"
+            chunk = normalized_numbers[start:start + chunk_size]
+            lawsuit_lookup.update(self.client.search_lawsuits_by_cnj_numbers(chunk))
+
+        return lawsuit_lookup, prefetched, None
+
+    def _handle_preload_stop(self, execution_id: int, signal: str) -> None:
+        execution = self.db.query(BatchExecution).filter(BatchExecution.id == execution_id).first()
+        if not execution:
+            return
+        if signal == BATCH_STATUS_CANCELLED:
+            self._finalize_execution(execution, cancelled=True)
+        elif signal == BATCH_STATUS_PAUSED:
+            self._clear_execution_claim(execution)
+            self.db.commit()
+        # MISSING / LOST: outra replica assumiu — nada a finalizar aqui.
 
     def create_spreadsheet_execution(
         self,
@@ -467,7 +505,14 @@ class BatchTaskCreationService:
                     for item in execution.items
                     if item.status in {"PENDENTE", "REPROCESSANDO"}
                 ]
-                lawsuit_lookup, prefetched_cnj_numbers = strategy.preload_lawsuits_by_cnj(pending_rows)
+                lawsuit_lookup, prefetched_cnj_numbers, stop_signal = self._preload_lawsuits_chunked(
+                    [row.get("CNJ") for row in pending_rows],
+                    execution.id,
+                    worker_id,
+                )
+                if stop_signal is not None:
+                    self._handle_preload_stop(execution.id, stop_signal)
+                    return
 
                 async def handle_item(item: BatchExecutionItem):
                     await strategy.process_single_item(
@@ -493,9 +538,14 @@ class BatchTaskCreationService:
                     for item in execution.items
                     if item.status in {"PENDENTE", "REPROCESSANDO"}
                 ]
-                lawsuit_lookup, prefetched_cnj_numbers = self._preload_lawsuits_by_cnj(
-                    [payload.get("cnj_number") for payload in pending_payloads]
+                lawsuit_lookup, prefetched_cnj_numbers, stop_signal = self._preload_lawsuits_chunked(
+                    [payload.get("cnj_number") for payload in pending_payloads],
+                    execution.id,
+                    worker_id,
                 )
+                if stop_signal is not None:
+                    self._handle_preload_stop(execution.id, stop_signal)
+                    return
 
                 async def handle_item(item: BatchExecutionItem):
                     await self._process_interactive_item(
