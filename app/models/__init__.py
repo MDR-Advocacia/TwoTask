@@ -50,3 +50,8 @@ from .classificador import (
     ClassificadorProcesso,
     ClassificadorRelatorio,
 )
+from .varredura import (
+    VarreduraAchado,
+    VarreduraProcessado,
+    VarreduraRun,
+)
