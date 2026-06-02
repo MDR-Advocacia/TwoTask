@@ -587,6 +587,75 @@ operador encontrara mencionado no texto.
 """
 
 
+ATIVO_SCHEME_ADDENDUM = """
+
+# ESQUEMA DO POLO ATIVO - ESTA SEÇÃO SOBREPÕE OS EXEMPLOS ACIMA
+
+Este escritório atua EXCLUSIVAMENTE no POLO ATIVO (autor / exequente /
+credor / recorrente - tipicamente recuperação de crédito). A TAXONOMIA
+acima já lista SOMENTE as categorias do polo ativo. Classifique
+EXCLUSIVAMENTE nelas e responda "polo": "ativo" (use "ambos" apenas
+quando o ato afeta os dois lados de forma simétrica e inequívoca, ex.:
+designação de audiência).
+
+IMPORTANTE: copie os nomes de categoria e subcategoria EXATAMENTE como
+estão na TAXONOMIA acima, COM acentuação. Nunca remova acentos.
+
+ATENÇÃO CRÍTICA: vários EXEMPLOS acima usam categorias do polo PASSIVO
+(ex.: "Recursos e Julgamentos em 2º Grau", "Sentença e Extinção",
+"Citação e Intimação Inicial", "Cumprimento de Sentença / Execução",
+"Manifestações, Prazos e Providências", "Tutelas, Liminares e Medidas
+Urgentes"). Essas categorias NÃO EXISTEM para este escritório -
+IGNORE-AS. Use a categoria EQUIVALENTE do polo ativo:
+
+  - Recursos, acórdãos, decisões monocráticas, apelações, agravos,
+    embargos de declaração, REsp/RE  ->  "Recursos"
+    (NUNCA "Recursos e Julgamentos em 2º Grau")
+  - Sentenças, decisões de mérito, extinções, arquivamento, suspensão
+    ->  "Decisão, Sentença e Extinção"
+  - Citação / intimação inicial / localização do devedor / mandado
+    ->  "Citação, Intimação e Localização"
+  - Intimação do credor/exequente para manifestar, juntar documento,
+    apresentar cálculo, requerer prosseguimento, indicar bens
+    ->  "Manifestação do Credor / Exequente"
+  - Pesquisa patrimonial, SISBAJUD/RENAJUD/INFOJUD, bloqueio/desbloqueio
+    ->  "Pesquisa Patrimonial e Bloqueio"
+  - Penhora, avaliação, leilão/praça, arrematação/adjudicação, garantia
+    ->  "Penhora, Garantia e Expropriação"
+  - Acordo, pagamento, depósito judicial, alvará/levantamento
+    ->  "Acordo, Pagamento e Depósito"
+  - Defesa do executado (embargos à execução, impugnação ao cumprimento,
+    exceção de pré-executividade, alegação de pagamento/prescrição/excesso)
+    ->  "Defesa do Devedor e Incidentes"
+  - Atos do próprio devedor/executado (pagar, apresentar defesa)
+    ->  "Manifestação do Devedor / Executado"
+  - Recuperação judicial, habilitação/impugnação de crédito
+    ->  "Recuperação Judicial"  |  Assembleia  ->  "Assembleia de Credores"
+  - Audiências  ->  "Audiências"
+  - Genuinamente ambíguo/insuficiente  ->  "Para Análise" da categoria mais provável
+
+## EXEMPLOS DO POLO ATIVO (use ESTES, não os exemplos do passivo acima)
+
+Texto: "ACÓRDÃO. ACORDAM os Desembargadores em DAR PROVIMENTO à apelação interposta pelo Banco exequente para reformar a sentença e julgar procedente a cobrança..."
+Resposta: {"categoria": "Recursos", "subcategoria": "Acórdão favorável", "polo": "ativo", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": null, "prazo_tipo": null, "prazo_fundamentacao": null, "confianca": "alta", "justificativa": "Acórdão favorável ao credor (provimento do recurso do exequente)"}
+
+Texto: "A Secretaria informa que foi distribuída Apelação Cível. Apelante: BANCO DO BRASIL S.A. Apelado: ..."
+Resposta: {"categoria": "Recursos", "subcategoria": "Apelação", "polo": "ativo", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": null, "prazo_tipo": null, "prazo_fundamentacao": null, "confianca": "alta", "justificativa": "Distribuição de apelação em 2º grau no polo ativo"}
+
+Texto: "Vistos. JULGO PROCEDENTE o pedido para condenar o réu ao pagamento do débito..."
+Resposta: {"categoria": "Decisão, Sentença e Extinção", "subcategoria": "Sentença procedente / favorável", "polo": "ativo", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": null, "prazo_tipo": null, "prazo_fundamentacao": null, "confianca": "alta", "justificativa": "Sentença de procedência favorável ao credor"}
+
+Texto: "Determino o bloqueio de valores via SISBAJUD nas contas do executado..."
+Resposta: {"categoria": "Pesquisa Patrimonial e Bloqueio", "subcategoria": "Bloqueio realizado", "polo": "ativo", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": null, "prazo_tipo": null, "prazo_fundamentacao": null, "confianca": "alta", "justificativa": "Bloqueio SISBAJUD em favor do exequente"}
+
+Texto: "Manifeste-se o exequente sobre o cálculo apresentado pelo executado, no prazo de 5 dias..."
+Resposta: {"categoria": "Manifestação do Credor / Exequente", "subcategoria": "Apresentar cálculo / atualizar débito", "polo": "ativo", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": 5, "prazo_tipo": "util", "prazo_fundamentacao": "Manifestação genérica em despacho - 5 dias úteis (art. 218 §3º CPC)", "confianca": "alta", "justificativa": "Intimação do credor para manifestar sobre cálculo"}
+
+Texto: "Opostos Embargos à Execução pelo executado alegando excesso. Intime-se o exequente para impugnar..."
+Resposta: {"categoria": "Defesa do Devedor e Incidentes", "subcategoria": "Embargos à execução / monitórios", "polo": "ativo", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": 15, "prazo_tipo": "util", "prazo_fundamentacao": "Impugnação aos embargos - 15 dias úteis", "confianca": "alta", "justificativa": "Embargos à execução opostos pelo devedor - incidente na execução do credor"}
+"""
+
+
 def build_system_prompt_for_office(
     excluded: set[tuple[str, str | None]] | None = None,
     custom_additions: list[dict[str, str]] | None = None,
@@ -645,6 +714,13 @@ def build_system_prompt_for_office(
 
     if feedback_examples:
         base += feedback_examples
+
+    # Esquema do polo ATIVO: roteamento de categorias ativo + exemplos
+    # proprios, no FIM do prompt (alta recencia) pra sobrepor os exemplos
+    # passivo-centricos do SYSTEM_PROMPT. So pra escritorio ativo; passivo
+    # e 'ambos' mantem o comportamento atual. (fix polo 2026-06)
+    if polo_scope == "ativo":
+        base += ATIVO_SCHEME_ADDENDUM
 
     return base
 
