@@ -773,9 +773,29 @@ def load_office_overrides(
     return excluded, custom_additions
 
 
-def build_user_message(process_number: str, publication_text: str) -> str:
-    """Monta a mensagem do usuário com o texto da publicação."""
-    return (
-        f"Processo: {process_number}\n\n"
-        f"Texto da publicação:\n{publication_text}"
-    )
+def build_user_message(
+    process_number: str,
+    publication_text: str,
+    office_path=None,
+    office_polo=None,
+) -> str:
+    """Monta a mensagem do usuário com o texto da publicação.
+
+    Quando o escritório responsável e o polo dele são conhecidos (info
+    DETERMINÍSTICA que já temos no cadastro), injeta no TOPO o escritório +
+    polo e ORDENA o modelo a rotear o esquema ANTES de ler o texto, em vez
+    de inferir o polo do corpo. Resolve o vazamento (ato do credor caindo
+    em categoria do passivo porque o texto cita a parte contrária)."""
+    header = ""
+    polo = (office_polo or "").strip().lower()
+    if office_path and polo in ("ativo", "passivo"):
+        nome = polo.upper()
+        header = f"""ESCRITÓRIO RESPONSÁVEL: {office_path}
+POLO DESTE ESCRITÓRIO: {nome}
+PASSO OBRIGATÓRIO ANTES DE CLASSIFICAR: este escritório atua no polo {nome}. Escolha e use EXCLUSIVAMENTE o esquema e as categorias do polo {nome} (as listadas na TAXONOMIA). Ignore exemplos e categorias do outro polo, mesmo que o texto cite a parte contrária.
+
+"""
+    return f"""{header}Processo: {process_number}
+
+Texto da publicação:
+{publication_text}"""
