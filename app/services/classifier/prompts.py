@@ -498,7 +498,7 @@ IMPORTANTE: o campo "natureza_processo" é OBRIGATÓRIO na resposta para esta pu
 """
 
 
-def build_feedback_examples(db, office_external_id: Optional[int] = None, limit: int = 15) -> str:
+def build_feedback_examples(db, office_external_id: Optional[int] = None, limit: int = 15, office_polo: Optional[str] = None) -> str:
     """
     Carrega feedbacks de classificação do banco e formata como exemplos
     adicionais para o prompt (few-shot learning dinâmico).
@@ -527,6 +527,30 @@ def build_feedback_examples(db, office_external_id: Optional[int] = None, limit:
     ).limit(limit)
 
     feedbacks = query.all()
+    # Filtro de polo (fix 2026-06): escritorio ATIVO nao deve receber feedback
+    # que corrige PRA categoria do PASSIVO (e vice-versa). Esses feedbacks
+    # legados vencem o esquema de polo e reintroduzem o vazamento (ex.:
+    # 'Manifestacoes, Prazos e Providencias / Cumprir Determinacao' do passivo
+    # aparecendo em escritorio Autor/Exequente). Mantem same-polo, 'ambos' e
+    # categorias fora da v2 (desconhecidas/legadas).
+    _polo = (office_polo or "").strip().lower()
+    if feedbacks and _polo in ("ativo", "passivo"):
+        _opposite = "passivo" if _polo == "ativo" else "ativo"
+        try:
+            from app.models.classification_taxonomy import ClassificationCategory
+            _cat_polo = {
+                name: ps
+                for (name, ps) in db.query(
+                    ClassificationCategory.name,
+                    ClassificationCategory.polo_scope,
+                ).filter(ClassificationCategory.taxonomy_version == "v2").all()
+            }
+            feedbacks = [
+                fb for fb in feedbacks
+                if _cat_polo.get(fb.corrected_category) != _opposite
+            ]
+        except Exception:  # noqa: BLE001
+            pass
     if not feedbacks:
         return ""
 

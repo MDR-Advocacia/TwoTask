@@ -282,6 +282,7 @@ class PublicationBatchClassifier:
         # polo e gravava a categoria do lado errado (ex.: BB/Autor caindo na
         # cat do passivo, que nao tem template do escritorio -> 'Sem template').
         office_polo_by_id: dict[int, Optional[str]] = {}
+        office_path_by_id: dict[int, Optional[str]] = {}
         if office_ids:
             try:
                 from app.models.legal_one import LegalOneOffice
@@ -294,13 +295,17 @@ class PublicationBatchClassifier:
                     office_polo_by_id[off.external_id] = (
                         raw if raw in ("ativo", "passivo") else None
                     )
+                    office_path_by_id[off.external_id] = getattr(off, "path", None)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Falha ao carregar polo dos escritorios: %s", exc)
 
         def _feedback_for(oid: int) -> str:
             if oid not in feedback_cache:
                 try:
-                    feedback_cache[oid] = build_feedback_examples(self.db, oid if oid else None)
+                    feedback_cache[oid] = build_feedback_examples(
+                        self.db, oid if oid else None,
+                        office_polo=office_polo_by_id.get(oid),
+                    )
                 except Exception as exc:
                     logger.warning("Falha ao carregar feedbacks do escritório %s: %s", oid, exc)
                     feedback_cache[oid] = ""
@@ -394,7 +399,11 @@ class PublicationBatchClassifier:
                 # nao tem como filtrar por templates de escritorio.
                 prompt = office_prompts.get((0, is_unlinked), SYSTEM_PROMPT)
 
-            user_msg = build_user_message(rec.linked_lawsuit_cnj or "", text)
+            user_msg = build_user_message(
+                rec.linked_lawsuit_cnj or "", text,
+                office_path=office_path_by_id.get(rec.linked_office_id or 0),
+                office_polo=office_polo_by_id.get(rec.linked_office_id or 0),
+            )
             batch_requests.append(
                 self.ai.build_batch_request(
                     custom_id=str(rec.id),

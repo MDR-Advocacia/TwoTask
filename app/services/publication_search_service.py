@@ -910,6 +910,7 @@ class PublicationSearchService:
                 try:
                     feedback_cache[oid] = build_feedback_examples(
                         self.db, office_id,
+                        office_polo=self._resolve_office_polo(office_id),
                     )
                 except Exception as exc:
                     logger.warning("Falha ao carregar feedbacks do escritório %s: %s", oid, exc)
@@ -962,7 +963,11 @@ class PublicationSearchService:
                 async with sem:
                     text = rec.description or ""
                     try:
-                        user_msg = build_user_message(rec.linked_lawsuit_cnj or "", text)
+                        user_msg = build_user_message(
+                            rec.linked_lawsuit_cnj or "", text,
+                            office_path=self._resolve_office_path(rec.linked_office_id),
+                            office_polo=self._resolve_office_polo(rec.linked_office_id),
+                        )
                         result = await ai.classify(_prompt_for(rec), user_msg)
 
                         # Schema cross-field: zera audiência se categoria não
@@ -1112,6 +1117,36 @@ class PublicationSearchService:
                 )
                 polo = None
             cache[office_external_id] = polo
+        return cache[office_external_id]
+
+    def _resolve_office_path(self, office_external_id: Optional[int]) -> Optional[str]:
+        """Path hierarquico do escritorio (ex.: 'MDR / ... / Banco do Brasil /
+        Autor') pra injetar a linha 'ESCRITORIO RESPONSAVEL' no user message
+        do classificador — sinal deterministico por publicacao pro modelo
+        rotear o esquema de polo. Cacheado por instancia."""
+        if not office_external_id:
+            return None
+        cache = getattr(self, "_office_path_cache", None)
+        if cache is None:
+            cache = {}
+            self._office_path_cache = cache
+        if office_external_id not in cache:
+            path = None
+            try:
+                from app.models.legal_one import LegalOneOffice
+                office = (
+                    self.db.query(LegalOneOffice)
+                    .filter(LegalOneOffice.external_id == office_external_id)
+                    .first()
+                )
+                path = getattr(office, "path", None)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Falha ao resolver path do escritorio %s: %s",
+                    office_external_id, exc,
+                )
+                path = None
+            cache[office_external_id] = path
         return cache[office_external_id]
 
     def _build_task_proposals(
