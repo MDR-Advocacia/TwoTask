@@ -3142,6 +3142,28 @@ class PublicationSearchService:
                 result.squad_name, result.fallback_reason,
             )
 
+    def _append_publication_notes(self, payload, pub_text):
+        """Anexa o texto da publicacao nas observacoes (notes) da tarefa.
+
+        Decisao do operador (2026-06): TODA tarefa a agendar leva o texto da
+        publicacao na observacao, independente do notes_template. Idempotente
+        (marcador evita duplicar em retry/reagendamento) e com cap de tamanho
+        pra nao estourar o campo de notes do Legal One."""
+        if not isinstance(payload, dict):
+            return
+        text = (pub_text or "").strip()
+        if not text:
+            return
+        mark = "--- Texto da Publicação ---"
+        current = payload.get("notes") or ""
+        if mark in current:
+            return
+        if len(text) > 4000:
+            text = text[:4000] + " [...]"
+        nl = chr(10)
+        block = nl + nl + mark + nl + text
+        payload["notes"] = (current + block) if current else (mark + nl + text)
+
     def schedule_group(
         self,
         lawsuit_id: int,
@@ -3246,6 +3268,7 @@ class PublicationSearchService:
 
         created_task_ids: list[int] = []
         for payload in payloads:
+            self._append_publication_notes(payload, first.description)
             self._enforce_description_limit(payload)
             self._apply_required_task_defaults(
                 payload, fallback_office_id=fallback_office_id,
@@ -3353,6 +3376,7 @@ class PublicationSearchService:
 
         created_task_ids: list[int] = []
         for payload in payloads:
+            self._append_publication_notes(payload, first.description)
             self._enforce_description_limit(payload)
             self._apply_required_task_defaults(
                 payload, fallback_office_id=fallback_office_id,
