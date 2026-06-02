@@ -123,6 +123,11 @@ def _resolve_in_squad(
                 f"Lider da squad '{squad.name}' nao existe mais no catalogo. "
                 "Re-sincronize ou ajuste a squad."
             )
+        if not user.is_active:
+            raise ValueError(
+                f"Lider da squad '{squad.name}' (usuario '{user.name}') esta "
+                "INATIVO no Legal One. Ajuste o lider da squad para um usuario ativo."
+            )
         return AssistantResolutionResult(
             user_external_id=int(user.external_id),
             squad_id=squad.id,
@@ -133,7 +138,12 @@ def _resolve_in_squad(
     from datetime import datetime, timezone
     member = (
         db.query(SquadMember)
-        .filter(SquadMember.squad_id == squad_id, SquadMember.is_assistant.is_(True))
+        .join(LegalOneUser, LegalOneUser.id == SquadMember.legal_one_user_id)
+        .filter(
+            SquadMember.squad_id == squad_id,
+            SquadMember.is_assistant.is_(True),
+            LegalOneUser.is_active.is_(True),
+        )
         .order_by(
             SquadMember.last_assigned_at.asc().nullsfirst(),
             SquadMember.id.asc(),
@@ -142,7 +152,7 @@ def _resolve_in_squad(
     )
     if member is None:
         raise ValueError(
-            f"Squad '{squad.name}' (id={squad_id}) nao tem assistente cadastrado."
+            f"Squad '{squad.name}' (id={squad_id}) nao tem assistente ATIVO cadastrado."
         )
     if commit:
         member.last_assigned_at = datetime.now(timezone.utc)
@@ -263,9 +273,11 @@ def resolve_assistant(
 
     assistant_member = (
         db.query(SquadMember)
+        .join(LegalOneUser, LegalOneUser.id == SquadMember.legal_one_user_id)
         .filter(
             SquadMember.squad_id == chosen_squad.id,
             SquadMember.is_assistant.is_(True),
+            LegalOneUser.is_active.is_(True),
         )
         .order_by(
             SquadMember.last_assigned_at.asc().nullsfirst(),
@@ -277,8 +289,8 @@ def resolve_assistant(
     if assistant_member is None:
         raise ValueError(
             f"Squad '{chosen_squad.name}' (id={chosen_squad.id}) nao tem "
-            "assistente cadastrado. Cadastre em /admin/squads ou troque "
-            "o responsavel da tarefa."
+            "assistente ATIVO cadastrado. Cadastre um usuario ativo em "
+            "/admin/squads ou troque o responsavel da tarefa."
         )
 
     if commit:
