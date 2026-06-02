@@ -2449,8 +2449,18 @@ class PublicationSearchService:
             .subquery()
         )
 
-        total_groups = self.db.query(sa_func.count()).select_from(groups_subq).scalar() or 0
-        total_records = self.db.query(sa_func.sum(groups_subq.c.cnt)).scalar() or 0
+        # Uma query so para as duas contagens (antes eram 2 round-trips):
+        # count(*) = grupos distintos; sum(cnt) = total de registros.
+        _agg = (
+            self.db.query(
+                sa_func.count(),
+                sa_func.coalesce(sa_func.sum(groups_subq.c.cnt), 0),
+            )
+            .select_from(groups_subq)
+            .one()
+        )
+        total_groups = int(_agg[0] or 0)
+        total_records = int(_agg[1] or 0)
 
         # UFs disponíveis globalmente — respeita todos os filtros EXCETO
         # o próprio UF (senão sumiriam as outras opções assim que o

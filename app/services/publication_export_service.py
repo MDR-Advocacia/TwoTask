@@ -46,6 +46,9 @@ EXPORT_COLUMNS: list[tuple[str, str, int]] = [
 ]
 
 
+# DEPRECADO / NAO USADO desde a refatoracao de paridade: o export passou a
+# reutilizar PublicationSearchService._base_publication_query (ver
+# export_records_grouped_xlsx). Mantido so por referencia historica.
 def _apply_filters(
     query, *, search_id, status, linked_office_id, date_from, date_to,
     category, uf=None, polo=None, scheduled_by_user_id=None,
@@ -236,14 +239,21 @@ def export_records_grouped_xlsx(
     date_to: Optional[str] = None,
     category: Optional[str] = None,
     uf: Optional[str] = None,
+    vinculo: Optional[str] = None,
+    natureza: Optional[str] = None,
     polo: Optional[str] = None,
+    cnj_search: Optional[str] = None,
     scheduled_by_user_id: Optional[str] = None,
 ) -> tuple[bytes, str]:
     """Gera o XLSX e devolve ``(bytes, filename)``."""
 
-    query = db.query(PublicationRecord)
-    query = _apply_filters(
-        query,
+    # Reutiliza a MESMA query-base do list (PublicationSearchService) para
+    # garantir paridade TOTAL de filtros entre a tela e o export, incluindo
+    # vinculo/natureza/cnj_search (que o _apply_filters local nao cobria). O
+    # construtor do service so guarda db/client; passamos client=None porque
+    # _base_publication_query e' SQL puro e nao toca no client.
+    from app.services.publication_search_service import PublicationSearchService
+    query = PublicationSearchService(db, None)._base_publication_query(
         search_id=search_id,
         status=status,
         linked_office_id=linked_office_id,
@@ -251,7 +261,10 @@ def export_records_grouped_xlsx(
         date_to=date_to,
         category=category,
         uf=uf,
+        vinculo=vinculo,
+        natureza=natureza,
         polo=polo,
+        cnj_search=cnj_search,
         scheduled_by_user_id=scheduled_by_user_id,
     )
 
@@ -326,7 +339,10 @@ def export_records_grouped_xlsx(
         ("date_to", date_to or ""),
         ("category", category or ""),
         ("uf", uf or ""),
+        ("vinculo", vinculo or ""),
+        ("natureza", natureza or ""),
         ("polo", polo or ""),
+        ("cnj_search", cnj_search or ""),
         ("scheduled_by_user_id", scheduled_by_user_id or ""),
     ]
     for row_idx, (label, value) in enumerate(meta_rows, start=1):

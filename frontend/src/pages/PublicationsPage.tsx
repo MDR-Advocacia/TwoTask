@@ -967,7 +967,10 @@ const PublicationsPage = () => {
       if (filterDateTo) params.set("date_to", filterDateTo);
       if (filterCategory) params.set("category", filterCategory);
       if (filterUf) params.set("uf", filterUf);
+      if (filterVinculo) params.set("vinculo", filterVinculo);
+      if (filterNatureza) params.set("natureza", filterNatureza);
       if (filterPolo) params.set("polo", filterPolo);
+      if (filterCnj) params.set("cnj_search", filterCnj);
       if (filterScheduledBy) params.set("scheduled_by_user_id", filterScheduledBy);
       const qs = params.toString();
       const url = `${API}/records/grouped/export${qs ? `?${qs}` : ""}`;
@@ -1096,7 +1099,10 @@ const PublicationsPage = () => {
     loadTaskMeta();
     loadStats();
     loadSearches();
-    loadGrouped(0, "", "", "", "", "", "", "", "", "", "", "");
+    // Passa o estado inicial dos filtros (filterStatus ja nasce com o default
+    // de pendentes) — antes ia tudo vazio e a 1a carga trazia TODOS os status,
+    // divergindo dos chips de Status exibidos.
+    loadGrouped(0, filterStatus, filterOffice, filterDateFrom, filterDateTo, filterCategory, filterUf, filterVinculo, filterNatureza, filterPolo, filterCnj, filterScheduledBy);
     loadBatches();
     loadSavedFilters();
   }, []);

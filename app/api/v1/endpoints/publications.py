@@ -711,7 +711,10 @@ def export_records_grouped(
     date_to: Optional[str] = Query(None, description="Data fim (YYYY-MM-DD)."),
     category: Optional[str] = Query(None, description="Classificação primária."),
     uf: Optional[str] = Query(None, description="UF/região derivada do CNJ."),
+    vinculo: Optional[str] = Query(None, description="Filtro de vínculo: com_processo, sem_processo."),
+    natureza: Optional[str] = Query(None, description="Natureza do processo (avulsas)."),
     polo: Optional[str] = Query(None, description="Filtra por polo indicado (ativo, passivo, ambos)."),
+    cnj_search: Optional[str] = Query(None, description="Busca tolerante por CNJ (match por dígitos)."),
     scheduled_by_user_id: Optional[str] = Query(None, description="CSV de user_ids do operador que cadastrou."),
     db: Session = Depends(get_db),
 ):
@@ -730,7 +733,10 @@ def export_records_grouped(
         date_to=date_to,
         category=category,
         uf=uf,
+        vinculo=vinculo,
+        natureza=natureza,
         polo=polo,
+        cnj_search=cnj_search,
         scheduled_by_user_id=scheduled_by_user_id,
     )
     return Response(
