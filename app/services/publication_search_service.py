@@ -2264,18 +2264,20 @@ class PublicationSearchService:
                 query = query.filter(PublicationRecord.polo == polo_list[0])
             else:
                 query = query.filter(PublicationRecord.polo.in_(polo_list))
-        # Cadastrado por (scheduled_by_user_id) — CSV de user_ids do
-        # operador que finalizou o agendamento da publicação.
+        # Cadastrado por — CSV de user_ids do operador que TRATOU a publicação.
+        # Tratar = agendar (scheduled_by_user_id) OU dar ciência/IGNORAR
+        # (ignored_by_user_id). Antes só casava scheduled_by_user_id, então ao
+        # filtrar por um operador os registros que ele apenas IGNOROU sumiam
+        # (status IGNORADO tem scheduled_by NULL). Agora casa qualquer das duas
+        # autorias — fecha o par scheduled_by_* / ignored_by_* do model.
         scheduled_by_ids = _parse_csv_ints(scheduled_by_user_id)
         if scheduled_by_ids:
-            if len(scheduled_by_ids) == 1:
-                query = query.filter(
-                    PublicationRecord.scheduled_by_user_id == scheduled_by_ids[0]
+            query = query.filter(
+                or_(
+                    PublicationRecord.scheduled_by_user_id.in_(scheduled_by_ids),
+                    PublicationRecord.ignored_by_user_id.in_(scheduled_by_ids),
                 )
-            else:
-                query = query.filter(
-                    PublicationRecord.scheduled_by_user_id.in_(scheduled_by_ids)
-                )
+            )
         # Busca por CNJ: match tolerante por dígitos (ignora máscara do usuário).
         # Comparamos a forma só-dígitos dos dois lados, assim "0000161-07.2026..."
         # e "000016107202680500" casam sem precisar normalizar o input.
@@ -2466,6 +2468,27 @@ class PublicationSearchService:
             .all()
             if r[0] is not None
         ]
+        # Inclui também quem deu ciência/IGNOROU (ignored_by_*) — senão um
+        # operador que só ignorou publicações (nunca agendou) jamais apareceria
+        # como opção de "Cadastrado por". Mesmo escopo de filtro do bloco acima.
+        _seen_by_ids = {d["user_id"] for d in available_scheduled_by}
+        for r in (
+            scheduled_by_query
+            .with_entities(
+                PublicationRecord.ignored_by_user_id,
+                PublicationRecord.ignored_by_name,
+                PublicationRecord.ignored_by_email,
+            )
+            .filter(PublicationRecord.ignored_by_user_id.isnot(None))
+            .distinct()
+            .all()
+        ):
+            if r[0] is not None and r[0] not in _seen_by_ids:
+                available_scheduled_by.append(
+                    {"user_id": r[0], "name": r[1] or "", "email": r[2] or ""}
+                )
+                _seen_by_ids.add(r[0])
+        available_scheduled_by.sort(key=lambda d: (d["name"] or "").lower())
 
         # Busca as group_keys da página atual
         page_keys_rows = (

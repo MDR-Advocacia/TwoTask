@@ -48,34 +48,81 @@ EXPORT_COLUMNS: list[tuple[str, str, int]] = [
 
 def _apply_filters(
     query, *, search_id, status, linked_office_id, date_from, date_to,
-    category, polo=None, scheduled_by_user_id=None,
+    category, uf=None, polo=None, scheduled_by_user_id=None,
 ):
+    """Aplica os MESMOS filtros de ``PublicationSearchService._base_publication_query``.
+
+    Todos os filtros multi-seleção (status, escritório, categoria, UF, polo)
+    chegam como CSV ("AGENDADO,IGNORADO") e PRECISAM virar ``IN``. Comparar
+    contra a string CSV inteira (``status == "AGENDADO,IGNORADO"``) não casa
+    com nenhuma linha — era por isso que o export saía vazio enquanto a tela
+    listava os registros normalmente.
+    """
+    # Helpers de parsing compartilhados com o service (fonte única de verdade).
+    from app.services.publication_search_service import (
+        _parse_csv_ints,
+        _parse_csv_strs,
+    )
+    from sqlalchemy import or_
+
     query = query.filter(PublicationRecord.is_duplicate == False)  # noqa: E712
     if search_id is not None:
         query = query.filter(PublicationRecord.search_id == search_id)
-    if status:
-        query = query.filter(PublicationRecord.status == status)
+
+    status_list = _parse_csv_strs(status)
+    if status_list:
+        if len(status_list) == 1:
+            query = query.filter(PublicationRecord.status == status_list[0])
+        else:
+            query = query.filter(PublicationRecord.status.in_(status_list))
     else:
         query = query.filter(PublicationRecord.status != RECORD_STATUS_OBSOLETE)
-    if linked_office_id is not None:
-        query = query.filter(PublicationRecord.linked_office_id == linked_office_id)
+
+    office_ids = _parse_csv_ints(linked_office_id)
+    if office_ids:
+        if len(office_ids) == 1:
+            query = query.filter(PublicationRecord.linked_office_id == office_ids[0])
+        else:
+            query = query.filter(PublicationRecord.linked_office_id.in_(office_ids))
+
     if date_from:
         query = query.filter(PublicationRecord.creation_date >= date_from)
     if date_to:
         # Mantém o mesmo comportamento de list_records_grouped (inclui o dia inteiro).
         query = query.filter(PublicationRecord.creation_date < date_to + "T99")
-    if category:
-        query = query.filter(PublicationRecord.category == category)
-    if polo:
-        query = query.filter(PublicationRecord.polo == polo.strip().lower())
-    # scheduled_by_user_id aceita CSV ("5,8"). Converte e aplica IN/=.
-    if scheduled_by_user_id:
-        ids = [int(x) for x in str(scheduled_by_user_id).split(",") if x.strip().isdigit()]
-        if ids:
-            if len(ids) == 1:
-                query = query.filter(PublicationRecord.scheduled_by_user_id == ids[0])
-            else:
-                query = query.filter(PublicationRecord.scheduled_by_user_id.in_(ids))
+
+    category_list = _parse_csv_strs(category)
+    if category_list:
+        if len(category_list) == 1:
+            query = query.filter(PublicationRecord.category == category_list[0])
+        else:
+            query = query.filter(PublicationRecord.category.in_(category_list))
+
+    uf_list = [u.strip().upper() for u in _parse_csv_strs(uf)]
+    if uf_list:
+        if len(uf_list) == 1:
+            query = query.filter(PublicationRecord.uf == uf_list[0])
+        else:
+            query = query.filter(PublicationRecord.uf.in_(uf_list))
+
+    polo_list = [p.strip().lower() for p in _parse_csv_strs(polo)]
+    if polo_list:
+        if len(polo_list) == 1:
+            query = query.filter(PublicationRecord.polo == polo_list[0])
+        else:
+            query = query.filter(PublicationRecord.polo.in_(polo_list))
+
+    # "Cadastrado por": casa quem AGENDOU (scheduled_by_user_id) OU quem deu
+    # ciência/IGNOROU (ignored_by_user_id). Antes só olhava scheduled_by_user_id,
+    # então registros ignorados (que têm scheduled_by NULL) sumiam do filtro.
+    by_ids = _parse_csv_ints(scheduled_by_user_id)
+    if by_ids:
+        query = query.filter(
+            or_(
+                PublicationRecord.scheduled_by_user_id.in_(by_ids),
+                PublicationRecord.ignored_by_user_id.in_(by_ids),
+            )
+        )
     return query
 
 
@@ -124,6 +171,20 @@ def _truncate(value: Any, limit: int = 32_000) -> Any:
     return value
 
 
+def _xlsx_safe(value: Any) -> Any:
+    """Evita célula ``<c t="inlineStr"/>`` sem ``<is>`` (XML inválido).
+
+    O openpyxl 3.1.x serializa string vazia ("") como uma célula inline-string
+    SEM o elemento ``<is>`` filho — OOXML inválido, que faz o Excel acusar
+    "encontramos um problema com algum conteúdo… deseja recuperar?" (o arquivo
+    "corrompido"). Trocar "" por ``None`` faz a célula ser omitida, que é
+    válido. Qualquer outro valor passa intacto.
+    """
+    if value == "":
+        return None
+    return value
+
+
 def _row_for_record(
     record: PublicationRecord,
     office_names: dict[int, str],
@@ -141,7 +202,11 @@ def _row_for_record(
         "creation_date": record.creation_date or "",
         "status": record.status or "",
         "scheduled_by": (
-            record.scheduled_by_name or record.scheduled_by_email or ""
+            record.scheduled_by_name
+            or record.scheduled_by_email
+            or record.ignored_by_name
+            or record.ignored_by_email
+            or ""
         ),
         "category": record.category or "",
         "subcategory": record.subcategory or "",
@@ -166,7 +231,7 @@ def export_records_grouped_xlsx(
     *,
     search_id: Optional[int] = None,
     status: Optional[str] = None,
-    linked_office_id: Optional[int] = None,
+    linked_office_id: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     category: Optional[str] = None,
@@ -185,12 +250,10 @@ def export_records_grouped_xlsx(
         date_from=date_from,
         date_to=date_to,
         category=category,
+        uf=uf,
         polo=polo,
         scheduled_by_user_id=scheduled_by_user_id,
     )
-    # Filtro UF via coluna materializada (SQL) — antes era em memória.
-    if uf:
-        query = query.filter(PublicationRecord.uf == uf.strip().upper())
 
     records = (
         query
@@ -239,7 +302,7 @@ def export_records_grouped_xlsx(
     for row_idx, record in enumerate(records, start=2):
         row = _row_for_record(record, office_names)
         for col_idx, (key, _title, _width) in enumerate(EXPORT_COLUMNS, start=1):
-            cell = ws.cell(row=row_idx, column=col_idx, value=row.get(key))
+            cell = ws.cell(row=row_idx, column=col_idx, value=_xlsx_safe(row.get(key)))
             cell.alignment = body_align
         ws.row_dimensions[row_idx].height = 25
 
@@ -268,7 +331,7 @@ def export_records_grouped_xlsx(
     ]
     for row_idx, (label, value) in enumerate(meta_rows, start=1):
         meta.cell(row=row_idx, column=1, value=label).font = Font(bold=True)
-        meta.cell(row=row_idx, column=2, value=value)
+        meta.cell(row=row_idx, column=2, value=_xlsx_safe(value))
     meta.column_dimensions["A"].width = 36
     meta.column_dimensions["B"].width = 48
 
