@@ -532,7 +532,9 @@ class LegalOneApiClient:
                 params = {
                     "$filter": f"responsibleOfficeId eq {int(office_id)}",
                     "$select": "id",
-                    "$top": 100,
+                    # OData /Lawsuits cap = 30 (descoberto 2026-05-19: $top>30
+                    # devolve 400 com mensagem explicita do servidor).
+                    "$top": 30,
                 }
                 results = self._paginated_catalog_loader(endpoint, params)
                 for item in results:

@@ -932,6 +932,11 @@ class PublicationSearchService:
                         custom or None,
                         is_unlinked=is_unlinked,
                         feedback_examples=_feedback_for(oid),
+                        # Polo do escritorio (Admin > Polo dos Escritorios):
+                        # trava a arvore da IA no polo certo (ativo/passivo).
+                        # Sem isso a IA via os dois polos e podia gravar a
+                        # categoria do lado errado (ver _resolve_office_polo).
+                        polo_scope=self._resolve_office_polo(oid),
                         # Modo arvore enxuta (fase 13): quando o setting
                         # template_driven_taxonomy esta on, build_taxonomy_text
                         # filtra a arvore pra so incluir cats com template
@@ -945,6 +950,7 @@ class PublicationSearchService:
                     office_prompts[cache_key] = build_system_prompt_for_office(
                         is_unlinked=is_unlinked,
                         feedback_examples=_feedback_for(oid),
+                        polo_scope=self._resolve_office_polo(oid),
                         office_external_id=oid,
                     )
             return office_prompts[cache_key]
@@ -1070,6 +1076,44 @@ class PublicationSearchService:
     # Construção de propostas de tarefa
     # ──────────────────────────────────────────────
 
+    def _resolve_office_polo(self, office_external_id: Optional[int]) -> Optional[str]:
+        """Polo configurado do escritorio (Admin > Polo dos Escritorios):
+        'ativo'/'passivo' viram filtro de arvore da taxonomia; 'ambos' ou
+        ausente -> None (sem filtro, comportamento legado). Cacheado por
+        instancia pra nao consultar o mesmo escritorio N vezes.
+
+        Wiring central do fix de polo (2026-06): a CLASSIFICACAO (prompt da
+        IA) e o MATCH de template passam a respeitar o polo do escritorio,
+        em vez de a IA enxergar as duas arvores (ativo+passivo) e gravar a
+        categoria do polo errado (ex.: BB/Autor caindo em 'Recursos e
+        Julgamentos em 2o Grau', que e passivo e nao tem template do
+        escritorio -> 'Sem template')."""
+        if not office_external_id:
+            return None
+        cache = getattr(self, "_office_polo_cache", None)
+        if cache is None:
+            cache = {}
+            self._office_polo_cache = cache
+        if office_external_id not in cache:
+            polo: Optional[str] = None
+            try:
+                from app.models.legal_one import LegalOneOffice
+                office = (
+                    self.db.query(LegalOneOffice)
+                    .filter(LegalOneOffice.external_id == office_external_id)
+                    .first()
+                )
+                raw = (getattr(office, "polo_scope", None) or "").strip().lower()
+                polo = raw if raw in ("ativo", "passivo") else None
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Falha ao resolver polo do escritorio %s: %s",
+                    office_external_id, exc,
+                )
+                polo = None
+            cache[office_external_id] = polo
+        return cache[office_external_id]
+
     def _build_task_proposals(
         self,
         records: List[PublicationRecord],
@@ -1127,10 +1171,19 @@ class PublicationSearchService:
                 # pra alinhar com taxonomy_active_version=v2.
                 raw_cat = clf_info.get("category") or ""
                 raw_sub = clf_info.get("subcategory") or "-"
+                # Polo pra resolver o template: prioriza o polo CONFIGURADO do
+                # escritorio (Admin > Polo dos Escritorios); so cai no polo
+                # inferido pela IA (rec.polo) quando o escritorio e 'ambos'/
+                # desconhecido. Evita o caso de a IA devolver 'ambos' e o
+                # repair nao achar a categoria polo-especifica.
+                match_polo = (
+                    self._resolve_office_polo(rec.linked_office_id)
+                    or getattr(rec, "polo", None)
+                )
                 try:
                     repaired_cat, repaired_sub = repair_classification(
                         raw_cat, raw_sub,
-                        polo_scope=getattr(rec, "polo", None),
+                        polo_scope=match_polo,
                         taxonomy_version="v2",
                     )
                 except Exception:
@@ -2764,7 +2817,9 @@ class PublicationSearchService:
             "records": records_payload,
         }
 
-    def update_record_status(self, record_id: int, new_status: str) -> dict[str, Any]:
+    def update_record_status(
+        self, record_id: int, new_status: str, acted_by: Optional[Any] = None
+    ) -> dict[str, Any]:
         valid_statuses = {
             RECORD_STATUS_NEW, RECORD_STATUS_CLASSIFIED,
             RECORD_STATUS_SCHEDULED, RECORD_STATUS_IGNORED, RECORD_STATUS_ERROR,
@@ -2776,8 +2831,21 @@ class PublicationSearchService:
         if not record:
             raise ValueError(f"Registro #{record_id} não encontrado.")
 
+        now_utc = datetime.now(timezone.utc)
         record.status = new_status
-        record.updated_at = datetime.now(timezone.utc)
+        record.updated_at = now_utc
+
+        # Autoria da ciência: quando o operador move o registro pra IGNORADO
+        # ("dar ciência"), registra quem fez e quando. Sobrescreve sempre o
+        # ato vigente (mesmo padrão de scheduled_by_* em schedule_group/
+        # schedule_records) — assim o placar reflete a ação real e o
+        # ignored_at carimba o momento, não um primeiro toque antigo.
+        if new_status == RECORD_STATUS_IGNORED and acted_by is not None:
+            record.ignored_by_user_id = getattr(acted_by, "id", None)
+            record.ignored_by_email = getattr(acted_by, "email", None)
+            record.ignored_by_name = getattr(acted_by, "name", None)
+            record.ignored_at = now_utc
+
         from app.services.publication_treatment_service import PublicationTreatmentService
         treatment_service = PublicationTreatmentService(self.db)
         treatment_service.sync_item_from_record(record, commit=False)

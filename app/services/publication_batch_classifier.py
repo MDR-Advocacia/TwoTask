@@ -276,6 +276,26 @@ class PublicationBatchClassifier:
         office_prompts: dict[tuple, str] = {}
         feedback_cache: dict[int, str] = {}
         office_ids = {rec.linked_office_id for rec in records if rec.linked_office_id}
+        # Polo configurado por escritorio (Admin > Polo dos Escritorios).
+        # 'ativo'/'passivo' travam a arvore da IA no polo certo; 'ambos' ou
+        # ausente -> None (sem filtro). Sem isso o batch classificava cego ao
+        # polo e gravava a categoria do lado errado (ex.: BB/Autor caindo na
+        # cat do passivo, que nao tem template do escritorio -> 'Sem template').
+        office_polo_by_id: dict[int, Optional[str]] = {}
+        if office_ids:
+            try:
+                from app.models.legal_one import LegalOneOffice
+                for off in (
+                    self.db.query(LegalOneOffice)
+                    .filter(LegalOneOffice.external_id.in_(office_ids))
+                    .all()
+                ):
+                    raw = (getattr(off, "polo_scope", None) or "").strip().lower()
+                    office_polo_by_id[off.external_id] = (
+                        raw if raw in ("ativo", "passivo") else None
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Falha ao carregar polo dos escritorios: %s", exc)
 
         def _feedback_for(oid: int) -> str:
             if oid not in feedback_cache:
@@ -301,6 +321,7 @@ class PublicationBatchClassifier:
                         excluded or None, custom or None,
                         is_unlinked=unlinked,
                         feedback_examples=fb,
+                        polo_scope=office_polo_by_id.get(oid),
                         office_external_id=oid,
                     )
             except Exception as exc:
@@ -357,6 +378,7 @@ class PublicationBatchClassifier:
                 try:
                     prompt = build_system_prompt_for_office(
                         is_unlinked=is_unlinked,
+                        polo_scope=office_polo_by_id.get(oid),
                         office_external_id=oid,
                     )
                     office_prompts[cache_key] = prompt  # cacheia pra proxima

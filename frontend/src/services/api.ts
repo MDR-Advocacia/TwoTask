@@ -2681,3 +2681,220 @@ export async function downloadClassificadorRelatorio(
   URL.revokeObjectURL(url);
 }
 
+
+// ─── Varredura de andamentos (modulo incidental) ─────────────────────
+
+export interface VarreduraOfficeOption {
+  external_id: number;
+  name: string;
+  path: string | null;
+  polo_scope: string;
+}
+
+export interface VarreduraRun {
+  id: number;
+  status: string;
+  started_at: string | null;
+  completed_at: string | null;
+  responsible_office_ids: number[];
+  window_days: number;
+  total_processos: number;
+  total_processados: number;
+  total_achados: number;
+  total_falhas: number;
+  triggered_by: string | null;
+  error_message: string | null;
+}
+
+export interface VarreduraRunListResponse {
+  total: number;
+  items: VarreduraRun[];
+}
+
+export interface VarreduraProcessado {
+  id: number;
+  run_id: number;
+  lawsuit_id: number;
+  cnj_number: string | null;
+  office_id: number | null;
+  queue_status: string;
+  attempt_count: number;
+  last_attempt_at: string | null;
+  completed_at: string | null;
+  total_andamentos_lidos: number;
+  total_achados: number;
+  last_error: string | null;
+  last_reason: string | null;
+}
+
+export interface VarreduraProcessadoListResponse {
+  total: number;
+  items: VarreduraProcessado[];
+}
+
+export interface VarreduraAchado {
+  id: number;
+  run_id: number;
+  processado_id: number;
+  lawsuit_id: number;
+  cnj_number: string | null;
+  andamento_data: string | null;
+  andamento_hora: string | null;
+  andamento_tipo: string | null;
+  andamento_texto: string;
+  andamento_movimentado_por: string | null;
+  tipo_evento: string;
+  regex_matched: string | null;
+  tratado: boolean;
+  tratado_em: string | null;
+  tratado_por: string | null;
+  observacao: string | null;
+  created_at: string | null;
+}
+
+export interface VarreduraAchadoListResponse {
+  total: number;
+  items: VarreduraAchado[];
+}
+
+export interface VarreduraPattern {
+  tipo: string;
+  label: string;
+  regex: string;
+}
+
+export async function fetchVarreduraOffices(): Promise<VarreduraOfficeOption[]> {
+  const res = await apiFetch("/api/v1/varredura/offices-disponiveis");
+  return expectJson<VarreduraOfficeOption[]>(res);
+}
+
+export async function fetchVarreduraPatterns(): Promise<{ patterns: VarreduraPattern[] }> {
+  const res = await apiFetch("/api/v1/varredura/patterns");
+  return expectJson<{ patterns: VarreduraPattern[] }>(res);
+}
+
+export async function createVarreduraRunFromList(payload: {
+  identifiers: string[];
+  window_days?: number;
+}): Promise<{ run: VarreduraRun; unresolved: string[] }> {
+  const res = await apiFetch("/api/v1/varredura/runs/from-list", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return expectJson(res);
+}
+
+export async function createVarreduraRun(payload: {
+  responsible_office_ids: number[];
+  window_days?: number;
+  max_processos?: number;
+}): Promise<VarreduraRun> {
+  const res = await apiFetch("/api/v1/varredura/runs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return expectJson<VarreduraRun>(res);
+}
+
+export async function fetchVarreduraRuns(params: {
+  status?: string;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<VarreduraRunListResponse> {
+  const q = new URLSearchParams();
+  if (params.status) q.set("status", params.status);
+  if (params.limit != null) q.set("limit", String(params.limit));
+  if (params.offset != null) q.set("offset", String(params.offset));
+  const qs = q.toString();
+  const res = await apiFetch(`/api/v1/varredura/runs${qs ? `?${qs}` : ""}`);
+  return expectJson<VarreduraRunListResponse>(res);
+}
+
+export async function fetchVarreduraRun(runId: number): Promise<VarreduraRun> {
+  const res = await apiFetch(`/api/v1/varredura/runs/${runId}`);
+  return expectJson<VarreduraRun>(res);
+}
+
+export async function fetchVarreduraProcessados(
+  runId: number,
+  params: { queue_status?: string; limit?: number; offset?: number } = {},
+): Promise<VarreduraProcessadoListResponse> {
+  const q = new URLSearchParams();
+  if (params.queue_status) q.set("queue_status", params.queue_status);
+  if (params.limit != null) q.set("limit", String(params.limit));
+  if (params.offset != null) q.set("offset", String(params.offset));
+  const qs = q.toString();
+  const res = await apiFetch(
+    `/api/v1/varredura/runs/${runId}/processados${qs ? `?${qs}` : ""}`,
+  );
+  return expectJson<VarreduraProcessadoListResponse>(res);
+}
+
+export async function cancelVarreduraRun(runId: number): Promise<VarreduraRun> {
+  const res = await apiFetch(`/api/v1/varredura/runs/${runId}/cancel`, {
+    method: "POST",
+  });
+  return expectJson<VarreduraRun>(res);
+}
+
+export async function recoverVarreduraZombies(
+  runId: number,
+  thresholdMinutes = 10,
+): Promise<{ recovered_count: number; threshold_minutes: number }> {
+  const q = new URLSearchParams();
+  q.set("threshold_minutes", String(thresholdMinutes));
+  const res = await apiFetch(
+    `/api/v1/varredura/runs/${runId}/recover-zombies?${q.toString()}`,
+    { method: "POST" },
+  );
+  return expectJson(res);
+}
+
+export async function fetchVarreduraAchados(params: {
+  run_id?: number;
+  tipo_evento?: string;
+  tratado?: boolean;
+  cnj_search?: string;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<VarreduraAchadoListResponse> {
+  const q = new URLSearchParams();
+  if (params.run_id != null) q.set("run_id", String(params.run_id));
+  if (params.tipo_evento) q.set("tipo_evento", params.tipo_evento);
+  if (params.tratado != null) q.set("tratado", String(params.tratado));
+  if (params.cnj_search) q.set("cnj_search", params.cnj_search);
+  if (params.limit != null) q.set("limit", String(params.limit));
+  if (params.offset != null) q.set("offset", String(params.offset));
+  const qs = q.toString();
+  const res = await apiFetch(`/api/v1/varredura/achados${qs ? `?${qs}` : ""}`);
+  return expectJson<VarreduraAchadoListResponse>(res);
+}
+
+export async function updateVarreduraAchado(
+  achadoId: number,
+  payload: { tratado: boolean; observacao?: string | null },
+): Promise<VarreduraAchado> {
+  const res = await apiFetch(`/api/v1/varredura/achados/${achadoId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+  return expectJson<VarreduraAchado>(res);
+}
+
+export async function downloadVarreduraRunXlsx(runId: number): Promise<void> {
+  const res = await apiFetch(`/api/v1/varredura/runs/${runId}/achados.xlsx`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `HTTP ${res.status}`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `varredura-${runId}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+

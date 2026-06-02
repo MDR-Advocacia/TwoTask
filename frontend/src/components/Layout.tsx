@@ -5,7 +5,7 @@ import {
   CircleUser,
   Clock,
   FileUp,
-  Home,
+  LayoutDashboard,
   ListChecks,
   LogOut,
   Menu,
@@ -26,7 +26,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
-import { Sheet, SheetContent, SheetTrigger } from "./ui/sheet";
+import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "./ui/sheet";
 
 type Permission = 'canScheduleBatch' | 'canUsePublications' | 'canUsePrazosIniciais' | 'isAdmin';
 
@@ -65,11 +65,6 @@ export default function Layout({ children }: PropsWithChildren) {
 
   const baseSections: NavSection[] = [
     {
-      items: [
-        { to: "/", icon: Home, label: "Dashboard" },
-      ],
-    },
-    {
       title: "Criação de Tarefas",
       items: [
         { to: "/tasks/spreadsheet-batch", icon: FileUp, label: "Tarefas por Planilha", requirePermission: 'canScheduleBatch' },
@@ -79,6 +74,7 @@ export default function Layout({ children }: PropsWithChildren) {
     {
       title: "Tratamento de Publicações",
       items: [
+        { to: "/publications/dashboard", icon: LayoutDashboard, label: "Dashboard", requirePermission: 'canUsePublications' },
         { to: "/automations", icon: Clock, label: "Agendamentos", requirePermission: 'canUsePublications' },
         { to: "/publications", icon: Newspaper, label: "Publicações Legal One", requirePermission: 'canUsePublications' },
         { to: "/publications/treatment", icon: ListChecks, label: "Tratamento Web", requirePermission: 'canUsePublications' },
@@ -176,6 +172,7 @@ export default function Layout({ children }: PropsWithChildren) {
               </Button>
             </SheetTrigger>
             <SheetContent side="left" className="flex flex-col">
+              <SheetTitle className="sr-only">Menu de navegação</SheetTitle>
               <div className="mb-4 flex items-center justify-center gap-2.5">
                 <img
                   src="/brand/dunaflow-logo.png"

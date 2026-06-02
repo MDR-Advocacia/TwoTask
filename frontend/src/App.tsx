@@ -13,7 +13,8 @@ import FeedbackButton from './components/FeedbackButton';
 // Páginas
 import AdminPage from './pages/AdminPage';
 import NotFound from './pages/NotFound';
-import DashboardHome from './pages/DashboardHome';
+import LandingPage from './pages/LandingPage';
+import PublicationsDashboardPage from './pages/PublicationsDashboardPage';
 import CreateTaskByTemplatePage from './pages/CreateTaskByTemplatePage';
 import LoginPage from './pages/LoginPage';
 import CreateTaskFromSpreadsheetPage from './pages/CreateTaskFromSpreadsheetPage';
@@ -60,12 +61,13 @@ function AppContent() {
 
           {/* Rotas Protegidas */}
           <Route element={<ProtectedRoute />}>
-            <Route path="/" element={<DashboardHome />} />
+            <Route path="/" element={<LandingPage />} />
             <Route path="/admin" element={<AdminPage />} />
             <Route path="/me" element={<ProfilePage />} />
             <Route path="/tasks/template-batch" element={<CreateTaskByTemplatePage />} />
             <Route path="/tasks/spreadsheet-batch" element={<CreateTaskFromSpreadsheetPage />} />
             <Route path="/publications" element={<PublicationsPage />} />
+            <Route path="/publications/dashboard" element={<PublicationsDashboardPage />} />
             <Route path="/publications/lookup" element={<LookupByCnjPage />} />
             <Route path="/publications/treatment" element={<PublicationTreatmentPage />} />
             <Route path="/publications/templates" element={<TaskTemplatesPage />} />

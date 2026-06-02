@@ -139,6 +139,23 @@ class PublicationRecord(Base):
     scheduled_by_name = Column(String, nullable=True)
     scheduled_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Autoria da ciência/ignorar (migration pub003).
+    # Preenchido quando o operador move o registro pra status=IGNORADO via
+    # PATCH /records/{id} ("dar ciência"). Mesmo padrão de scheduled_by_*:
+    # FK + snapshot de email/nome pra preservar o rastro se o LegalOneUser
+    # for removido. Junto com scheduled_by_*, fecha a autoria das duas ações
+    # humanas de tratamento (agendar + dar ciência). NOVO→CLASSIFICADO é
+    # automático (IA), por isso não tem autoria.
+    ignored_by_user_id = Column(
+        Integer,
+        ForeignKey("legal_one_users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    ignored_by_email = Column(String, nullable=True)
+    ignored_by_name = Column(String, nullable=True)
+    ignored_at = Column(DateTime(timezone=True), nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 

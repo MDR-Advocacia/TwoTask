@@ -786,10 +786,17 @@ def update_record_status(
     record_id: int,
     payload: UpdateRecordStatusRequest,
     service: PublicationSearchService = Depends(_get_service),
+    current_user=Depends(auth_security.get_current_user),
 ):
-    """Atualiza o status de um registro de publicação."""
+    """Atualiza o status de um registro de publicação.
+
+    Quando o status vai pra IGNORADO ("dar ciência"), o `current_user` é
+    repassado pro service pra registrar a autoria (ignored_by_*).
+    """
     try:
-        return service.update_record_status(record_id, payload.status)
+        return service.update_record_status(
+            record_id, payload.status, acted_by=current_user
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

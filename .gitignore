@@ -95,3 +95,17 @@ test-data/
 # do repo principal). Sem isso, `git add` na raiz captura a worktree
 # como gitlink/submodule (mode 160000).
 .claude/worktrees/
+
+# Output da auditoria forense (incidental). DADOS SENSIVEIS de cliente —
+# nunca devem ir pro repo. O path padrao usado por
+# scripts/run_audit_carteira.py é qualquer pasta começando com auditoria*/.
+# Operador deve passar --output-dir pra um path FORA do repo (ex.: junto
+# da pasta de JSONs de input). Esta regra é defesa em profundidade.
+auditoria/
+auditoria-*/
+
+# Symlink pro node_modules do RPA Playwright (aponta pra /app/output/... ,
+# path interno do container Docker). Fora do container vira symlink quebrado
+# e faz `git add -A` falhar com "Function not implemented". A regra
+# node_modules/ acima nao pega porque isto e um symlink, nao um diretorio.
+app/runners/legalone/node_modules
