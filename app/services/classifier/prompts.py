@@ -677,6 +677,21 @@ Resposta: {"categoria": "Manifestação do Credor / Exequente", "subcategoria": 
 
 Texto: "Opostos Embargos à Execução pelo executado alegando excesso. Intime-se o exequente para impugnar..."
 Resposta: {"categoria": "Defesa do Devedor e Incidentes", "subcategoria": "Embargos à execução / monitórios", "polo": "ativo", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": 15, "prazo_tipo": "util", "prazo_fundamentacao": "Impugnação aos embargos - 15 dias úteis", "confianca": "alta", "justificativa": "Embargos à execução opostos pelo devedor - incidente na execução do credor"}
+
+## CASO RECORRENTE (polo ATIVO) — CUSTAS + PLANILHA DE DÉBITO: retorne AS DUAS (ARRAY)
+
+Intimações de execução ao EXEQUENTE/CREDOR frequentemente pedem DUAS providências no mesmo despacho. Quando o texto intima o exequente a (a) apresentar comprovante de CUSTAS / diligência (SISBAJUD, SERASAJUD, INFOJUD, RENAJUD, "código de custas", etc.) E TAMBÉM (b) apresentar PLANILHA DE DÉBITO ATUALIZADA / atualizar o débito / juntar cálculo, você DEVE retornar um ARRAY com DUAS classificações — uma por providência. NUNCA deixe a planilha/cálculo de fora só porque já classificou a custa.
+
+  1. "Manifestação do Credor / Exequente" / "Recolher custas / diligências"   (a custa)
+  2. "Manifestação do Credor / Exequente" / "Apresentar cálculo / atualizar débito"   (a planilha/cálculo)
+
+Gatilhos da #2 (planilha/cálculo): "apresentar Planilha de Débito Atualizada", "planilha atualizada", "atualizar o débito", "demonstrativo de débito atualizado", "memória de cálculo atualizada", "apresentar cálculo".
+
+Texto: "...fica o EXEQUENTE intimado para apresentar o comprovante de custas CÓDIGO 1007... Junto às custas deve o EXEQUENTE apresentar Planilha de Débito Atualizada caso esta não tenha sido apresentada. Prazo 05 dias."
+Resposta: [
+  {"categoria": "Manifestação do Credor / Exequente", "subcategoria": "Recolher custas / diligências", "polo": "ativo", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": 5, "prazo_tipo": "util", "prazo_fundamentacao": "Recolhimento de custas/diligência - 5 dias úteis (art. 218, 3o, CPC)", "confianca": "alta", "justificativa": "Exequente intimado a comprovar custas de diligência"},
+  {"categoria": "Manifestação do Credor / Exequente", "subcategoria": "Apresentar cálculo / atualizar débito", "polo": "ativo", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": 5, "prazo_tipo": "util", "prazo_fundamentacao": "Planilha de débito atualizada - 5 dias úteis (art. 218, 3o, CPC)", "confianca": "alta", "justificativa": "Mesmo despacho exige planilha de débito atualizada do exequente"}
+]
 """
 
 
