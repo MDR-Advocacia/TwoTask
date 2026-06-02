@@ -917,9 +917,19 @@ const PublicationsPage = () => {
     finally { setLoadingDuplicates(false); }
   }, []);
 
+  // Guarda de sequencia: so aplica a resposta de loadGrouped se for a mais
+  // recente. Sem isso, ao trocar de filtro rapido a resposta lenta de um
+  // filtro antigo chega por ultimo e sobrescreve a contagem/linhas atuais.
+  const latestGroupedLoadId = useRef(0);
+  // Debounce das trocas de filtro (handleFilterChange): um burst de cliques
+  // em multi-select vira um unico fetch — cada fetch roda varias queries
+  // pesadas no backend, entao sem debounce a tela trava.
+  const filterFetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const loadGrouped = useCallback(async (
     page = 0, status = "", officeId = "", dateFrom = "", dateTo = "", category = "", ufParam = "", vinculoParam = "", naturezaParam = "", poloParam = "", cnjParam = "", scheduledByParam = "",
   ) => {
+    const loadId = ++latestGroupedLoadId.current;
     try {
       let url = `${API}/records/grouped?limit=${groupPageSize}&offset=${page * groupPageSize}`;
       if (status) url += `&status=${status}`;
@@ -934,7 +944,12 @@ const PublicationsPage = () => {
       if (cnjParam) url += `&cnj_search=${encodeURIComponent(cnjParam)}`;
       if (scheduledByParam) url += `&scheduled_by_user_id=${encodeURIComponent(scheduledByParam)}`;
       const res = await apiFetch(url);
-      if (res.ok) setGrouped(await res.json());
+      if (!res.ok) return;
+      const data = await res.json();
+      // Descarta resposta obsoleta: outra chamada de loadGrouped comecou
+      // depois desta (filtro/pagina mais novos) — ela e a fonte de verdade.
+      if (loadId !== latestGroupedLoadId.current) return;
+      setGrouped(data);
     } catch { /* ignore */ }
     // groupPageSize precisa estar nas deps senão o useCallback captura
     // o valor inicial (20) e ignora o dropdown — bug que fazia "100 por
@@ -1264,7 +1279,13 @@ const PublicationsPage = () => {
     const sb = scheduledByParam ?? filterScheduledBy;
     setGroupPage(0);
     setSelectedGroupKeys(new Set());
-    loadGrouped(0, status, officeId, df, dt, cat, uf, vin, nat, pol, cnj, sb);
+    // Debounce: a troca de filtro so dispara o fetch apos 300ms de quietude,
+    // entao marcar varios chips em sequencia vira UM fetch (e a guarda de
+    // sequencia em loadGrouped descarta qualquer corrida que reste).
+    if (filterFetchTimerRef.current) clearTimeout(filterFetchTimerRef.current);
+    filterFetchTimerRef.current = setTimeout(() => {
+      loadGrouped(0, status, officeId, df, dt, cat, uf, vin, nat, pol, cnj, sb);
+    }, 300);
   };
 
   const handleGroupPageChange = (newPage: number) => {
@@ -3081,10 +3102,15 @@ const PublicationsPage = () => {
                     <Badge variant="outline">{grouped.total_records} publicações</Badge>
                   )}
                   {(() => {
+                    // Conta filtros realmente aplicados pelo operador: o status
+                    // DEFAULT (pendentes) nao conta, e inclui Cadastrado por +
+                    // CNJ (antes ficavam de fora -> badge mostrava numero errado).
                     const active = [
-                      filterStatus, filterOffice, filterCategory, filterUf,
+                      filterStatus && filterStatus !== DEFAULT_PENDING_PUBLICATION_STATUSES_CSV,
+                      filterOffice, filterCategory, filterUf,
                       filterVinculo, filterNatureza, filterPolo,
                       filterDateFrom, filterDateTo,
+                      filterCnj, filterScheduledBy,
                     ].filter(Boolean).length;
                     return active > 0 ? (
                       <Badge
@@ -3146,7 +3172,7 @@ const PublicationsPage = () => {
           {/* Toggle mobile — no desktop (md+) o bloco fica sempre visível */}
           {(() => {
             const activeFiltersCount = [
-              filterStatus,
+              filterStatus && filterStatus !== DEFAULT_PENDING_PUBLICATION_STATUSES_CSV,
               filterOffice,
               filterCategory,
               filterUf,
@@ -3155,6 +3181,8 @@ const PublicationsPage = () => {
               filterPolo,
               filterDateFrom,
               filterDateTo,
+              filterCnj,
+              filterScheduledBy,
             ].filter(Boolean).length;
             return (
               <div className="md:hidden">
