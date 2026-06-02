@@ -692,6 +692,14 @@ Resposta: [
   {"categoria": "Manifestação do Credor / Exequente", "subcategoria": "Recolher custas / diligências", "polo": "ativo", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": 5, "prazo_tipo": "util", "prazo_fundamentacao": "Recolhimento de custas/diligência - 5 dias úteis (art. 218, 3o, CPC)", "confianca": "alta", "justificativa": "Exequente intimado a comprovar custas de diligência"},
   {"categoria": "Manifestação do Credor / Exequente", "subcategoria": "Apresentar cálculo / atualizar débito", "polo": "ativo", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": 5, "prazo_tipo": "util", "prazo_fundamentacao": "Planilha de débito atualizada - 5 dias úteis (art. 218, 3o, CPC)", "confianca": "alta", "justificativa": "Mesmo despacho exige planilha de débito atualizada do exequente"}
 ]
+
+## CARTA PRECATÓRIA (polo ATIVO)
+
+Intimação ao AUTOR / EXEQUENTE para retirar / distribuir / comprovar Carta Precatória (acompanhar a diligência no juízo deprecado, recolher custas no deprecado) -> "Manifestação do Credor / Exequente" / "Distribuir Carta Precatória".
+Gatilhos: "INTIMAÇÃO AUTOR - DISTRIBUIR PRECATÓRIA", "retirar a Carta Precatória", "comprovar a distribuição", "juízo deprecado", "distribuir a precatória".
+
+Texto: "INTIMAÇÃO AUTOR - DISTRIBUIR PRECATÓRIA. Fica a parte AUTORA intimada a retirar a Carta Precatória e comprovar a distribuição em 10 dias, ficando a seu encargo o recolhimento das custas perante o juízo deprecado, bem como o acompanhamento da diligência."
+Resposta: {"categoria": "Manifestação do Credor / Exequente", "subcategoria": "Distribuir Carta Precatória", "polo": "ativo", "audiencia_data": null, "audiencia_hora": null, "audiencia_link": null, "prazo_dias": 10, "prazo_tipo": "util", "prazo_fundamentacao": "Distribuição de carta precatória - prazo de 10 dias fixado no despacho", "confianca": "alta", "justificativa": "Exequente intimado a retirar, distribuir e acompanhar carta precatória"}
 """
 
 
