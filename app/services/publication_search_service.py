@@ -1402,17 +1402,22 @@ class PublicationSearchService:
                         rec.id, tmpl.id, exc,
                     )
 
-            if not proposals:
-                continue
-
-            # Guarda as propostas no raw_relationships
+            # SEMPRE atualiza as chaves de proposta (limpando as antigas), pra
+            # que reclassificacao manual / rebuild reflita a classificacao
+            # ATUAL. Antes, 'if not proposals: continue' deixava a proposta
+            # velha presa quando a nova classificacao nao casava template; e
+            # como _proposed_tasks so era setado quando len>1, a lista antiga
+            # de extras tambem ficava grudada ao passar de N->1. (fix 2026-06)
             raw = dict(rec.raw_relationships or {}) if isinstance(rec.raw_relationships, dict) else {
                 "_relationships": rec.raw_relationships
             }
-            # Primeira proposta mantém compatibilidade; extras ficam em lista
-            raw["_proposed_task"] = proposals[0]
-            if len(proposals) > 1:
-                raw["_proposed_tasks"] = proposals
+            raw.pop("_proposed_task", None)
+            raw.pop("_proposed_tasks", None)
+            if proposals:
+                # Primeira proposta mantém compatibilidade; extras ficam em lista
+                raw["_proposed_task"] = proposals[0]
+                if len(proposals) > 1:
+                    raw["_proposed_tasks"] = proposals
             rec.raw_relationships = raw
 
         self.db.commit()
