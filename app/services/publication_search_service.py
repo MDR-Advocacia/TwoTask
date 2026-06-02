@@ -2123,6 +2123,12 @@ class PublicationSearchService:
             payload["responsibleOfficeId"] = effective_office_id
             payload["originOfficeId"] = effective_office_id
 
+        # Texto da publicacao na observacao da PROPOSTA: entra no notes que o
+        # modal de agendamento exibe (operador ve e edita a vontade). O backend
+        # NAO re-injeta no schedule — respeita a edicao do operador. Helper
+        # idempotente + cap de tamanho.
+        self._append_publication_notes(payload, rec.description)
+
         result = {
             "template_id": tmpl.id,
             "template_name": tmpl.name,
@@ -3268,7 +3274,6 @@ class PublicationSearchService:
 
         created_task_ids: list[int] = []
         for payload in payloads:
-            self._append_publication_notes(payload, first.description)
             self._enforce_description_limit(payload)
             self._apply_required_task_defaults(
                 payload, fallback_office_id=fallback_office_id,
@@ -3376,7 +3381,6 @@ class PublicationSearchService:
 
         created_task_ids: list[int] = []
         for payload in payloads:
-            self._append_publication_notes(payload, first.description)
             self._enforce_description_limit(payload)
             self._apply_required_task_defaults(
                 payload, fallback_office_id=fallback_office_id,
