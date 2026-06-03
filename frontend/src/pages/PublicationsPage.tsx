@@ -1726,7 +1726,34 @@ const PublicationsPage = () => {
       }
     }));
 
-    setEditedPayloads(resolvedTasks.map((t) => ({ ...t })));
+    // ── Recalcula a data dos templates com referencia "data atual" ──────
+    // A data da proposta e' congelada quando o template e' aplicado; pra
+    // publicacao antiga com template "data atual" ela fica velha. Aqui, na
+    // ABERTURA do modal, pedimos ao backend a data refeita (hoje + N dias
+    // uteis) e aplicamos UMA UNICA vez (respeita edicao manual posterior do
+    // operador). Falha graceful: mantem a data da proposta.
+    let dateAdjustedTasks = resolvedTasks;
+    if (group.lawsuit_id) {
+      try {
+        const dres = await apiFetch(
+          `${API}/groups/${group.lawsuit_id}/refresh-today-dates`,
+          { method: "POST" },
+        );
+        if (dres.ok) {
+          const dmap =
+            (await dres.json())?.refreshed_dates_by_subtype || {};
+          dateAdjustedTasks = resolvedTasks.map((t) => {
+            const r = dmap[String(t.subTypeId)] ?? dmap[t.subTypeId];
+            return r?.startDateTime
+              ? { ...t, startDateTime: r.startDateTime, endDateTime: r.endDateTime }
+              : t;
+          });
+        }
+      } catch {
+        /* mantem a data da proposta */
+      }
+    }
+    setEditedPayloads(dateAdjustedTasks.map((t) => ({ ...t })));
     // Reset do estado de duplicatas — a checagem roda via useEffect abaixo.
     setDuplicatesBySubtype({});
     setDuplicateCheckFailed(false);

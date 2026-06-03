@@ -1656,6 +1656,122 @@ class PublicationSearchService:
             f"&currentPage=1&returnUrl={quote(return_path, safe='')}"
         )
 
+    def refresh_today_reference_dates(self, lawsuit_id: int) -> dict:
+        """Recalcula a DATA de agendamento (start/endDateTime) das propostas
+        cujo template tem due_date_reference='today', usando a DATA ATUAL.
+
+        Motivo: a data da proposta e' congelada quando o template e' aplicado
+        (_render_proposal). Pra template com referencia "data atual", uma
+        publicacao antiga acaba com data velha. Este metodo — chamado quando o
+        operador ABRE o modal de agendamento — reconstroi a sugestao pra hoje +
+        N dias uteis. So mexe na DATA (preserva descricao, notas e
+        participantes). Pula proposta de audiencia (a data vem do ato, nao do
+        "hoje").
+
+        Persiste no _proposed_task/_proposed_tasks (durabilidade) e retorna
+        {subtype_id: {"startDateTime", "endDateTime"}} pro frontend aplicar nos
+        payloads do modal — uma unica vez, na abertura (respeita edicao manual
+        posterior do operador).
+        """
+        from app.models.task_template import TaskTemplate
+        from app.services.prazos_iniciais.prazo_calculator import add_business_days
+        from datetime import date as date_cls
+        from sqlalchemy.orm.attributes import flag_modified
+
+        records = (
+            self.db.query(PublicationRecord)
+            .filter(PublicationRecord.linked_lawsuit_id == lawsuit_id)
+            .filter(
+                PublicationRecord.status.in_(
+                    [RECORD_STATUS_NEW, RECORD_STATUS_CLASSIFIED, RECORD_STATUS_IGNORED]
+                )
+            )
+            .all()
+        )
+        if not records:
+            return {}
+
+        BR_TZ = ZoneInfo("America/Sao_Paulo")
+
+        def _brt_to_utc_z(date_str: str, time_str: str) -> str:
+            if time_str.count(":") == 1:
+                time_str = f"{time_str}:00"
+            local_dt = datetime.fromisoformat(
+                f"{date_str}T{time_str}"
+            ).replace(tzinfo=BR_TZ)
+            return local_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        today = date_cls.today()
+        refreshed: dict = {}
+        tmpl_cache: dict = {}
+        dirty = False
+
+        for rec in records:
+            raw = rec.raw_relationships if isinstance(rec.raw_relationships, dict) else None
+            if not raw:
+                continue
+            # Audiencia: a data vem do ato (data/hora da audiencia), nao do "hoje".
+            if getattr(rec, "audiencia_data", None):
+                continue
+
+            proposals = raw.get("_proposed_tasks")
+            is_list = isinstance(proposals, list)
+            if not is_list:
+                single = raw.get("_proposed_task")
+                proposals = [single] if isinstance(single, dict) else []
+            if not proposals:
+                continue
+
+            changed = False
+            for prop in proposals:
+                if not isinstance(prop, dict):
+                    continue
+                tmpl_id = prop.get("template_id")
+                if not tmpl_id:
+                    continue
+                if tmpl_id not in tmpl_cache:
+                    tmpl_cache[tmpl_id] = (
+                        self.db.query(TaskTemplate)
+                        .filter(TaskTemplate.id == tmpl_id)
+                        .first()
+                    )
+                tmpl = tmpl_cache[tmpl_id]
+                if not tmpl or getattr(tmpl, "due_date_reference", None) != "today":
+                    continue
+
+                pl = prop.get("payload")
+                if not isinstance(pl, dict):
+                    continue
+                due_date = add_business_days(today, tmpl.due_business_days or 5)
+                due_iso = _brt_to_utc_z(due_date.isoformat(), "23:59:59")
+                if pl.get("startDateTime") != due_iso or pl.get("endDateTime") != due_iso:
+                    pl["startDateTime"] = due_iso
+                    pl["endDateTime"] = due_iso
+                    changed = True
+                sub = pl.get("subTypeId")
+                if sub:
+                    refreshed[int(sub)] = {
+                        "startDateTime": due_iso,
+                        "endDateTime": due_iso,
+                    }
+
+            if changed:
+                # Pos-reload do DB, _proposed_task e _proposed_tasks[0] sao
+                # objetos distintos (JSON nao preserva referencia). Como o
+                # modal e o schedule leem _proposed_tasks quando ela existe,
+                # mutamos a lista; aqui re-sincronizamos o singular pro
+                # invariante _proposed_task == _proposed_tasks[0].
+                if is_list and proposals:
+                    raw["_proposed_task"] = proposals[0]
+                # Mutacao IN-PLACE de coluna JSON nao e' detectada pelo
+                # SQLAlchemy sem MutableDict — flag_modified forca o UPDATE.
+                flag_modified(rec, "raw_relationships")
+                dirty = True
+
+        if dirty:
+            self.db.commit()
+        return refreshed
+
     def check_duplicates_for_lawsuit(
         self,
         lawsuit_id: int,

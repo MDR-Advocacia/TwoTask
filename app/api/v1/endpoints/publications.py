@@ -970,6 +970,35 @@ def check_duplicates(
         raise HTTPException(status_code=500, detail=f"Erro ao checar duplicatas: {exc}")
 
 
+@router.post("/groups/{lawsuit_id}/refresh-today-dates")
+def refresh_today_dates(
+    lawsuit_id: int,
+    service: PublicationSearchService = Depends(_get_service),
+    _=Depends(auth_security.get_current_user),
+):
+    """
+    Recalcula a data de agendamento das propostas cujo template tem
+    referencia "data atual" (due_date_reference='today'), usando a data de
+    HOJE. Chamado pelo modal de agendamento na ABERTURA — pra publicacao
+    antiga nao ficar com data velha (a data e' congelada quando o template e'
+    aplicado). So mexe nessas propostas; as demais ficam intactas.
+
+    Retorna { "refreshed_dates_by_subtype": { <subtype_id>: { "startDateTime",
+    "endDateTime" } } } pro frontend aplicar nos payloads do modal (uma vez,
+    na abertura — respeita edicao manual posterior). Falha graceful: em erro
+    retorna mapa vazio (nao trava o agendamento).
+    """
+    try:
+        refreshed = service.refresh_today_reference_dates(lawsuit_id)
+        return {"refreshed_dates_by_subtype": refreshed}
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "refresh-today-dates falhou p/ lawsuit %s: %s", lawsuit_id, exc
+        )
+        return {"refreshed_dates_by_subtype": {}}
+
+
 @router.get("/groups/{lawsuit_id}/recent-tasks")
 def recent_tasks(
     lawsuit_id: int,
