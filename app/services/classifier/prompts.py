@@ -838,8 +838,10 @@ def build_user_message(
     if office_path and polo in ("ativo", "passivo"):
         nome = polo.upper()
         header = f"""ESCRITÓRIO RESPONSÁVEL: {office_path}
-POLO DESTE ESCRITÓRIO: {nome}
-PASSO OBRIGATÓRIO ANTES DE CLASSIFICAR: este escritório atua no polo {nome}. Escolha e use EXCLUSIVAMENTE o esquema e as categorias do polo {nome} (as listadas na TAXONOMIA). Ignore exemplos e categorias do outro polo, mesmo que o texto cite a parte contrária.
+POLO DO ESCRITÓRIO RESPONSÁVEL: {nome}
+Regra de classificação: use EXCLUSIVAMENTE o esquema e as categorias do polo {nome} (este é o escritório responsável). Ignore categorias do outro polo, mesmo que o texto cite a parte contrária.
+O campo "polo" da resposta reflete O ATO da publicação (a quem ela se dirige/afeta) e PODE ser diferente do polo do escritório — isso é normal, NÃO é contradição, NÃO comente.
+Responda SOMENTE com o JSON pedido — sem nenhum texto, observação ou explicação antes ou depois do JSON.
 
 """
     return f"""{header}Processo: {process_number}

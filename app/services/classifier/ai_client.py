@@ -396,6 +396,47 @@ class AnthropicClassifierClient:
             return None
 
     @staticmethod
+    def _extract_first_json(text):
+        """Extrai o primeiro objeto/array JSON BALANCEADO do texto, ignorando
+        prosa antes ou depois. A IA as vezes anexa explicacao (ex.: um
+        paragrafo 'OBSERVACAO CRITICA: ...' depois do JSON) — isso sobrava no
+        json.loads e quebrava o parse. Rastreia strings/escapes pra nao fechar
+        em chave dentro de string. Retorna a substring balanceada ou None se
+        nao houver objeto/array fechado (ex.: truncado por max_tokens)."""
+        start = -1
+        for i, ch in enumerate(text):
+            if ch == "{" or ch == "[":
+                start = i
+                break
+        if start == -1:
+            return None
+        open_ch = text[start]
+        close_ch = "}" if open_ch == "{" else "]"
+        bs = chr(92)
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == bs:
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == open_ch:
+                depth += 1
+            elif ch == close_ch:
+                depth -= 1
+                if depth == 0:
+                    return text[start:i + 1]
+        return None
+
+    @staticmethod
     def _parse_classification_response(
         raw_text: str, stop_reason: str | None = None
     ) -> dict[str, Any] | list[dict[str, Any]]:
@@ -414,6 +455,14 @@ class AnthropicClassifierClient:
             lines = text.split("\n")
             lines = [l for l in lines if not l.strip().startswith("```")]
             text = "\n".join(lines).strip()
+
+        # A IA as vezes anexa prosa (explicacao) antes/depois do JSON — ex.:
+        # um paragrafo "OBSERVACAO CRITICA: ..." DEPOIS do objeto. Extrai o
+        # primeiro objeto/array balanceado e ignora o resto, pra nao quebrar
+        # o json.loads com texto sobrando. (fix 2026-06)
+        _extracted = AnthropicClassifierClient._extract_first_json(text)
+        if _extracted is not None:
+            text = _extracted
 
         try:
             parsed = json.loads(text)
