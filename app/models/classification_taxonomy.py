@@ -68,7 +68,10 @@ class ClassificationCategory(Base):
         "ClassificationSubcategory",
         back_populates="category",
         cascade="all, delete-orphan",
-        order_by="ClassificationSubcategory.display_order, ClassificationSubcategory.name",
+        # SUBcategorias em ordem alfabetica (A->Z) — decisao do operador
+        # 2026-06-04. As CATEGORIAS principais ficam em ordem processual
+        # (display_order). display_order continua na tabela, so nao ordena subs.
+        order_by="ClassificationSubcategory.name",
     )
 
 

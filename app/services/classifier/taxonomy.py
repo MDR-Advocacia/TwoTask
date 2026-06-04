@@ -190,6 +190,9 @@ def _load_tree_from_db(
                 q = q.filter(
                     ClassificationCategory.taxonomy_version == taxonomy_version
                 )
+            # Categorias em ordem PROCESSUAL (display_order) — a ordem em
+            # que acontecem no processo. So as SUBcategorias sao alfabeticas
+            # (ver order_by do relationship subcategories).
             cats = q.order_by(
                 ClassificationCategory.display_order, ClassificationCategory.name
             ).all()
