@@ -224,6 +224,7 @@ def list_taxonomy(
     if not include_inactive:
         query = query.filter(ClassificationCategory.is_active.is_(True))
 
+    # Categorias em ordem PROCESSUAL (display_order); subs alfabeticas.
     cats = query.order_by(
         ClassificationCategory.display_order,
         ClassificationCategory.name,
