@@ -42,18 +42,15 @@ const LoginPage = () => {
   return (
     <div className="flex items-center justify-center min-h-screen bg-background px-4">
       <div className="w-full max-w-sm space-y-6">
-        <div className="flex flex-col items-center gap-3">
+        <div className="flex flex-col items-center gap-2">
           <img
-            src="/brand/dunaflow-logo.png"
-            alt="DunaFlow"
-            className="h-16 w-auto"
+            src="/brand/flow-wordmark.png"
+            alt="Flow by DUNATECH"
+            className="h-20 w-auto"
           />
-          <div className="flex flex-col items-center gap-1">
-            <h1 className="flow-neon text-4xl leading-none">Flow</h1>
-            <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
-              by DUNATECH
-            </p>
-          </div>
+          <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
+            by DUNATECH
+          </p>
         </div>
         <Card className="w-full">
           <CardHeader>
