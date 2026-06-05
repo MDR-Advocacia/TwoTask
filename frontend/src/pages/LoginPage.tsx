@@ -46,7 +46,7 @@ const LoginPage = () => {
           <img
             src="/brand/flow-wordmark.png"
             alt="Flow by DUNATECH"
-            className="h-20 w-auto"
+            className="h-28 w-auto"
           />
           <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
             by DUNATECH
