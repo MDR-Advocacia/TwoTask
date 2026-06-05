@@ -2898,3 +2898,202 @@ export async function downloadVarreduraRunXlsx(runId: number): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
+
+// === GED LegalOne (envio em lote de arquivos pro GED do L1) ===
+
+export interface GedUploadBatch {
+  id: number;
+  nome: string;
+  mode: "SINGLE_FILE" | "MULTI_FILE";
+  type_id: string | null;
+  description: string | null;
+  status: string;
+  is_terminal: boolean;
+  progress_pct: number;
+  total_itens: number;
+  total_sucesso: number;
+  total_erro: number;
+  total_pendente: number;
+  shared_original_filename: string | null;
+  error_message: string | null;
+  created_by_user_id: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+  finished_at: string | null;
+}
+
+export interface GedUploadItem {
+  id: number;
+  batch_id: number;
+  cnj_number: string | null;
+  cnj_masked: string | null;
+  lawsuit_id: number | null;
+  original_filename: string | null;
+  file_ext: string | null;
+  size_bytes: number | null;
+  status: string;
+  ged_document_id: number | null;
+  error_message: string | null;
+  attempts: number;
+  created_at: string | null;
+  processed_at: string | null;
+}
+
+export interface GedBatchStatus {
+  id: number;
+  status: string;
+  mode: string;
+  is_terminal: boolean;
+  progress_pct: number;
+  total_itens: number;
+  total_sucesso: number;
+  total_erro: number;
+  total_pendente: number;
+  finished_at: string | null;
+  updated_at: string | null;
+}
+
+export interface GedResolveSummary {
+  resolved: number;
+  nao_encontrado: number;
+  total: number;
+  invalid_cnjs?: string[];
+  duplicates_removed?: number;
+  files_sem_cnj?: string[];
+}
+
+export interface GedCreateBatchResponse {
+  batch: GedUploadBatch;
+  resolve_summary: GedResolveSummary;
+}
+
+export interface GedBatchListResponse {
+  total: number;
+  items: GedUploadBatch[];
+}
+
+export interface GedItemListResponse {
+  total: number;
+  items: GedUploadItem[];
+}
+
+export interface GedDocumentType {
+  type_id: string | null;
+  label: string;
+}
+
+export async function listGedDocumentTypes(): Promise<GedDocumentType[]> {
+  const res = await apiFetch("/api/v1/ged-legalone/document-types");
+  const data = await expectJson<{ items: GedDocumentType[] }>(res);
+  return data.items;
+}
+
+export async function createGedBatchSingle(input: {
+  nome: string;
+  file: File;
+  cnjList: string;
+  typeId?: string | null;
+  description?: string;
+}): Promise<GedCreateBatchResponse> {
+  const fd = new FormData();
+  fd.append("nome", input.nome);
+  fd.append("cnj_list", input.cnjList);
+  fd.append("file", input.file);
+  if (input.typeId) fd.append("type_id", input.typeId);
+  if (input.description) fd.append("description", input.description);
+  const res = await apiFetch("/api/v1/ged-legalone/batches/single", {
+    method: "POST",
+    body: fd,
+  });
+  return expectJson<GedCreateBatchResponse>(res);
+}
+
+export async function createGedBatchMulti(input: {
+  nome: string;
+  files: File[];
+  typeId?: string | null;
+  description?: string;
+  cnjOverrides?: Record<string, string>;
+}): Promise<GedCreateBatchResponse> {
+  const fd = new FormData();
+  fd.append("nome", input.nome);
+  for (const f of input.files) fd.append("files", f);
+  if (input.typeId) fd.append("type_id", input.typeId);
+  if (input.description) fd.append("description", input.description);
+  if (input.cnjOverrides && Object.keys(input.cnjOverrides).length > 0) {
+    fd.append("cnj_overrides", JSON.stringify(input.cnjOverrides));
+  }
+  const res = await apiFetch("/api/v1/ged-legalone/batches/multi", {
+    method: "POST",
+    body: fd,
+  });
+  return expectJson<GedCreateBatchResponse>(res);
+}
+
+export async function listGedBatches(params: {
+  status?: string;
+  nome?: string;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<GedBatchListResponse> {
+  const q = new URLSearchParams();
+  if (params.status) q.set("status", params.status);
+  if (params.nome) q.set("nome", params.nome);
+  if (params.limit != null) q.set("limit", String(params.limit));
+  if (params.offset != null) q.set("offset", String(params.offset));
+  const qs = q.toString();
+  const res = await apiFetch(`/api/v1/ged-legalone/batches${qs ? `?${qs}` : ""}`);
+  return expectJson<GedBatchListResponse>(res);
+}
+
+export async function getGedBatch(batchId: number): Promise<GedUploadBatch> {
+  const res = await apiFetch(`/api/v1/ged-legalone/batches/${batchId}`);
+  return expectJson<GedUploadBatch>(res);
+}
+
+export async function getGedBatchStatus(batchId: number): Promise<GedBatchStatus> {
+  const res = await apiFetch(`/api/v1/ged-legalone/batches/${batchId}/status`);
+  return expectJson<GedBatchStatus>(res);
+}
+
+export async function listGedBatchItems(
+  batchId: number,
+  params: { status?: string; limit?: number; offset?: number } = {},
+): Promise<GedItemListResponse> {
+  const q = new URLSearchParams();
+  if (params.status) q.set("status", params.status);
+  if (params.limit != null) q.set("limit", String(params.limit));
+  if (params.offset != null) q.set("offset", String(params.offset));
+  const qs = q.toString();
+  const res = await apiFetch(
+    `/api/v1/ged-legalone/batches/${batchId}/items${qs ? `?${qs}` : ""}`,
+  );
+  return expectJson<GedItemListResponse>(res);
+}
+
+export async function retryGedBatchFailed(
+  batchId: number,
+): Promise<{ batch: GedUploadBatch; re_enqueued: number } & GedResolveSummary> {
+  const res = await apiFetch(
+    `/api/v1/ged-legalone/batches/${batchId}/retry-failed`,
+    { method: "POST" },
+  );
+  return expectJson<{ batch: GedUploadBatch; re_enqueued: number } & GedResolveSummary>(res);
+}
+
+export async function cancelGedBatch(batchId: number): Promise<GedUploadBatch> {
+  const res = await apiFetch(`/api/v1/ged-legalone/batches/${batchId}/cancel`, {
+    method: "POST",
+  });
+  return expectJson<GedUploadBatch>(res);
+}
+
+export async function deleteGedBatch(batchId: number): Promise<void> {
+  const res = await apiFetch(`/api/v1/ged-legalone/batches/${batchId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 204) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || `HTTP error! status: ${res.status}`);
+  }
+}

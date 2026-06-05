@@ -12,6 +12,7 @@ import {
   Newspaper,
   ScanSearch,
   Settings,
+  Upload,
   Users,
   Workflow,
 } from "lucide-react";
@@ -94,6 +95,12 @@ export default function Layout({ children }: PropsWithChildren) {
       title: "Classificador",
       items: [
         { to: "/classificador", icon: ScanSearch, label: "Diagnostico de Carteira", requirePermission: 'canUsePrazosIniciais' },
+      ],
+    },
+    {
+      title: "GED LegalOne",
+      items: [
+        { to: "/ged-legalone", icon: Upload, label: "Envio em Lote ao GED", requirePermission: 'canUsePrazosIniciais' },
       ],
     },
     {

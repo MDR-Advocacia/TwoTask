@@ -22,6 +22,7 @@ from app.api.v1.endpoints import (
     classifier,
     classificador,
     dashboard,
+    ged_legalone,
     offices,
     prazos_iniciais,
     prazos_iniciais_legacy_tasks,
@@ -239,6 +240,19 @@ async def lifespan(_: FastAPI):
             "Falha ao registrar report_worker do Classificador no startup."
         )
 
+    # Worker de upload do GED LegalOne — CORE do modulo (sobe os arquivos
+    # dos lotes pro GED do L1). Default ON (ged_legalone_worker_enabled).
+    try:
+        from app.services.ged_legalone.upload_worker import (
+            register_ged_legalone_job,
+        )
+
+        register_ged_legalone_job(scheduler)
+    except Exception:
+        logger.exception(
+            "Falha ao registrar worker do GED LegalOne no startup."
+        )
+
     # Cron diário de cleanup dos PDFs da habilitação (Onda 3).
     # Pega resíduos: intakes já uplodados pro GED mas com pdf_path != None,
     # e também arquivos antigos (retenção) de intakes que travaram fora
@@ -331,6 +345,9 @@ app.include_router(
 )
 app.include_router(task_templates.router, prefix="/api/v1/task-templates", tags=["Templates de Tarefa"], dependencies=protected_dependencies)
 app.include_router(ajus.router, prefix="/api/v1", tags=["AJUS"], dependencies=protected_dependencies)
+# GED LegalOne — envio em lote de arquivos pro GED (ECM) de processos do L1.
+# JWT obrigatorio + permissao prazos_iniciais (guard interno por endpoint).
+app.include_router(ged_legalone.router, prefix="/api/v1", tags=["GED LegalOne"], dependencies=protected_dependencies)
 app.include_router(automations.router, prefix="/api/v1/automations", tags=["Automações"], dependencies=protected_dependencies)
 # Base Processual: upload diario da Listagem de Acoes do L1 + dashboard
 # de movimentacao de carteira. JWT obrigatorio + guard interno admin-only.

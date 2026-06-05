@@ -55,3 +55,7 @@ from .varredura import (
     VarreduraProcessado,
     VarreduraRun,
 )
+from .ged_legalone import (
+    GedUploadBatch,
+    GedUploadItem,
+)

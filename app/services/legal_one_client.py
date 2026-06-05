@@ -30,6 +30,27 @@ def _ascii_filename(value: str, default: str = "documento.pdf") -> str:
     return f"{normalized}{ext or os.path.splitext(default)[1] or '.pdf'}"
 
 
+# Mapa extensao -> Content-Type pro PUT no Azure Blob do GED. Usado quando
+# o upload nao e' PDF (modulo GED LegalOne). Fallback octet-stream pra
+# extensoes desconhecidas: o blob guarda os bytes crus de qualquer jeito;
+# o Content-Type so afeta o preview posterior no L1.
+_GED_CONTENT_TYPES: Dict[str, str] = {
+    "pdf": "application/pdf",
+    "doc": "application/msword",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xls": "application/vnd.ms-excel",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "ppt": "application/vnd.ms-powerpoint",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "txt": "text/plain",
+    "csv": "text/csv",
+    "zip": "application/zip",
+}
+
+
 class LegalOneAuthenticationError(RuntimeError):
     pass
 
@@ -1341,6 +1362,8 @@ class LegalOneApiClient:
         archive_name: Optional[str] = None,
         description: Optional[str] = None,
         notes: Optional[str] = None,
+        file_extension: Optional[str] = None,
+        content_type: Optional[str] = None,
     ) -> int:
         """
         Faz upload de um PDF no GED do L1 vinculado a um processo (Litigation).
@@ -1357,7 +1380,15 @@ class LegalOneApiClient:
         o blob temporario, exigindo refazer GetContainer + PUT do zero).
         """
         # Passo 1 — obtém container temp.
-        ext = "pdf"
+        ext = (
+            file_extension
+            or os.path.splitext(file_name)[1].lstrip(".")
+            or "pdf"
+        ).lower()
+        resolved_content_type = (
+            content_type
+            or _GED_CONTENT_TYPES.get(ext, "application/octet-stream")
+        )
         get_container_endpoint = (
             f"/documents/getcontainer(fileExtension='{ext}')"
         )
@@ -1418,7 +1449,7 @@ class LegalOneApiClient:
                 data=file_bytes,
                 headers={
                     "x-ms-blob-type": "BlockBlob",
-                    "Content-Type": "application/pdf",
+                    "Content-Type": resolved_content_type,
                 },
                 timeout=60,
             )

@@ -292,6 +292,35 @@ class Settings(BaseSettings):
     ajus_runner_poll_interval_seconds: int = 30
     ajus_runner_batch_per_account: int = 5
 
+    # ── GED LegalOne — envio em lote de arquivos pro GED (ECM) do L1 ──
+    # Modulo dedicado a subir arquivos arbitrarios (PDF, docx, xlsx,
+    # imagens...) no GED de processos do Legal One a partir de CNJ +
+    # arquivo. Um worker em background processa cada lote item a item.
+    # Volume persistente onde os arquivos ficam ate o upload no GED.
+    ged_legalone_storage_path: str = "/app/data/ged_legalone"
+    # Limite por arquivo (MB). PUT do Azure tem timeout de 60s — 50MB OK.
+    ged_legalone_max_file_mb: int = 50
+    # Extensoes aceitas (separadas por virgula). Rejeitadas cedo no create
+    # (422) em vez de descobrir no meio do lote.
+    ged_legalone_allowed_extensions: str = (
+        "pdf,doc,docx,xls,xlsx,ppt,pptx,jpg,jpeg,png,txt,csv,zip"
+    )
+    # typeId default do GED (formato "type_N"). None = sem tipo (operador
+    # define no L1). A UI manda o tipo por lote; isso e' so fallback.
+    ged_legalone_default_type_id: str | None = None
+    # Escape hatch: se o GED rejeitar a extensao original, refaz o upload
+    # como octet-stream/pdf (bytes intactos). Default OFF — pode bagunçar
+    # como o L1 renderiza o doc; ligar so se o GED tiver allow-list propria.
+    ged_legalone_fallback_extension_to_pdf: bool = False
+    # Worker de upload — CORE do modulo (nao dormente como o Classificador).
+    # Default ON; em prod o Coolify pode desligar via env se precisar.
+    ged_legalone_worker_enabled: bool = True
+    ged_legalone_worker_interval_seconds: int = 15
+    ged_legalone_worker_batch_size: int = 25
+    # Itens travados em PROCESSANDO ha mais que isso (sem ged_document_id)
+    # voltam pra PENDENTE no proximo tick (recuperacao de crash).
+    ged_legalone_stuck_minutes: int = 15
+
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -335,6 +364,20 @@ class Settings(BaseSettings):
     @property
     def prazos_iniciais_max_upload_pdf_bytes(self) -> int:
         return self.prazos_iniciais_max_upload_pdf_mb * 1024 * 1024
+
+    @property
+    def ged_legalone_max_file_bytes(self) -> int:
+        return self.ged_legalone_max_file_mb * 1024 * 1024
+
+    @property
+    def ged_legalone_allowed_extensions_set(self) -> set[str]:
+        """Extensoes aceitas pro envio ao GED, normalizadas (sem ponto, lower)."""
+        raw = self.ged_legalone_allowed_extensions or ""
+        return {
+            ext.strip().lower().lstrip(".")
+            for ext in raw.split(",")
+            if ext.strip()
+        }
 
     @property
     def batch_tasks_api_keys(self) -> set[str]:
