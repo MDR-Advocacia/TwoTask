@@ -696,6 +696,65 @@ class LegalOneApiClient:
         finally:
             session.close()
 
+    def fetch_updates_by_lawsuit(
+        self,
+        lawsuit_id: int,
+        since: Optional[str] = None,
+        max_pages: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Busca TODOS os andamentos (updates) de um processo via API L1.
+
+        Usa endpoint /Updates com filtro relationships/any(r: r/linkId eq X).
+        Paginacao manual via $top=30 + $skip (cap do servidor). Cada item
+        contem description (texto integra), date, creationDate, typeId,
+        originType, relationships.
+
+        Args:
+            lawsuit_id: ID interno do processo no L1.
+            since: ISO date (YYYY-MM-DD) opcional. Filtra date ge since.
+            max_pages: cap defensivo de paginas (default 50 = 1500 andamentos).
+
+        Returns:
+            Lista de updates (cada um e' dict com os campos do payload L1).
+        """
+        from urllib.parse import quote
+
+        filter_parts = [f"relationships/any(r: r/linkId eq {int(lawsuit_id)})"]
+        if since:
+            filter_parts.append(f"date ge {since}T00:00:00Z")
+        filter_clause = " and ".join(filter_parts)
+
+        items: List[Dict[str, Any]] = []
+        skip = 0
+        page_size = 30
+        for page in range(max_pages):
+            params = {
+                "$filter": filter_clause,
+                "$top": page_size,
+                "$skip": skip,
+                "$orderby": "date desc",
+            }
+            qs = "&".join(
+                f"{k}={quote(str(v), safe='')}" for k, v in params.items()
+            )
+            url = f"{self.base_url}/Updates?{qs}"
+            try:
+                resp = self._request_with_retry("GET", url)
+                page_items = resp.json().get("value", []) or []
+            except Exception as exc:
+                self.logger.warning(
+                    "fetch_updates_by_lawsuit lid=%s skip=%s falhou: %s",
+                    lawsuit_id, skip, exc,
+                )
+                break
+            if not page_items:
+                break
+            items.extend(page_items)
+            if len(page_items) < page_size:
+                break  # ultima pagina
+            skip += page_size
+        return items
+
     @staticmethod
     def _cached_responsible_from_payload(payload: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         if not isinstance(payload, dict):
