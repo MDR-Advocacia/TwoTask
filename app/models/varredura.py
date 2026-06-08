@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     Column,
     Date,
@@ -22,6 +23,7 @@ from sqlalchemy import (
     false,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
 from app.db.session import Base
@@ -65,6 +67,8 @@ EVENTO_SENTENCA = "sentenca"
 EVENTO_REVELIA = "revelia"
 EVENTO_TRANSITO_JULGADO = "transito_julgado"
 EVENTO_ARQUIVAMENTO = "arquivamento"
+EVENTO_CUMPRIMENTO_INICIADO = "cumprimento_iniciado"
+EVENTO_CUMPRIMENTO_EXTINTO = "cumprimento_extinto"
 
 ALL_TIPOS_EVENTO = (
     EVENTO_AUDIENCIA_DESIGNADA,
@@ -73,6 +77,8 @@ ALL_TIPOS_EVENTO = (
     EVENTO_REVELIA,
     EVENTO_TRANSITO_JULGADO,
     EVENTO_ARQUIVAMENTO,
+    EVENTO_CUMPRIMENTO_INICIADO,
+    EVENTO_CUMPRIMENTO_EXTINTO,
 )
 
 
@@ -158,6 +164,9 @@ class VarreduraProcessado(Base):
     )
     last_error = Column(Text, nullable=True)
     last_reason = Column(String(64), nullable=True)
+    # Snapshot da capa da planilha (Listagem L1) no momento da varredura.
+    # Permite queries cruzadas sem reler a planilha. Var002 (2026-06-07).
+    capa_json = Column(JSONB, nullable=True)
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -173,6 +182,11 @@ class VarreduraProcessado(Base):
     run = relationship("VarreduraRun", back_populates="processados")
     achados = relationship(
         "VarreduraAchado",
+        back_populates="processado",
+        cascade="all, delete-orphan",
+    )
+    andamentos_raw = relationship(
+        "VarreduraAndamentoRaw",
         back_populates="processado",
         cascade="all, delete-orphan",
     )
@@ -216,4 +230,44 @@ class VarreduraAchado(Base):
     run = relationship("VarreduraRun", back_populates="achados")
     processado = relationship(
         "VarreduraProcessado", back_populates="achados"
+    )
+
+
+class VarreduraAndamentoRaw(Base):
+    """TODOS os andamentos brutos varridos (nao so' os que matcham regex).
+
+    Permite consultas livres: distribuicao de tipos por UF, busca textual,
+    timeline de processos, etc. Adicionada em var002 (2026-06-07).
+    """
+
+    __tablename__ = "varredura_andamento_raw"
+
+    id = Column(BigInteger, primary_key=True)
+    run_id = Column(
+        Integer,
+        ForeignKey("varredura_run.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    processado_id = Column(
+        Integer,
+        ForeignKey("varredura_processado.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    lawsuit_id = Column(Integer, nullable=False)
+    cnj_number = Column(String(64), nullable=True)
+    office_id = Column(Integer, nullable=True)
+    andamento_data = Column(Date, nullable=True)
+    andamento_hora = Column(String(8), nullable=True)
+    andamento_tipo = Column(String(64), nullable=True)
+    andamento_texto = Column(Text, nullable=False)
+    andamento_movimentado_por = Column(String(255), nullable=True)
+    ordem = Column(Integer, nullable=False, default=0, server_default="0")
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    processado = relationship(
+        "VarreduraProcessado", back_populates="andamentos_raw"
     )

@@ -52,6 +52,7 @@ from .classificador import (
 )
 from .varredura import (
     VarreduraAchado,
+    VarreduraAndamentoRaw,
     VarreduraProcessado,
     VarreduraRun,
 )

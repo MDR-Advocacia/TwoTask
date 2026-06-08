@@ -17,6 +17,8 @@ from app.models.varredura import (
     EVENTO_ARQUIVAMENTO,
     EVENTO_AUDIENCIA_CANCELADA,
     EVENTO_AUDIENCIA_DESIGNADA,
+    EVENTO_CUMPRIMENTO_EXTINTO,
+    EVENTO_CUMPRIMENTO_INICIADO,
     EVENTO_REVELIA,
     EVENTO_SENTENCA,
     EVENTO_TRANSITO_JULGADO,
@@ -67,6 +69,44 @@ PATTERNS: tuple[Pattern, ...] = (
         tipo=EVENTO_ARQUIVAMENTO,
         label="Arquivamento",
         regex=re.compile(r"arquivad[ao]|arquivamento", re.IGNORECASE),
+    ),
+    Pattern(
+        tipo=EVENTO_CUMPRIMENTO_INICIADO,
+        label="Cumprimento de sentença iniciado",
+        regex=re.compile(
+            r"cumprimento\s+de\s+senten[çc]a"
+            r"|intim[ea][-\s]?se\s+.{0,50}\s*pa(ra|guem|gue)?\s*pag"
+            r"|intim[ae][çc][ãa]o\s+(para|pa\.\s+)?pagamento"
+            r"|bacenjud|sisbajud|renajud|infojud"
+            r"|penhora\s+(online|de\s+ativos|sobre|determinada|de\s+valores)"
+            r"|determin[ao]\s+(o\s+)?(bloqueio|penhora)"
+            r"|bloqueio\s+(de\s+ativos|de\s+valores|judicial)"
+            r"|indisponibilidade\s+de\s+ativos"
+            r"|dep[óo]sito\s+judicial"
+            r"|execu[çc][ãa]o\s+de\s+senten[çc]a\s+iniciad[ao]"
+            r"|homologa[çc][ãa]o\s+(?:d[ao]\s+|d[ao]s\s+)?c[áa]lculos?"
+            r"|alvar[áa]\s+(de|para)\s+levantamento"
+            r"|art\.?\s*523\s+do\s+cpc"
+            r"|requerimento\s+de\s+cumprimento",
+            re.IGNORECASE,
+        ),
+    ),
+    Pattern(
+        tipo=EVENTO_CUMPRIMENTO_EXTINTO,
+        label="Cumprimento extinto/satisfeito",
+        regex=re.compile(
+            r"extin[çc][ãa]o\s+d[ao]\s+execu[çc][ãa]o"
+            r"|extint[ao]\s+(o\s+cumprimento|a\s+execu[çc][ãa]o)"
+            r"|cumprimento\s+extint[ao]"
+            r"|quita[çc][ãa]o\s+(integral|total|d[ao]\s+d[ée]bito)"
+            r"|d[ée]bito\s+quitad[ao]"
+            r"|pagamento\s+integral"
+            r"|baixa\s+definitiva"
+            r"|satisfa[çc][ãa]o\s+d[ao]\s+(cr[ée]dito|obriga[çc][ãa]o|d[ée]bito)"
+            r"|encerramento\s+d[ao]\s+execu[çc][ãa]o"
+            r"|obriga[çc][ãa]o\s+satisfeita",
+            re.IGNORECASE,
+        ),
     ),
 )
 

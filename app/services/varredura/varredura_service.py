@@ -1027,16 +1027,52 @@ def _apply_item_outcome(
     # status == "ok"
     p.total_andamentos_lidos = len(andamentos)
 
-    # Aplica regex em cada andamento e cria achados
+    # Lazy import: VarreduraAndamentoRaw foi adicionada em var002 (2026-06-07).
+    # Se a tabela ainda nao existir (migration nao aplicada), o salvamento
+    # bruto fica em no-op e o fluxo normal de achados segue inteiro.
+    try:
+        from app.models.varredura import VarreduraAndamentoRaw
+        _raw_disponivel = True
+    except ImportError:
+        _raw_disponivel = False
+
+    # Salva TODOS os andamentos brutos + aplica regex em cada andamento.
     achados_criados = 0
-    for and_ in andamentos:
+    for ordem, and_ in enumerate(andamentos):
         texto = (and_.get("texto") or "").strip()
         if not texto:
             continue
-        detections = detect_eventos(texto)
-        if not detections:
-            continue
         d = _parse_pt_date(and_.get("data"))
+        hora = (and_.get("hora") or "")[:8] or None
+        tipo = (and_.get("tipo") or "")[:64] or None
+        mov_por = (and_.get("movimentadoPor") or "")[:255] or None
+
+        # 1) Sempre persiste o andamento bruto (independente de match)
+        if _raw_disponivel:
+            try:
+                db.add(
+                    VarreduraAndamentoRaw(
+                        run_id=run_id,
+                        processado_id=p.id,
+                        lawsuit_id=p.lawsuit_id,
+                        cnj_number=p.cnj_number,
+                        office_id=p.office_id,
+                        andamento_data=d,
+                        andamento_hora=hora,
+                        andamento_tipo=tipo,
+                        andamento_texto=texto,
+                        andamento_movimentado_por=mov_por,
+                        ordem=ordem,
+                    )
+                )
+            except Exception as exc:
+                logger.warning(
+                    "varredura.andamento_raw.skip lid=%s ordem=%s err=%s",
+                    p.lawsuit_id, ordem, exc,
+                )
+
+        # 2) Se bater regex, cria achado(s) — fluxo preservado da v1
+        detections = detect_eventos(texto)
         for det in detections:
             db.add(
                 VarreduraAchado(
@@ -1045,12 +1081,10 @@ def _apply_item_outcome(
                     lawsuit_id=p.lawsuit_id,
                     cnj_number=p.cnj_number,
                     andamento_data=d,
-                    andamento_hora=(and_.get("hora") or "")[:8] or None,
-                    andamento_tipo=(and_.get("tipo") or "")[:64] or None,
+                    andamento_hora=hora,
+                    andamento_tipo=tipo,
                     andamento_texto=texto,
-                    andamento_movimentado_por=(
-                        (and_.get("movimentadoPor") or "")[:255] or None
-                    ),
+                    andamento_movimentado_por=mov_por,
                     tipo_evento=det.tipo,
                     regex_matched=det.matched_text[:500],
                 )
