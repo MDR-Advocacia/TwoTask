@@ -172,7 +172,7 @@ export default function Layout({ children }: PropsWithChildren) {
               className="h-6 w-auto object-contain opacity-85"
             />
             <div className="text-[0.65rem] tracking-wider text-muted-foreground text-center">
-              © 2026 Duna.Tech · MDR Advocacia
+              © 2026 Duna.Tech
             </div>
           </div>
         </div>
@@ -204,7 +204,7 @@ export default function Layout({ children }: PropsWithChildren) {
                   className="h-6 w-auto object-contain opacity-85"
                 />
                 <div className="text-[0.65rem] tracking-wider text-muted-foreground text-center">
-                  © 2026 Duna.Tech · MDR Advocacia
+                  © 2026 Duna.Tech
                 </div>
               </div>
             </SheetContent>

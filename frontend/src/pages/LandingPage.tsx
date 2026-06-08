@@ -377,7 +377,7 @@ const LandingPage = () => {
       <footer className="pt-6 flex items-center justify-between text-xs text-muted-foreground">
         <span className="inline-flex items-center gap-1.5">
           <Sparkles className="h-3.5 w-3.5 text-[hsl(var(--dunatech-blue))]" />
-          DunaFlow · MDR Advocacia
+          DunaFlow
         </span>
         <span className="hidden sm:inline">
           Use o botão de feedback no canto inferior direito para reportar qualquer coisa.
