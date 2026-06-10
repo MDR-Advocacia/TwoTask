@@ -1,79 +1,81 @@
+"""Aplica migrations no boot do container (chamado pelo docker-api-start.sh).
+
+GUARDA DE SEGURANÇA: se o banco estiver VAZIO (sem alembic_version populada),
+o script ABORTA em vez de inicializar do zero. Em produção, banco vazio
+significa volume errado/desanexado — subir nesse estado colocaria uma base
+zerada no ar. Pra inicializar um ambiente NOVO de propósito (lab, dev),
+defina ALLOW_DB_BOOTSTRAP=true no ambiente.
+
+Histórico: a versão antiga deste script era para SQLite e imprimia
+"Database does not exist, will be created by migrations" em todo deploy
+com Postgres (o os.path.exists numa URL postgres é sempre False) — um
+alarme falso que causou pânico no incidente de 2026-06-10.
+"""
 import os
-import sqlite3
-from pathlib import Path
+import sys
+import time
+
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import create_engine, inspect, text
 
 from app.db.session import SQLALCHEMY_DATABASE_URL
 
+ALLOW_DB_BOOTSTRAP = os.getenv("ALLOW_DB_BOOTSTRAP", "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
 
-def reset_alembic_version_if_needed() -> None:
-    """Reset alembic_version table if it contains invalid revisions."""
-    # Extract database path from SQLAlchemy URL
-    db_path = SQLALCHEMY_DATABASE_URL.replace("sqlite:///", "")
+CONNECT_RETRIES = 15
+CONNECT_RETRY_DELAY_S = 2
 
-    if not os.path.exists(db_path):
-        print(f"Database {db_path} does not exist, will be created by migrations")
-        return
 
-    try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
+def get_current_version() -> "str | None":
+    """Retorna o version_num do alembic_version, ou None se banco virgem.
 
-        # Check if alembic_version table exists
-        cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='alembic_version'"
-        )
-        if not cursor.fetchone():
-            print("alembic_version table does not exist (new database)")
-            conn.close()
-            return
-
-        # Get current version
-        cursor.execute("SELECT version_num FROM alembic_version")
-        versions = cursor.fetchall()
-
-        if versions:
-            current_version = versions[0][0]
-            print(f"Current alembic version: {current_version}")
-
-            # Check if this revision exists in migration files
-            migration_dir = Path("alembic/versions")
-            existing_revisions = set()
-
-            for migration_file in migration_dir.glob("*.py"):
-                if migration_file.name.startswith("__"):
-                    continue
-                content = migration_file.read_text()
-                # Extract revision ID from file
-                for line in content.split("\n"):
-                    if line.startswith('revision:'):
-                        rev_id = line.split('"')[1]
-                        existing_revisions.add(rev_id)
-                        break
-
-            if current_version not in existing_revisions:
-                print(f"WARNING: Current version '{current_version}' not found in migrations")
-                print(f"Available revisions: {sorted(existing_revisions)}")
-                print(f"Resetting alembic_version table...")
-
-                # Clear the invalid version
-                cursor.execute("DELETE FROM alembic_version")
-                conn.commit()
-                print("alembic_version table reset")
-
-        conn.close()
-    except Exception as e:
-        print(f"Error checking alembic_version: {e}")
-        print("Continuing with migration anyway...")
+    Tenta conectar com retry (o Postgres pode estar terminando de subir,
+    mesmo com depends_on: service_healthy)."""
+    engine = create_engine(SQLALCHEMY_DATABASE_URL, pool_pre_ping=True)
+    last_exc: "Exception | None" = None
+    for attempt in range(1, CONNECT_RETRIES + 1):
+        try:
+            with engine.connect() as conn:
+                if not inspect(conn).has_table("alembic_version"):
+                    return None
+                return conn.execute(
+                    text("SELECT version_num FROM alembic_version LIMIT 1")
+                ).scalar()
+        except Exception as exc:  # conexão recusada, DNS, banco subindo...
+            last_exc = exc
+            print(
+                f"Banco indisponível (tentativa {attempt}/{CONNECT_RETRIES}): {exc}"
+            )
+            time.sleep(CONNECT_RETRY_DELAY_S)
+    print(f"ERRO: não foi possível conectar ao banco: {last_exc}")
+    sys.exit(1)
 
 
 def main() -> None:
-    reset_alembic_version_if_needed()
+    version = get_current_version()
+
+    if version is None:
+        if not ALLOW_DB_BOOTSTRAP:
+            print("=" * 72)
+            print("ABORTADO: banco de dados VAZIO detectado (sem alembic_version).")
+            print("Em produção isso indica volume errado ou desanexado — prosseguir")
+            print("criaria uma base ZERADA no ar. Verifique o mapeamento de volume")
+            print("do Postgres (Coolify > serviço postgres > Storages).")
+            print("Se isto é um ambiente NOVO de propósito (lab/dev), defina a env")
+            print("ALLOW_DB_BOOTSTRAP=true e rode o deploy novamente.")
+            print("=" * 72)
+            sys.exit(1)
+        print("ALLOW_DB_BOOTSTRAP=true — inicializando banco NOVO do zero.")
+    else:
+        print(f"Banco existente (alembic_version={version}). Aplicando migrations pendentes...")
 
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", SQLALCHEMY_DATABASE_URL)
     command.upgrade(config, "head")
+    print("Migrations aplicadas com sucesso.")
 
 
 if __name__ == "__main__":
