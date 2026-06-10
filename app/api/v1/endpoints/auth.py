@@ -1,5 +1,8 @@
 # app/api/v1/endpoints/auth.py
 
+import base64
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import func
@@ -13,6 +16,30 @@ from app.models.legal_one import LegalOneUser
 from app.api.v1 import schemas
 
 router = APIRouter()
+
+
+def _name_from_id_token(authorization: str) -> "str | None":
+    """Extrai o claim `name` (nome completo do Entra) do ID token que o
+    oauth2-proxy injeta no header Authorization (Bearer <jwt>) quando
+    OAUTH2_PROXY_SET_AUTHORIZATION_HEADER=true. Decodifica só o payload, SEM
+    verificar assinatura — o token chega pelo proxy confiável, mesmo modelo de
+    confiança dos headers X-Auth-Request-*. Retorna None se não vier, não for
+    um JWT, ou não tiver `name`."""
+    raw = (authorization or "").strip()
+    for prefix in ("Bearer ", "bearer "):
+        if raw.startswith(prefix):
+            raw = raw[len(prefix):].strip()
+            break
+    parts = raw.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)  # padding base64url
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+        name = (claims.get("name") or "").strip()
+        return name or None
+    except Exception:
+        return None
 
 
 @router.post("/token", response_model=schemas.Token)
@@ -87,8 +114,12 @@ def sso_session(request: Request, db: Session = Depends(get_db)):
         # Provisionamento JIT: cria usuário PENDENTE — sem vínculo com o Legal
         # One (external_id NULL) e SEM nenhuma permissão. O admin libera/vincula
         # depois. A equipe sincronizada do Legal One cai no match acima.
+        # Nome do pendente (usado na busca por similaridade): preferimos o
+        # claim `name` do ID token (nome completo do Entra); senão o header de
+        # nome; por último o local-part do e-mail.
         display_name = (
-            (request.headers.get(settings.sso_name_header) or "").strip()
+            _name_from_id_token(request.headers.get(settings.sso_id_token_header) or "")
+            or (request.headers.get(settings.sso_name_header) or "").strip()
             or email.split("@")[0]
         )
         user = LegalOneUser(

@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     sso_header_auth_enabled: bool = False
     sso_email_header: str = "x-auth-request-email"
     sso_name_header: str = "x-auth-request-user"
+    # Header com o ID token (JWT) injetado pelo oauth2-proxy quando
+    # OAUTH2_PROXY_SET_AUTHORIZATION_HEADER=true. Usado só pra extrair o claim
+    # `name` (nome completo do Entra) — o oauth2-proxy não expõe o nome nos
+    # X-Auth-Request-*. Decodificado SEM verificar assinatura (vem do proxy
+    # confiável, igual aos demais headers). Ver app/api/v1/endpoints/auth.py.
+    sso_id_token_header: str = "authorization"
 
     cors_allowed_origins: str = "http://localhost:5173,http://localhost:8080"
     spreadsheet_max_size_mb: int = 10
