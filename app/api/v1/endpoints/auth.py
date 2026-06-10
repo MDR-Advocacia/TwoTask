@@ -2,6 +2,9 @@
 
 import base64
 import json
+import logging
+import urllib.error
+import urllib.request
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -16,6 +19,37 @@ from app.models.legal_one import LegalOneUser
 from app.api.v1 import schemas
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
+
+
+def _validate_via_oauth2_proxy(cookie: str) -> "tuple[str, str]":
+    """Valida a sessão do oauth2-proxy server-side: chama settings.sso_validate_url
+    (/oauth2/auth) repassando o cookie do usuário e lê a identidade dos headers
+    da resposta. Substitui o forward-auth do Traefik (que o Coolify aplicava no
+    domínio inteiro, derrubando o acesso). Retorna (email, id_token); ('', '')
+    se não houver sessão.
+
+    SEGURANÇA: o oauth2-proxy valida o cookie (assinado) e só então devolve a
+    identidade — nada é forjável pelo cliente."""
+    if not settings.sso_validate_url or not cookie:
+        return "", ""
+    try:
+        req = urllib.request.Request(
+            settings.sso_validate_url,
+            headers={"Cookie": cookie},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            email = (resp.headers.get(settings.sso_email_header) or "").strip().lower()
+            id_token = resp.headers.get(settings.sso_id_token_header) or ""
+            return email, id_token
+    except urllib.error.HTTPError:
+        # 401/403 → sem sessão SSO válida (usuário não logou no Entra).
+        return "", ""
+    except Exception:
+        logger.warning("Falha ao validar sessão no oauth2-proxy", exc_info=True)
+        return "", ""
 
 
 def _name_from_id_token(authorization: str) -> "str | None":
@@ -96,11 +130,17 @@ def sso_session(request: Request, db: Session = Depends(get_db)):
     if not settings.sso_header_auth_enabled:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="SSO desativado")
 
+    # Identidade: 1) header injetado por forward-auth (se houver); senão
+    # 2) validação server-side do cookie do oauth2-proxy (caminho atual — não
+    # depende de middleware no Traefik).
     email = (request.headers.get(settings.sso_email_header) or "").strip().lower()
+    id_token = request.headers.get(settings.sso_id_token_header) or ""
+    if not email:
+        email, id_token = _validate_via_oauth2_proxy(request.headers.get("cookie") or "")
     if not email:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Identidade SSO ausente no header.",
+            detail="Sessão Microsoft não encontrada. Entre pelo botão da Microsoft.",
         )
 
     # Match case-insensitive pra não duplicar usuário por diferença de caixa.
@@ -118,7 +158,7 @@ def sso_session(request: Request, db: Session = Depends(get_db)):
         # claim `name` do ID token (nome completo do Entra); senão o header de
         # nome; por último o local-part do e-mail.
         display_name = (
-            _name_from_id_token(request.headers.get(settings.sso_id_token_header) or "")
+            _name_from_id_token(id_token)
             or (request.headers.get(settings.sso_name_header) or "").strip()
             or email.split("@")[0]
         )

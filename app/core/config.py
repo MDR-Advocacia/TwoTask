@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     # X-Auth-Request-*. Decodificado SEM verificar assinatura (vem do proxy
     # confiável, igual aos demais headers). Ver app/api/v1/endpoints/auth.py.
     sso_id_token_header: str = "authorization"
+    # URL de verificação do oauth2-proxy (/oauth2/auth). Quando setada, o
+    # /auth/sso/session valida a sessão SSO chamando esta URL server-side com o
+    # cookie do usuário — substitui o forward-auth do Traefik (que o Coolify
+    # aplicava no domínio inteiro). Prod: https://auth.dunatecnologia.com/oauth2/auth
+    sso_validate_url: str = ""
 
     cors_allowed_origins: str = "http://localhost:5173,http://localhost:8080"
     spreadsheet_max_size_mb: int = 10
