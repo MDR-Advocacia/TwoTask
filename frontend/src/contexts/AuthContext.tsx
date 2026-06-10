@@ -82,34 +82,55 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   useEffect(() => {
-    const loadUserFromToken = async () => {
-      const storedToken = localStorage.getItem('authToken');
-      if (storedToken) {
+    const bootstrap = async () => {
+      // Aplica um token: valida no /me e popula o estado. Retorna true se ok.
+      const applyToken = async (tok: string): Promise<boolean> => {
         try {
-          const decoded = decodeToken(storedToken);
-          setTokenData(decoded);
-          const userResponse = await fetch('/api/v1/me', {
-            headers: {
-              Authorization: `Bearer ${storedToken}`,
-            },
+          const resp = await fetch('/api/v1/me', {
+            headers: { Authorization: `Bearer ${tok}` },
           });
-          if (!userResponse.ok) {
-            throw new Error('Sessão inválida ou expirada');
-          }
-          const userData: User = await userResponse.json();
+          if (!resp.ok) return false;
+          const userData: User = await resp.json();
           setUser(userData);
-          setToken(storedToken);
-        } catch (error) {
-          console.error("Erro ao validar token:", error);
-          localStorage.removeItem('authToken');
-          setUser(null);
-          setToken(null);
-          setTokenData(null);
+          setToken(tok);
+          setTokenData(decodeToken(tok));
+          localStorage.setItem('authToken', tok);
+          return true;
+        } catch {
+          return false;
         }
+      };
+
+      // 1) Token salvo (sessão anterior).
+      const stored = localStorage.getItem('authToken');
+      if (stored && (await applyToken(stored))) {
+        setIsLoading(false);
+        return;
       }
+
+      // 2) SSO: o proxy reverso (oauth2-proxy + Entra) injeta a identidade.
+      //    Em produção, atrás do proxy, isto loga o usuário automaticamente.
+      try {
+        const sso = await fetch('/api/v1/auth/sso/session');
+        if (sso.ok) {
+          const { access_token } = await sso.json();
+          if (access_token && (await applyToken(access_token))) {
+            setIsLoading(false);
+            return;
+          }
+        }
+      } catch {
+        // SSO indisponível (ex.: dev local sem proxy) — cai no login por senha.
+      }
+
+      // 3) Sem token e sem SSO → deslogado (login por senha / break-glass).
+      localStorage.removeItem('authToken');
+      setUser(null);
+      setToken(null);
+      setTokenData(null);
       setIsLoading(false);
     };
-    loadUserFromToken();
+    bootstrap();
   }, []);
 
   const login = async (email: string, password: string) => {

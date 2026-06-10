@@ -1,15 +1,19 @@
 # app/api/v1/endpoints/auth.py
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core import auth
+from app.core.config import settings
 from app.core.dependencies import get_db
 from app.models.legal_one import LegalOneUser
 from app.api.v1 import schemas
 
 router = APIRouter()
+
 
 @router.post("/token", response_model=schemas.Token)
 def login_for_access_token(
@@ -17,14 +21,14 @@ def login_for_access_token(
     form_data: OAuth2PasswordRequestForm = Depends()
 ):
     """
-    Endpoint de login. Recebe e-mail (como username) e senha.
+    Login por senha (break-glass / fallback). O acesso padrão passou a ser via
+    SSO (Entra) em /sso/session. Recebe e-mail (como username) e senha.
     Retorna um token de acesso JWT em caso de sucesso.
     """
     # 1. Busca o usuário pelo e-mail no banco de dados.
     user = db.query(LegalOneUser).filter(LegalOneUser.email == form_data.username).first()
 
     # 2. Verifica se o usuário existe e se a senha está correta.
-    # Usamos a função `verify_password` que criamos anteriormente.
     if not user or not user.hashed_password or not auth.verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -32,9 +36,7 @@ def login_for_access_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # 3. Cria o token de acesso.
-    # O "sub" (subject) do token será o e-mail do usuário.
-    # Também incluimos role, permissões e must_change_password no token.
+    # 3. Cria o token de acesso (sub = e-mail; inclui role/permissões).
     access_token = auth.create_access_token(
         data={"sub": user.email},
         role=user.role,
@@ -44,9 +46,90 @@ def login_for_access_token(
         must_change_password=user.must_change_password,
     )
 
-    # 4. Retorna o token e inclui must_change_password no response para o frontend redirecionar.
     return {
         "access_token": access_token,
         "token_type": "bearer",
         "must_change_password": user.must_change_password,
     }
+
+
+@router.get("/sso/session", response_model=schemas.Token)
+def sso_session(request: Request, db: Session = Depends(get_db)):
+    """
+    Estabelece a sessão a partir da identidade injetada pelo proxy reverso
+    (oauth2-proxy + Microsoft Entra ID). Lê o e-mail de um header confiável,
+    faz "acha-ou-cria" (JIT) do usuário e devolve o MESMO JWT do login por
+    senha. O frontend chama isto no boot quando não há token salvo.
+
+    SEGURANÇA: confia no header de e-mail. Só funciona se
+    `settings.sso_header_auth_enabled` for True E o app estiver ATRÁS do proxy
+    (Traefik/oauth2-proxy sobrescreve qualquer header forjado pelo cliente).
+    NUNCA expor o app publicamente sem o proxy.
+    """
+    if not settings.sso_header_auth_enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="SSO desativado")
+
+    email = (request.headers.get(settings.sso_email_header) or "").strip().lower()
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Identidade SSO ausente no header.",
+        )
+
+    # Match case-insensitive pra não duplicar usuário por diferença de caixa.
+    user = (
+        db.query(LegalOneUser)
+        .filter(func.lower(LegalOneUser.email) == email)
+        .first()
+    )
+
+    if user is None:
+        # Provisionamento JIT: cria usuário PENDENTE — sem vínculo com o Legal
+        # One (external_id NULL) e SEM nenhuma permissão. O admin libera/vincula
+        # depois. A equipe sincronizada do Legal One cai no match acima.
+        display_name = (
+            (request.headers.get(settings.sso_name_header) or "").strip()
+            or email.split("@")[0]
+        )
+        user = LegalOneUser(
+            email=email,
+            name=display_name,
+            external_id=None,
+            is_active=True,
+            hashed_password=None,
+            must_change_password=False,
+            role="user",
+            can_schedule_batch=False,
+            can_use_publications=False,
+            can_use_prazos_iniciais=False,
+        )
+        db.add(user)
+        try:
+            db.commit()
+            db.refresh(user)
+        except IntegrityError:
+            # Corrida: outra request criou o mesmo usuário em paralelo.
+            db.rollback()
+            user = (
+                db.query(LegalOneUser)
+                .filter(func.lower(LegalOneUser.email) == email)
+                .first()
+            )
+            if user is None:
+                raise
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Conta inativa. Contate o administrador.",
+        )
+
+    access_token = auth.create_access_token(
+        data={"sub": user.email},
+        role=user.role,
+        can_schedule_batch=user.can_schedule_batch,
+        can_use_publications=user.can_use_publications,
+        can_use_prazos_iniciais=getattr(user, "can_use_prazos_iniciais", False),
+        must_change_password=user.must_change_password,
+    )
+    return {"access_token": access_token, "token_type": "bearer"}

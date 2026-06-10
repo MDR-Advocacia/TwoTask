@@ -67,7 +67,7 @@ class UserWithSquads(BaseModel):
     Usado para popular seletores no frontend.
     """
     id: int
-    external_id: int
+    external_id: Optional[int] = None
     name: str
 
     @computed_field
@@ -90,9 +90,11 @@ class UserWithSquads(BaseModel):
 class LegalOneUser(BaseModel):
     """
     Representa um usuário do Legal One, conforme retornado pela nossa API.
+    external_id é opcional: usuários provisionados via SSO (Entra) ainda
+    não têm vínculo com o Legal One no primeiro acesso.
     """
     id: int
-    external_id: int
+    external_id: Optional[int] = None
     name: str
     is_active: bool
     model_config = ConfigDict(from_attributes=True)
@@ -263,7 +265,7 @@ class HierarchicalTaskTypeSchema(BaseModel):
 class UserSchema(BaseModel):
     id: int
     name: str
-    external_id: int
+    external_id: Optional[int] = None
 
 class TaskStatusSchema(BaseModel):
     id: int

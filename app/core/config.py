@@ -9,6 +9,15 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24
 
+    # ── SSO via reverse-proxy (oauth2-proxy + Microsoft Entra) ────────
+    # Quando True, GET /api/v1/auth/sso/session confia no header injetado
+    # pelo proxy (X-Auth-Request-Email) pra autenticar/provisionar o usuário.
+    # DEVE ser True SÓ em produção, com o app ATRÁS do proxy (senão o header
+    # pode ser forjado). Default False (dev local sem proxy).
+    sso_header_auth_enabled: bool = False
+    sso_email_header: str = "x-auth-request-email"
+    sso_name_header: str = "x-auth-request-user"
+
     cors_allowed_origins: str = "http://localhost:5173,http://localhost:8080"
     spreadsheet_max_size_mb: int = 10
     spreadsheet_allowed_content_types: str = (

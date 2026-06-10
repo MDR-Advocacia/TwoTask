@@ -3,6 +3,7 @@ from typing import List, Optional, Dict, Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.core import auth
@@ -607,6 +608,136 @@ def deactivate_user(
         "email": user.email,
         "name": user.name,
         "is_active": user.is_active,
+    }
+
+
+# ─── SSO Account Linking (Microsoft Entra) ──────────────────────────────────
+# O email do Entra (@mdradvocacia.com) diverge do email guardado no Legal One
+# (a maioria é @gmail pessoal), então o vínculo é feito por SIMILARIDADE DE NOME
+# + confirmação do admin. "Pendente" = usuário provisionado via SSO sem vínculo
+# com o Legal One (external_id IS NULL — ver app/api/v1/endpoints/auth.py).
+# Ao unificar, o email da Microsoft passa a ser o email do usuário do Legal One
+# e os próximos logins casam direto pelo email.
+
+SSO_NAME_SIMILARITY_THRESHOLD = 0.2  # similaridade pg_trgm (0..1)
+
+
+class SsoUnifyRequest(BaseModel):
+    pending_user_id: int
+    target_user_id: int
+
+
+def _name_similarity(name: str):
+    """Similaridade (trigrama, sem acento) do LegalOneUser.name contra `name`."""
+    return func.similarity(
+        func.unaccent(func.lower(LegalOneUser.name)),
+        func.unaccent(func.lower(name)),
+    )
+
+
+@router.get("/sso/pending", tags=["Admin"])
+def list_sso_pending(
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth.get_current_user),
+):
+    """Lista contas provisionadas via SSO ainda NÃO vinculadas (external_id NULL)
+    e, pra cada uma, os usuários do Legal One mais parecidos por nome —
+    candidatos pra unificação. (admin only)"""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+
+    pendings = (
+        db.query(LegalOneUser)
+        .filter(LegalOneUser.external_id.is_(None))
+        .order_by(LegalOneUser.name)
+        .all()
+    )
+
+    result = []
+    for p in pendings:
+        sim = _name_similarity(p.name)
+        rows = (
+            db.query(LegalOneUser, sim.label("sim"))
+            .filter(LegalOneUser.external_id.isnot(None))
+            .filter(sim > SSO_NAME_SIMILARITY_THRESHOLD)
+            .order_by(sim.desc())
+            .limit(5)
+            .all()
+        )
+        result.append({
+            "id": p.id,
+            "name": p.name,
+            "email": p.email,
+            "candidates": [
+                {
+                    "id": c.id,
+                    "name": c.name,
+                    "email": c.email,
+                    "external_id": c.external_id,
+                    "role": c.role,
+                    "is_active": c.is_active,
+                    "similarity": round(float(s or 0), 3),
+                }
+                for (c, s) in rows
+            ],
+        })
+    return result
+
+
+@router.post("/sso/unify", tags=["Admin"])
+def unify_sso_account(
+    payload: SsoUnifyRequest,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(auth.get_current_user),
+):
+    """Unifica uma conta SSO pendente com um usuário existente do Legal One:
+    o email da Microsoft (do pendente) passa a ser o email do usuário do Legal
+    One (mantendo external_id, permissões e dados). A conta pendente é removida.
+    A partir daí os próximos logins SSO casam direto pelo email. (admin only)"""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+
+    pending = (
+        db.query(LegalOneUser)
+        .filter(LegalOneUser.id == payload.pending_user_id, LegalOneUser.external_id.is_(None))
+        .first()
+    )
+    if not pending:
+        raise HTTPException(status_code=404, detail="Conta pendente não encontrada (ou já vinculada).")
+
+    target = (
+        db.query(LegalOneUser)
+        .filter(LegalOneUser.id == payload.target_user_id, LegalOneUser.external_id.isnot(None))
+        .first()
+    )
+    if not target:
+        raise HTTPException(status_code=404, detail="Usuário do Legal One (alvo) não encontrado.")
+
+    new_email = pending.email  # email institucional Microsoft
+
+    # Migra dados que por acaso estejam no pendente (defensivo — pendentes
+    # recém-criados não costumam ter nada).
+    db.query(SavedFilter).filter(SavedFilter.user_id == pending.id).update(
+        {"user_id": target.id}, synchronize_session=False
+    )
+
+    # Remove o pendente PRIMEIRO (libera o email único), depois aplica no alvo.
+    db.delete(pending)
+    db.flush()
+    target.email = new_email
+    target.is_active = True
+    db.commit()
+    db.refresh(target)
+
+    return {
+        "unified": True,
+        "user": {
+            "id": target.id,
+            "name": target.name,
+            "email": target.email,
+            "external_id": target.external_id,
+            "role": target.role,
+        },
     }
 
 
