@@ -119,6 +119,26 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+    # ── SSO Microsoft Entra ID (Fase 1 — coexistência) ──────────────────────
+    # forward-auth (oauth2-proxy) APENAS na rota /api/v1/auth/sso/session, com
+    # prioridade alta pra vencer o router catch-all do domínio gerado pelo
+    # Coolify. O resto do app continua aberto → login por senha convive com o
+    # botão "Entrar com Microsoft". Quem já tem sessão do portal (.dunatecnologia.com)
+    # loga automático; quem não tem cai 401 e usa a tela normal.
+    # Só tem efeito atrás do Traefik (em produção); localmente é ignorado.
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.middlewares.flow-sso-auth.forwardauth.address=https://auth.dunatecnologia.com/oauth2/auth"
+      - "traefik.http.middlewares.flow-sso-auth.forwardauth.trustForwardHeader=true"
+      - "traefik.http.middlewares.flow-sso-auth.forwardauth.authResponseHeaders=X-Auth-Request-User,X-Auth-Request-Email"
+      - "traefik.http.routers.flow-sso.rule=Host(`flow.dunatecnologia.com`) && PathPrefix(`/api/v1/auth/sso/session`)"
+      - "traefik.http.routers.flow-sso.entryPoints=https"
+      - "traefik.http.routers.flow-sso.tls=true"
+      - "traefik.http.routers.flow-sso.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.flow-sso.service=flow-sso-svc"
+      - "traefik.http.routers.flow-sso.middlewares=flow-sso-auth"
+      - "traefik.http.routers.flow-sso.priority=1000"
+      - "traefik.http.services.flow-sso-svc.loadbalancer.server.port=80"
 
 # Volumes blindados com external: true + nome configuravel via env var.
 # Sem isso, Coolify pode recriar volumes ao detectar mudanca no compose,
