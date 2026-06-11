@@ -29,6 +29,7 @@ import {
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "./ui/sheet";
+import { DunaFlowMark } from "./DunaFlowMark";
 
 type Permission = 'canScheduleBatch' | 'canUsePublications' | 'canUsePrazosIniciais' | 'isAdmin';
 
@@ -149,13 +150,13 @@ export default function Layout({ children }: PropsWithChildren) {
     <div className="grid min-h-screen w-full md:grid-cols-[220px_1fr] lg:grid-cols-[280px_1fr]">
       <div className="hidden border-r bg-muted/40 md:block">
         <div className="flex h-full max-h-screen flex-col gap-2">
-          <div className="flex h-20 items-center border-b px-4 lg:h-24 lg:px-6">
-            <Link to="/" className="flex items-center w-full justify-center" title="Flow by DUNATECH">
-              <img
-                src="/brand/flow-wordmark.png"
-                alt="Flow by DUNATECH"
-                className="h-14 w-auto object-contain"
-              />
+          <div className="flex h-14 items-center border-b px-4 lg:h-[60px] lg:px-6">
+            <Link
+              to="/"
+              className="flex items-center w-full justify-center text-[hsl(var(--dunatech-navy))]"
+              title="DunaFlow by DUNATECH"
+            >
+              <DunaFlowMark size="md" />
             </Link>
           </div>
           <div className="flex-1">
@@ -185,12 +186,8 @@ export default function Layout({ children }: PropsWithChildren) {
             </SheetTrigger>
             <SheetContent side="left" className="flex flex-col">
               <SheetTitle className="sr-only">Menu de navegação</SheetTitle>
-              <div className="mb-4 flex items-center justify-center py-3">
-                <img
-                  src="/brand/flow-wordmark.png"
-                  alt="Flow by DUNATECH"
-                  className="h-14 w-auto object-contain"
-                />
+              <div className="mb-4 flex items-center justify-center py-3 text-[hsl(var(--dunatech-navy))]">
+                <DunaFlowMark size="md" />
               </div>
               <NavContent />
               <div className="mt-auto flex flex-col items-center gap-2 border-t pt-4">

@@ -121,7 +121,8 @@ const SectionCard = ({
         transition-all duration-300
         hover:-translate-y-1
         hover:shadow-[0_12px_40px_0_rgba(31,38,135,0.14)]
-        hover:bg-white/60
+        hover:border-[hsl(var(--dunatech-blue)/0.45)]
+        hover:bg-white/70
         focus:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--dunatech-blue))]
       `}
     >
@@ -132,7 +133,7 @@ const SectionCard = ({
               rounded-xl p-2.5
               ${discreet
                 ? 'bg-slate-500/10 text-slate-600'
-                : 'bg-[hsl(var(--dunatech-blue)/0.12)] text-[hsl(var(--dunatech-blue))]'}
+                : 'bg-gradient-to-br from-[#1668d6] to-[#1fc4ff] text-white shadow-[0_4px_12px_-2px_rgba(22,104,214,0.5)]'}
             `}
           >
             <Icon className="h-5 w-5" />
@@ -180,19 +181,18 @@ const SectionCard = ({
 interface PulseChipProps {
   icon: React.ElementType;
   text: string;
+  onDark?: boolean;
 }
 
-const PulseChip = ({ icon: Icon, text }: PulseChipProps) => (
+const PulseChip = ({ icon: Icon, text, onDark = false }: PulseChipProps) => (
   <div
-    className={`
-      inline-flex items-center gap-2 px-4 py-2 rounded-full
-      backdrop-blur-xl bg-white/50 dark:bg-white/[0.06]
-      border border-white/40
-      shadow-[0_4px_16px_0_rgba(31,38,135,0.06)]
-      text-sm text-[hsl(var(--dunatech-navy))]
-    `}
+    className={
+      onDark
+        ? 'inline-flex items-center gap-2 px-4 py-2 rounded-full backdrop-blur-md bg-white/[0.13] border border-white/25 text-sm text-white'
+        : 'inline-flex items-center gap-2 px-4 py-2 rounded-full backdrop-blur-xl bg-white/50 dark:bg-white/[0.06] border border-white/40 shadow-[0_4px_16px_0_rgba(31,38,135,0.06)] text-sm text-[hsl(var(--dunatech-navy))]'
+    }
   >
-    <Icon className="h-4 w-4 text-[hsl(var(--dunatech-blue))]" />
+    <Icon className={onDark ? 'h-4 w-4 text-cyan-200' : 'h-4 w-4 text-[hsl(var(--dunatech-blue))]'} />
     <span>{text}</span>
   </div>
 );
@@ -276,46 +276,76 @@ const LandingPage = () => {
   const lastBatch = batches?.[0];
 
   return (
-    <div className="relative isolate space-y-8">
-      {/* Camada decorativa liquid glass — atrás do conteúdo, contida na área
-          da página (não afeta o fluxo nem o enquadramento padrão). */}
-      <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-to-br from-white/60 via-transparent to-blue-50/40 dark:from-slate-950/60 dark:via-transparent dark:to-slate-900/40" />
-        <div className="absolute top-[-30%] left-[-5%] h-[500px] w-[500px] rounded-full bg-[hsl(var(--dunatech-blue))] opacity-[0.18] blur-[120px]" />
-        <div className="absolute bottom-[-30%] right-[-5%] h-[450px] w-[450px] rounded-full bg-[hsl(var(--dunatech-navy))] opacity-[0.12] blur-[120px]" />
-      </div>
+    <div className="relative space-y-8 px-3 pt-4 sm:px-6 sm:pt-6">
+      {/* Hero de boas-vindas — identidade DunaTech (navy -> ciano + ondas) */}
+      <section
+        className="relative overflow-hidden rounded-2xl px-6 py-8 sm:px-10 sm:py-10 shadow-[0_14px_44px_-12px_rgba(13,33,71,0.55)]"
+        style={{
+          background:
+            'linear-gradient(118deg, #081226 0%, #0d2147 38%, #1668d6 72%, #1fc4ff 100%)',
+        }}
+      >
+        {/* Ondas/dunas fluidas da marca */}
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 820 320"
+          preserveAspectRatio="none"
+          className="pointer-events-none absolute inset-0 h-full w-full opacity-50"
+        >
+          <path d="M-20,150 C180,90 360,210 600,140 C720,104 800,150 840,130" fill="none" stroke="rgba(255,255,255,0.45)" strokeWidth="1.3" />
+          <path d="M-20,200 C200,140 420,250 660,180 C760,150 820,190 840,175" fill="none" stroke="rgba(255,255,255,0.30)" strokeWidth="1" />
+          <path d="M-20,250 C240,196 460,290 720,224 C780,208 820,232 840,222" fill="none" stroke="rgba(255,255,255,0.20)" strokeWidth="1" />
+          <path d="M-20,104 C160,64 320,150 520,104 C660,72 760,108 840,92" fill="none" stroke="rgba(120,210,255,0.40)" strokeWidth="1" />
+        </svg>
 
-      {/* Header de saudação contextual */}
-      <header className="space-y-2">
-        <h1 className="text-3xl font-bold tracking-tight text-[hsl(var(--dunatech-navy))]">
-          {greeting}
-          {user?.name ? `, ${firstName(user.name)}` : ''}.
-        </h1>
-        <p className="text-sm italic text-muted-foreground max-w-2xl">
-          Central DunaFlow de tratamento jurídico automatizado. Publicações, prazos
-          iniciais e andamentos em um só lugar.
-        </p>
-      </header>
+        <div className="relative z-10 space-y-5">
+          {/* Wordmark DunaFlow */}
+          <div className="flex items-center gap-2 text-white">
+            <svg width="28" height="17" viewBox="0 0 40 24" aria-hidden="true">
+              <path d="M2,15 C9,8 13,8 20,13 C26,17 31,16 38,10" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" />
+              <path d="M3,21 C10,15 14,15 20,19 C25,22 30,21 37,16" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" opacity="0.75" />
+            </svg>
+            <span className="text-sm font-medium tracking-[0.18em]">
+              DUNA<span className="font-normal opacity-80">FLOW</span>
+            </span>
+          </div>
 
-      {/* Pulso da equipe hoje (chips opcionais) */}
-      {canUsePublications && pubsOverview?.kpis && (
-        <div className="flex flex-wrap gap-3">
-          <PulseChip
-            icon={Flame}
-            text={`${pubsOverview.kpis.tratadas_janela ?? 0} publicações tratadas pela equipe nos últimos 7 dias`}
-          />
-          {nextAutomation?.next_run_at && (
-            <PulseChip
-              icon={CalendarCheck2}
-              text={`Próximo agendamento automático: ${formatTimeBR(nextAutomation.next_run_at)}`}
-            />
+          {/* Saudação */}
+          <div className="space-y-2">
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white">
+              {greeting}
+              {user?.name ? `, ${firstName(user.name)}` : ''}.
+            </h1>
+            <p className="text-sm text-white/80 max-w-xl leading-relaxed">
+              Central DunaFlow de tratamento jurídico automatizado. Publicações, prazos
+              iniciais e andamentos em um só lugar.
+            </p>
+          </div>
+
+          {/* Pulso da equipe (chips de vidro sobre o hero) */}
+          {canUsePublications && pubsOverview?.kpis && (
+            <div className="flex flex-wrap gap-3 pt-1">
+              <PulseChip
+                onDark
+                icon={Flame}
+                text={`${pubsOverview.kpis.tratadas_janela ?? 0} publicações tratadas pela equipe nos últimos 7 dias`}
+              />
+              {nextAutomation?.next_run_at && (
+                <PulseChip
+                  onDark
+                  icon={CalendarCheck2}
+                  text={`Próximo agendamento automático: ${formatTimeBR(nextAutomation.next_run_at)}`}
+                />
+              )}
+              <PulseChip
+                onDark
+                icon={CheckCircle2}
+                text={`Backlog: ${pubsOverview.kpis.pendentes_agora ?? 0} pendentes`}
+              />
+            </div>
           )}
-          <PulseChip
-            icon={CheckCircle2}
-            text={`Backlog: ${pubsOverview.kpis.pendentes_agora ?? 0} pendentes`}
-          />
         </div>
-      )}
+      </section>
 
       {/* Grid de seções */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
@@ -377,7 +407,7 @@ const LandingPage = () => {
       <footer className="pt-6 flex items-center justify-between text-xs text-muted-foreground">
         <span className="inline-flex items-center gap-1.5">
           <Sparkles className="h-3.5 w-3.5 text-[hsl(var(--dunatech-blue))]" />
-          DunaFlow
+          DunaFlow · MDR Advocacia
         </span>
         <span className="hidden sm:inline">
           Use o botão de feedback no canto inferior direito para reportar qualquer coisa.

@@ -2,9 +2,10 @@
 
 from datetime import datetime, timedelta, timezone
 from typing import List, Literal
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func as sa_func
+from sqlalchemy import func as sa_func, text
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.dependencies import get_db
@@ -449,5 +450,128 @@ def get_publications_pipeline(db: Session = Depends(get_db)):
             for item in next_out
         ],
         "pending_total": pending_total,
+        "generated_at": now.isoformat(),
+    }
+
+
+# ───────────────────────────────────────────────────────────────
+# Tratamento por operador (agendadas + ciências) — Bloco 4
+# ───────────────────────────────────────────────────────────────
+
+@router.get(
+    "/publications-operators",
+    summary="Tratamento (agendadas + ciências) por operador, em janelas de tempo",
+)
+def get_publications_operators(
+    mode: Literal["calendar", "rolling"] = Query(
+        "calendar",
+        description=(
+            "'calendar' = hoje / esta semana / este mês / semestre "
+            "(marcos no horário de Brasília); 'rolling' = últimas "
+            "24h / 7d / 30d / 180d."
+        ),
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    Volume de tratamento HUMANO por operador. Tratamento = agendar OU dar
+    ciência (ignorar) — as duas ações humanas. A classificação NOVO→CLASSIFICADO
+    é automática (IA) e não entra. Une a autoria scheduled_by_*/ignored_by_*.
+
+    Por operador: 5 janelas (dia/semana/mês/semestre/total) com o total tratado
+    em cada, mais o split agendadas/ciências do período inteiro. Só lista quem
+    tem ao menos 1 tratamento. Ordenado por produção do dia (desc).
+
+    Histórico: agendamento desde abr/2026 (pub002); ciências só a partir do
+    deploy desta versão (pub003) — registros anteriores não têm autor, ficam
+    de fora da contagem.
+    """
+    now = datetime.now(timezone.utc)
+
+    if mode == "rolling":
+        day_start = now - timedelta(days=1)
+        week_start = now - timedelta(days=7)
+        month_start = now - timedelta(days=30)
+        semester_start = now - timedelta(days=180)
+    else:
+        # Marcos de calendário no horário de Brasília, convertidos pra UTC
+        # pra comparar com os timestamps (timestamptz, armazenados em UTC).
+        sp = ZoneInfo("America/Sao_Paulo")
+        now_sp = now.astimezone(sp)
+        day_sp = now_sp.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_sp = day_sp - timedelta(days=day_sp.weekday())  # segunda-feira
+        month_sp = day_sp.replace(day=1)
+        semester_sp = day_sp.replace(month=(1 if now_sp.month <= 6 else 7), day=1)
+        day_start = day_sp.astimezone(timezone.utc)
+        week_start = week_sp.astimezone(timezone.utc)
+        month_start = month_sp.astimezone(timezone.utc)
+        semester_start = semester_sp.astimezone(timezone.utc)
+
+    query = text(
+        """
+        WITH eventos AS (
+            SELECT scheduled_by_user_id AS user_id,
+                   scheduled_by_name AS user_name,
+                   scheduled_by_email AS user_email,
+                   scheduled_at AS at,
+                   'agendado' AS tipo
+            FROM publicacao_registros
+            WHERE scheduled_by_user_id IS NOT NULL AND scheduled_at IS NOT NULL
+            UNION ALL
+            SELECT ignored_by_user_id, ignored_by_name, ignored_by_email,
+                   ignored_at, 'ignorado'
+            FROM publicacao_registros
+            WHERE ignored_by_user_id IS NOT NULL AND ignored_at IS NOT NULL
+        )
+        SELECT
+            user_id,
+            max(user_name) AS user_name,
+            max(user_email) AS user_email,
+            count(*) FILTER (WHERE at >= :day_start) AS dia,
+            count(*) FILTER (WHERE at >= :week_start) AS semana,
+            count(*) FILTER (WHERE at >= :month_start) AS mes,
+            count(*) FILTER (WHERE at >= :semester_start) AS semestre,
+            count(*) AS total,
+            count(*) FILTER (WHERE tipo = 'agendado') AS agendado_total,
+            count(*) FILTER (WHERE tipo = 'ignorado') AS ignorado_total
+        FROM eventos
+        GROUP BY user_id
+        ORDER BY dia DESC, total DESC
+        """
+    )
+
+    rows = db.execute(
+        query,
+        {
+            "day_start": day_start,
+            "week_start": week_start,
+            "month_start": month_start,
+            "semester_start": semester_start,
+        },
+    ).fetchall()
+
+    operators = [
+        {
+            "user_id": r.user_id,
+            "user_name": r.user_name,
+            "user_email": r.user_email,
+            "dia": int(r.dia),
+            "semana": int(r.semana),
+            "mes": int(r.mes),
+            "semestre": int(r.semestre),
+            "total": int(r.total),
+            "agendado_total": int(r.agendado_total),
+            "ignorado_total": int(r.ignorado_total),
+        }
+        for r in rows
+    ]
+
+    keys = ("dia", "semana", "mes", "semestre", "total", "agendado_total", "ignorado_total")
+    team_totals = {k: sum(o[k] for o in operators) for k in keys}
+
+    return {
+        "mode": mode,
+        "operators": operators,
+        "team_totals": team_totals,
         "generated_at": now.isoformat(),
     }

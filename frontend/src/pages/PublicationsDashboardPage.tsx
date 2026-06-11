@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -12,6 +12,7 @@ import {
   ListChecks,
   Loader2,
   TrendingUp,
+  Users,
 } from 'lucide-react';
 import {
   Area,
@@ -114,6 +115,43 @@ interface PipelinePayload {
   generated_at: string;
 }
 
+type OperatorWindow = 'dia' | 'semana' | 'mes' | 'semestre' | 'total';
+
+interface OperatorRow {
+  user_id: number;
+  user_name: string | null;
+  user_email: string | null;
+  dia: number;
+  semana: number;
+  mes: number;
+  semestre: number;
+  total: number;
+  agendado_total: number;
+  ignorado_total: number;
+}
+
+interface OperatorsPayload {
+  mode: 'calendar' | 'rolling';
+  operators: OperatorRow[];
+  team_totals: {
+    dia: number;
+    semana: number;
+    mes: number;
+    semestre: number;
+    total: number;
+    agendado_total: number;
+    ignorado_total: number;
+  };
+  generated_at: string;
+}
+
+const OPERATOR_WINDOWS: OperatorWindow[] = ['dia', 'semana', 'mes', 'semestre', 'total'];
+
+const OPERATOR_WINDOW_LABELS: Record<'calendar' | 'rolling', Record<OperatorWindow, string>> = {
+  calendar: { dia: 'Hoje', semana: 'Esta semana', mes: 'Este mês', semestre: 'Semestre', total: 'Total' },
+  rolling: { dia: '24h', semana: '7 dias', mes: '30 dias', semestre: '180 dias', total: 'Total' },
+};
+
 // ──────────────────────────────────────────────────────────────
 // Paleta DUNATECH para gráficos (valores HSL das vars do design system)
 // ──────────────────────────────────────────────────────────────
@@ -185,6 +223,14 @@ const formatHour = (iso: string): string => {
     timeZone: 'America/Sao_Paulo',
   }).format(new Date(iso));
   return `${h}h`;
+};
+
+// Iniciais pro avatar do operador: "Maria Silva" -> "MS"
+const initials = (name?: string | null, email?: string | null): string => {
+  const src = (name || email || '?').trim();
+  const parts = src.split(/\s+/);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return src.slice(0, 2).toUpperCase();
 };
 
 // ──────────────────────────────────────────────────────────────
@@ -281,10 +327,14 @@ const FunnelStep = ({
 const PublicationsDashboardPage = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { canUsePublications } = useAuth();
+  const { canUsePublications, user } = useAuth();
 
   // Granularidade do grafico de velocidade (Bloco 2): 'day' (N dias) ou 'hour' (24h)
   const [chartGranularity, setChartGranularity] = useState<'day' | 'hour'>('day');
+
+  // Tratamento por operador (Bloco 4): modo de janela + coluna de ordenacao
+  const [operatorMode, setOperatorMode] = useState<'calendar' | 'rolling'>('calendar');
+  const [operatorSort, setOperatorSort] = useState<OperatorWindow>('dia');
 
   // Overview (KPIs + funil + serie) — a serie respeita a granularidade do grafico.
   // KPIs e funil sao snapshot/janela e nao mudam com a granularidade.
@@ -325,6 +375,25 @@ const PublicationsDashboardPage = () => {
     enabled: canUsePublications,
     refetchInterval: 30_000,
   });
+
+  // Tratamento por operador (Bloco 4) — recarrega ao trocar o modo de janela
+  const { data: operatorsData, isLoading: operatorsLoading } = useQuery({
+    queryKey: ['dashboard-operators', operatorMode],
+    queryFn: async () => {
+      const res = await apiFetch(
+        `/api/v1/dashboard/publications-operators?mode=${operatorMode}`,
+      );
+      if (!res.ok) throw new Error('Falha ao carregar tratamento por operador');
+      return (await res.json()) as OperatorsPayload;
+    },
+    enabled: canUsePublications,
+    refetchInterval: 60_000,
+  });
+
+  const sortedOperators = useMemo(() => {
+    const ops = operatorsData?.operators ?? [];
+    return [...ops].sort((a, b) => b[operatorSort] - a[operatorSort]);
+  }, [operatorsData, operatorSort]);
 
   const { data: savedFilters = [], isLoading: filtersLoading } = useQuery({
     queryKey: ['saved-filters', 'publications'],
@@ -474,6 +543,148 @@ const PublicationsDashboardPage = () => {
               isLoading={rhythmLoading}
             />
           </div>
+
+          {/* Bloco 4 — Tratamento por operador (agendadas + ciências) */}
+          <Card>
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div>
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Users className="h-4 w-4 text-[hsl(var(--dunatech-blue))]" />
+                    Tratamento por operador
+                  </CardTitle>
+                  <CardDescription className="text-xs">
+                    Agendadas + ciências por pessoa. Clique numa coluna pra ordenar.
+                  </CardDescription>
+                </div>
+                <div className="inline-flex rounded-lg border p-0.5 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setOperatorMode('calendar')}
+                    className={`px-2.5 py-1 rounded-md transition-colors ${
+                      operatorMode === 'calendar'
+                        ? 'bg-[hsl(var(--dunatech-blue))] text-white'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    Calendário
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOperatorMode('rolling')}
+                    className={`px-2.5 py-1 rounded-md transition-colors ${
+                      operatorMode === 'rolling'
+                        ? 'bg-[hsl(var(--dunatech-blue))] text-white'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    Janela móvel
+                  </button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {operatorsLoading ? (
+                <div className="h-[120px] flex items-center justify-center">
+                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                </div>
+              ) : sortedOperators.length === 0 ? (
+                <div className="h-[120px] flex items-center justify-center text-sm text-muted-foreground">
+                  Nenhum tratamento registrado ainda.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b text-xs text-muted-foreground">
+                        <th className="text-left font-medium py-2 px-2">Operador</th>
+                        {OPERATOR_WINDOWS.map((w) => (
+                          <th
+                            key={w}
+                            onClick={() => setOperatorSort(w)}
+                            className={`text-right font-medium py-2 px-2 cursor-pointer select-none hover:text-foreground ${
+                              operatorSort === w ? 'text-[hsl(var(--dunatech-blue))]' : ''
+                            }`}
+                          >
+                            <span className="inline-flex items-center gap-1">
+                              {OPERATOR_WINDOW_LABELS[operatorMode][w]}
+                              {operatorSort === w && <ArrowDown className="h-3 w-3" />}
+                            </span>
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedOperators.map((o) => {
+                        const isMe = user?.id === o.user_id;
+                        const name = isMe
+                          ? 'Você'
+                          : o.user_name || o.user_email || `Operador #${o.user_id}`;
+                        return (
+                          <tr
+                            key={o.user_id}
+                            className={`border-b last:border-0 ${
+                              isMe ? 'bg-[hsl(var(--dunatech-blue)/0.08)]' : ''
+                            }`}
+                          >
+                            <td className="py-2 px-2">
+                              <div className="flex items-center gap-2">
+                                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--dunatech-blue)/0.12)] text-[11px] font-semibold text-[hsl(var(--dunatech-blue))]">
+                                  {initials(o.user_name, o.user_email)}
+                                </span>
+                                <span className="truncate">{name}</span>
+                              </div>
+                            </td>
+                            {(['dia', 'semana', 'mes', 'semestre'] as OperatorWindow[]).map((w) => (
+                              <td
+                                key={w}
+                                className={`text-right py-2 px-2 tabular-nums ${
+                                  operatorSort === w
+                                    ? 'font-semibold text-[hsl(var(--dunatech-navy))]'
+                                    : ''
+                                }`}
+                              >
+                                {o[w]}
+                              </td>
+                            ))}
+                            <td className="text-right py-2 px-2">
+                              <div className="font-semibold tabular-nums text-[hsl(var(--dunatech-navy))]">
+                                {o.total}
+                              </div>
+                              <div className="text-[11px] text-muted-foreground">
+                                {o.agendado_total} ag · {o.ignorado_total} ci
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    {operatorsData?.team_totals && (
+                      <tfoot>
+                        <tr className="border-t">
+                          <td className="py-2 px-2 text-muted-foreground">Equipe (todos)</td>
+                          {(['dia', 'semana', 'mes', 'semestre', 'total'] as OperatorWindow[]).map(
+                            (w) => (
+                              <td
+                                key={w}
+                                className="text-right py-2 px-2 font-semibold tabular-nums"
+                              >
+                                {operatorsData.team_totals[w]}
+                              </td>
+                            ),
+                          )}
+                        </tr>
+                      </tfoot>
+                    )}
+                  </table>
+                  <p className="text-[11px] text-muted-foreground mt-2">
+                    ag = agendadas · ci = ciências (ignoradas). O histórico de ciências
+                    começa no deploy desta versão.
+                  </p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
           {/* Linha de gráficos: Velocidade (2/3) + Funil (1/3) */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

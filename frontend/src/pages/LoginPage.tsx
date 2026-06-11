@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { LogIn, AlertCircle } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { DunaFlowMark } from '@/components/DunaFlowMark';
 
 // Base do oauth2-proxy (Microsoft Entra ID). Em produção fica em
 // auth.dunatecnologia.com; sobrescrevível por env pra outros ambientes.
@@ -66,11 +67,7 @@ const LoginPage = () => {
     <div className="flex items-center justify-center min-h-screen bg-background px-4">
       <div className="w-full max-w-sm space-y-6">
         <div className="flex flex-col items-center gap-2">
-          <img
-            src="/brand/flow-wordmark.png"
-            alt="Flow by DUNATECH"
-            className="h-28 w-auto"
-          />
+          <DunaFlowMark size="lg" className="text-[hsl(var(--dunatech-navy))]" />
           <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
             by DUNATECH
           </p>
