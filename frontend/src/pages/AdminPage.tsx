@@ -46,6 +46,7 @@ interface AdminUser {
   notify_onerequest_errors: boolean;
   default_office_id: number | null;
   has_password: boolean;
+  is_sso: boolean;
   must_change_password: boolean;
 }
 interface Office {
@@ -907,7 +908,7 @@ const UsersAndPermissions = () => {
                                 <TableHead>Status</TableHead>
                                 <TableHead>Acesso</TableHead>
                                 <TableHead>Papel</TableHead>
-                                <TableHead>Agendar</TableHead>
+                                <TableHead>LegalOne</TableHead>
                                 <TableHead>Publicações</TableHead>
                                 <TableHead>Prazos Iniciais</TableHead>
                                 <TableHead>Notificação OneRequest</TableHead>
@@ -926,9 +927,15 @@ const UsersAndPermissions = () => {
                                         </Badge>
                                     </TableCell>
                                     <TableCell>
-                                        <Badge variant={user.has_password ? "outline" : "destructive"}>
-                                            {user.has_password ? "Configurado" : "Sem senha"}
-                                        </Badge>
+                                        {user.is_sso ? (
+                                            <Badge variant="outline" className="border-blue-300 bg-blue-50 text-blue-700">
+                                                Entra ID
+                                            </Badge>
+                                        ) : (
+                                            <Badge variant={user.has_password ? "outline" : "destructive"}>
+                                                {user.has_password ? "Configurado" : "Sem senha"}
+                                            </Badge>
+                                        )}
                                     </TableCell>
                                     <TableCell>
                                         {editingUserId === user.id ? (

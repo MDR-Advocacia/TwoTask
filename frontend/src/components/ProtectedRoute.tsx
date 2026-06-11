@@ -3,6 +3,7 @@
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth'
 import Layout from './Layout';
+import WelcomeScreen from './WelcomeScreen';
 import { Loader2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useToast } from '@/hooks/use-toast';
@@ -72,6 +73,19 @@ const ProtectedRoute = () => {
         <Loader2 className="h-8 w-8 animate-spin text-primary" />
       </div>
     );
+  }
+
+  // Conta nova/pendente: autenticado mas SEM nenhuma permissão e não-admin →
+  // tela de boas-vindas (aguardando liberação do admin). Cobre todo 1º acesso
+  // via Entra ID, que agora entra sem permissão por padrão.
+  if (
+    isAuthenticated &&
+    !isAdmin &&
+    !canScheduleBatch &&
+    !canUsePublications &&
+    !canUsePrazosIniciais
+  ) {
+    return <WelcomeScreen />;
   }
 
   // Se permissão negada, redireciona para home

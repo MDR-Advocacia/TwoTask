@@ -5,6 +5,7 @@ import json
 import logging
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -188,6 +189,13 @@ def sso_session(request: Request, db: Session = Depends(get_db)):
             )
             if user is None:
                 raise
+
+    # Carimba o login SSO (selo "Entra ID" no admin de usuários).
+    user.last_sso_at = datetime.now(timezone.utc)
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
 
     if not user.is_active:
         raise HTTPException(

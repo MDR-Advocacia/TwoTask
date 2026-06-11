@@ -471,6 +471,7 @@ def list_users(
             "notify_onerequest_errors": getattr(u, "notify_onerequest_errors", False),
             "default_office_id": u.default_office_id,
             "has_password": u.hashed_password is not None,
+            "is_sso": getattr(u, "last_sso_at", None) is not None,
             "must_change_password": u.must_change_password,
         }
         for u in users

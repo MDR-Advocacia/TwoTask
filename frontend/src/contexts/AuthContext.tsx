@@ -193,7 +193,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     logout,
     isLoading,
     canScheduleBatch: tokenData?.can_schedule_batch ?? false,
-    canUsePublications: tokenData?.can_use_publications ?? true,
+    // Default FALSE: 1º acesso entra sem permissão (vê a tela de boas-vindas).
+    // Usa o /me (banco) como fonte de verdade pra refletir liberação sem re-login.
+    canUsePublications: user?.can_use_publications ?? tokenData?.can_use_publications ?? false,
     // Nova permissão — default false pra JWTs antigos que não carregam a claim.
     // Usa o /me (banco) como fallback pra não exigir re-login após toggle no admin.
     canUsePrazosIniciais:
