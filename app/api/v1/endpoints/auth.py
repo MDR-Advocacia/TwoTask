@@ -190,8 +190,11 @@ def sso_session(request: Request, db: Session = Depends(get_db)):
             if user is None:
                 raise
 
-    # Carimba o login SSO (selo "Entra ID" no admin de usuários).
+    # Carimba o login SSO (selo "Entra ID" no admin) + zera o "trocar senha
+    # provisória": quem entra pelo Entra não usa senha, então esse fluxo não se
+    # aplica (senão o usuário trava numa troca de senha que ele não tem).
     user.last_sso_at = datetime.now(timezone.utc)
+    user.must_change_password = False
     try:
         db.commit()
     except Exception:
