@@ -4,6 +4,7 @@ import {
   CalendarClock,
   CircleUser,
   Clock,
+  Contact,
   FileUp,
   LayoutDashboard,
   ListChecks,
@@ -66,10 +67,11 @@ export default function Layout({ children }: PropsWithChildren) {
 
   const baseSections: NavSection[] = [
     {
-      title: "Criação de Tarefas",
+      title: "LegalOne",
       items: [
         { to: "/tasks/spreadsheet-batch", icon: FileUp, label: "Tarefas por Planilha", requirePermission: 'canScheduleBatch' },
-        { to: "/batches", icon: ListChecks, label: "Acompanhamento de Lotes", requirePermission: 'canScheduleBatch' },
+        { to: "/ged-legalone", icon: Upload, label: "Envio em Lote ao GED", requirePermission: 'canScheduleBatch' },
+        { to: "/contatos-legalone", icon: Contact, label: "Atualização de Contatos", requirePermission: 'canScheduleBatch' },
       ],
     },
     {
@@ -95,12 +97,6 @@ export default function Layout({ children }: PropsWithChildren) {
       title: "Classificador",
       items: [
         { to: "/classificador", icon: ScanSearch, label: "Diagnostico de Carteira", requirePermission: 'canUsePrazosIniciais' },
-      ],
-    },
-    {
-      title: "GED LegalOne",
-      items: [
-        { to: "/ged-legalone", icon: Upload, label: "Envio em Lote ao GED", requirePermission: 'canUsePrazosIniciais' },
       ],
     },
     {

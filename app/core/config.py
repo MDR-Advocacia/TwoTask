@@ -341,6 +341,25 @@ class Settings(BaseSettings):
     # voltam pra PENDENTE no proximo tick (recuperacao de crash).
     ged_legalone_stuck_minutes: int = 15
 
+    # ─── Atualizacao de Contatos LegalOne ────────────────────────────────
+    # Enriquece contatos existentes (achados por CPF/CNPJ) com telefone/
+    # e-mail/endereco via navigation property POST. Worker em background.
+    contatos_legalone_worker_enabled: bool = True
+    contatos_legalone_worker_interval_seconds: int = 10
+    # Itens por tick. Cada item faz 1 busca + 3 leituras + ate' ~5 POSTs; o
+    # _rate_limiter global do L1 (1.2 req/s) ja' serializa o throughput, entao
+    # batch_size alto nao acelera — mantem baixo pra spread justo entre lotes.
+    contatos_legalone_worker_batch_size: int = 5
+    # Itens travados em PROCESSANDO ha mais que isso voltam pra PENDENTE.
+    contatos_legalone_stuck_minutes: int = 15
+    # typeId default de telefone (catalogo /ContactPhoneTypes): 3 = Celular.
+    contatos_legalone_phone_type_id: int = 3
+    # typeId default de e-mail (catalogo /ContactEmailTypes): 1 = Particular.
+    contatos_legalone_email_type_id: int = 1
+    # Formato do numero gravado: True = mascara "(92) 99202-2665" (default,
+    # padrao do MD); False = so' digitos "92992022665".
+    contatos_legalone_phone_keep_mask: bool = True
+
 
     model_config = SettingsConfigDict(
         env_file=".env",

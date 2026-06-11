@@ -15,8 +15,8 @@ CRUD + acompanhamento:
 - GET    /ged-legalone/document-types     : catalogo de tipos do GED (dropdown)
 
 Auth: JWT (router em main.py com protected_dependencies) + permissao
-`prazos_iniciais` (mesmo gate de AJUS/Classificador). O upload em si roda
-no worker (app/services/ged_legalone/upload_worker.py).
+`schedule_batch` (gate do grupo LegalOne no sidebar/admin). O upload em si
+roda no worker (app/services/ged_legalone/upload_worker.py).
 """
 
 from __future__ import annotations
@@ -100,7 +100,7 @@ def _validate_one_file(content: bytes, filename: str) -> str:
 
 @router.get("/document-types")
 def list_document_types(
-    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+    _: LegalOneUser = Depends(auth_security.require_permission("schedule_batch")),
 ):
     """Catalogo de tipos do GED pro dropdown da UI."""
     return {"items": GED_DOCUMENT_TYPES}
@@ -117,7 +117,7 @@ async def create_batch_single(
     type_id: Optional[str] = Form(default=None),
     description: Optional[str] = Form(default=None),
     db: Session = Depends(get_db),
-    current_user: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+    current_user: LegalOneUser = Depends(auth_security.require_permission("schedule_batch")),
 ):
     """Modo SINGLE_FILE: um arquivo unico enviado pra varios processos."""
     type_clean = _validate_type_id(type_id)
@@ -157,7 +157,7 @@ async def create_batch_multi(
         description='JSON {nome_do_arquivo: cnj} pra corrigir/atribuir CNJ por arquivo.',
     ),
     db: Session = Depends(get_db),
-    current_user: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+    current_user: LegalOneUser = Depends(auth_security.require_permission("schedule_batch")),
 ):
     """Modo MULTI_FILE: varios arquivos, cada um mapeado a um CNJ."""
     type_clean = _validate_type_id(type_id)
@@ -212,7 +212,7 @@ def list_batches(
     limit: int = Query(default=25, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
-    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+    _: LegalOneUser = Depends(auth_security.require_permission("schedule_batch")),
 ):
     """Lista paginada dos lotes — mais recente primeiro."""
     q = db.query(GedUploadBatch).order_by(GedUploadBatch.created_at.desc())
@@ -233,7 +233,7 @@ def list_batches(
 def get_batch(
     batch_id: int,
     db: Session = Depends(get_db),
-    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+    _: LegalOneUser = Depends(auth_security.require_permission("schedule_batch")),
 ):
     batch = _get_batch_or_404(db, batch_id)
     return batch_service.serialize_batch(batch)
@@ -243,7 +243,7 @@ def get_batch(
 def get_batch_status(
     batch_id: int,
     db: Session = Depends(get_db),
-    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+    _: LegalOneUser = Depends(auth_security.require_permission("schedule_batch")),
 ):
     """Payload barato pro polling da barra de progresso (sem itens)."""
     batch = _get_batch_or_404(db, batch_id)
@@ -257,7 +257,7 @@ def list_batch_items(
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
-    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+    _: LegalOneUser = Depends(auth_security.require_permission("schedule_batch")),
 ):
     """Itens do lote, paginados — pra tabela de acompanhamento."""
     _get_batch_or_404(db, batch_id)
@@ -284,7 +284,7 @@ def list_batch_items(
 def retry_failed(
     batch_id: int,
     db: Session = Depends(get_db),
-    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+    _: LegalOneUser = Depends(auth_security.require_permission("schedule_batch")),
 ):
     """Re-enfileira itens ERRO + CNJ_NAO_ENCONTRADO (volta a PENDENTE)."""
     batch = _get_batch_or_404(db, batch_id)
@@ -299,7 +299,7 @@ def retry_failed(
 def cancel_batch(
     batch_id: int,
     db: Session = Depends(get_db),
-    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+    _: LegalOneUser = Depends(auth_security.require_permission("schedule_batch")),
 ):
     """Cancela o lote — worker para de pegar os itens pendentes."""
     batch = _get_batch_or_404(db, batch_id)
@@ -311,7 +311,7 @@ def cancel_batch(
 def delete_batch(
     batch_id: int,
     db: Session = Depends(get_db),
-    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+    _: LegalOneUser = Depends(auth_security.require_permission("schedule_batch")),
 ):
     """Apaga o lote + itens (cascade) + arquivos do volume."""
     batch = _get_batch_or_404(db, batch_id)

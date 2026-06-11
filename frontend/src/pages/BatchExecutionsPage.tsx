@@ -208,7 +208,7 @@ function ErrorGroupsBlock({ executionId, canRetry }: { executionId: number; canR
 // ─────────────────────────────────────────────────────────────
 // Página principal
 // ─────────────────────────────────────────────────────────────
-export default function BatchExecutionsPage() {
+export default function BatchExecutionsPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { isAdmin, canScheduleBatch } = useAuth();
   const canRetry = isAdmin || canScheduleBatch;
 
@@ -274,23 +274,32 @@ export default function BatchExecutionsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
-            <ListChecks className="h-6 w-6" />
-            Acompanhamento de Lotes
-          </h1>
-          <p className="text-muted-foreground">
-            Histórico das execuções dos motores de criação em lote (OneRequest, OneSid, Planilha).
-          </p>
-        </div>
-        <div className="flex gap-2">
+      {embedded ? (
+        <div className="flex justify-end">
           <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
             <RefreshCw className={`h-4 w-4 mr-2 ${isFetching ? 'animate-spin' : ''}`} />
             Atualizar
           </Button>
         </div>
-      </div>
+      ) : (
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
+              <ListChecks className="h-6 w-6" />
+              Acompanhamento de Lotes
+            </h1>
+            <p className="text-muted-foreground">
+              Histórico das execuções dos motores de criação em lote (OneRequest, OneSid, Planilha).
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
+              <RefreshCw className={`h-4 w-4 mr-2 ${isFetching ? 'animate-spin' : ''}`} />
+              Atualizar
+            </Button>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Card><CardHeader className="pb-2"><CardDescription>Execuções</CardDescription><CardTitle className="text-2xl">{stats.totalExec}</CardTitle></CardHeader></Card>

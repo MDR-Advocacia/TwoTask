@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AlertCircle, CheckCircle2, Download, File, HelpCircle, Loader2, Pause, Play, Square, Upload } from "lucide-react";
+import { AlertCircle, CheckCircle2, Download, File, HelpCircle, ListChecks, Loader2, Pause, Play, Square, Upload } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -25,6 +25,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api-client";
 import {
@@ -33,6 +34,7 @@ import {
   pauseBatchExecution,
   resumeBatchExecution,
 } from "@/services/api";
+import BatchExecutionsPage from "./BatchExecutionsPage";
 
 
 interface PreviewRow {
@@ -78,6 +80,7 @@ interface BatchStatusResponse {
 
 const CreateTaskFromSpreadsheetPage = () => {
   const { toast } = useToast();
+  const [tab, setTab] = useState("criar");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [isPreviewing, setIsPreviewing] = useState(false);
@@ -306,12 +309,13 @@ const CreateTaskFromSpreadsheetPage = () => {
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
             <Upload className="h-6 w-6" />
-            Criação de Tarefas por Planilha
+            Tarefas por Planilha
           </h1>
           <p className="text-muted-foreground">
-            Valide, acompanhe e controle o agendamento em lote com mais segurança.
+            Crie tarefas em lote a partir de uma planilha e acompanhe as execuções.
           </p>
         </div>
+        {tab === "criar" && (
         <div className="flex gap-2">
           <Dialog>
             <DialogTrigger asChild>
@@ -402,9 +406,23 @@ const CreateTaskFromSpreadsheetPage = () => {
             Baixar Modelo
           </Button>
         </div>
+        )}
       </div>
 
-      <Card className="max-w-3xl mx-auto glass-card border-0 animate-fade-in">
+      <Tabs value={tab} onValueChange={setTab} className="w-full">
+        <TabsList>
+          <TabsTrigger value="criar" className="gap-2">
+            <Upload className="h-4 w-4" />
+            Criar por Planilha
+          </TabsTrigger>
+          <TabsTrigger value="acompanhamento" className="gap-2">
+            <ListChecks className="h-4 w-4" />
+            Acompanhamento de Lotes
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="criar" className="mt-4 space-y-6">
+          <Card className="max-w-3xl mx-auto glass-card border-0 animate-fade-in">
         <CardHeader>
           <CardTitle>Upload da Planilha</CardTitle>
           <CardDescription>
@@ -505,6 +523,12 @@ const CreateTaskFromSpreadsheetPage = () => {
           </CardContent>
         </Card>
       )}
+        </TabsContent>
+
+        <TabsContent value="acompanhamento" className="mt-4">
+          <BatchExecutionsPage embedded />
+        </TabsContent>
+      </Tabs>
 
       <AlertDialog
         open={showBatchDialog}

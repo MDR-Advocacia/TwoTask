@@ -162,7 +162,7 @@ export const ProfilePage = () => {
             <h3 className="font-semibold mb-4">Permissões</h3>
             <div className="space-y-2">
               <p className="text-sm">
-                <span className="inline-block w-48">Agendar Lotes:</span>
+                <span className="inline-block w-48">LegalOne:</span>
                 <span className="font-medium">{user?.can_schedule_batch ? 'Ativado' : 'Desativado'}</span>
               </p>
               <p className="text-sm">

@@ -59,3 +59,7 @@ from .ged_legalone import (
     GedUploadBatch,
     GedUploadItem,
 )
+from .contato_update import (
+    ContatoAtualizacaoBatch,
+    ContatoAtualizacaoItem,
+)
