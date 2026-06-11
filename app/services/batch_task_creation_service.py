@@ -221,7 +221,7 @@ class BatchTaskCreationService:
             self.db.add(
                 BatchExecutionItem(
                     execution_id=execution_log.id,
-                    process_number=row_data.get("CNJ") or "N/A",
+                    process_number=row_data.get("CNJ") or row_data.get("PASTA") or "N/A",
                     input_data=row_data,
                     status="PENDENTE",
                 )

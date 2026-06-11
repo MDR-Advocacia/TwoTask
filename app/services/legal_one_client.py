@@ -121,6 +121,11 @@ class LegalOneApiClient:
     # linhas. Com batch=10, maximo 30 filter_parts -> cabe no limite.
     _CNJ_LOOKUP_BATCH_SIZE = 10
     _PROCESS_LOOKUP_SELECT = "id,identifierNumber,responsibleOfficeId,creationDate"
+    # Lookup por numero da pasta (campo `folder`). folder eq nao expande
+    # variantes (1 filtro por pasta), entao cabe mais por chunk que o CNJ.
+    # 25 fica abaixo do teto de 30 do $top em /Lawsuits e /Litigations.
+    _FOLDER_LOOKUP_SELECT = "id,identifierNumber,responsibleOfficeId,folder,creationDate"
+    _FOLDER_LOOKUP_BATCH_SIZE = 25
     _rate_limiter = _GlobalRateLimiter()
 
     # typeIds do GED (formato "type_N", catalogo descoberto em 2026-05-04).
@@ -217,6 +222,20 @@ class LegalOneApiClient:
     @staticmethod
     def _chunk_list(items: List[str], chunk_size: int) -> List[List[str]]:
         return [items[index : index + chunk_size] for index in range(0, len(items), chunk_size)]
+
+    @staticmethod
+    def _clean_folder_number(folder: Any) -> str:
+        # Normaliza o numero da pasta: tira espacos das pontas, colapsa
+        # espacos internos e troca NBSP por espaco comum. Preserva o case
+        # (o `folder eq` do L1 ja e case-insensitive) e a mascara/prefixo,
+        # que o L1 exige por completo (ex.: 'Proc - 0069519').
+        if folder is None:
+            return ""
+        return " ".join(str(folder).replace("\xa0", " ").split())
+
+    @staticmethod
+    def _folder_lookup_key(folder: Any) -> str:
+        return LegalOneApiClient._clean_folder_number(folder).casefold()
 
     def _refresh_token_if_needed(self, force: bool = False):
         now = datetime.utcnow()
@@ -450,6 +469,97 @@ class LegalOneApiClient:
 
         self.logger.info("Precarregamento de processos concluido. Encontrados %s de %s CNJs.", len(matches), len(normalized_numbers))
         return matches
+
+    def _search_process_endpoint_by_folder_numbers(
+        self,
+        endpoint: str,
+        folder_numbers: List[str],
+    ) -> Dict[str, Dict[str, Any]]:
+        matches: Dict[str, Dict[str, Any]] = {}
+        cleaned: List[str] = []
+        seen: set = set()
+        for folder in folder_numbers:
+            value = self._clean_folder_number(folder)
+            key = value.casefold()
+            if not value or key in seen:
+                continue
+            cleaned.append(value)
+            seen.add(key)
+
+        for chunk in self._chunk_list(cleaned, self._FOLDER_LOOKUP_BATCH_SIZE):
+            filter_parts = [
+                f"folder eq '{self._escape_odata_literal(value)}'"
+                for value in chunk
+            ]
+            params = {
+                "$filter": " or ".join(filter_parts),
+                "$select": self._FOLDER_LOOKUP_SELECT,
+                "$top": min(max(len(filter_parts), 1), 30),
+            }
+            results = self._paginated_catalog_loader(endpoint, params)
+            for item in results:
+                key = self._folder_lookup_key(item.get("folder"))
+                if key and key not in matches:
+                    matches[key] = item
+
+        return matches
+
+    def search_lawsuits_by_folder_numbers(self, folder_numbers: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        Busca processos/pastas pelo numero da pasta (campo `folder` do L1),
+        em lote. Espelha search_lawsuits_by_cnj_numbers, mas filtra por
+        `folder eq` em vez de `identifierNumber` - usado pra agendar tarefas
+        em pastas sem CNJ (ex.: cobranca pre-judicial).
+
+        O `folder eq` do L1 e case-insensitive, mas exige o valor completo
+        com mascara (ex.: 'Proc - 0069519'); numero cru nao casa.
+
+        Retorna dict {folder_key: {id, identifierNumber, responsibleOfficeId,
+        folder}} onde folder_key e a pasta normalizada (casefold + espacos
+        colapsados). Use _folder_lookup_key pra montar a chave de consulta.
+        """
+        cleaned: List[str] = []
+        seen: set = set()
+        for folder in folder_numbers:
+            value = self._clean_folder_number(folder)
+            key = value.casefold()
+            if not value or key in seen:
+                continue
+            cleaned.append(value)
+            seen.add(key)
+
+        if not cleaned:
+            return {}
+
+        self.logger.info("Precarregando %s pastas distintas por numero (folder).", len(cleaned))
+        matches = self._search_process_endpoint_by_folder_numbers("/Lawsuits", cleaned)
+
+        missing = [value for value in cleaned if value.casefold() not in matches]
+        if missing:
+            self.logger.info(
+                "%s pastas nao encontradas em Lawsuits. Tentando fallback em Litigations.",
+                len(missing),
+            )
+            fallback = self._search_process_endpoint_by_folder_numbers("/Litigations", missing)
+            for key, item in fallback.items():
+                matches.setdefault(key, item)
+
+        self.logger.info(
+            "Precarregamento de pastas concluido. Encontradas %s de %s.",
+            len(matches), len(cleaned),
+        )
+        return matches
+
+    def search_lawsuit_by_folder(self, folder_number: str) -> Optional[Dict[str, Any]]:
+        key = self._folder_lookup_key(folder_number)
+        if not key:
+            return None
+        self.logger.info("Buscando pasta por numero (folder): %s", self._clean_folder_number(folder_number))
+        lawsuit = self.search_lawsuits_by_folder_numbers([folder_number]).get(key)
+        if lawsuit:
+            return lawsuit
+        self.logger.warning("Nenhuma pasta encontrada para o folder %s.", folder_number)
+        return None
 
     def fetch_lawsuits_by_ids(self, lawsuit_ids: List[int]) -> Dict[int, Dict[str, Any]]:
         """

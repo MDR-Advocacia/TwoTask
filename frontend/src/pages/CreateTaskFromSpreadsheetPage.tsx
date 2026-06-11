@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AlertCircle, CheckCircle2, Download, File, Loader2, Pause, Play, Square, Upload } from "lucide-react";
+import { AlertCircle, CheckCircle2, Download, File, HelpCircle, Loader2, Pause, Play, Square, Upload } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -13,6 +13,14 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
@@ -305,6 +313,90 @@ const CreateTaskFromSpreadsheetPage = () => {
           </p>
         </div>
         <div className="flex gap-2">
+          <Dialog>
+            <DialogTrigger asChild>
+              <Button variant="outline" size="sm">
+                <HelpCircle className="mr-2 h-4 w-4" />
+                Como preencher
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-2xl max-h-[80vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>Como preencher a planilha de agendamento</DialogTitle>
+                <DialogDescription>
+                  Cada linha vira uma tarefa agendada no Legal One, vinculada ao processo ou pasta.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 text-sm">
+                <section className="space-y-1">
+                  <h4 className="font-semibold">Identificação do processo: CNJ ou PASTA</h4>
+                  <p className="text-muted-foreground">
+                    Cada linha precisa de <strong>um</strong> identificador — preencha{" "}
+                    <strong>CNJ</strong> <em>ou</em> <strong>PASTA</strong> (não os dois):
+                  </p>
+                  <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
+                    <li>
+                      <strong>CNJ</strong> — processos judiciais com número (ex.:{" "}
+                      <code>0000000-00.2026.8.00.0000</code>).
+                    </li>
+                    <li>
+                      <strong>PASTA</strong> — processos <strong>sem CNJ</strong> (ex.: cobrança
+                      pré-judicial). Cole o número da pasta <strong>exatamente como aparece no Legal
+                      One</strong>, com o prefixo (ex.: <code>Proc - 0069519</code>). Só o número
+                      (<code>69519</code>) não funciona.
+                    </li>
+                  </ul>
+                  <p className="text-muted-foreground">
+                    Pode misturar linhas por CNJ e por PASTA no mesmo arquivo.
+                  </p>
+                </section>
+
+                <section className="space-y-1">
+                  <h4 className="font-semibold">Colunas obrigatórias</h4>
+                  <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
+                    <li>
+                      <strong>ESCRITORIO</strong> — escritório de origem, caminho completo (ex.:{" "}
+                      MDR Advocacia / Filial BA / Cível).
+                    </li>
+                    <li>
+                      <strong>CNJ ou PASTA</strong> — identificador do processo (ver acima).
+                    </li>
+                    <li>
+                      <strong>PUBLISH_DATE</strong> — data de publicação/ciência (dd/mm/aaaa).
+                    </li>
+                    <li>
+                      <strong>SUBTIPO</strong> — subtipo da tarefa, exatamente como cadastrado no L1.
+                    </li>
+                    <li>
+                      <strong>EXECUTANTE</strong> — responsável/executante, pelo nome cadastrado no L1.
+                    </li>
+                    <li>
+                      <strong>DATA_TAREFA</strong> — data do prazo/compromisso (dd/mm/aaaa).
+                    </li>
+                  </ul>
+                </section>
+
+                <section className="space-y-1">
+                  <h4 className="font-semibold">Colunas opcionais</h4>
+                  <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
+                    <li><strong>PRAZO</strong> — data que entra na descrição da tarefa (dd/mm/aaaa).</li>
+                    <li><strong>HORARIO</strong> — hora da tarefa (HH:MM). Em branco, assume 23:59.</li>
+                    <li><strong>OBSERVACAO</strong> — vai para as anotações da tarefa.</li>
+                    <li><strong>DESCRICAO</strong> — complemento da descrição.</li>
+                  </ul>
+                </section>
+
+                <section className="space-y-1">
+                  <h4 className="font-semibold">Antes de enviar</h4>
+                  <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
+                    <li>Use <strong>Validar Planilha</strong> para conferir erros sem criar nada.</li>
+                    <li>Agendamentos idênticos já criados são bloqueados (anti-duplicidade).</li>
+                    <li>Baixe o <strong>Modelo</strong> para já começar no formato certo.</li>
+                  </ul>
+                </section>
+              </div>
+            </DialogContent>
+          </Dialog>
           <Button variant="outline" size="sm" onClick={handleTemplateDownload} disabled={isDownloadingTemplate}>
             {isDownloadingTemplate ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
             Baixar Modelo
@@ -316,7 +408,9 @@ const CreateTaskFromSpreadsheetPage = () => {
         <CardHeader>
           <CardTitle>Upload da Planilha</CardTitle>
           <CardDescription>
-            O arquivo deve conter ao menos: ESCRITORIO, CNJ, PUBLISH_DATE, SUBTIPO, EXECUTANTE e DATA_TAREFA.
+            Cada linha precisa de ESCRITORIO, PUBLISH_DATE, SUBTIPO, EXECUTANTE, DATA_TAREFA e o
+            identificador do processo: <strong>CNJ ou PASTA</strong> (use PASTA para processos sem
+            CNJ, como cobrança pré-judicial). Veja "Como preencher".
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">

@@ -201,6 +201,7 @@ def _build_template_bytes() -> bytes:
     headers = [
         "ESCRITORIO",
         "CNJ",
+        "PASTA",
         "PUBLISH_DATE",
         "SUBTIPO",
         "EXECUTANTE",
@@ -211,10 +212,29 @@ def _build_template_bytes() -> bytes:
         "DESCRICAO",
     ]
     sheet.append(headers)
+    # Exemplo 1 - processo judicial identificado pelo CNJ (PASTA em branco).
     sheet.append(
         [
             "Juridico / Filial SP / Contencioso",
             "0000000-00.2026.8.00.0000",
+            "",
+            "18/03/2026",
+            "Audiencia",
+            "Maria Silva",
+            "25/03/2026",
+            "25/03/2026",
+            "14:00",
+            "Observacoes opcionais",
+            "Complemento opcional",
+        ]
+    )
+    # Exemplo 2 - processo SEM CNJ (ex.: cobranca pre-judicial) identificado
+    # pela PASTA. Cole a pasta exatamente como aparece no L1 (com "Proc - ").
+    sheet.append(
+        [
+            "Juridico / Filial SP / Contencioso",
+            "",
+            "Proc - 0069519",
             "18/03/2026",
             "Audiencia",
             "Maria Silva",

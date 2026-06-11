@@ -26,9 +26,11 @@ DEFAULT_TASK_STATUS_ID = 0
 
 
 class SpreadsheetStrategy(BaseStrategy):
+    # CNJ saiu de REQUIRED_FIELDS: a linha pode ser identificada por CNJ
+    # OU por PASTA (numero da pasta do L1, pra processos sem CNJ - ex.:
+    # cobranca pre-judicial). A regra "CNJ ou PASTA" e validada a parte.
     REQUIRED_FIELDS = [
         "ESCRITORIO",
-        "CNJ",
         "PUBLISH_DATE",
         "SUBTIPO",
         "EXECUTANTE",
@@ -37,6 +39,7 @@ class SpreadsheetStrategy(BaseStrategy):
     COLUMN_KEYS = [
         "ESCRITORIO",
         "CNJ",
+        "PASTA",
         "PUBLISH_DATE",
         "SUBTIPO",
         "EXECUTANTE",
@@ -56,6 +59,15 @@ class SpreadsheetStrategy(BaseStrategy):
         if cnj_number is None:
             return ""
         return str(cnj_number).strip()
+
+    @staticmethod
+    def _normalize_folder_value(value: Any) -> str:
+        # Numero da pasta do L1 (campo `folder`). O operador cola exatamente
+        # como aparece na tela (ex.: 'Proc - 0069519'); o L1 casa por
+        # `folder eq` case-insensitive, mas exige o prefixo/mascara completos.
+        if value is None:
+            return ""
+        return " ".join(str(value).replace("\xa0", " ").split())
 
     @staticmethod
     def _normalize_lookup_value(value: Any) -> str:
@@ -205,6 +217,8 @@ class SpreadsheetStrategy(BaseStrategy):
             missing_cols = [column for column in self.REQUIRED_FIELDS if indices[column] is None]
             if missing_cols:
                 raise ValueError(f"Colunas obrigatorias ausentes na planilha: {', '.join(missing_cols)}")
+            if indices.get("CNJ") is None and indices.get("PASTA") is None:
+                raise ValueError("A planilha precisa ter ao menos a coluna CNJ ou a coluna PASTA.")
 
             normalized_rows = [self._build_row_data(row, indices) for row in rows]
             return {"headers": headers, "rows": normalized_rows}
@@ -233,6 +247,11 @@ class SpreadsheetStrategy(BaseStrategy):
         if missing:
             raise ValueError(f"Dados essenciais faltando: {', '.join(missing)}")
 
+        cnj = self._normalize_cnj_number(data.get("CNJ"))
+        folder = self._normalize_folder_value(data.get("PASTA"))
+        if not cnj and not folder:
+            raise ValueError("Informe CNJ ou PASTA na linha (processo sem CNJ usa o numero da pasta).")
+
         office_name = data.get("ESCRITORIO")
         office = caches["offices"].get(self._normalize_lookup_value(office_name))
         if not office:
@@ -254,7 +273,7 @@ class SpreadsheetStrategy(BaseStrategy):
         )
         publish_date_iso = self._parse_and_format_date_to_utc(data.get("PUBLISH_DATE"))
         fingerprint = build_task_fingerprint(
-            process_number=data.get("CNJ"),
+            process_number=cnj or folder,
             subtype_identifier=sub_type.external_id,
             responsible_identifier=user.external_id,
             due_datetime_iso=end_datetime_iso,
@@ -265,6 +284,8 @@ class SpreadsheetStrategy(BaseStrategy):
             "office": office,
             "user": user,
             "sub_type": sub_type,
+            "cnj": cnj,
+            "folder": folder,
             "end_datetime_iso": end_datetime_iso,
             "publish_date_iso": publish_date_iso,
             "fingerprint": fingerprint,
@@ -328,7 +349,7 @@ class SpreadsheetStrategy(BaseStrategy):
             preview_rows.append(
                 {
                     "row_id": row_index,
-                    "process_number": row_data.get("CNJ"),
+                    "process_number": row_data.get("CNJ") or self._normalize_folder_value(row_data.get("PASTA")) or None,
                     "is_valid": is_valid,
                     "errors": errors,
                     "warnings": warnings,
@@ -367,9 +388,9 @@ class SpreadsheetStrategy(BaseStrategy):
             if signal == BATCH_STATUS_CANCELLED:
                 return {"sucesso": success_count, "falhas": len(failed_items), "cancelled": True}
 
-            cnj = row_data.get("CNJ")
+            ref = row_data.get("CNJ") or self._normalize_folder_value(row_data.get("PASTA"))
             log_item = BatchExecutionItem(
-                process_number=cnj or "N/A",
+                process_number=ref or "N/A",
                 execution_id=execution_log.id,
                 input_data=row_data,
                 status="PENDENTE",
@@ -388,7 +409,7 @@ class SpreadsheetStrategy(BaseStrategy):
             if success:
                 success_count += 1
             else:
-                failed_items.append({"cnj": cnj, "motivo": log_item.error_message})
+                failed_items.append({"cnj": ref, "motivo": log_item.error_message})
 
             await asyncio.sleep(0.01)
 
@@ -398,6 +419,24 @@ class SpreadsheetStrategy(BaseStrategy):
             "detalhes_falhas": failed_items,
             "cancelled": False,
         }
+
+    def _resolve_lawsuit_by_folder(self, folder: str) -> dict[str, Any] | None:
+        # Resolve a pasta (campo `folder` do L1) para {id, responsibleOfficeId}
+        # com memo por execucao: pastas repetidas no mesmo lote nao refazem a
+        # chamada. O preload por CNJ nao cobre pastas, entao a resolucao por
+        # pasta acontece on-demand aqui (1 chamada por pasta distinta).
+        if not folder or self.client is None:
+            return None
+        cache = getattr(self, "_folder_cache", None)
+        if cache is None:
+            cache = {}
+            self._folder_cache = cache
+        key = folder.casefold()
+        if key in cache:
+            return cache[key]
+        result = self.client.search_lawsuit_by_folder(folder)
+        cache[key] = result
+        return result
 
     async def process_single_item(
         self,
@@ -418,11 +457,19 @@ class SpreadsheetStrategy(BaseStrategy):
                 raise ValueError("Tarefa duplicada detectada: ja existe um agendamento igual processado com sucesso.")
 
             cnj = self._normalize_cnj_number(data.get("CNJ"))
-            lawsuit = (lawsuit_lookup or {}).get(cnj)
-            if lawsuit is None and (prefetched_cnj_numbers is None or cnj not in prefetched_cnj_numbers):
-                lawsuit = self.client.search_lawsuit_by_cnj(cnj)
-            if not lawsuit or not lawsuit.get("id"):
-                raise Exception("Processo nao encontrado no Legal One.")
+            folder = self._normalize_folder_value(data.get("PASTA"))
+            if cnj:
+                lawsuit = (lawsuit_lookup or {}).get(cnj)
+                if lawsuit is None and (prefetched_cnj_numbers is None or cnj not in prefetched_cnj_numbers):
+                    lawsuit = self.client.search_lawsuit_by_cnj(cnj)
+                if not lawsuit or not lawsuit.get("id"):
+                    raise Exception("Processo nao encontrado no Legal One (CNJ).")
+            elif folder:
+                lawsuit = self._resolve_lawsuit_by_folder(folder)
+                if not lawsuit or not lawsuit.get("id"):
+                    raise Exception(f"Pasta '{folder}' nao encontrada no Legal One.")
+            else:
+                raise Exception("Linha sem CNJ nem PASTA.")
 
             lawsuit_id = lawsuit["id"]
             responsible_office_id = lawsuit.get("responsibleOfficeId")
