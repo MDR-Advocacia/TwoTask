@@ -26,6 +26,7 @@ import AutomationsPage from './pages/AutomationsPage';
 import ProfilePage from './pages/ProfilePage';
 import BatchExecutionsPage from './pages/BatchExecutionsPage';
 import PublicationTreatmentPage from './pages/PublicationTreatmentPage';
+import CitacoesBMPage from './pages/CitacoesBMPage';
 import LookupByCnjPage from './pages/LookupByCnjPage';
 import PrazosIniciaisPage from './pages/PrazosIniciaisPage';
 import PrazosIniciaisTreatmentPage from './pages/PrazosIniciaisTreatmentPage';
@@ -72,6 +73,7 @@ function AppContent() {
             <Route path="/publications/dashboard" element={<PublicationsDashboardPage />} />
             <Route path="/publications/lookup" element={<LookupByCnjPage />} />
             <Route path="/publications/treatment" element={<PublicationTreatmentPage />} />
+            <Route path="/publications/citacoes-bm" element={<CitacoesBMPage />} />
             <Route path="/publications/templates" element={<TaskTemplatesPage />} />
             <Route
               path="/publications/templates/review-pending"

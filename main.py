@@ -19,6 +19,7 @@ from app.api.v1.endpoints import (
     base_processual_exports,
     base_processual_public,
     capture_health,
+    citacoes_bm,
     classifier,
     classificador,
     contatos_legalone,
@@ -282,6 +283,19 @@ async def lifespan(_: FastAPI):
             "Falha ao registrar worker de cleanup de PDFs de prazos iniciais no startup."
         )
 
+    # Job diário do módulo Citações BM — puxa processos novos do L1
+    # (Banco Master/Réu) e varre o DataJud atrás de movimentações/citação.
+    try:
+        from app.services.citacoes_bm.scan_worker import (
+            register_citacoes_bm_scan_job,
+        )
+
+        register_citacoes_bm_scan_job(scheduler)
+    except Exception:
+        logger.exception(
+            "Falha ao registrar job diário do Citações BM no startup."
+        )
+
     try:
         yield
     finally:
@@ -343,6 +357,9 @@ app.include_router(classificador.router, prefix="/api/v1", tags=["Classificador 
 app.include_router(classificador.intake_router, prefix="/api/v1")
 app.include_router(publications.router, prefix="/api/v1/publications", tags=["Publicações"], dependencies=protected_dependencies)
 app.include_router(publication_treatment.router, prefix="/api/v1/publications", tags=["Publicações"], dependencies=protected_dependencies)
+# Citações BM — monitoramento de citação via DataJud (CNJ). Seção dentro de
+# Tratamento de Publicações. JWT + permissão publications.
+app.include_router(citacoes_bm.router, prefix="/api/v1/publications", tags=["Citações BM"], dependencies=protected_dependencies)
 # Intake externo: autenticado por API key (header X-Intake-Api-Key), SEM JWT.
 app.include_router(prazos_iniciais.intake_router, prefix="/api/v1")
 # Endpoints internos de prazos iniciais (UI do operador): JWT obrigatório.

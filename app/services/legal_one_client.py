@@ -689,6 +689,52 @@ class LegalOneApiClient:
         cache[office_id] = {"ts": time(), "ids": ids}
         return ids
 
+    def fetch_lawsuits_by_office_since(
+        self, office_id: int, created_since: str
+    ) -> List[Dict[str, Any]]:
+        """Lista processos do escritório com pasta criada a partir de uma data.
+
+        Usado pela ingestão automática do módulo Citações BM: traz os
+        processos NOVOS (creationDate >= data de corte) de um escritório
+        (ex.: Banco Master / Réu) pra entrar no monitoramento de citação.
+
+        `created_since` deve ser ISO (ex.: "2026-06-16" ou
+        "2026-06-16T00:00:00Z"). Filtro OData:
+            responsibleOfficeId eq X and creationDate ge <created_since>
+
+        Retorna lista de dicts {id, identifierNumber, responsibleOfficeId,
+        creationDate} unindo /Lawsuits e /Litigations (dedupe por id).
+        """
+        out: Dict[int, Dict[str, Any]] = {}
+        for endpoint in ("/Lawsuits", "/Litigations"):
+            try:
+                params = {
+                    "$filter": (
+                        f"responsibleOfficeId eq {int(office_id)} "
+                        f"and creationDate ge {created_since}"
+                    ),
+                    "$select": self._PROCESS_LOOKUP_SELECT,
+                    "$top": 30,
+                }
+                results = self._paginated_catalog_loader(endpoint, params)
+                for item in results:
+                    iid = item.get("id")
+                    if iid is not None:
+                        try:
+                            out.setdefault(int(iid), item)
+                        except (TypeError, ValueError):
+                            pass
+            except Exception as exc:
+                self.logger.warning(
+                    "Falha ao listar processos novos do escritorio %s em %s: %s",
+                    office_id, endpoint, exc,
+                )
+        self.logger.info(
+            "Processos novos do escritorio %s desde %s: %s.",
+            office_id, created_since, len(out),
+        )
+        return list(out.values())
+
     # ──────────────────────────────────────────────────────────────
     # lawsuit_cache (TTL 24h)
     # ──────────────────────────────────────────────────────────────

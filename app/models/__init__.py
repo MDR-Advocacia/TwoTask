@@ -63,3 +63,7 @@ from .contato_update import (
     ContatoAtualizacaoBatch,
     ContatoAtualizacaoItem,
 )
+from .citacoes_bm import (
+    CitacaoBMMovimento,
+    CitacaoBMProcesso,
+)
