@@ -1,10 +1,18 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, Edit3, Loader2, Plus, RefreshCw, Trash2, X } from "lucide-react";
+import { AlertTriangle, Bell, Check, Edit3, Eye, Loader2, Plus, RefreshCw, Trash2, X } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -20,11 +28,13 @@ import { useToast } from "@/hooks/use-toast";
 import {
   createAdminNotice,
   deleteAdminNotice,
+  fetchAdminNoticeAudience,
   fetchAllAdminNotices,
   updateAdminNotice,
 } from "@/services/api";
 import type {
   AdminNotice,
+  AdminNoticeAudience,
   AdminNoticeCreatePayload,
   AdminNoticeSeverity,
   AdminNoticeStatus,
@@ -82,6 +92,7 @@ interface FormState {
   title: string;
   message: string;
   severity: AdminNoticeSeverity;
+  require_ack: boolean;
   starts_at: string;  // datetime-local string
   ends_at: string;
 }
@@ -100,9 +111,54 @@ function blankForm(): FormState {
     title: "",
     message: "",
     severity: "info",
+    require_ack: false,
     starts_at: isoToInputValue(start.toISOString()),
     ends_at: isoToInputValue(end.toISOString()),
   };
+}
+
+
+function AudienceColumn({
+  title,
+  Icon,
+  iconClass,
+  entries,
+}: {
+  title: string;
+  Icon: React.ComponentType<{ className?: string }>;
+  iconClass: string;
+  entries: AdminNoticeAudience["seen"];
+}) {
+  return (
+    <div className="rounded-md border">
+      <div className="flex items-center gap-2 border-b bg-slate-50 px-3 py-2 text-sm font-medium">
+        <Icon className={`h-4 w-4 ${iconClass}`} />
+        {title}
+        <span className="ml-auto text-xs text-muted-foreground">{entries.length}</span>
+      </div>
+      {entries.length === 0 ? (
+        <p className="px-3 py-6 text-center text-xs text-muted-foreground">
+          Ninguém ainda.
+        </p>
+      ) : (
+        <ul className="divide-y">
+          {entries.map((e) => (
+            <li key={e.user_id} className="px-3 py-2">
+              <div className="text-sm font-medium text-slate-800">
+                {e.name || e.email || `Usuário ${e.user_id}`}
+              </div>
+              {e.email ? (
+                <div className="text-xs text-muted-foreground">{e.email}</div>
+              ) : null}
+              <div className="mt-0.5 text-[11px] text-muted-foreground">
+                {formatDateTime(e.at)}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 
@@ -116,6 +172,10 @@ export function AdminNoticesManager() {
   const [form, setForm] = useState<FormState>(blankForm());
   const [submitting, setSubmitting] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  // Painel de audiencia (quem viu / quem confirmou) — aberto pelo contador.
+  const [audienceNotice, setAudienceNotice] = useState<AdminNotice | null>(null);
+  const [audience, setAudience] = useState<AdminNoticeAudience | null>(null);
+  const [audienceLoading, setAudienceLoading] = useState(false);
 
   const load = async () => {
     setIsLoading(true);
@@ -147,6 +207,7 @@ export function AdminNoticesManager() {
       title: notice.title,
       message: notice.message,
       severity: notice.severity,
+      require_ack: notice.require_ack,
       starts_at: isoToInputValue(notice.starts_at),
       ends_at: isoToInputValue(notice.ends_at),
     });
@@ -182,6 +243,7 @@ export function AdminNoticesManager() {
         title: form.title.trim(),
         message: form.message.trim(),
         severity: form.severity,
+        require_ack: form.require_ack,
         starts_at: inputValueToIso(form.starts_at),
         ends_at: inputValueToIso(form.ends_at),
       };
@@ -220,6 +282,26 @@ export function AdminNoticesManager() {
       toast({ title: "Falha ao apagar", description: msg, variant: "destructive" });
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  const openAudience = async (notice: AdminNotice) => {
+    setAudienceNotice(notice);
+    setAudience(null);
+    setAudienceLoading(true);
+    try {
+      const data = await fetchAdminNoticeAudience(notice.id);
+      setAudience(data);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Falha ao carregar.";
+      toast({
+        title: "Falha ao carregar audiência",
+        description: msg,
+        variant: "destructive",
+      });
+      setAudienceNotice(null);
+    } finally {
+      setAudienceLoading(false);
     }
   };
 
@@ -308,6 +390,28 @@ export function AdminNoticesManager() {
                 placeholder="Conteudo do aviso. Pode quebrar linha pra detalhes."
               />
             </div>
+            <div className="rounded-md border bg-slate-50 p-3">
+              <div className="flex items-start gap-2.5">
+                <Checkbox
+                  id="notice-require-ack"
+                  checked={form.require_ack}
+                  onCheckedChange={(v) =>
+                    setForm({ ...form, require_ack: Boolean(v) })
+                  }
+                  className="mt-0.5"
+                />
+                <div>
+                  <Label htmlFor="notice-require-ack" className="cursor-pointer font-medium">
+                    Exibir como pop-up (exige clicar em "Ciente")
+                  </Label>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                    Marcado: abre um modal bloqueante na tela do usuário, que só
+                    some ao clicar "Ciente". Desmarcado: banner discreto no topo
+                    da app, fechável no X.
+                  </p>
+                </div>
+              </div>
+            </div>
             <div className="grid gap-3 md:grid-cols-2">
               <div>
                 <Label className="text-xs">Início *</Label>
@@ -366,7 +470,7 @@ export function AdminNoticesManager() {
                   <TableHead>Status</TableHead>
                   <TableHead>Início</TableHead>
                   <TableHead>Fim</TableHead>
-                  <TableHead>Dispensado por</TableHead>
+                  <TableHead>Audiência</TableHead>
                   <TableHead className="text-right">Ações</TableHead>
                 </TableRow>
               </TableHeader>
@@ -381,8 +485,18 @@ export function AdminNoticesManager() {
                   notices.map((n) => (
                     <TableRow key={n.id}>
                       <TableCell className="font-mono text-xs">#{n.id}</TableCell>
-                      <TableCell className="max-w-[280px] truncate" title={n.title}>
-                        {n.title}
+                      <TableCell className="max-w-[280px]">
+                        <div className="flex items-center gap-2">
+                          <span className="truncate" title={n.title}>{n.title}</span>
+                          {n.require_ack ? (
+                            <span
+                              className="shrink-0 inline-flex items-center gap-1 rounded border border-violet-300 bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700"
+                              title="Aparece como pop-up bloqueante (exige Ciente)"
+                            >
+                              <Bell className="h-3 w-3" /> Pop-up
+                            </span>
+                          ) : null}
+                        </div>
                       </TableCell>
                       <TableCell>
                         <Badge className={SEVERITY_BADGE[n.severity]}>
@@ -394,8 +508,22 @@ export function AdminNoticesManager() {
                       </TableCell>
                       <TableCell className="text-xs">{formatDateTime(n.starts_at)}</TableCell>
                       <TableCell className="text-xs">{formatDateTime(n.ends_at)}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {n.dismissed_count} usuário(s)
+                      <TableCell className="text-xs">
+                        <button
+                          type="button"
+                          onClick={() => openAudience(n)}
+                          className="inline-flex items-center gap-3 rounded-md px-2 py-1 hover:bg-slate-100"
+                          title="Ver quem viu e quem confirmou"
+                        >
+                          <span className="inline-flex items-center gap-1 text-slate-600">
+                            <Eye className="h-3.5 w-3.5" />
+                            {n.seen_count}
+                          </span>
+                          <span className="inline-flex items-center gap-1 text-emerald-700">
+                            <Check className="h-3.5 w-3.5" />
+                            {n.dismissed_count}
+                          </span>
+                        </button>
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">
@@ -432,6 +560,48 @@ export function AdminNoticesManager() {
           </div>
         </CardContent>
       </Card>
+
+      <Dialog
+        open={audienceNotice !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setAudienceNotice(null);
+            setAudience(null);
+          }
+        }}
+      >
+        <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              Audiência{audienceNotice ? ` — #${audienceNotice.id} ${audienceNotice.title}` : ""}
+            </DialogTitle>
+            <DialogDescription>
+              "Viu" = aviso renderizado na tela do usuário (impressão).
+              "Confirmou" = clicou em Ciente/fechou o aviso.
+            </DialogDescription>
+          </DialogHeader>
+          {audienceLoading ? (
+            <div className="flex items-center justify-center py-10 text-muted-foreground">
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Carregando...
+            </div>
+          ) : audience ? (
+            <div className="grid gap-4 md:grid-cols-2">
+              <AudienceColumn
+                title="Confirmou (Ciente)"
+                Icon={Check}
+                iconClass="text-emerald-700"
+                entries={audience.acknowledged}
+              />
+              <AudienceColumn
+                title="Viu"
+                Icon={Eye}
+                iconClass="text-slate-600"
+                entries={audience.seen}
+              />
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

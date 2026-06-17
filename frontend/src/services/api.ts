@@ -50,6 +50,7 @@ import {
   PublicationTreatmentStartResponse,
   AdminNotice,
   AdminNoticeActive,
+  AdminNoticeAudience,
   AdminNoticeCreatePayload,
   AdminNoticeUpdatePayload,
   AjusAndamentoQueueItem,
@@ -1419,6 +1420,21 @@ export async function dismissAdminNotice(noticeId: number): Promise<void> {
   }
 }
 
+/** Registra impressao (avisos exibidos na tela) pro usuario corrente.
+ *  Idempotente no backend (upsert em admin_notice_views). Best-effort:
+ *  falha de rede e' silenciosa, nao quebra a UI. */
+export async function markAdminNoticesSeen(ids: number[]): Promise<void> {
+  if (!ids.length) return;
+  try {
+    await apiFetch(`/api/v1/admin/notices/seen`, {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    });
+  } catch (err) {
+    console.warn("markAdminNoticesSeen: falha ao registrar impressao:", err);
+  }
+}
+
 /** Lista TODOS os avisos (admin only — backend retorna 403 se nao). */
 export async function fetchAllAdminNotices(): Promise<AdminNotice[]> {
   const res = await apiFetch(`/api/v1/admin/notices`);
@@ -1453,6 +1469,15 @@ export async function deleteAdminNotice(id: number): Promise<void> {
   if (!res.ok && res.status !== 204) {
     throw new Error(`HTTP ${res.status} ao apagar aviso`);
   }
+}
+
+/** Audiencia de um aviso: quem viu (impressao) e quem confirmou/dispensou.
+ *  Admin only — backend retorna 403 caso contrario. */
+export async function fetchAdminNoticeAudience(
+  id: number,
+): Promise<AdminNoticeAudience> {
+  const res = await apiFetch(`/api/v1/admin/notices/${id}/audience`);
+  return expectJson<AdminNoticeAudience>(res);
 }
 
 /**

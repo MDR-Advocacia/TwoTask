@@ -991,6 +991,8 @@ export interface AdminNoticeActive {
   title: string;
   message: string;
   severity: AdminNoticeSeverity;
+  /** true -> exibir como pop-up bloqueante (exige clicar "Ciente"). */
+  require_ack: boolean;
   starts_at: string | null;
   ends_at: string | null;
 }
@@ -1001,12 +1003,14 @@ export interface AdminNotice {
   title: string;
   message: string;
   severity: AdminNoticeSeverity;
+  require_ack: boolean;
   starts_at: string;
   ends_at: string;
   created_by_user_id: number | null;
   created_at: string;
   updated_at: string;
   status: AdminNoticeStatus;
+  seen_count: number;
   dismissed_count: number;
 }
 
@@ -1014,11 +1018,27 @@ export interface AdminNoticeCreatePayload {
   title: string;
   message: string;
   severity: AdminNoticeSeverity;
+  require_ack: boolean;
   starts_at: string;
   ends_at: string;
 }
 
 export type AdminNoticeUpdatePayload = Partial<AdminNoticeCreatePayload>;
+
+/** Um usuario que viu ou confirmou um aviso (GET /admin/notices/{id}/audience). */
+export interface AdminNoticeAudienceEntry {
+  user_id: number;
+  name: string | null;
+  email: string | null;
+  at: string;
+}
+
+/** Detalhe de audiencia de um aviso: quem viu e quem confirmou. */
+export interface AdminNoticeAudience {
+  notice_id: number;
+  seen: AdminNoticeAudienceEntry[];
+  acknowledged: AdminNoticeAudienceEntry[];
+}
 
 export interface AjusBlocklistItem {
   id: number;
