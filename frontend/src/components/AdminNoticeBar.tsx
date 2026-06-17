@@ -1,8 +1,13 @@
-import { useEffect, useState, useCallback, useContext } from "react";
+import { useEffect, useState, useCallback, useContext, useRef } from "react";
 import { AlertTriangle, Info, Megaphone, X } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { AuthContext } from "@/contexts/AuthContext";
-import { dismissAdminNotice, fetchActiveAdminNotices } from "@/services/api";
+import {
+  dismissAdminNotice,
+  fetchActiveAdminNotices,
+  markAdminNoticesSeen,
+} from "@/services/api";
 import type { AdminNoticeActive, AdminNoticeSeverity } from "@/types/api";
 
 const POLL_INTERVAL_MS = 30_000;
@@ -10,52 +15,77 @@ const POLL_INTERVAL_MS = 30_000;
 const SEVERITY_STYLES: Record<AdminNoticeSeverity, {
   container: string;
   icon: string;
+  accent: string;
   Icon: React.ComponentType<{ className?: string }>;
 }> = {
   info: {
     container: "bg-blue-50 border-blue-200 text-blue-900",
     icon: "text-blue-600",
+    accent: "bg-blue-600",
     Icon: Info,
   },
   warning: {
     container: "bg-amber-50 border-amber-300 text-amber-900",
     icon: "text-amber-700",
+    accent: "bg-amber-500",
     Icon: AlertTriangle,
   },
   danger: {
     container: "bg-red-50 border-red-300 text-red-900",
     icon: "text-red-700",
+    accent: "bg-red-600",
     Icon: Megaphone,
   },
 };
 
+function formatEnds(ends_at: string | null): string | null {
+  if (!ends_at) return null;
+  return new Date(ends_at).toLocaleString("pt-BR", {
+    timeZone: "America/Fortaleza",
+    dateStyle: "short",
+    timeStyle: "short",
+  });
+}
+
 /**
- * Banner de avisos broadcast emitidos pelo admin (manutencao, downtime,
- * comunicados gerais). Polling de 30s no GET /admin/notices/active —
- * backend ja' filtra (a) janela starts_at..ends_at e (b) dismissals do
- * usuario corrente, entao a UI so renderiza o que esta' realmente ativo
- * + nao foi fechado.
+ * Avisos broadcast emitidos pelo admin. Dois formatos, decididos pelo flag
+ * `require_ack` de cada aviso:
  *
- * Quando o usuario clica no X de um aviso:
- *  1. POST /dismiss persiste a marca pra ele (banner nao volta, mesmo
- *     se ele relogar).
- *  2. Removemos otimisticamente do state local (sem esperar o proximo
- *     poll, evita flicker).
+ *  - require_ack=false -> BANNER discreto, empilhado no topo (sticky). O
+ *    usuario fecha no X quando quiser. Comportamento historico.
+ *  - require_ack=true  -> POP-UP bloqueante (modal central). Aparece na hora,
+ *    cobre a tela com overlay e so some quando o usuario clica "Ciente".
+ *    Mostrado um de cada vez (fila) pra forcar leitura de cada aviso.
  *
- * Multiplas notices empilham — cada uma e' um banner separado pra o
- * operador poder fechar uma a uma. Renderizado como `position: sticky`
- * no topo do AppContent — sempre visivel mesmo quando a pagina rola.
+ * Polling de 30s no GET /admin/notices/active — o backend ja' filtra (a)
+ * janela starts_at..ends_at e (b) dismissals do usuario, entao a UI so
+ * renderiza o que esta' ativo e nao foi confirmado.
+ *
+ * Impressao: toda vez que um aviso novo aparece, reportamos POST /seen
+ * (best-effort, idempotente) pra alimentar o "Visto por N" do painel admin.
+ * Confirmar ("Ciente"/X) faz POST /dismiss — some pra sempre pra esse user.
  */
 export function AdminNoticeBar() {
   const auth = useContext(AuthContext);
   const isAuthenticated = auth?.isAuthenticated ?? false;
   const [notices, setNotices] = useState<AdminNoticeActive[]>([]);
   const [dismissingIds, setDismissingIds] = useState<Set<number>>(new Set());
+  // Ids cuja impressao ja' foi reportada nesta sessao — evita re-POST a cada
+  // poll de 30s. (O backend so atualiza last_seen_at; reportar 1x basta.)
+  const reportedRef = useRef<Set<number>>(new Set());
 
   const load = useCallback(async () => {
     try {
       const data = await fetchActiveAdminNotices();
       setNotices(data);
+      // Reporta impressao dos ids ainda nao vistos nesta sessao.
+      const fresh = data
+        .map((n) => n.id)
+        .filter((id) => !reportedRef.current.has(id));
+      if (fresh.length) {
+        fresh.forEach((id) => reportedRef.current.add(id));
+        void markAdminNoticesSeen(fresh);
+      }
     } catch (err) {
       // Silencioso — falhas de rede sao normais (laptop dormindo, VPN
       // caindo). O proximo tick reten ta'.
@@ -66,6 +96,7 @@ export function AdminNoticeBar() {
   useEffect(() => {
     if (!isAuthenticated) {
       setNotices([]);
+      reportedRef.current = new Set();
       return;
     }
     // Carrega imediatamente + a cada 30s.
@@ -107,56 +138,97 @@ export function AdminNoticeBar() {
 
   if (!isAuthenticated || notices.length === 0) return null;
 
+  const banners = notices.filter((n) => !n.require_ack);
+  // Pop-ups exibidos um de cada vez (fila) — o primeiro da lista bloqueia
+  // a tela ate' o "Ciente"; ao confirmar, o proximo aparece.
+  const modalNotice = notices.find((n) => n.require_ack) ?? null;
+
   return (
-    <div className="sticky top-0 z-50 flex flex-col gap-px">
-      {notices.map((n) => {
-        const style = SEVERITY_STYLES[n.severity] || SEVERITY_STYLES.info;
+    <>
+      {banners.length > 0 ? (
+        <div className="sticky top-0 z-50 flex flex-col gap-px">
+          {banners.map((n) => {
+            const style = SEVERITY_STYLES[n.severity] || SEVERITY_STYLES.info;
+            const { Icon } = style;
+            const isDismissing = dismissingIds.has(n.id);
+            const ends = formatEnds(n.ends_at);
+            return (
+              <div
+                key={n.id}
+                className={`border-b px-5 py-4 sm:px-8 sm:py-5 ${style.container}`}
+                role="alert"
+              >
+                <div className="flex items-start gap-3.5">
+                  <Icon className={`mt-0.5 h-6 w-6 shrink-0 ${style.icon}`} />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-base font-semibold leading-tight">{n.title}</div>
+                    <div className="text-sm whitespace-pre-wrap mt-1">{n.message}</div>
+                    {ends ? (
+                      <div className="text-xs mt-1 opacity-70">Ate {ends}</div>
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleDismiss(n.id)}
+                    disabled={isDismissing}
+                    className="shrink-0 rounded-md p-1.5 hover:bg-black/5 disabled:opacity-50"
+                    title="Dispensar este aviso (nao volta a aparecer pra voce)"
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+
+      {modalNotice ? (() => {
+        const style = SEVERITY_STYLES[modalNotice.severity] || SEVERITY_STYLES.info;
         const { Icon } = style;
-        const isDismissing = dismissingIds.has(n.id);
+        const isDismissing = dismissingIds.has(modalNotice.id);
+        const ends = formatEnds(modalNotice.ends_at);
         return (
           <div
-            key={n.id}
-            className={`border-b px-5 py-4 sm:px-8 sm:py-5 ${style.container}`}
-            role="alert"
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="notice-modal-title"
           >
-            {/*
-              Banner full-width — sem max-w/mx-auto. O conteudo se
-              estica de borda a borda com padding consistente em
-              qualquer monitor (1366/1920/2560+), evitando a "ilha
-              centralizada" desalinhada da sidebar quando a tela
-              passa de 1536px. Padding vertical generoso (py-4/py-5)
-              + texto maior (base/sm) pra notificacao se destacar
-              em monitores grandes — em modal pequeno ainda cabe.
-            */}
-            <div className="flex items-start gap-3.5">
-              <Icon className={`mt-0.5 h-6 w-6 shrink-0 ${style.icon}`} />
-              <div className="flex-1 min-w-0">
-                <div className="text-base font-semibold leading-tight">{n.title}</div>
-                <div className="text-sm whitespace-pre-wrap mt-1">{n.message}</div>
-                {n.ends_at ? (
-                  <div className="text-xs mt-1 opacity-70">
-                    Ate {new Date(n.ends_at).toLocaleString("pt-BR", {
-                      timeZone: "America/Fortaleza",
-                      dateStyle: "short",
-                      timeStyle: "short",
-                    })}
+            <div className="w-full max-w-lg overflow-hidden rounded-xl bg-white shadow-2xl">
+              <div className={`h-1.5 w-full ${style.accent}`} />
+              <div className="p-6">
+                <div className="flex items-start gap-3.5">
+                  <Icon className={`mt-0.5 h-7 w-7 shrink-0 ${style.icon}`} />
+                  <div className="flex-1 min-w-0">
+                    <h2
+                      id="notice-modal-title"
+                      className="text-lg font-semibold leading-tight text-slate-900"
+                    >
+                      {modalNotice.title}
+                    </h2>
+                    <p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">
+                      {modalNotice.message}
+                    </p>
+                    {ends ? (
+                      <p className="mt-3 text-xs text-slate-400">Aviso valido ate {ends}</p>
+                    ) : null}
                   </div>
-                ) : null}
+                </div>
+                <div className="mt-6 flex justify-end">
+                  <Button
+                    onClick={() => handleDismiss(modalNotice.id)}
+                    disabled={isDismissing}
+                  >
+                    Ciente
+                  </Button>
+                </div>
               </div>
-              <button
-                type="button"
-                onClick={() => handleDismiss(n.id)}
-                disabled={isDismissing}
-                className="shrink-0 rounded-md p-1.5 hover:bg-black/5 disabled:opacity-50"
-                title="Dispensar este aviso (nao volta a aparecer pra voce)"
-              >
-                <X className="h-5 w-5" />
-              </button>
             </div>
           </div>
         );
-      })}
-    </div>
+      })() : null}
+    </>
   );
 }
 
