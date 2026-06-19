@@ -269,6 +269,12 @@ class Settings(BaseSettings):
     # Aceita múltiplas separadas por vírgula pra rotação sem downtime.
     batch_tasks_api_key: str | None = None
 
+    # ── Intake OneRequest (motor RPA externo) ─────────────────────────
+    # Chave(s) que autenticam o motor RPA do OneRequest no endpoint
+    # /api/v1/onerequest/intake/*. Aceita múltiplas separadas por vírgula
+    # (rotação sem downtime). Vazio = endpoint de intake desativado.
+    onerequest_intake_api_key: str | None = None
+
     # ── AJUS (sistema do cliente — POST /inserir-prazos) ──────────────
     # Credenciais lidas do env (Coolify). NÃO fica em tabela porque é
     # uma conta única por instalação MDR. Se um dia precisar de conta
@@ -426,6 +432,12 @@ class Settings(BaseSettings):
         múltiplas separadas por vírgula.
         """
         raw = self.batch_tasks_api_key or ""
+        return {key.strip() for key in raw.split(",") if key.strip()}
+
+    @property
+    def onerequest_intake_api_keys(self) -> set[str]:
+        """Chaves válidas pro intake do OneRequest (motor RPA externo, rotação)."""
+        raw = self.onerequest_intake_api_key or ""
         return {key.strip() for key in raw.split(",") if key.strip()}
 
 

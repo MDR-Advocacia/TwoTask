@@ -15,6 +15,7 @@ const ProtectedRoute = () => {
     canScheduleBatch,
     canUsePublications,
     canUsePrazosIniciais,
+    canUseOnerequest,
     isAdmin,
   } = useAuth();
   const { pathname } = useLocation();
@@ -52,6 +53,13 @@ const ProtectedRoute = () => {
           variant: 'destructive',
         });
         setPermissionDenied(true);
+      } else if (pathname.startsWith('/onerequest') && !canUseOnerequest && !isAdmin) {
+        toast({
+          title: 'Acesso Negado',
+          description: 'Você não tem permissão para acessar o OneRequest.',
+          variant: 'destructive',
+        });
+        setPermissionDenied(true);
       } else if (pathname.startsWith('/admin') && !isAdmin) {
         toast({
           title: 'Acesso Negado',
@@ -63,7 +71,7 @@ const ProtectedRoute = () => {
         setPermissionDenied(false);
       }
     }
-  }, [pathname, isLoading, isAuthenticated, canScheduleBatch, canUsePublications, canUsePrazosIniciais, isAdmin, toast]);
+  }, [pathname, isLoading, isAuthenticated, canScheduleBatch, canUsePublications, canUsePrazosIniciais, canUseOnerequest, isAdmin, toast]);
 
   // Se ainda estivermos verificando a autenticação (ex: ao recarregar a página),
   // mostramos um indicador de carregamento.
@@ -83,7 +91,8 @@ const ProtectedRoute = () => {
     !isAdmin &&
     !canScheduleBatch &&
     !canUsePublications &&
-    !canUsePrazosIniciais
+    !canUsePrazosIniciais &&
+    !canUseOnerequest
   ) {
     return <WelcomeScreen />;
   }

@@ -70,6 +70,7 @@ class LegalOneUser(Base):
     can_use_publications = Column(Boolean, default=False, server_default="false", nullable=False)
     can_use_prazos_iniciais = Column(Boolean, default=False, nullable=False)
     notify_onerequest_errors = Column(Boolean, default=False, nullable=False)
+    can_use_onerequest = Column(Boolean, default=False, server_default="false", nullable=False)
     default_office_id = Column(Integer, ForeignKey("legal_one_offices.external_id"), nullable=True)
     # Carimbo do último login via SSO (Microsoft Entra). NULL = nunca entrou
     # por SSO. Usado pro selo "Entra ID" no admin de usuários.

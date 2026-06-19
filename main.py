@@ -26,6 +26,7 @@ from app.api.v1.endpoints import (
     dashboard,
     ged_legalone,
     offices,
+    onerequest,
     prazos_iniciais,
     prazos_iniciais_legacy_tasks,
     prazos_iniciais_scheduling,
@@ -362,6 +363,13 @@ app.include_router(publication_treatment.router, prefix="/api/v1/publications", 
 app.include_router(citacoes_bm.router, prefix="/api/v1/publications", tags=["Citações BM"], dependencies=protected_dependencies)
 # Intake externo: autenticado por API key (header X-Intake-Api-Key), SEM JWT.
 app.include_router(prazos_iniciais.intake_router, prefix="/api/v1")
+# Intake do OneRequest (motor RPA externo): auth via header
+# X-Onerequest-Api-Key, SEM JWT. Recebe números/detalhes das DMIs do BB.
+app.include_router(onerequest.intake_router, prefix="/api/v1")
+# UI do operador OneRequest (tratamento + agendar): JWT + permissão onerequest.
+app.include_router(
+    onerequest.router, prefix="/api/v1", tags=["OneRequest"], dependencies=protected_dependencies
+)
 # Endpoints internos de prazos iniciais (UI do operador): JWT obrigatório.
 app.include_router(prazos_iniciais.router, prefix="/api/v1", dependencies=protected_dependencies)
 app.include_router(

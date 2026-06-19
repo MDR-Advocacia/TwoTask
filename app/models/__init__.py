@@ -67,3 +67,4 @@ from .citacoes_bm import (
     CitacaoBMMovimento,
     CitacaoBMProcesso,
 )
+from .onerequest import OnerequestSolicitacao

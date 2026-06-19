@@ -11,6 +11,7 @@ interface User {
   can_schedule_batch?: boolean;
   can_use_publications?: boolean;
   can_use_prazos_iniciais?: boolean;
+  can_use_onerequest?: boolean;
   must_change_password?: boolean;
 }
 
@@ -20,6 +21,7 @@ interface TokenData {
   can_schedule_batch: boolean;
   can_use_publications: boolean;
   can_use_prazos_iniciais?: boolean;
+  can_use_onerequest?: boolean;
   must_change_password: boolean;
   exp: number;
 }
@@ -36,6 +38,7 @@ interface AuthContextType {
   canScheduleBatch: boolean;
   canUsePublications: boolean;
   canUsePrazosIniciais: boolean;
+  canUseOnerequest: boolean;
   isAdmin: boolean;
   refreshMe: () => Promise<void>;
 }
@@ -200,6 +203,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     // Usa o /me (banco) como fallback pra não exigir re-login após toggle no admin.
     canUsePrazosIniciais:
       user?.can_use_prazos_iniciais ?? tokenData?.can_use_prazos_iniciais ?? false,
+    canUseOnerequest:
+      user?.can_use_onerequest ?? tokenData?.can_use_onerequest ?? false,
     isAdmin: tokenData?.role === 'admin',
     refreshMe,
   };

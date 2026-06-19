@@ -1,0 +1,282 @@
+"""Endpoints do módulo OneRequest.
+
+Por enquanto (Fase 1) só o `intake_router`: ingresso dos dados que o MOTOR RPA
+externo empurra. Autenticado por API key no header `X-Onerequest-Api-Key`
+(env `ONEREQUEST_INTAKE_API_KEY`), SEM JWT — mesmo padrão do intake de Prazos
+Iniciais e do Classificador. Registrado sem `protected_dependencies` em main.py.
+
+A UI do operador (listagem/tratamento/agendar) e o acompanhamento de status no
+L1 entram em fases seguintes — ver `docs/onerequest-integracao-plano.md`.
+"""
+
+import logging
+from typing import Dict, List, Optional
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+
+from app.core.auth import get_current_user, require_permission
+from app.core.config import settings
+from app.core.dependencies import get_api_client, get_db
+from app.models.legal_one import LegalOneUser
+from app.services.legal_one_client import LegalOneApiClient
+from app.services.onerequest.intake_service import OnerequestIntakeService
+from app.services.onerequest.service import OnerequestService
+
+logger = logging.getLogger(__name__)
+
+intake_router = APIRouter(prefix="/onerequest", tags=["OneRequest (Intake)"])
+
+
+def _validate_intake_api_key(
+    x_onerequest_api_key: Optional[str] = Header(
+        default=None, alias="X-Onerequest-Api-Key"
+    ),
+) -> str:
+    """
+    Autentica o motor RPA externo por header `X-Onerequest-Api-Key`.
+
+    Aceita múltiplas chaves em `ONEREQUEST_INTAKE_API_KEY` (separadas por
+    vírgula) pra rotação sem downtime. Se nenhuma chave estiver configurada,
+    o endpoint fica explicitamente bloqueado (503) — evita rota aberta em
+    produção por esquecimento de config.
+    """
+    valid_keys = settings.onerequest_intake_api_keys
+    if not valid_keys:
+        logger.error("ONEREQUEST_INTAKE_API_KEY não configurada — intake rejeitado.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Endpoint de intake do OneRequest não configurado.",
+        )
+    if not x_onerequest_api_key or x_onerequest_api_key not in valid_keys:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API key inválida ou ausente no header X-Onerequest-Api-Key.",
+        )
+    return x_onerequest_api_key
+
+
+# ── Schemas ────────────────────────────────────────────────────────────
+class IntakeNumerosRequest(BaseModel):
+    numeros: List[str] = Field(
+        ...,
+        description=(
+            "Snapshot COMPLETO dos números de DMI abertos no portal do BB "
+            "(ex.: '2026/0000000001'). O Flow faz o diff de novos/respondidos."
+        ),
+    )
+
+
+class IntakeNumerosResponse(BaseModel):
+    recebidos: int
+    novos: int
+    respondidos: int
+    reabertos: int
+
+
+class PendentesDetalheResponse(BaseModel):
+    total: int
+    numeros: List[str]
+
+
+class IntakeDetalheItem(BaseModel):
+    numero_solicitacao: str
+    titulo: Optional[str] = None
+    npj_direcionador: Optional[str] = None
+    prazo: Optional[str] = None
+    texto_dmi: Optional[str] = None
+    numero_processo: Optional[str] = None
+    polo: Optional[str] = None
+
+
+class IntakeDetalhesRequest(BaseModel):
+    itens: List[IntakeDetalheItem]
+
+
+class IntakeDetalhesResponse(BaseModel):
+    atualizados: int
+    nao_encontrados: List[str]
+
+
+# ── Endpoints ──────────────────────────────────────────────────────────
+@intake_router.post(
+    "/intake/numeros",
+    response_model=IntakeNumerosResponse,
+    summary="Sincroniza o snapshot de números de DMI abertos no portal do BB",
+)
+def intake_numeros(
+    payload: IntakeNumerosRequest,
+    db: Session = Depends(get_db),
+    _: str = Depends(_validate_intake_api_key),
+):
+    service = OnerequestIntakeService(db)
+    return service.sync_numeros(payload.numeros)
+
+
+@intake_router.get(
+    "/intake/pendentes-detalhe",
+    response_model=PendentesDetalheResponse,
+    summary="Lista os números abertos que ainda precisam de detalhamento",
+)
+def intake_pendentes_detalhe(
+    db: Session = Depends(get_db),
+    _: str = Depends(_validate_intake_api_key),
+):
+    service = OnerequestIntakeService(db)
+    numeros = service.pendentes_detalhe()
+    return PendentesDetalheResponse(total=len(numeros), numeros=numeros)
+
+
+@intake_router.post(
+    "/intake/detalhes",
+    response_model=IntakeDetalhesResponse,
+    summary="Atualiza os detalhes capturados das DMIs (título/NPJ/prazo/processo)",
+)
+def intake_detalhes(
+    payload: IntakeDetalhesRequest,
+    db: Session = Depends(get_db),
+    _: str = Depends(_validate_intake_api_key),
+):
+    service = OnerequestIntakeService(db)
+    return service.upsert_detalhes(payload.itens)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Router do OPERADOR (UI de tratamento) — JWT + permissão dedicada.
+# Gateado por `onerequest` (default false → entra travado, só admin enxerga;
+# admin libera por usuário na tela de Usuários & Permissões).
+# Registrado COM protected_dependencies em main.py.
+# ════════════════════════════════════════════════════════════════════════
+router = APIRouter(prefix="/onerequest", tags=["OneRequest"])
+
+_perm = Depends(require_permission("onerequest"))
+
+
+class SolicitacaoOut(BaseModel):
+    id: int
+    numero_solicitacao: str
+    titulo: Optional[str] = None
+    npj_direcionador: Optional[str] = None
+    prazo: Optional[str] = None
+    texto_dmi: Optional[str] = None
+    numero_processo: Optional[str] = None
+    proc_utilizavel: bool = False
+    polo: Optional[str] = None
+    recebido_em: Optional[str] = None
+    status_sistema: str
+    status_tratamento: str
+    responsavel_user_id: Optional[int] = None
+    responsavel_nome: Optional[str] = None
+    setor: Optional[str] = None
+    data_agendamento: Optional[str] = None
+    anotacao: Optional[str] = None
+    created_task_id: Optional[int] = None
+    linked_lawsuit_id: Optional[int] = None
+    last_error: Optional[str] = None
+    farol: str
+
+
+class ListResponse(BaseModel):
+    total: int
+    kpis: Dict[str, int]
+    items: List[SolicitacaoOut]
+
+
+class OptionsResponse(BaseModel):
+    setores: List[str]
+
+
+class UpdateTratamentoRequest(BaseModel):
+    responsavel_user_id: Optional[int] = None
+    setor: Optional[str] = None
+    data_agendamento: Optional[str] = None
+    anotacao: Optional[str] = None
+    status_tratamento: Optional[str] = None
+
+
+class UpdateResponse(BaseModel):
+    ok: bool
+    id: int
+    status_tratamento: str
+
+
+class AgendarResponse(BaseModel):
+    ok: bool
+    status_tratamento: str
+    created_task_id: Optional[int] = None
+    mensagem: str
+
+
+@router.get(
+    "/solicitacoes",
+    response_model=ListResponse,
+    summary="Lista solicitações (DMIs) com farol/KPIs, paginada",
+    dependencies=[_perm],
+)
+def listar_solicitacoes(
+    status_sistema: Optional[str] = Query("ABERTO"),
+    status_tratamento: Optional[str] = Query(None),
+    responsavel_user_id: Optional[int] = Query(None),
+    busca: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    service = OnerequestService(db)
+    return service.list_solicitacoes(
+        status_sistema=status_sistema or None,
+        status_tratamento=status_tratamento,
+        responsavel_user_id=responsavel_user_id,
+        busca=busca,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get(
+    "/options",
+    response_model=OptionsResponse,
+    summary="Opções pro formulário (setores disponíveis)",
+    dependencies=[_perm],
+)
+def opcoes():
+    return OptionsResponse(setores=OnerequestService.setores_disponiveis())
+
+
+@router.patch(
+    "/solicitacoes/{solicitacao_id}",
+    response_model=UpdateResponse,
+    summary="Atualiza o tratamento de uma solicitação",
+    dependencies=[_perm],
+)
+def atualizar_tratamento(
+    solicitacao_id: int,
+    payload: UpdateTratamentoRequest,
+    db: Session = Depends(get_db),
+):
+    service = OnerequestService(db)
+    row = service.get(solicitacao_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Solicitação não encontrada.")
+    row = service.update_tratamento(row, payload.model_dump(exclude_unset=True))
+    return UpdateResponse(ok=True, id=row.id, status_tratamento=row.status_tratamento)
+
+
+@router.post(
+    "/solicitacoes/{solicitacao_id}/agendar",
+    response_model=AgendarResponse,
+    summary="Cria a tarefa no Legal One para a solicitação tratada",
+    dependencies=[_perm],
+)
+def agendar_solicitacao(
+    solicitacao_id: int,
+    db: Session = Depends(get_db),
+    client: LegalOneApiClient = Depends(get_api_client),
+    current_user: LegalOneUser = Depends(get_current_user),
+):
+    service = OnerequestService(db)
+    row = service.get(solicitacao_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Solicitação não encontrada.")
+    return service.agendar(row, client, current_user)

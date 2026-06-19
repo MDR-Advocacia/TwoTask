@@ -105,6 +105,7 @@ def login_for_access_token(
         can_schedule_batch=user.can_schedule_batch,
         can_use_publications=user.can_use_publications,
         can_use_prazos_iniciais=getattr(user, "can_use_prazos_iniciais", False),
+        can_use_onerequest=getattr(user, "can_use_onerequest", False),
         must_change_password=user.must_change_password,
     )
 
@@ -212,6 +213,7 @@ def sso_session(request: Request, db: Session = Depends(get_db)):
         can_schedule_batch=user.can_schedule_batch,
         can_use_publications=user.can_use_publications,
         can_use_prazos_iniciais=getattr(user, "can_use_prazos_iniciais", False),
+        can_use_onerequest=getattr(user, "can_use_onerequest", False),
         must_change_password=user.must_change_password,
     )
     return {"access_token": access_token, "token_type": "bearer"}

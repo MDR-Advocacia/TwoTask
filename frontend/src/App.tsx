@@ -37,6 +37,7 @@ import AjusPage from './pages/AjusPage';
 import ClassificadorPage from './pages/ClassificadorPage';
 import GedLegalOnePage from './pages/GedLegalOnePage';
 import ContatosLegalOnePage from './pages/ContatosLegalOnePage';
+import OnerequestPage from './pages/OnerequestPage';
 
 // Contexto de Autenticação
 import { AuthProvider, AuthContext } from './contexts/AuthContext';
@@ -100,6 +101,7 @@ function AppContent() {
             <Route path="/classificador" element={<ClassificadorPage />} />
             <Route path="/ged-legalone" element={<GedLegalOnePage />} />
             <Route path="/contatos-legalone" element={<ContatosLegalOnePage />} />
+            <Route path="/onerequest" element={<OnerequestPage />} />
           </Route>
 
           {/* Rota para página não encontrada */}

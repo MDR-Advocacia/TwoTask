@@ -43,6 +43,7 @@ interface AdminUser {
   can_schedule_batch: boolean;
   can_use_publications: boolean;
   can_use_prazos_iniciais: boolean;
+  can_use_onerequest: boolean;
   notify_onerequest_errors: boolean;
   default_office_id: number | null;
   has_password: boolean;
@@ -911,6 +912,7 @@ const UsersAndPermissions = () => {
                                 <TableHead>LegalOne</TableHead>
                                 <TableHead>Publicações</TableHead>
                                 <TableHead>Prazos Iniciais</TableHead>
+                                <TableHead>OneRequest</TableHead>
                                 <TableHead>Notificação OneRequest</TableHead>
                                 <TableHead>Escritório</TableHead>
                                 <TableHead>Ações</TableHead>
@@ -978,6 +980,16 @@ const UsersAndPermissions = () => {
                                             />
                                         ) : (
                                             <Checkbox checked={user.can_use_prazos_iniciais} disabled />
+                                        )}
+                                    </TableCell>
+                                    <TableCell>
+                                        {editingUserId === user.id ? (
+                                            <Checkbox
+                                                checked={editingData.can_use_onerequest ?? false}
+                                                onCheckedChange={(c) => setEditingData({ ...editingData, can_use_onerequest: !!c })}
+                                            />
+                                        ) : (
+                                            <Checkbox checked={user.can_use_onerequest} disabled />
                                         )}
                                     </TableCell>
                                     <TableCell>

@@ -1,0 +1,190 @@
+"""Serviço de intake do OneRequest.
+
+Recebe os dados que o MOTOR RPA externo empurra (números e detalhes das DMIs)
+e mantém a tabela `onr_solicitacoes` sincronizada. Toda a lógica de diff
+(o que respondeu, o que é novo, o que reabriu) — que no OneRequest legado vivia
+no SQLite da própria RPA — passa a viver AQUI, deixando a RPA como um scraper
+fino que só posta.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+from typing import Iterable
+
+from sqlalchemy.orm import Session
+
+from app.models.onerequest import (
+    OnerequestSolicitacao,
+    STATUS_SISTEMA_ABERTO,
+    STATUS_SISTEMA_RESPONDIDO,
+    STATUS_TRATAMENTO_NOVO,
+)
+
+logger = logging.getLogger(__name__)
+
+# Atualizações em chunks pra não montar IN clauses gigantes no Postgres.
+_UPDATE_CHUNK = 500
+
+
+def _chunk(seq: list, size: int) -> Iterable[list]:
+    for i in range(0, len(seq), size):
+        yield seq[i : i + size]
+
+
+class OnerequestIntakeService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    # ──────────────────────────────────────────────────────────────────
+    # Robô 1 — sincronização de números (snapshot dos abertos no portal)
+    # ──────────────────────────────────────────────────────────────────
+    def sync_numeros(self, numeros: list[str]) -> dict:
+        """
+        Recebe o snapshot COMPLETO dos números de DMI abertos no portal do BB
+        e reconcilia com o banco:
+
+          1. Insere os números novos (status ABERTO / tratamento NOVO).
+          2. Marca como RESPONDIDO os que estavam ABERTO e sumiram do snapshot.
+          3. Reabre (volta a ABERTO) os que voltaram a aparecer no portal.
+
+        Mantém `status_tratamento` intacto (AGENDADO/IGNORADO/etc. são do fluxo
+        interno do Flow, independentes do lado do BB).
+        """
+        snapshot = {n.strip() for n in numeros if n and n.strip()}
+
+        # Guarda de segurança: snapshot vazio quase sempre é glitch da RPA
+        # (login falhou, página não carregou). NÃO marcar tudo como respondido.
+        if not snapshot:
+            logger.warning(
+                "OneRequest intake/numeros recebeu snapshot vazio — ignorando "
+                "para não marcar a base inteira como respondida."
+            )
+            return {"recebidos": 0, "novos": 0, "respondidos": 0, "reabertos": 0}
+
+        rows = self.db.query(
+            OnerequestSolicitacao.id,
+            OnerequestSolicitacao.numero_solicitacao,
+            OnerequestSolicitacao.status_sistema,
+        ).all()
+
+        existentes = {num for (_id, num, _st) in rows}
+        responder_ids = [
+            _id
+            for (_id, num, st) in rows
+            if st == STATUS_SISTEMA_ABERTO and num not in snapshot
+        ]
+        reabrir_ids = [
+            _id
+            for (_id, num, st) in rows
+            if st == STATUS_SISTEMA_RESPONDIDO and num in snapshot
+        ]
+        novos = [n for n in snapshot if n not in existentes]
+
+        agora = datetime.now(timezone.utc)
+
+        for numero in novos:
+            self.db.add(
+                OnerequestSolicitacao(
+                    numero_solicitacao=numero,
+                    recebido_em=agora,
+                    status_sistema=STATUS_SISTEMA_ABERTO,
+                    status_tratamento=STATUS_TRATAMENTO_NOVO,
+                )
+            )
+
+        for chunk in _chunk(responder_ids, _UPDATE_CHUNK):
+            (
+                self.db.query(OnerequestSolicitacao)
+                .filter(OnerequestSolicitacao.id.in_(chunk))
+                .update(
+                    {OnerequestSolicitacao.status_sistema: STATUS_SISTEMA_RESPONDIDO},
+                    synchronize_session=False,
+                )
+            )
+
+        for chunk in _chunk(reabrir_ids, _UPDATE_CHUNK):
+            (
+                self.db.query(OnerequestSolicitacao)
+                .filter(OnerequestSolicitacao.id.in_(chunk))
+                .update(
+                    {OnerequestSolicitacao.status_sistema: STATUS_SISTEMA_ABERTO},
+                    synchronize_session=False,
+                )
+            )
+
+        self.db.commit()
+
+        resultado = {
+            "recebidos": len(snapshot),
+            "novos": len(novos),
+            "respondidos": len(responder_ids),
+            "reabertos": len(reabrir_ids),
+        }
+        logger.info("OneRequest intake/numeros: %s", resultado)
+        return resultado
+
+    # ──────────────────────────────────────────────────────────────────
+    # Robô 2 — fila de detalhamento e upsert dos detalhes
+    # ──────────────────────────────────────────────────────────────────
+    def pendentes_detalhe(self) -> list[str]:
+        """Números abertos que ainda não têm título (= sem detalhe capturado)."""
+        rows = (
+            self.db.query(OnerequestSolicitacao.numero_solicitacao)
+            .filter(
+                OnerequestSolicitacao.status_sistema == STATUS_SISTEMA_ABERTO,
+                OnerequestSolicitacao.titulo.is_(None),
+            )
+            .order_by(OnerequestSolicitacao.recebido_em.asc())
+            .all()
+        )
+        return [num for (num,) in rows]
+
+    def upsert_detalhes(self, itens: list) -> dict:
+        """
+        Atualiza os detalhes (título, NPJ, prazo, texto DMI, processo, polo) das
+        solicitações já capturadas. `itens` é uma lista de objetos com atributo
+        `numero_solicitacao` + os campos de detalhe (Pydantic ou dict-like).
+        """
+        atualizados = 0
+        nao_encontrados: list[str] = []
+        agora = datetime.now(timezone.utc)
+
+        for item in itens:
+            data = item.model_dump() if hasattr(item, "model_dump") else dict(item)
+            numero = (data.get("numero_solicitacao") or "").strip()
+            if not numero:
+                continue
+
+            row = (
+                self.db.query(OnerequestSolicitacao)
+                .filter(OnerequestSolicitacao.numero_solicitacao == numero)
+                .first()
+            )
+            if not row:
+                nao_encontrados.append(numero)
+                continue
+
+            for campo in (
+                "titulo",
+                "npj_direcionador",
+                "prazo",
+                "texto_dmi",
+                "numero_processo",
+                "polo",
+            ):
+                valor = data.get(campo)
+                if valor is not None:
+                    setattr(row, campo, valor)
+            row.detalhe_capturado_em = agora
+            atualizados += 1
+
+        self.db.commit()
+        resultado = {"atualizados": atualizados, "nao_encontrados": nao_encontrados}
+        logger.info(
+            "OneRequest intake/detalhes: %s atualizados, %s não encontrados.",
+            atualizados,
+            len(nao_encontrados),
+        )
+        return resultado

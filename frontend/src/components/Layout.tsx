@@ -7,6 +7,7 @@ import {
   Contact,
   FileUp,
   Gavel,
+  Inbox,
   LayoutDashboard,
   ListChecks,
   LogOut,
@@ -32,7 +33,7 @@ import {
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "./ui/sheet";
 import { DunaFlowMark } from "./DunaFlowMark";
 
-type Permission = 'canScheduleBatch' | 'canUsePublications' | 'canUsePrazosIniciais' | 'isAdmin';
+type Permission = 'canScheduleBatch' | 'canUsePublications' | 'canUsePrazosIniciais' | 'canUseOnerequest' | 'isAdmin';
 
 interface NavItem {
   to: string;
@@ -53,6 +54,7 @@ export default function Layout({ children }: PropsWithChildren) {
     canScheduleBatch,
     canUsePublications,
     canUsePrazosIniciais,
+    canUseOnerequest,
     isAdmin,
   } = useAuth();
   const navigate = useNavigate();
@@ -63,6 +65,7 @@ export default function Layout({ children }: PropsWithChildren) {
     if (perm === 'canUsePublications') return canUsePublications;
     // Admin vê o item mesmo sem a flag explícita (bypass alinhado com o backend).
     if (perm === 'canUsePrazosIniciais') return canUsePrazosIniciais || isAdmin;
+    if (perm === 'canUseOnerequest') return canUseOnerequest || isAdmin;
     if (perm === 'isAdmin') return isAdmin;
     return false;
   };
@@ -103,6 +106,12 @@ export default function Layout({ children }: PropsWithChildren) {
       ],
     },
     {
+      title: "OneRequest",
+      items: [
+        { to: "/onerequest", icon: Inbox, label: "DMIs Banco do Brasil", requirePermission: 'canUseOnerequest' },
+      ],
+    },
+    {
       items: [
         { to: "/admin", icon: Users, label: "Administração", requirePermission: 'isAdmin' },
       ],
@@ -113,7 +122,7 @@ export default function Layout({ children }: PropsWithChildren) {
     return baseSections
       .map(sec => ({ ...sec, items: sec.items.filter(it => hasPermission(it.requirePermission)) }))
       .filter(sec => sec.items.length > 0);
-  }, [canScheduleBatch, canUsePublications, canUsePrazosIniciais, isAdmin]);
+  }, [canScheduleBatch, canUsePublications, canUsePrazosIniciais, canUseOnerequest, isAdmin]);
 
   const handleLogout = () => {
     logout();

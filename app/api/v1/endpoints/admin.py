@@ -428,6 +428,7 @@ class UserUpdateRequest(BaseModel):
     can_schedule_batch: Optional[bool] = None
     can_use_publications: Optional[bool] = None
     can_use_prazos_iniciais: Optional[bool] = None
+    can_use_onerequest: Optional[bool] = None
     notify_onerequest_errors: Optional[bool] = None
     default_office_id: Optional[int] = None
 
@@ -440,6 +441,7 @@ class UserResponseSchema(BaseModel):
     can_schedule_batch: bool
     can_use_publications: bool
     can_use_prazos_iniciais: bool = False
+    can_use_onerequest: bool = False
     notify_onerequest_errors: bool = False
     default_office_id: Optional[int] = None
 
@@ -468,6 +470,7 @@ def list_users(
             "can_schedule_batch": u.can_schedule_batch,
             "can_use_publications": u.can_use_publications,
             "can_use_prazos_iniciais": getattr(u, "can_use_prazos_iniciais", False),
+            "can_use_onerequest": getattr(u, "can_use_onerequest", False),
             "notify_onerequest_errors": getattr(u, "notify_onerequest_errors", False),
             "default_office_id": u.default_office_id,
             "has_password": u.hashed_password is not None,
@@ -501,6 +504,8 @@ def update_user(
         user.can_use_publications = payload.can_use_publications
     if payload.can_use_prazos_iniciais is not None:
         user.can_use_prazos_iniciais = payload.can_use_prazos_iniciais
+    if payload.can_use_onerequest is not None:
+        user.can_use_onerequest = payload.can_use_onerequest
     if payload.notify_onerequest_errors is not None:
         user.notify_onerequest_errors = payload.notify_onerequest_errors
     if payload.default_office_id is not None:
@@ -516,6 +521,7 @@ def update_user(
         "can_schedule_batch": user.can_schedule_batch,
         "can_use_publications": user.can_use_publications,
         "can_use_prazos_iniciais": getattr(user, "can_use_prazos_iniciais", False),
+        "can_use_onerequest": getattr(user, "can_use_onerequest", False),
         "notify_onerequest_errors": getattr(user, "notify_onerequest_errors", False),
         "default_office_id": user.default_office_id,
     }
@@ -1058,6 +1064,7 @@ class MeResponseSchema(BaseModel):
     can_schedule_batch: bool
     can_use_publications: bool
     can_use_prazos_iniciais: bool = False
+    can_use_onerequest: bool = False
     default_office_id: Optional[int]
     must_change_password: bool
 
@@ -1079,6 +1086,7 @@ def get_current_user_info(
         "can_schedule_batch": current_user.can_schedule_batch,
         "can_use_publications": current_user.can_use_publications,
         "can_use_prazos_iniciais": getattr(current_user, "can_use_prazos_iniciais", False),
+        "can_use_onerequest": getattr(current_user, "can_use_onerequest", False),
         "default_office_id": current_user.default_office_id,
         "must_change_password": current_user.must_change_password,
     }

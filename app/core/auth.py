@@ -56,6 +56,7 @@ def create_access_token(
     can_schedule_batch: bool = False,
     can_use_publications: bool = True,
     can_use_prazos_iniciais: bool = False,
+    can_use_onerequest: bool = False,
     must_change_password: bool = False,
     expires_delta: Optional[timedelta] = None
 ) -> str:
@@ -69,6 +70,7 @@ def create_access_token(
         "can_schedule_batch": can_schedule_batch,
         "can_use_publications": can_use_publications,
         "can_use_prazos_iniciais": can_use_prazos_iniciais,
+        "can_use_onerequest": can_use_onerequest,
         "must_change_password": must_change_password,
     })
     return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
@@ -101,7 +103,7 @@ def get_current_user(
 
 
 def require_permission(
-    permission: Literal["schedule_batch", "publications", "prazos_iniciais"],
+    permission: Literal["schedule_batch", "publications", "prazos_iniciais", "onerequest"],
 ):
     """
     Dependency factory to check if user has specific permission.
@@ -128,6 +130,12 @@ def require_permission(
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Usuário não tem permissão para usar Prazos Iniciais.",
+                )
+        elif permission == "onerequest":
+            if not getattr(current_user, "can_use_onerequest", False):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Usuário não tem permissão para usar o OneRequest.",
                 )
         return current_user
 
