@@ -18,6 +18,7 @@ from .publication_capture import OfficePublicationCursor, PublicationFetchAttemp
 from .lawsuit_cache import LawsuitCache
 from .office_lawsuit_index import OfficeLawsuitIndex, OfficeLawsuitSync
 from .publication_treatment import PublicationTreatmentItem, PublicationTreatmentRun
+from .publication_task_audit import PublicationTaskAudit
 from .prazo_inicial import (
     PrazoInicialBatch,
     PrazoInicialIntake,
@@ -67,4 +68,4 @@ from .citacoes_bm import (
     CitacaoBMMovimento,
     CitacaoBMProcesso,
 )
-from .onerequest import OnerequestSolicitacao
+from .onerequest import OnerequestAnotacao, OnerequestSolicitacao

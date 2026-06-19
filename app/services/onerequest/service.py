@@ -10,6 +10,7 @@ Ver docs/onerequest-integracao-plano.md §6 e §7.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, datetime, timezone
 from typing import Optional
 
@@ -18,11 +19,13 @@ from sqlalchemy.orm import Session
 
 from app.models.legal_one import LegalOneUser
 from app.models.onerequest import (
+    OnerequestAnotacao,
     OnerequestSolicitacao,
     STATUS_SISTEMA_ABERTO,
     STATUS_TRATAMENTO_AGENDADO,
     STATUS_TRATAMENTO_AGUARDANDO_PROCESSO,
     STATUS_TRATAMENTO_ERRO,
+    STATUS_TRATAMENTO_IGNORADO,
 )
 from app.services.batch_strategies.onerequest_strategy import (
     DEFAULT_TASK_STATUS_ID,
@@ -71,6 +74,37 @@ def _farol(prazo_date: Optional[date], hoje: date) -> str:
     return "verde"
 
 
+# ── Legal One web (deep-links) ─────────────────────────────────────────
+L1_WEB_BASE_URL = "https://mdradvocacia.novajus.com.br"
+L1_BLOCKING_STATUS_IDS = {0, 4}  # Pendente, Iniciado = "em aberto"
+L1_STATUS_LABELS_FULL = {
+    0: "Pendente",
+    1: "Cumprido",
+    2: "Não cumprido",
+    3: "Cancelado",
+    4: "Iniciado",
+    5: "Reagendado",
+}
+
+
+def _l1_lawsuit_url(lawsuit_id: int) -> str:
+    return f"{L1_WEB_BASE_URL}/processos/processos/DetailsCompromissosTarefas/{int(lawsuit_id)}"
+
+
+def _l1_task_url(task_id, lawsuit_id) -> str:
+    from urllib.parse import quote
+
+    return_path = (
+        f"/processos/processos/DetailsCompromissosTarefas/{int(lawsuit_id)}"
+        "?ajaxnavigation=true&renderOnlySection=True"
+    )
+    return (
+        f"{L1_WEB_BASE_URL}/agenda/tarefas/DetailsCompromissoTarefa/{int(task_id)}"
+        f"?parentId={int(lawsuit_id)}&tipoContexto=1&hasNavigation=True"
+        f"&currentPage=1&returnUrl={quote(return_path, safe='')}"
+    )
+
+
 class OnerequestService:
     def __init__(self, db: Session):
         self.db = db
@@ -85,6 +119,8 @@ class OnerequestService:
         status_tratamento: Optional[str] = None,
         responsavel_user_id: Optional[int] = None,
         busca: Optional[str] = None,
+        farol: Optional[str] = None,
+        sem_responsavel: Optional[bool] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> dict:
@@ -104,6 +140,14 @@ class OnerequestService:
                     OnerequestSolicitacao.titulo.ilike(termo),
                 )
             )
+        if sem_responsavel:
+            # "Novas" = ainda SEM RESPONSÁVEL (não distribuídas), excluindo as
+            # marcadas como sem providência. No painel antigo, atribuir
+            # responsável = distribuir a DMI.
+            q = q.filter(
+                OnerequestSolicitacao.responsavel_user_id.is_(None),
+                OnerequestSolicitacao.status_tratamento != STATUS_TRATAMENTO_IGNORADO,
+            )
 
         hoje = date.today()
 
@@ -115,23 +159,25 @@ class OnerequestService:
         enriquecidos = []
         for _id, prazo in leves:
             pdate = _parse_prazo(prazo)
-            farol = _farol(pdate, hoje)
-            if farol == "cinza":
+            farol_row = _farol(pdate, hoje)
+            if farol_row == "cinza":
                 kpis["vencidas"] += 1 if pdate is not None and pdate < hoje else 0
-            elif farol == "vermelho":
+            elif farol_row == "vermelho":
                 kpis["hoje"] += 1
-            elif farol == "amarelo":
+            elif farol_row == "amarelo":
                 kpis["amanha"] += 1
-            elif farol == "roxo":
+            elif farol_row == "roxo":
                 kpis["fds"] += 1
-            elif farol == "verde":
+            elif farol_row == "verde":
                 kpis["futuras"] += 1
             # ordena por prazo asc; sem data vai pro fim
-            enriquecidos.append((_id, pdate or date.max))
+            enriquecidos.append((_id, pdate or date.max, farol_row))
 
+        if farol:
+            enriquecidos = [e for e in enriquecidos if e[2] == farol]
         total = len(enriquecidos)
         enriquecidos.sort(key=lambda x: x[1])
-        page_ids = [i for (i, _d) in enriquecidos[offset : offset + limit]]
+        page_ids = [i for (i, _d, _f) in enriquecidos[offset : offset + limit]]
 
         # Passo 2: linhas completas só da página, preservando a ordem.
         page_map = {
@@ -214,9 +260,10 @@ class OnerequestService:
         Cria a tarefa no L1 pra uma solicitação tratada. Retorna
         {ok, status_tratamento, created_task_id?, mensagem}.
 
-        Cascata de resolução do processo (§7):
+        Cascata de resolução do processo (§7) — NÃO exige CNJ:
           1. CNJ utilizável -> search_lawsuit_by_cnj.
-          2. (TODO pós-probe) CNJ ausente + NPJ -> busca por NPJ no L1.
+          2. NPJ -> contains(notes/title) da pasta no L1 (a casa grava o NPJ
+             nas notas/título do cadastro da pasta).
           3. Nada resolve -> AGUARDANDO_PROCESSO (não é erro).
         """
         # Validação dos campos de tratamento (mensagens claras pro operador).
@@ -246,18 +293,6 @@ class OnerequestService:
                 "mensagem": "Responsável sem external_id no Legal One.",
             }
 
-        # ── Cascata de resolução do processo ──────────────────────────
-        if not _proc_utilizavel(solicitacao.numero_processo):
-            # Etapa 2 (NPJ) virá após o probe ao vivo confirmar o campo do L1.
-            solicitacao.status_tratamento = STATUS_TRATAMENTO_AGUARDANDO_PROCESSO
-            solicitacao.last_error = "Sem CNJ utilizável; aguardando processo (resolução por NPJ pendente)."
-            self.db.commit()
-            return {
-                "ok": False,
-                "status_tratamento": solicitacao.status_tratamento,
-                "mensagem": "Sem CNJ utilizável. Marcado como AGUARDANDO_PROCESSO.",
-            }
-
         try:
             strat = OnerequestStrategy(self.db, client)
             type_id, subtype_id = strat._get_task_type_ids(solicitacao.setor)
@@ -274,23 +309,24 @@ class OnerequestService:
             description = strat._build_task_description(payload_para_textos)
             notes = strat._build_task_notes(payload_para_textos)
 
-            lawsuit = client.search_lawsuit_by_cnj(solicitacao.numero_processo)
+            # Resolução do processo: CNJ -> NPJ(notes/title). Não exige CNJ.
+            lawsuit = self.resolver_lawsuit(solicitacao, client)
             if not lawsuit or not lawsuit.get("id"):
                 solicitacao.status_tratamento = STATUS_TRATAMENTO_AGUARDANDO_PROCESSO
                 solicitacao.last_error = (
-                    f"Processo (CNJ {solicitacao.numero_processo}) não encontrado no Legal One."
+                    "Processo não encontrado no Legal One por CNJ nem por NPJ. Aguardando processo."
                 )
                 self.db.commit()
                 return {
                     "ok": False,
                     "status_tratamento": solicitacao.status_tratamento,
-                    "mensagem": "Processo não encontrado no L1. Marcado como AGUARDANDO_PROCESSO.",
+                    "mensagem": "Processo não encontrado no L1 (CNJ/NPJ). Marcado como AGUARDANDO_PROCESSO.",
                 }
 
             lawsuit_id = lawsuit["id"]
             office_id = lawsuit.get("responsibleOfficeId")
             if not office_id:
-                raise Exception(f"Processo {solicitacao.numero_processo} sem responsibleOfficeId.")
+                raise Exception(f"Processo {lawsuit_id} sem responsibleOfficeId no L1.")
 
             publish_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             task_payload = {
@@ -354,6 +390,162 @@ class OnerequestService:
                 "status_tratamento": solicitacao.status_tratamento,
                 "mensagem": f"Erro ao agendar: {erro}",
             }
+
+    # ──────────────────────────────────────────────────────────────────
+    # Anotações (log de auditoria por DMI)
+    # ──────────────────────────────────────────────────────────────────
+    def list_anotacoes(self, solicitacao_id: int) -> list[dict]:
+        rows = (
+            self.db.query(OnerequestAnotacao)
+            .filter(OnerequestAnotacao.solicitacao_id == solicitacao_id)
+            .order_by(OnerequestAnotacao.created_at.desc())
+            .all()
+        )
+        return [
+            {
+                "id": a.id,
+                "texto": a.texto,
+                "autor_nome": a.autor_nome,
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+            }
+            for a in rows
+        ]
+
+    def add_anotacao(self, solicitacao_id: int, texto: str, autor: LegalOneUser) -> dict:
+        anot = OnerequestAnotacao(
+            solicitacao_id=solicitacao_id,
+            texto=texto.strip(),
+            autor_user_id=autor.id,
+            autor_nome=autor.name,
+        )
+        self.db.add(anot)
+        self.db.commit()
+        self.db.refresh(anot)
+        return {
+            "id": anot.id,
+            "texto": anot.texto,
+            "autor_nome": anot.autor_nome,
+            "created_at": anot.created_at.isoformat() if anot.created_at else None,
+        }
+
+    # ──────────────────────────────────────────────────────────────────
+    # Legal One: resolução do processo + tarefas na pasta (sob demanda)
+    # ──────────────────────────────────────────────────────────────────
+    def _resolver_por_npj(self, client: LegalOneApiClient, npj: Optional[str]) -> Optional[dict]:
+        """Resolve a pasta pelo NPJ do BB, gravado nas NOTAS (ou título) do
+        cadastro da pasta no L1. Filtra por contains(notes|title, <dígitos>).
+        Confirmado empiricamente: NPJ vive em `notes` (maioria) e às vezes
+        `title`; `contains` funciona no /Lawsuits (substringof não)."""
+        core = re.sub(r"\D", "", (npj or "").split("-")[0])
+        if len(core) < 7:
+            return None
+        for field in ("notes", "title"):
+            try:
+                res = client._paginated_catalog_loader(
+                    "/Lawsuits",
+                    {
+                        "$filter": f"contains({field},'{core}')",
+                        "$select": "id,identifierNumber,responsibleOfficeId,folder",
+                        "$top": 5,
+                    },
+                )
+            except Exception as e:
+                logger.warning("OneRequest: busca por NPJ em %s falhou: %s", field, e)
+                continue
+            if res:
+                return res[0]
+        return None
+
+    def resolver_lawsuit(
+        self, solicitacao: OnerequestSolicitacao, client: LegalOneApiClient
+    ) -> Optional[dict]:
+        """Resolve a pasta no L1 e cacheia o lawsuit_id. Cascata: CNJ -> NPJ
+        (notes/title). Retorna o dict do processo (id, responsibleOfficeId, ...)
+        ou None. NÃO exige CNJ."""
+        if solicitacao.linked_lawsuit_id:
+            try:
+                return client.get_lawsuit_by_id(solicitacao.linked_lawsuit_id)
+            except Exception:
+                return {"id": solicitacao.linked_lawsuit_id}
+
+        law = None
+        if _proc_utilizavel(solicitacao.numero_processo):
+            try:
+                law = client.search_lawsuit_by_cnj(solicitacao.numero_processo)
+            except Exception as e:
+                logger.warning("Falha ao resolver por CNJ %s: %s", solicitacao.numero_processo, e)
+                law = None
+        if not (law and law.get("id")):
+            law = self._resolver_por_npj(client, solicitacao.npj_direcionador)
+
+        if law and law.get("id"):
+            solicitacao.linked_lawsuit_id = law["id"]
+            self.db.commit()
+            return law
+        return None
+
+    def tarefas_na_pasta(
+        self, solicitacao: OnerequestSolicitacao, client: LegalOneApiClient
+    ) -> dict:
+        """Tarefas pendentes/concluídas na pasta do processo no L1 (sob demanda)."""
+        law = self.resolver_lawsuit(solicitacao, client)
+        lid = law.get("id") if law else None
+        if not lid:
+            return {
+                "lawsuit_id": None,
+                "l1_url": None,
+                "pendentes": [],
+                "concluidas": [],
+                "resolvido": False,
+                "check_failed": False,
+            }
+        url = _l1_lawsuit_url(lid)
+        try:
+            tasks = client.find_tasks_for_lawsuit(lid, top=30)
+        except Exception as e:
+            logger.warning("Falha ao buscar tarefas da pasta %s: %s", lid, e)
+            return {
+                "lawsuit_id": lid,
+                "l1_url": url,
+                "pendentes": [],
+                "concluidas": [],
+                "resolvido": True,
+                "check_failed": True,
+            }
+        pendentes, concluidas = [], []
+        for t in tasks:
+            sid = t.get("statusId")
+            if sid is None and isinstance(t.get("status"), dict):
+                sid = t["status"].get("id")
+            item = {
+                "task_id": t.get("id"),
+                "description": t.get("description"),
+                "status_id": sid,
+                "status_label": L1_STATUS_LABELS_FULL.get(sid, str(sid)),
+                "end_date_time": t.get("endDateTime"),
+                "l1_url": _l1_task_url(t.get("id"), lid),
+            }
+            (pendentes if sid in L1_BLOCKING_STATUS_IDS else concluidas).append(item)
+        return {
+            "lawsuit_id": lid,
+            "l1_url": url,
+            "pendentes": pendentes,
+            "concluidas": concluidas[:10],
+            "resolvido": True,
+            "check_failed": False,
+        }
+
+    def estado(self) -> dict:
+        """Heartbeat da última ingestão + contagem de abertas (pro aviso da UI)."""
+        from app.services.app_settings import get_setting
+
+        last = get_setting("onerequest_last_ingest_at")
+        abertas = (
+            self.db.query(OnerequestSolicitacao)
+            .filter(OnerequestSolicitacao.status_sistema == STATUS_SISTEMA_ABERTO)
+            .count()
+        )
+        return {"last_ingest_at": last, "abertas": abertas}
 
     @staticmethod
     def setores_disponiveis() -> list[str]:

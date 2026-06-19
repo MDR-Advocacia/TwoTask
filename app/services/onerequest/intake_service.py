@@ -21,8 +21,13 @@ from app.models.onerequest import (
     STATUS_SISTEMA_RESPONDIDO,
     STATUS_TRATAMENTO_NOVO,
 )
+from app.services.app_settings import set_setting
 
 logger = logging.getLogger(__name__)
+
+# Heartbeat da última ingestão (qualquer intake). Exibido no painel pros
+# operadores vigiarem se a RPA parou de mandar dados.
+LAST_INGEST_KEY = "onerequest_last_ingest_at"
 
 # Atualizações em chunks pra não montar IN clauses gigantes no Postgres.
 _UPDATE_CHUNK = 500
@@ -36,6 +41,13 @@ def _chunk(seq: list, size: int) -> Iterable[list]:
 class OnerequestIntakeService:
     def __init__(self, db: Session):
         self.db = db
+
+    def _touch_ingest(self) -> None:
+        """Carimba o horário da última ingestão (heartbeat da RPA)."""
+        try:
+            set_setting(LAST_INGEST_KEY, datetime.now(timezone.utc).isoformat())
+        except Exception as e:  # noqa: BLE001
+            logger.warning("OneRequest: falha ao registrar last_ingest: %s", e)
 
     # ──────────────────────────────────────────────────────────────────
     # Robô 1 — sincronização de números (snapshot dos abertos no portal)
@@ -115,6 +127,7 @@ class OnerequestIntakeService:
             )
 
         self.db.commit()
+        self._touch_ingest()
 
         resultado = {
             "recebidos": len(snapshot),
@@ -181,6 +194,7 @@ class OnerequestIntakeService:
             atualizados += 1
 
         self.db.commit()
+        self._touch_ingest()
         resultado = {"atualizados": atualizados, "nao_encontrados": nao_encontrados}
         logger.info(
             "OneRequest intake/detalhes: %s atualizados, %s não encontrados.",

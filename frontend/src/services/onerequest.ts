@@ -42,8 +42,49 @@ export interface ListParams {
   status_tratamento?: string;
   responsavel_user_id?: number;
   busca?: string;
+  farol?: string;
+  sem_responsavel?: boolean;
   limit?: number;
   offset?: number;
+}
+
+export interface Sugestao {
+  setor: string | null;
+  setor_confianca: string | null;
+  responsavel_user_id: number | null;
+  responsavel_nome: string | null;
+  responsavel_confianca: number | null;
+  data_agendamento: string | null;
+}
+
+export interface L1Task {
+  task_id: number | null;
+  description: string | null;
+  status_id: number | null;
+  status_label: string | null;
+  end_date_time: string | null;
+  l1_url: string | null;
+}
+
+export interface L1Tarefas {
+  lawsuit_id: number | null;
+  l1_url: string | null;
+  pendentes: L1Task[];
+  concluidas: L1Task[];
+  resolvido: boolean;
+  check_failed: boolean;
+}
+
+export interface Anotacao {
+  id: number;
+  texto: string;
+  autor_nome: string | null;
+  created_at: string | null;
+}
+
+export interface Estado {
+  last_ingest_at: string | null;
+  abertas: number;
 }
 
 export interface UpdateTratamentoBody {
@@ -90,6 +131,8 @@ export async function listSolicitacoes(params: ListParams): Promise<ListResponse
   if (params.responsavel_user_id)
     qs.set("responsavel_user_id", String(params.responsavel_user_id));
   if (params.busca) qs.set("busca", params.busca);
+  if (params.farol) qs.set("farol", params.farol);
+  if (params.sem_responsavel) qs.set("sem_responsavel", "true");
   qs.set("limit", String(params.limit ?? 50));
   qs.set("offset", String(params.offset ?? 0));
   return json(await apiFetch(`${BASE}/solicitacoes?${qs.toString()}`));
@@ -124,4 +167,29 @@ export async function getFormUsers(): Promise<FormUser[]> {
     await apiFetch(`/api/v1/tasks/task-creation-data`),
   );
   return data.users ?? [];
+}
+
+export async function getEstado(): Promise<Estado> {
+  return json(await apiFetch(`${BASE}/estado`));
+}
+
+export async function getSugestao(id: number): Promise<Sugestao> {
+  return json(await apiFetch(`${BASE}/solicitacoes/${id}/sugestao`));
+}
+
+export async function getL1Tarefas(id: number): Promise<L1Tarefas> {
+  return json(await apiFetch(`${BASE}/solicitacoes/${id}/l1-tarefas`));
+}
+
+export async function listAnotacoes(id: number): Promise<Anotacao[]> {
+  return json(await apiFetch(`${BASE}/solicitacoes/${id}/anotacoes`));
+}
+
+export async function addAnotacao(id: number, texto: string): Promise<Anotacao> {
+  return json(
+    await apiFetch(`${BASE}/solicitacoes/${id}/anotacoes`, {
+      method: "POST",
+      body: JSON.stringify({ texto }),
+    }),
+  );
 }

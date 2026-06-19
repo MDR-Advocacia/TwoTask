@@ -1024,6 +1024,41 @@ def recent_tasks(
         raise HTTPException(status_code=500, detail=f"Erro ao consultar tarefas: {exc}")
 
 
+@router.get("/groups/{lawsuit_id}/scheduled-audit")
+def scheduled_audit(
+    lawsuit_id: int,
+    service: PublicationSearchService = Depends(_get_service),
+    _=Depends(auth_security.get_current_user),
+):
+    """Auditoria de agendamento por processo: pra cada tarefa criada no L1,
+    o payload EXATO enviado, quem agendou e se divergiu da proposta automática
+    (override humano de subtipo/escritório/responsável). O L1 só guarda
+    "Sistema" como criador — aqui fica o operador real."""
+    from app.models.publication_task_audit import PublicationTaskAudit
+
+    rows = (
+        service.db.query(PublicationTaskAudit)
+        .filter(PublicationTaskAudit.lawsuit_id == lawsuit_id)
+        .order_by(PublicationTaskAudit.id.desc())
+        .all()
+    )
+    return [
+        {
+            "id": a.id,
+            "created_task_id": a.created_task_id,
+            "subtype_id": a.subtype_id,
+            "override_detected": a.override_detected,
+            "override_fields": a.override_fields,
+            "scheduled_by_name": a.scheduled_by_name,
+            "scheduled_by_email": a.scheduled_by_email,
+            "scheduled_at": a.scheduled_at.isoformat() if a.scheduled_at else None,
+            "sent_payload": a.sent_payload,
+            "proposed_payload": a.proposed_payload,
+        }
+        for a in rows
+    ]
+
+
 # ─── Debug ──────────────────────────────────────
 
 @router.get("/debug-api")

@@ -3291,6 +3291,75 @@ class PublicationSearchService:
         block = nl + nl + mark + nl + text
         payload["notes"] = (current + block) if current else (mark + nl + text)
 
+    def _record_scheduled_task_audit(
+        self,
+        *,
+        lawsuit_id: Optional[int],
+        records: list,
+        proposals: list,
+        sent_payloads: list,
+        created_task_ids: list,
+        sb_user_id: Optional[int],
+        sb_email: Optional[str],
+        sb_name: Optional[str],
+        when,
+    ) -> None:
+        """Persiste auditoria por tarefa criada: payload EXATO enviado ao L1 +
+        quem agendou + diff vs. a proposta automática (flag de override humano).
+        Best-effort: nunca quebra o agendamento se a auditoria falhar."""
+        try:
+            from app.models.publication_task_audit import PublicationTaskAudit
+
+            prop_by_sub: dict[int, dict] = {}
+            single_prop = None
+            for p in (proposals or []):
+                pay = (p or {}).get("payload") or {}
+                single_prop = single_prop or pay
+                sub = pay.get("subTypeId")
+                if sub is not None:
+                    prop_by_sub[int(sub)] = pay
+
+            def _contact(pl: dict):
+                parts = pl.get("participants") or []
+                if parts and isinstance(parts[0], dict):
+                    return (parts[0].get("contact") or {}).get("id")
+                return None
+
+            rec_id = records[0].id if records else None
+            for sent, task_id in zip(sent_payloads, created_task_ids):
+                if not isinstance(sent, dict):
+                    continue
+                sub = sent.get("subTypeId")
+                prop = prop_by_sub.get(int(sub)) if sub is not None else None
+                if prop is None and len(prop_by_sub) <= 1:
+                    prop = single_prop
+                override_fields: dict = {}
+                if prop:
+                    checks = {
+                        "subTypeId": (prop.get("subTypeId"), sent.get("subTypeId")),
+                        "responsibleOfficeId": (prop.get("responsibleOfficeId"), sent.get("responsibleOfficeId")),
+                        "responsavel_contact_id": (_contact(prop), _contact(sent)),
+                    }
+                    for field, (proposto, enviado) in checks.items():
+                        if proposto is not None and proposto != enviado:
+                            override_fields[field] = {"proposto": proposto, "enviado": enviado}
+                self.db.add(PublicationTaskAudit(
+                    lawsuit_id=lawsuit_id,
+                    publication_record_id=rec_id,
+                    subtype_id=int(sub) if sub is not None else None,
+                    created_task_id=task_id,
+                    sent_payload=sent,
+                    proposed_payload=prop,
+                    override_detected=bool(override_fields),
+                    override_fields=override_fields or None,
+                    scheduled_by_user_id=sb_user_id,
+                    scheduled_by_name=sb_name,
+                    scheduled_by_email=sb_email,
+                    scheduled_at=when,
+                ))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("publications: falha ao gravar auditoria de agendamento: %s", exc)
+
     def schedule_group(
         self,
         lawsuit_id: int,
@@ -3431,6 +3500,11 @@ class PublicationSearchService:
             r.scheduled_by_name = sb_name
             r.scheduled_at = now_utc
             treatment_service.sync_item_from_record(r, commit=False)
+        self._record_scheduled_task_audit(
+            lawsuit_id=lawsuit_id, records=records, proposals=proposals,
+            sent_payloads=payloads, created_task_ids=created_task_ids,
+            sb_user_id=sb_user_id, sb_email=sb_email, sb_name=sb_name, when=now_utc,
+        )
         self.db.commit()
 
         return {
@@ -3531,6 +3605,11 @@ class PublicationSearchService:
             r.scheduled_by_name = sb_name
             r.scheduled_at = now_utc
             treatment_service.sync_item_from_record(r, commit=False)
+        self._record_scheduled_task_audit(
+            lawsuit_id=None, records=records, proposals=proposals,
+            sent_payloads=payloads, created_task_ids=created_task_ids,
+            sb_user_id=sb_user_id, sb_email=sb_email, sb_name=sb_name, when=now_utc,
+        )
         self.db.commit()
 
         return {

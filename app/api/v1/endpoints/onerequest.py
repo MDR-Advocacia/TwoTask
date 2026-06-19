@@ -21,6 +21,7 @@ from app.core.config import settings
 from app.core.dependencies import get_api_client, get_db
 from app.models.legal_one import LegalOneUser
 from app.services.legal_one_client import LegalOneApiClient
+from app.services.onerequest import suggestions
 from app.services.onerequest.intake_service import OnerequestIntakeService
 from app.services.onerequest.service import OnerequestService
 
@@ -215,10 +216,12 @@ class AgendarResponse(BaseModel):
     dependencies=[_perm],
 )
 def listar_solicitacoes(
-    status_sistema: Optional[str] = Query("ABERTO"),
+    status_sistema: Optional[str] = Query(None),
     status_tratamento: Optional[str] = Query(None),
     responsavel_user_id: Optional[int] = Query(None),
     busca: Optional[str] = Query(None),
+    farol: Optional[str] = Query(None, description="Filtra por farol: cinza|vermelho|amarelo|roxo|verde"),
+    sem_responsavel: Optional[bool] = Query(None, description="Apenas DMIs sem responsável (não distribuídas)"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -229,6 +232,8 @@ def listar_solicitacoes(
         status_tratamento=status_tratamento,
         responsavel_user_id=responsavel_user_id,
         busca=busca,
+        farol=farol,
+        sem_responsavel=sem_responsavel,
         limit=limit,
         offset=offset,
     )
@@ -242,6 +247,21 @@ def listar_solicitacoes(
 )
 def opcoes():
     return OptionsResponse(setores=OnerequestService.setores_disponiveis())
+
+
+class EstadoResponse(BaseModel):
+    last_ingest_at: Optional[str] = None
+    abertas: int
+
+
+@router.get(
+    "/estado",
+    response_model=EstadoResponse,
+    summary="Estado do módulo: data da última ingestão + total de abertas",
+    dependencies=[_perm],
+)
+def estado(db: Session = Depends(get_db)):
+    return OnerequestService(db).estado()
 
 
 @router.patch(
@@ -280,3 +300,107 @@ def agendar_solicitacao(
     if not row:
         raise HTTPException(status_code=404, detail="Solicitação não encontrada.")
     return service.agendar(row, client, current_user)
+
+
+# ── Sugestão (motor de pré-preenchimento) ──────────────────────────────
+class SugestaoResponse(BaseModel):
+    setor: Optional[str] = None
+    setor_confianca: Optional[str] = None
+    responsavel_user_id: Optional[int] = None
+    responsavel_nome: Optional[str] = None
+    responsavel_confianca: Optional[int] = None
+    data_agendamento: Optional[str] = None
+
+
+@router.get(
+    "/solicitacoes/{solicitacao_id}/sugestao",
+    response_model=SugestaoResponse,
+    summary="Sugestão de setor/responsável/data (motor parametrizado)",
+    dependencies=[_perm],
+)
+def sugestao(solicitacao_id: int, db: Session = Depends(get_db)):
+    service = OnerequestService(db)
+    row = service.get(solicitacao_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Solicitação não encontrada.")
+    return suggestions.sugerir(db, titulo=row.titulo, polo=row.polo, prazo=row.prazo)
+
+
+# ── Tarefas na pasta (Legal One, sob demanda) ──────────────────────────
+class L1TaskItem(BaseModel):
+    task_id: Optional[int] = None
+    description: Optional[str] = None
+    status_id: Optional[int] = None
+    status_label: Optional[str] = None
+    end_date_time: Optional[str] = None
+    l1_url: Optional[str] = None
+
+
+class L1TarefasResponse(BaseModel):
+    lawsuit_id: Optional[int] = None
+    l1_url: Optional[str] = None
+    pendentes: List[L1TaskItem]
+    concluidas: List[L1TaskItem]
+    resolvido: bool
+    check_failed: bool
+
+
+@router.get(
+    "/solicitacoes/{solicitacao_id}/l1-tarefas",
+    response_model=L1TarefasResponse,
+    summary="Tarefas pendentes/concluídas na pasta do processo no Legal One",
+    dependencies=[_perm],
+)
+def l1_tarefas(
+    solicitacao_id: int,
+    db: Session = Depends(get_db),
+    client: LegalOneApiClient = Depends(get_api_client),
+):
+    service = OnerequestService(db)
+    row = service.get(solicitacao_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Solicitação não encontrada.")
+    return service.tarefas_na_pasta(row, client)
+
+
+# ── Anotações (log de auditoria) ───────────────────────────────────────
+class AnotacaoItem(BaseModel):
+    id: int
+    texto: str
+    autor_nome: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class AnotacaoCreate(BaseModel):
+    texto: str
+
+
+@router.get(
+    "/solicitacoes/{solicitacao_id}/anotacoes",
+    response_model=List[AnotacaoItem],
+    summary="Histórico de anotações da DMI",
+    dependencies=[_perm],
+)
+def listar_anotacoes(solicitacao_id: int, db: Session = Depends(get_db)):
+    return OnerequestService(db).list_anotacoes(solicitacao_id)
+
+
+@router.post(
+    "/solicitacoes/{solicitacao_id}/anotacoes",
+    response_model=AnotacaoItem,
+    status_code=201,
+    summary="Adiciona uma anotação (log de auditoria) à DMI",
+    dependencies=[_perm],
+)
+def criar_anotacao(
+    solicitacao_id: int,
+    payload: AnotacaoCreate,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(get_current_user),
+):
+    service = OnerequestService(db)
+    if not service.get(solicitacao_id):
+        raise HTTPException(status_code=404, detail="Solicitação não encontrada.")
+    if not (payload.texto or "").strip():
+        raise HTTPException(status_code=400, detail="Anotação vazia.")
+    return service.add_anotacao(solicitacao_id, payload.texto, current_user)

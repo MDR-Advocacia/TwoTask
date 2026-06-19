@@ -1,10 +1,12 @@
 // frontend/src/pages/OnerequestPage.tsx
 //
-// OneRequest — tratamento das DMIs (demandas diversas de assessoria) do Banco
-// do Brasil. As solicitações são capturadas por um motor RPA externo e
-// empurradas pro Flow via intake; aqui o operador direciona (responsável,
-// setor, prazo) e agenda a tarefa no Legal One. Acesso pela permissão
-// dedicada `can_use_onerequest` (admin libera por usuário).
+// OneRequest — painel de tratamento das DMIs (demandas diversas de assessoria)
+// do Banco do Brasil. Capturadas por motor RPA externo, tratadas aqui e
+// agendadas no Legal One. Acesso pela permissão dedicada can_use_onerequest.
+//
+// Abas: Novas · Vence Hoje · Todas · Busca/Auditoria. Sugestão de
+// setor/responsável/data (motor parametrizado), processo clicável -> L1,
+// tarefas pendentes/concluídas na pasta, e log de anotações por DMI.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -41,24 +43,38 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import UserSelector, { SelectableUser } from "@/components/ui/UserSelector";
 import { useToast } from "@/hooks/use-toast";
 import {
   AlertTriangle,
   CalendarCheck,
+  CheckCircle2,
+  ExternalLink,
   Inbox,
+  Lightbulb,
   Loader2,
   RefreshCw,
   Search,
 } from "lucide-react";
 import {
+  addAnotacao,
   agendarSolicitacao,
+  Anotacao,
+  Estado,
   Farol,
   FormUser,
+  getEstado,
   getFormUsers,
+  getL1Tarefas,
   getOptions,
+  getSugestao,
+  L1Tarefas,
+  ListParams,
+  listAnotacoes,
   listSolicitacoes,
   OnerequestSolicitacao,
+  Sugestao,
   updateTratamento,
 } from "@/services/onerequest";
 
@@ -80,106 +96,158 @@ const KPI_DEFS: { key: string; label: string; dot: string }[] = [
   { key: "futuras", label: "Futuras", dot: "bg-emerald-500" },
 ];
 
-const STATUS_TRATAMENTO_FILTROS = [
-  { value: "TODOS", label: "Todos os tratamentos" },
-  { value: "NOVO", label: "Novo" },
-  { value: "AGENDADO", label: "Agendado" },
-  { value: "AGUARDANDO_PROCESSO", label: "Aguardando processo" },
-  { value: "IGNORADO", label: "Sem providência" },
-  { value: "ERRO", label: "Erro" },
+type TabKey = "novas" | "hoje" | "todas" | "respondidas" | "busca";
+
+const TABS: { key: TabKey; label: string }[] = [
+  { key: "novas", label: "Novas (sem responsável)" },
+  { key: "hoje", label: "Vence Hoje" },
+  { key: "todas", label: "Todas (abertas)" },
+  { key: "respondidas", label: "Respondidas" },
+  { key: "busca", label: "Busca / Auditoria" },
 ];
 
-function StatusTratamentoBadge({ status }: { status: string }) {
-  switch (status) {
-    case "AGENDADO":
-      return <Badge className="bg-emerald-600 hover:bg-emerald-600">Agendado</Badge>;
-    case "AGUARDANDO_PROCESSO":
-      return <Badge className="bg-amber-500 hover:bg-amber-500">Aguardando processo</Badge>;
-    case "IGNORADO":
-      return <Badge variant="outline">Sem providência</Badge>;
-    case "ERRO":
-      return <Badge variant="destructive">Erro</Badge>;
-    default:
-      return <Badge variant="secondary">Novo</Badge>;
-  }
+// Status derivado do estado da DMI (não só do status_tratamento bruto):
+// sem responsável = Nova; com responsável = Distribuída; com tarefa = Agendada.
+function StatusBadge({ sol }: { sol: OnerequestSolicitacao }) {
+  if (sol.created_task_id || sol.status_tratamento === "AGENDADO")
+    return <Badge className="bg-emerald-600 hover:bg-emerald-600">Agendada</Badge>;
+  if (sol.status_tratamento === "AGUARDANDO_PROCESSO")
+    return <Badge className="bg-amber-500 hover:bg-amber-500">Aguardando processo</Badge>;
+  if (sol.status_tratamento === "ERRO")
+    return <Badge variant="destructive">Erro</Badge>;
+  if (sol.status_tratamento === "IGNORADO")
+    return <Badge variant="outline">Sem providência</Badge>;
+  // RPA capturou o número mas ainda não detalhou (robô 2): título/NPJ/prazo vazios.
+  if (!sol.titulo)
+    return <Badge variant="outline" className="border-slate-300 text-slate-500">Aguardando detalhe</Badge>;
+  if (sol.responsavel_user_id)
+    return <Badge className="bg-sky-600 hover:bg-sky-600">Distribuída</Badge>;
+  return <Badge variant="secondary">Nova</Badge>;
+}
+
+function fmtDateTime(value: string | null): string {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return value;
+  return d.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+// Converte entre o formato do <input type=date> (YYYY-MM-DD) e o do backend (DD/MM/YYYY).
+function toISODate(s: string | null): string {
+  const t = (s || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+  const m = t.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : "";
+}
+
+function toBRDate(iso: string): string {
+  const m = (iso || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
+}
+
+function ingestInfo(iso: string | null): { texto: string; tone: "ok" | "warn" | "danger" } {
+  if (!iso) return { texto: "Nenhuma ingestão de dados registrada ainda.", tone: "danger" };
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return { texto: "Data de ingestão inválida.", tone: "danger" };
+  const mins = Math.floor((Date.now() - d.getTime()) / 60000);
+  let rel: string;
+  if (mins < 1) rel = "agora há pouco";
+  else if (mins < 60) rel = `há ${mins} min`;
+  else if (mins < 1440) rel = `há ${Math.floor(mins / 60)}h`;
+  else rel = `há ${Math.floor(mins / 1440)} dia(s)`;
+  // robô 1 roda de hora em hora; passou de ~2h é amarelo, >6h é alerta.
+  const tone = mins <= 120 ? "ok" : mins <= 360 ? "warn" : "danger";
+  const abs = d.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return { texto: `Última ingestão de dados: ${abs} · ${rel}`, tone };
 }
 
 export default function OnerequestPage() {
   const { toast } = useToast();
+  const [tab, setTab] = useState<TabKey>("novas");
   const [items, setItems] = useState<OnerequestSolicitacao[]>([]);
   const [total, setTotal] = useState(0);
   const [kpis, setKpis] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(false);
+  const [estado, setEstado] = useState<Estado | null>(null);
 
-  // Filtros
   const [buscaInput, setBuscaInput] = useState("");
   const [busca, setBusca] = useState("");
-  const [statusTratamento, setStatusTratamento] = useState("TODOS");
-  const [statusSistema, setStatusSistema] = useState("ABERTO");
-
-  // Paginação
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
 
-  // Catálogos
   const [users, setUsers] = useState<FormUser[]>([]);
   const [setores, setSetores] = useState<string[]>([]);
 
-  // Modal de tratamento
+  // Modal de tratamento + sub-dados
   const [selected, setSelected] = useState<OnerequestSolicitacao | null>(null);
   const [editResponsavelExt, setEditResponsavelExt] = useState<string | null>(null);
   const [editSetor, setEditSetor] = useState("");
   const [editData, setEditData] = useState("");
-  const [editAnotacao, setEditAnotacao] = useState("");
   const [saving, setSaving] = useState(false);
   const [scheduling, setScheduling] = useState(false);
+  const [sugestao, setSugestao] = useState<Sugestao | null>(null);
+  const [sugerido, setSugerido] = useState(false);
+  const [l1, setL1] = useState<L1Tarefas | null>(null);
+  const [l1Loading, setL1Loading] = useState(false);
+  const [anotacoes, setAnotacoes] = useState<Anotacao[]>([]);
+  const [novaAnotacao, setNovaAnotacao] = useState("");
+  const [resolvingL1Id, setResolvingL1Id] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const resp = await listSolicitacoes({
-        status_sistema: statusSistema,
-        status_tratamento: statusTratamento === "TODOS" ? undefined : statusTratamento,
+      const params: ListParams = {
         busca: busca || undefined,
         limit: pageSize,
         offset: (page - 1) * pageSize,
-      });
+      };
+      if (tab === "novas") {
+        params.status_sistema = "ABERTO";
+        params.sem_responsavel = true; // "novas" = ainda sem responsável (não distribuídas)
+      } else if (tab === "hoje") {
+        params.status_sistema = "ABERTO";
+        params.farol = "vermelho";
+      } else if (tab === "todas") {
+        params.status_sistema = "ABERTO";
+      } else if (tab === "respondidas") {
+        params.status_sistema = "RESPONDIDO";
+      }
+      // "busca": sem filtro de status (todas as situações)
+      const resp = await listSolicitacoes(params);
       setItems(resp.items);
       setTotal(resp.total);
       setKpis(resp.kpis);
+      getEstado().then(setEstado).catch(() => {});
     } catch (e) {
-      toast({
-        title: "Erro ao carregar",
-        description: String((e as Error).message),
-        variant: "destructive",
-      });
+      toast({ title: "Erro ao carregar", description: String((e as Error).message), variant: "destructive" });
     } finally {
       setLoading(false);
     }
-  }, [statusSistema, statusTratamento, busca, page, pageSize, toast]);
+  }, [tab, busca, page, pageSize, toast]);
 
   useEffect(() => {
     load();
   }, [load]);
 
   useEffect(() => {
-    getOptions()
-      .then((o) => setSetores(o.setores))
-      .catch(() => {});
-    getFormUsers()
-      .then(setUsers)
-      .catch(() => {});
+    getOptions().then((o) => setSetores(o.setores)).catch(() => {});
+    getFormUsers().then(setUsers).catch(() => {});
   }, []);
 
   const selectableUsers: SelectableUser[] = useMemo(
-    () =>
-      users.map((u) => ({
-        id: u.id,
-        external_id: u.external_id,
-        name: u.name,
-        squads: u.squads ?? [],
-        email: u.email ?? null,
-      })),
+    () => users.map((u) => ({ id: u.id, external_id: u.external_id, name: u.name, squads: u.squads ?? [], email: u.email ?? null })),
     [users],
   );
 
@@ -187,9 +255,20 @@ export default function OnerequestPage() {
   const firstRow = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const lastRow = Math.min(total, page * pageSize);
 
+  const trocarTab = (t: TabKey) => {
+    setPage(1);
+    setTab(t);
+  };
+
   const aplicarBusca = () => {
     setPage(1);
     setBusca(buscaInput.trim());
+  };
+
+  const resolveResponsavelId = (): number | null => {
+    if (!editResponsavelExt) return null;
+    const u = users.find((x) => String(x.external_id) === editResponsavelExt);
+    return u ? u.id : null;
   };
 
   const openModal = (sol: OnerequestSolicitacao) => {
@@ -197,16 +276,60 @@ export default function OnerequestPage() {
     const u = users.find((x) => x.id === sol.responsavel_user_id);
     setEditResponsavelExt(u ? String(u.external_id) : null);
     setEditSetor(sol.setor ?? "");
-    setEditData(sol.data_agendamento ?? "");
-    setEditAnotacao(sol.anotacao ?? "");
+    setEditData(toISODate(sol.data_agendamento));
+    setSugestao(null);
+    setSugerido(false);
+    setL1(null);
+    setAnotacoes([]);
+    setNovaAnotacao("");
+
+    // Sugestão (pré-preenche entradas NOVAS ainda sem tratamento).
+    getSugestao(sol.id)
+      .then((s) => {
+        setSugestao(s);
+        // Pré-preenche campos VAZIOS com a sugestão, em qualquer DMI ainda
+        // sem tarefa criada (o operador confirma/ajusta).
+        const naoAgendada = !sol.created_task_id;
+        if (naoAgendada) {
+          if (s.setor && !sol.setor) setEditSetor(s.setor);
+          if (s.responsavel_user_id && !sol.responsavel_user_id) {
+            const su = users.find((x) => x.id === s.responsavel_user_id);
+            if (su) setEditResponsavelExt(String(su.external_id));
+          }
+          if (s.data_agendamento && !sol.data_agendamento) setEditData(toISODate(s.data_agendamento));
+          setSugerido(true);
+        }
+      })
+      .catch(() => {});
+
+    // Tarefas na pasta + URL do processo no L1.
+    setL1Loading(true);
+    getL1Tarefas(sol.id)
+      .then(setL1)
+      .catch(() => {})
+      .finally(() => setL1Loading(false));
+
+    listAnotacoes(sol.id).then(setAnotacoes).catch(() => {});
   };
 
   const closeModal = () => setSelected(null);
 
-  const resolveResponsavelId = (): number | null => {
-    if (!editResponsavelExt) return null;
-    const u = users.find((x) => String(x.external_id) === editResponsavelExt);
-    return u ? u.id : null;
+  // Clicar no nº do processo na tabela -> resolve e abre no L1.
+  const abrirProcessoNoL1 = async (sol: OnerequestSolicitacao) => {
+    if (!sol.proc_utilizavel && !sol.npj_direcionador) {
+      toast({ title: "Sem processo", description: "Esta DMI não tem CNJ nem NPJ pra resolver.", variant: "destructive" });
+      return;
+    }
+    setResolvingL1Id(sol.id);
+    try {
+      const r = await getL1Tarefas(sol.id);
+      if (r.l1_url) window.open(r.l1_url, "_blank", "noopener");
+      else toast({ title: "Processo não encontrado no L1", variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Erro ao abrir no L1", description: String((e as Error).message), variant: "destructive" });
+    } finally {
+      setResolvingL1Id(null);
+    }
   };
 
   const saveTratamento = async (): Promise<boolean> => {
@@ -216,18 +339,13 @@ export default function OnerequestPage() {
       await updateTratamento(selected.id, {
         responsavel_user_id: resolveResponsavelId(),
         setor: editSetor || null,
-        data_agendamento: editData || null,
-        anotacao: editAnotacao || null,
+        data_agendamento: editData ? toBRDate(editData) : null,
       });
       toast({ title: "Tratamento salvo." });
       await load();
       return true;
     } catch (e) {
-      toast({
-        title: "Erro ao salvar",
-        description: String((e as Error).message),
-        variant: "destructive",
-      });
+      toast({ title: "Erro ao salvar", description: String((e as Error).message), variant: "destructive" });
       return false;
     } finally {
       setSaving(false);
@@ -236,29 +354,20 @@ export default function OnerequestPage() {
 
   const handleAgendar = async () => {
     if (!selected) return;
-    // Persiste o tratamento antes de agendar (garante responsável/setor/data).
     const ok = await saveTratamento();
     if (!ok) return;
     setScheduling(true);
     try {
       const res = await agendarSolicitacao(selected.id);
-      if (res.ok) {
-        toast({ title: "Agendado no Legal One", description: res.mensagem });
-        closeModal();
-      } else {
-        toast({
-          title: "Não agendado",
-          description: res.mensagem,
-          variant: "destructive",
-        });
-      }
+      toast({
+        title: res.ok ? "Agendado no Legal One" : "Não agendado",
+        description: res.mensagem,
+        variant: res.ok ? undefined : "destructive",
+      });
+      if (res.ok) closeModal();
       await load();
     } catch (e) {
-      toast({
-        title: "Erro ao agendar",
-        description: String((e as Error).message),
-        variant: "destructive",
-      });
+      toast({ title: "Erro ao agendar", description: String((e as Error).message), variant: "destructive" });
     } finally {
       setScheduling(false);
     }
@@ -273,201 +382,200 @@ export default function OnerequestPage() {
       closeModal();
       await load();
     } catch (e) {
-      toast({
-        title: "Erro",
-        description: String((e as Error).message),
-        variant: "destructive",
-      });
+      toast({ title: "Erro", description: String((e as Error).message), variant: "destructive" });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleAddAnotacao = async () => {
+    if (!selected || !novaAnotacao.trim()) return;
+    try {
+      await addAnotacao(selected.id, novaAnotacao.trim());
+      setNovaAnotacao("");
+      const updated = await listAnotacoes(selected.id);
+      setAnotacoes(updated);
+    } catch (e) {
+      toast({ title: "Erro ao anotar", description: String((e as Error).message), variant: "destructive" });
     }
   };
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-3">
-        <Inbox className="h-6 w-6 text-primary" />
+        <Inbox className="h-6 w-6 shrink-0 text-primary" />
         <div>
           <h1 className="text-xl font-semibold">OneRequest — DMIs do Banco do Brasil</h1>
           <p className="text-sm text-muted-foreground">
-            Demandas diversas de assessoria capturadas do Portal Jurídico do BB.
-            Direcione e agende no Legal One.
+            Capturadas do Portal Jurídico do BB. Direcione, agende no Legal One e acompanhe.
           </p>
         </div>
       </div>
 
-      {/* KPIs (farol por prazo do BB) */}
+      {/* Aviso persistente: data da última ingestão (RPA heartbeat) */}
+      {(() => {
+        const info = ingestInfo(estado?.last_ingest_at ?? null);
+        const cls =
+          info.tone === "ok"
+            ? "border-emerald-300 bg-emerald-50 text-emerald-900"
+            : info.tone === "warn"
+              ? "border-amber-300 bg-amber-50 text-amber-900"
+              : "border-red-300 bg-red-50 text-red-900";
+        const Icon = info.tone === "ok" ? CheckCircle2 : AlertTriangle;
+        return (
+          <div className={`flex flex-wrap items-center gap-3 rounded-lg border-2 p-3 text-base font-semibold ${cls}`}>
+            <Icon className="h-6 w-6 shrink-0" />
+            <span>{info.texto}</span>
+            {estado && (
+              <span className="ml-auto text-sm font-normal opacity-80">{estado.abertas} DMIs abertas</span>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* KPIs */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         {KPI_DEFS.map((kpi) => (
           <Card key={kpi.key}>
             <CardContent className="flex items-center gap-3 p-4">
-              <span className={`h-3 w-3 rounded-full ${kpi.dot}`} />
-              <div>
+              <span className={`h-3 w-3 shrink-0 rounded-full ${kpi.dot}`} />
+              <div className="min-w-0">
                 <div className="text-2xl font-bold">{kpis[kpi.key] ?? 0}</div>
-                <div className="text-xs text-muted-foreground">{kpi.label}</div>
+                <div className="truncate text-xs text-muted-foreground">{kpi.label}</div>
               </div>
             </CardContent>
           </Card>
         ))}
       </div>
 
-      {/* Filtros */}
-      <Card>
-        <CardContent className="flex flex-wrap items-end gap-3 p-4">
-          <div className="flex-1 min-w-[220px]">
-            <Label className="text-xs">Buscar</Label>
-            <div className="flex gap-2">
-              <Input
-                placeholder="Nº solicitação, processo ou título"
-                value={buscaInput}
-                onChange={(e) => setBuscaInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") aplicarBusca();
-                }}
-              />
-              <Button variant="secondary" onClick={aplicarBusca}>
-                <Search className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
-          <div className="min-w-[200px]">
-            <Label className="text-xs">Tratamento</Label>
-            <Select
-              value={statusTratamento}
-              onValueChange={(v) => {
-                setPage(1);
-                setStatusTratamento(v);
-              }}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {STATUS_TRATAMENTO_FILTROS.map((f) => (
-                  <SelectItem key={f.value} value={f.value}>
-                    {f.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="min-w-[160px]">
-            <Label className="text-xs">Situação no BB</Label>
-            <Select
-              value={statusSistema}
-              onValueChange={(v) => {
-                setPage(1);
-                setStatusSistema(v);
-              }}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="ABERTO">Abertas</SelectItem>
-                <SelectItem value="RESPONDIDO">Respondidas</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+      {/* Abas + busca */}
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <Tabs value={tab} onValueChange={(v) => trocarTab(v as TabKey)}>
+          <TabsList>
+            {TABS.map((t) => (
+              <TabsTrigger key={t.key} value={t.key}>
+                {t.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+        <div className="flex gap-2">
+          <Input
+            className="w-full lg:w-72"
+            placeholder="Nº solicitação, processo ou título"
+            value={buscaInput}
+            onChange={(e) => setBuscaInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && aplicarBusca()}
+          />
+          <Button variant="secondary" onClick={aplicarBusca}>
+            <Search className="h-4 w-4" />
+          </Button>
           <Button variant="outline" onClick={() => load()} disabled={loading}>
             <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
           </Button>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
       {/* Tabela */}
       <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">Solicitações</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-6"></TableHead>
-                <TableHead>Nº Solicitação</TableHead>
-                <TableHead>Título</TableHead>
-                <TableHead>Processo</TableHead>
-                <TableHead>Prazo BB</TableHead>
-                <TableHead>Responsável</TableHead>
-                <TableHead>Setor</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Ação</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {loading && items.length === 0 ? (
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
                 <TableRow>
-                  <TableCell colSpan={9} className="py-10 text-center">
-                    <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground" />
-                  </TableCell>
+                  <TableHead className="w-6"></TableHead>
+                  <TableHead>Nº Solicitação</TableHead>
+                  <TableHead className="min-w-[200px]">Título</TableHead>
+                  <TableHead>Processo</TableHead>
+                  <TableHead>Prazo BB</TableHead>
+                  <TableHead>Responsável</TableHead>
+                  <TableHead>Setor</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Ação</TableHead>
                 </TableRow>
-              ) : items.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
-                    Nenhuma solicitação encontrada.
-                  </TableCell>
-                </TableRow>
-              ) : (
-                items.map((sol) => (
-                  <TableRow key={sol.id}>
-                    <TableCell>
-                      <span
-                        className={`inline-block h-3 w-3 rounded-full ${FAROL_DOT[sol.farol]}`}
-                        title={sol.prazo ? `Prazo BB: ${sol.prazo}` : "Sem prazo"}
-                      />
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">{sol.numero_solicitacao}</TableCell>
-                    <TableCell className="max-w-[260px] truncate text-sm" title={sol.titulo ?? ""}>
-                      {sol.titulo ?? <span className="text-muted-foreground">—</span>}
-                    </TableCell>
-                    <TableCell className="text-xs">
-                      {sol.proc_utilizavel ? (
-                        <span className="font-mono">{sol.numero_processo}</span>
-                      ) : (
-                        <Badge variant="outline" className="border-amber-300 text-amber-700">
-                          sem processo
-                        </Badge>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-sm">{sol.prazo ?? "—"}</TableCell>
-                    <TableCell className="text-sm">
-                      {sol.responsavel_nome ?? <span className="text-muted-foreground">—</span>}
-                    </TableCell>
-                    <TableCell className="text-sm">{sol.setor ?? "—"}</TableCell>
-                    <TableCell>
-                      <StatusTratamentoBadge status={sol.status_tratamento} />
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Button size="sm" variant="outline" onClick={() => openModal(sol)}>
-                        Tratar
-                      </Button>
+              </TableHeader>
+              <TableBody>
+                {loading && items.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={9} className="py-10 text-center">
+                      <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground" />
                     </TableCell>
                   </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
+                ) : items.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
+                      Nenhuma solicitação encontrada.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  items.map((sol) => (
+                    <TableRow key={sol.id}>
+                      <TableCell>
+                        <span
+                          className={`inline-block h-3 w-3 rounded-full ${FAROL_DOT[sol.farol]}`}
+                          title={sol.prazo ? `Prazo BB: ${sol.prazo}` : "Sem prazo"}
+                        />
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap font-mono text-xs">
+                        {sol.numero_solicitacao}
+                      </TableCell>
+                      <TableCell className="max-w-[280px] truncate text-sm" title={sol.titulo ?? ""}>
+                        {sol.titulo ?? <span className="text-muted-foreground">—</span>}
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        {sol.proc_utilizavel || sol.npj_direcionador ? (
+                          <button
+                            type="button"
+                            onClick={() => abrirProcessoNoL1(sol)}
+                            className="inline-flex items-center gap-1 font-mono text-primary hover:underline"
+                            title="Abrir processo no Legal One (resolve por CNJ ou NPJ)"
+                          >
+                            {resolvingL1Id === sol.id ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <ExternalLink className="h-3 w-3" />
+                            )}
+                            {sol.proc_utilizavel ? sol.numero_processo : `NPJ ${sol.npj_direcionador}`}
+                          </button>
+                        ) : !sol.titulo ? (
+                          <span className="text-muted-foreground">aguardando detalhe</span>
+                        ) : (
+                          <Badge variant="outline" className="border-amber-300 text-amber-700">
+                            sem processo
+                          </Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-sm">{sol.prazo ?? "—"}</TableCell>
+                      <TableCell className="text-sm">
+                        {sol.responsavel_nome ?? <span className="text-muted-foreground">—</span>}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-sm">{sol.setor ?? "—"}</TableCell>
+                      <TableCell>
+                        <StatusBadge sol={sol} />
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button size="sm" variant="outline" onClick={() => openModal(sol)}>
+                          Tratar
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
 
           {/* Paginação */}
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t p-3 text-sm">
             <div className="flex items-center gap-2">
               <span className="text-muted-foreground">Por página:</span>
-              <Select
-                value={String(pageSize)}
-                onValueChange={(v) => {
-                  setPage(1);
-                  setPageSize(Number(v));
-                }}
-              >
+              <Select value={String(pageSize)} onValueChange={(v) => { setPage(1); setPageSize(Number(v)); }}>
                 <SelectTrigger className="w-20">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   {PAGE_SIZES.map((s) => (
-                    <SelectItem key={s} value={String(s)}>
-                      {s}
-                    </SelectItem>
+                    <SelectItem key={s} value={String(s)}>{s}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -476,20 +584,10 @@ export default function OnerequestPage() {
               {firstRow}–{lastRow} de {total} · Página {page} de {totalPages}
             </div>
             <div className="flex gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={page <= 1 || loading}
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-              >
+              <Button variant="outline" size="sm" disabled={page <= 1 || loading} onClick={() => setPage((p) => Math.max(1, p - 1))}>
                 Anterior
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={page >= totalPages || loading}
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              >
+              <Button variant="outline" size="sm" disabled={page >= totalPages || loading} onClick={() => setPage((p) => Math.min(totalPages, p + 1))}>
                 Próxima
               </Button>
             </div>
@@ -499,42 +597,150 @@ export default function OnerequestPage() {
 
       {/* Modal de tratamento */}
       <Dialog open={!!selected} onOpenChange={(o) => !o && closeModal()}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-h-[92vh] max-w-3xl overflow-y-auto">
           {selected && (
             <>
               <DialogHeader>
-                <DialogTitle className="font-mono text-base">
-                  DMI {selected.numero_solicitacao}
-                </DialogTitle>
+                <DialogTitle className="font-mono text-base">DMI {selected.numero_solicitacao}</DialogTitle>
                 <DialogDescription>{selected.titulo ?? "Sem título"}</DialogDescription>
               </DialogHeader>
 
-              <div className="grid grid-cols-2 gap-3 text-sm">
-                <div>
-                  <span className="text-muted-foreground">NPJ direcionador:</span>{" "}
-                  {selected.npj_direcionador ?? "—"}
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Polo:</span> {selected.polo ?? "—"}
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Prazo BB:</span> {selected.prazo ?? "—"}
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Processo:</span>{" "}
-                  {selected.proc_utilizavel ? (
-                    <span className="font-mono">{selected.numero_processo}</span>
-                  ) : (
-                    <span className="text-amber-700">sem processo utilizável</span>
-                  )}
-                </div>
+              <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
+                <div><span className="text-muted-foreground">NPJ:</span> {selected.npj_direcionador ?? "—"}</div>
+                <div><span className="text-muted-foreground">Polo:</span> {selected.polo ?? "—"}</div>
+                <div><span className="text-muted-foreground">Prazo BB:</span> {selected.prazo ?? "—"}</div>
+                <div className="truncate"><span className="text-muted-foreground">Proc.:</span> {selected.numero_processo ?? "—"}</div>
               </div>
 
               {selected.texto_dmi && (
-                <div className="max-h-32 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 text-xs">
+                <div className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 text-sm leading-relaxed">
                   {selected.texto_dmi}
                 </div>
               )}
+
+              {/* Painel Legal One: processo + tarefas na pasta */}
+              <div className="rounded-md border p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-sm font-medium">Processo no Legal One</span>
+                  {l1?.l1_url && (
+                    <a
+                      href={l1.l1_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
+                    >
+                      <ExternalLink className="h-4 w-4" /> Abrir processo
+                    </a>
+                  )}
+                </div>
+                {l1Loading ? (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" /> Consultando tarefas na pasta…
+                  </div>
+                ) : !l1 || !l1.resolvido ? (
+                  <div className="text-sm text-muted-foreground">Processo não resolvido no L1 (sem CNJ utilizável).</div>
+                ) : l1.check_failed ? (
+                  <div className="flex items-center gap-2 text-sm text-amber-700">
+                    <AlertTriangle className="h-4 w-4" /> Não foi possível consultar as tarefas agora.
+                  </div>
+                ) : (
+                  <div className="space-y-2 text-sm">
+                    <div>
+                      <span className="font-medium text-red-600">Pendentes ({l1.pendentes.length})</span>
+                      {l1.pendentes.length === 0 ? (
+                        <span className="ml-2 text-muted-foreground">nenhuma</span>
+                      ) : (
+                        <ul className="mt-1 space-y-1">
+                          {l1.pendentes.map((t) => (
+                            <li key={t.task_id} className="flex items-start gap-2">
+                              <Badge variant="secondary" className="shrink-0">{t.status_label}</Badge>
+                              <a href={t.l1_url ?? "#"} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                                {t.description || `Tarefa ${t.task_id}`}
+                              </a>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                    {l1.concluidas.length > 0 && (
+                      <div>
+                        <span className="font-medium text-emerald-700">Concluídas (recentes)</span>
+                        <ul className="mt-1 space-y-1 text-muted-foreground">
+                          {l1.concluidas.slice(0, 5).map((t) => (
+                            <li key={t.task_id} className="truncate">
+                              {t.status_label} · {t.description || `Tarefa ${t.task_id}`}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Sugestão do motor */}
+              {sugestao && (sugestao.setor || sugestao.responsavel_nome || sugestao.data_agendamento) && (
+                <div className="flex items-start gap-2 rounded-md border border-sky-200 bg-sky-50 p-2 text-xs text-sky-900">
+                  <Lightbulb className="mt-0.5 h-4 w-4 shrink-0" />
+                  <div>
+                    <span className="font-medium">{sugerido ? "Sugestão pré-preenchida" : "Sugestão"}:</span>{" "}
+                    setor <b>{sugestao.setor}</b> ({sugestao.setor_confianca})
+                    {sugestao.responsavel_nome && <> · resp. <b>{sugestao.responsavel_nome}</b>{sugestao.responsavel_confianca ? ` (${sugestao.responsavel_confianca}%)` : ""}</>}
+                    {sugestao.data_agendamento && <> · data <b>{sugestao.data_agendamento}</b></>}
+                    . Confira e ajuste antes de agendar.
+                  </div>
+                </div>
+              )}
+
+              {/* Form de tratamento */}
+              <div className="grid gap-3">
+                <div>
+                  <Label className="text-xs">Responsável</Label>
+                  <UserSelector users={selectableUsers} value={editResponsavelExt} onChange={setEditResponsavelExt} showEmail />
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <Label className="text-xs">Setor</Label>
+                    <Select value={editSetor} onValueChange={setEditSetor}>
+                      <SelectTrigger><SelectValue placeholder="Selecione o setor" /></SelectTrigger>
+                      <SelectContent>
+                        {setores.map((s) => (
+                          <SelectItem key={s} value={s}>{s}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-xs">Data de agendamento</Label>
+                    <Input type="date" value={editData} onChange={(e) => setEditData(e.target.value)} />
+                  </div>
+                </div>
+              </div>
+
+              {/* Log de anotações (auditoria) */}
+              <div className="rounded-md border p-3">
+                <div className="mb-2 text-sm font-medium">Anotações (auditoria)</div>
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="Ex.: respondeu fora do prazo em 12/06…"
+                    value={novaAnotacao}
+                    onChange={(e) => setNovaAnotacao(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleAddAnotacao()}
+                  />
+                  <Button variant="secondary" onClick={handleAddAnotacao} disabled={!novaAnotacao.trim()}>
+                    Anotar
+                  </Button>
+                </div>
+                {anotacoes.length > 0 && (
+                  <ul className="mt-2 max-h-32 space-y-1 overflow-auto text-xs">
+                    {anotacoes.map((a) => (
+                      <li key={a.id} className="border-b pb-1">
+                        <span className="text-muted-foreground">{fmtDateTime(a.created_at)} · {a.autor_nome ?? "—"}:</span> {a.texto}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
 
               {selected.last_error && (
                 <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800">
@@ -543,80 +749,17 @@ export default function OnerequestPage() {
                 </div>
               )}
 
-              {selected.created_task_id && (
-                <div className="text-xs text-emerald-700">
-                  Tarefa criada no Legal One (ID {selected.created_task_id}).
-                </div>
-              )}
-
-              <div className="grid gap-3">
-                <div>
-                  <Label className="text-xs">Responsável</Label>
-                  <UserSelector
-                    users={selectableUsers}
-                    value={editResponsavelExt}
-                    onChange={setEditResponsavelExt}
-                    showEmail
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label className="text-xs">Setor</Label>
-                    <Select value={editSetor} onValueChange={setEditSetor}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Selecione o setor" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {setores.map((s) => (
-                          <SelectItem key={s} value={s}>
-                            {s}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div>
-                    <Label className="text-xs">Data de agendamento</Label>
-                    <Input
-                      placeholder="DD/MM/AAAA"
-                      value={editData}
-                      onChange={(e) => setEditData(e.target.value)}
-                    />
-                  </div>
-                </div>
-                <div>
-                  <Label className="text-xs">Anotação</Label>
-                  <Textarea
-                    rows={3}
-                    value={editAnotacao}
-                    onChange={(e) => setEditAnotacao(e.target.value)}
-                  />
-                </div>
-              </div>
-
               <DialogFooter className="gap-2 sm:justify-between">
-                <Button
-                  variant="ghost"
-                  onClick={handleIgnorar}
-                  disabled={saving || scheduling}
-                >
+                <Button variant="ghost" onClick={handleIgnorar} disabled={saving || scheduling}>
                   Sem providência
                 </Button>
                 <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={saveTratamento}
-                    disabled={saving || scheduling}
-                  >
+                  <Button variant="outline" onClick={saveTratamento} disabled={saving || scheduling}>
                     {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                     Salvar
                   </Button>
                   <Button onClick={handleAgendar} disabled={saving || scheduling}>
-                    {scheduling ? (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    ) : (
-                      <CalendarCheck className="mr-2 h-4 w-4" />
-                    )}
+                    {scheduling ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CalendarCheck className="mr-2 h-4 w-4" />}
                     Agendar no Legal One
                   </Button>
                 </div>

@@ -113,3 +113,29 @@ class OnerequestSolicitacao(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+
+class OnerequestAnotacao(Base):
+    """Log append-only de anotações por DMI (auditoria: quem/quando/texto).
+
+    Ex.: "usuário respondeu atrasado em 12/06". Não substitui o campo
+    `anotacao` (nota rápida) da solicitação — é o histórico formal.
+    """
+
+    __tablename__ = "onr_anotacoes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    solicitacao_id = Column(
+        Integer,
+        ForeignKey("onr_solicitacoes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    texto = Column(Text, nullable=False)
+    autor_user_id = Column(
+        Integer, ForeignKey("legal_one_users.id", ondelete="SET NULL"), nullable=True
+    )
+    autor_nome = Column(String, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

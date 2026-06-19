@@ -336,6 +336,15 @@ class LegalOneApiClient:
         all_items: List[Dict[str, Any]] = []
         base_url = f"{self.base_url}{endpoint}"
         current_params = (params or {}).copy()
+        # L1 limita $top a 30 em /Tasks, /Lawsuits, /Litigations etc.: passar
+        # mais devolve HTTP 400 e a query era engolida (voltava 0) — foi o que
+        # zerava a auditoria de tarefas da pasta (find_tasks_for_lawsuit/
+        # search_tasks usavam top=50). O nextLink abaixo pagina o restante.
+        try:
+            if int(current_params.get("$top", 0)) > 30:
+                current_params["$top"] = 30
+        except (TypeError, ValueError):
+            pass
         current_params["$count"] = "true"
         url = base_url
         is_first_page = True
