@@ -473,77 +473,90 @@ class BlocoAgravoInfo(BaseModel):
     Útil pra triagem sem abrir o PDF."""
 
 
-# ─── Patrocínio (pin018) ─────────────────────────────────────────────
-# Análise paralela à classificação de prazos. Aplica-se SOMENTE quando o
-# polo passivo do intake bate com alguma vinculada Master (CNPJ na
-# tabela master_vinculadas). Não interfere em tasks — só registra a
-# decisão (MDR / outro escritório / condução interna) e a fila de
-# devolução. As constantes canônicas vivem no modelo
-# `prazo_inicial_patrocinio`; aqui só listamos pra schema do Sonnet.
-
-PATROCINIO_DECISAO_VALIDA = ("MDR_ADVOCACIA", "OUTRO_ESCRITORIO", "CONDUCAO_INTERNA")
-PATROCINIO_NATUREZA_VALIDA = (
-    "CONSUMERISTA",
-    "CIVIL_PUBLICA",
-    "INQUERITO_ADMINISTRATIVO",
-    "TRABALHISTA",
-    "OUTRO",
-)
+# ─── Vinculada Master no polo passivo (substitui patrocínio) ─────────
+# Flag NEUTRA: só registra que uma vinculada Banco Master figura como
+# ré no polo passivo. A antiga análise de patrocínio (decisão de
+# escritório, suspeita de devolução por advogado pré-habilitado a partir
+# de data de corte) foi SUPERADA pelo cliente e não subsiste mais.
 
 
-class BlocoPatrocinio(BaseModel):
+class BlocoVinculadaMaster(BaseModel):
     """
-    Análise de patrocínio. Só vem preenchido quando o polo passivo
-    contém alguma vinculada Master. Caso contrário, a IA emite
-    `aplicavel=false` e os demais campos ficam null.
+    Detecção neutra de vinculada Banco Master no polo passivo.
+
+    Aplica quando algum CNPJ da lista de vinculadas (informada na user
+    message) aparece no polo passivo da capa ou citado como réu na PI.
+    Caso contrário, `presente=false` e demais campos null. Sem decisão,
+    sem devolução, sem corte por data — só visibilidade/roteamento.
     """
 
-    aplicavel: bool = False
-    """True quando o polo passivo (confirmado contra a PI) tem CNPJ de
-    vinculada Master. Quando False, demais campos viram null e o intake
-    não recebe registro de patrocínio."""
-
-    decisao: Optional[
-        Literal["MDR_ADVOCACIA", "OUTRO_ESCRITORIO", "CONDUCAO_INTERNA"]
-    ] = None
-
-    outro_escritorio_nome: Optional[str] = None
-    """Nome do escritório (texto livre). Preenchido quando
-    decisao=OUTRO_ESCRITORIO e a IA conseguiu identificar."""
-
-    outro_advogado_nome: Optional[str] = None
-    outro_advogado_oab: Optional[str] = None
-    outro_advogado_data_habilitacao: Optional[date] = None
-
-    suspeita_devolucao: bool = False
-    """True quando o caso deve voltar pro cliente (advogado anterior a
-    18/03/2026, contestação posterior por outro advogado, ou natureza
-    fora de consumerista)."""
-
-    motivo_suspeita: Optional[str] = None
-    """Justificativa em 1-2 frases citando evidência (data, advogado,
-    natureza). Obrigatório quando suspeita_devolucao=True."""
-
-    natureza_acao: Optional[
-        Literal[
-            "CONSUMERISTA",
-            "CIVIL_PUBLICA",
-            "INQUERITO_ADMINISTRATIVO",
-            "TRABALHISTA",
-            "OUTRO",
-        ]
-    ] = None
-
+    presente: bool = False
+    vinculada_nome: Optional[str] = None
+    vinculada_cnpj: Optional[str] = None
     polo_passivo_confirmado: bool = True
     """False quando a capa lista vinculada Master mas a PI deixa claro
     que o sujeito passivo é OUTRA pessoa (cadastro errado no PJe)."""
-
-    polo_passivo_observacao: Optional[str] = None
-
+    observacao: Optional[str] = None
     confianca: Optional[Confianca] = None
-    fundamentacao: Optional[str] = None
-    """Texto explicando o raciocínio: CNPJ casado, advogado encontrado,
-    data de habilitação, natureza da ação extraída da PI."""
+
+    @model_validator(mode="after")
+    def _clear_when_absent(self) -> "BlocoVinculadaMaster":
+        if not self.presente:
+            self.vinculada_nome = None
+            self.vinculada_cnpj = None
+            self.observacao = None
+        return self
+
+
+# ─── Despacho ordenando a citação (sinal-âncora do processo novo) ────
+# O despacho inicial é, na prática, o MESMO documento que ordena a
+# citação, abre o prazo de contestação e (quando há) designa a audiência
+# do art. 334 CPC. Detectado de forma INDEPENDENTE do bloco `contestar`.
+
+DESPACHO_CITACAO_MODALIDADES = frozenset({
+    "eletronica", "correio", "oficial_justica", "edital", "outra",
+})
+
+DESPACHO_CITACAO_MODALIDADE_LABELS = {
+    "eletronica": "Eletrônica (PJe / Domicílio Judicial)",
+    "correio": "Correio (AR)",
+    "oficial_justica": "Oficial de justiça (mandado)",
+    "edital": "Edital",
+    "outra": "Outra",
+}
+
+
+class BlocoDespachoCitacao(BaseModel):
+    """
+    Despacho/decisão que ORDENA a citação da Ré.
+
+    Marca `existe=true` sempre que houver comando judicial de citação
+    (`cite-se`, `determino a citação`, `expeça-se mandado/carta de
+    citação`), MESMO que a citação ainda não tenha se perfectibilizado
+    (sem prazo correndo). `citacao_efetivada` separa "mandou citar" de
+    "prazo já aberto" (AR/mandado juntado). NÃO gera sugestão/tarefa
+    sozinho — é flag de triagem destacada no HITL.
+    """
+
+    existe: bool = False
+    data_despacho: Optional[date] = None
+    """Data do despacho que ordenou a citação (não da juntada)."""
+    modalidade: Optional[
+        Literal["eletronica", "correio", "oficial_justica", "edital", "outra"]
+    ] = None
+    citacao_efetivada: Optional[bool] = None
+    """True quando há sinal de que a citação se perfectibilizou (AR/
+    mandado juntado, comparecimento) — aí o prazo de defesa já corre.
+    None quando indeterminado."""
+    justificativa: str = ""
+
+    @model_validator(mode="after")
+    def _clear_when_absent(self) -> "BlocoDespachoCitacao":
+        if not self.existe:
+            self.data_despacho = None
+            self.modalidade = None
+            self.citacao_efetivada = None
+        return self
 
 
 # ─── Contestação já apresentada (pin021) ─────────────────────────────
@@ -757,11 +770,17 @@ class PrazoInicialClassificationResponse(BaseModel):
     # petições declaratórias puras.
     pedidos: list[BlocoPedido] = Field(default_factory=list)
 
-    # Patrocínio (pin018) — análise paralela. Sempre presente; quando
-    # o polo passivo NÃO bate com vinculada Master, vem
-    # `aplicavel=false` e o classifier não persiste registro.
-    patrocinio: Optional[BlocoPatrocinio] = Field(
-        default_factory=lambda: BlocoPatrocinio(aplicavel=False)
+    # Vinculada Master no polo passivo (substitui patrocínio). Flag
+    # neutra: só marca presença de vinculada Master como ré, sem
+    # decisão/devolução (regra superada).
+    vinculada_master: BlocoVinculadaMaster = Field(
+        default_factory=lambda: BlocoVinculadaMaster(presente=False)
+    )
+
+    # Despacho ordenando a citação — sinal-âncora do processo novo.
+    # Top-level, independente do bloco `contestar`.
+    despacho_citacao: BlocoDespachoCitacao = Field(
+        default_factory=lambda: BlocoDespachoCitacao(existe=False)
     )
 
     # Contestação já apresentada (pin021) — análise paralela. Sempre

@@ -265,6 +265,36 @@ class PrazoInicialIntake(Base):
     contestacao_generica = Column(Boolean, nullable=True)
     contestacao_analise_qualidade = Column(Text, nullable=True)
 
+    # Despacho ordenando a citação — sinal-âncora do "processo novo".
+    # O despacho inicial é geralmente o MESMO ato que ordena a citação,
+    # abre o prazo de contestação e (quando há) designa a audiência do
+    # art. 334 CPC. Detectado de forma INDEPENDENTE do bloco `contestar`:
+    # `existe=true` mesmo quando a citação ainda não se perfectibilizou
+    # (sem prazo correndo). `efetivada` separa "mandou citar" de "prazo
+    # já aberto" (AR/mandado juntado). NÃO cria sugestão/tarefa sozinho —
+    # é flag de triagem destacada no HITL.
+    despacho_citacao_existe = Column(
+        Boolean, nullable=False, server_default=text("false"), index=True,
+    )
+    despacho_citacao_data = Column(Date, nullable=True)
+    despacho_citacao_modalidade = Column(String(32), nullable=True)
+    despacho_citacao_efetivada = Column(Boolean, nullable=True)
+    despacho_citacao_justificativa = Column(Text, nullable=True)
+
+    # Vinculada Master no polo passivo — substitui a antiga análise de
+    # patrocínio (pin018/019). Flag NEUTRA: só registra que uma vinculada
+    # Banco Master figura como ré. A regra de devolução por advogado
+    # pré-habilitado a partir de data de corte foi SUPERADA e não subsiste.
+    # A tabela prazo_inicial_patrocinio fica DORMANTE (histórico preservado,
+    # sem novas gravações).
+    vinculada_master_presente = Column(
+        Boolean, nullable=False, server_default=text("false"), index=True,
+    )
+    vinculada_master_nome = Column(String(255), nullable=True)
+    vinculada_master_cnpj = Column(String(32), nullable=True)
+    vinculada_master_polo_confirmado = Column(Boolean, nullable=True)
+    vinculada_master_observacao = Column(Text, nullable=True)
+
     # Quem tratou finalisticamente o intake — preenchido quando o operador
     # confirma agendamentos OU finaliza sem providência (pin011). NULL
     # enquanto o intake estiver em fluxo. Usado pra "Tratado por: <nome>"

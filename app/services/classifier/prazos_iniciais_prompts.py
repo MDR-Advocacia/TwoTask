@@ -50,6 +50,19 @@ Saída: UM único objeto JSON conforme schema abaixo. Sem markdown, sem texto an
 4. **Audiência ex art. 334 CPC**: dispara prazo de contestação (15 dias úteis a contar DELA, não da citação). Audiência de instrução só vem depois da contestação.
 5. **Pedidos certos, alternativos e subsidiários** (CPC 322-326): enumere TODOS, mas para aprovisionamento considere o cenário realista (provável + cumuláveis). Pedidos puramente declaratórios sem valor → `valor_indicado=null`.
 
+# SINAL-ÂNCORA — DESPACHO DE CITAÇÃO (preencher SEMPRE: é a triagem-chave)
+
+O fato MAIS importante desta etapa: **há despacho/decisão ORDENANDO a citação da Ré?** O despacho inicial costuma ser o MESMO ato que ordena a citação, abre o prazo de contestação e (quando há) designa a audiência do art. 334 CPC — leia-o como documento-âncora e extraia os três de forma correlacionada.
+
+Preencha o bloco raiz `despacho_citacao`:
+- `existe=true` sempre que houver comando judicial de citação da Ré: `cite-se`, `cite-se a parte ré/requerida`, `determino/ordeno a citação`, `expeça-se mandado/carta de citação`. Marque MESMO que a citação ainda não tenha se perfectibilizado (sem prazo correndo ainda).
+- `data_despacho`: data do despacho que ordenou a citação (não a da juntada). Null se não constar.
+- `modalidade`: `eletronica` (PJe / Domicílio Judicial Eletrônico) · `correio` (carta com AR) · `oficial_justica` (mandado / oficial de justiça) · `edital` · `outra`. Null se não der pra inferir.
+- `citacao_efetivada`: `true` quando há sinal de que a citação se concretizou (AR/mandado juntado, comparecimento) — aí o prazo de defesa já corre e o bloco `contestar` (Etapa 2A.1) deve aplicar. `false`/`null` quando só houve a ordem, sem perfectibilização.
+- `justificativa`: trecho curto que sustenta.
+
+Este bloco é INDEPENDENTE: não gera prazo nem tarefa sozinho. É a triagem do "processo novo".
+
 # ETAPA 1 — CLASSIFICAÇÃO PRELIMINAR
 
 ## `produto` (informativo, não roteia tarefa). Se ambíguo ou inicial indisponível → `null`.
@@ -187,119 +200,16 @@ Extraia TODOS os pedidos da PI. Um pedido = uma pretensão.
 
 (1) Probabilidade GLOBAL de êxito do RÉU (regra do menos favorável: 1 pedido provável de condenação → intake inteiro é "remota" de êxito) + tese principal. (2) Aprovisionamento total + se há pedidos `possivel` exigindo nota explicativa.
 
-# BLOCO `patrocinio` (raiz, análise PARALELA — não interfere em prazos/tasks)
+# BLOCO `vinculada_master` (raiz — flag NEUTRA, substitui o antigo patrocínio)
 
-Esta análise é **EXCLUSIVA** para processos onde o BANCO MASTER (ou empresa vinculada) figura no POLO PASSIVO. Determina QUEM patrocina o caso (MDR Advocacia, outro escritório, ou condução interna do cliente). Não interfere em sugestões de prazo nem em tasks — é registro paralelo pra fila de devolução.
+A user message lista os CNPJs das vinculadas Banco Master. Verifique se ALGUM aparece no `polo_passivo` (capa) OU é citado como réu/demandado na PI.
 
-## Quando aplica
+- Se aparecer → `presente=true`; preencha `vinculada_nome` e `vinculada_cnpj` da que casou, `polo_passivo_confirmado` (false quando a capa lista a vinculada mas a PI deixa claro que o réu é OUTRA pessoa — cadastro errado no PJe; descreva em `observacao`), e `confianca`.
+- Se NENHUM aparecer → `presente=false` e demais campos null.
 
-A user message lista os **CNPJs das vinculadas Master**. Se NENHUM aparecer no `polo_passivo` (capa) NEM citado como réu/demandado na PI → `patrocinio.aplicavel=false` e demais campos null. Termine aqui.
+É só uma flag de visibilidade/roteamento. NÃO há mais análise de decisão de escritório, suspeita de devolução, advogado pré-habilitado ou corte por data — essa regra foi SUPERADA pelo cliente.
 
-Se algum CNPJ vinculada aparecer:
-1. **Confirme contra a PI** que o sujeito passivo é mesmo aquela entidade. Capa do PJe pode ter cadastro errado. Se a PI deixar claro que o réu é OUTRO (ex: capa diz "Banco Master S/A" mas a PI ataca "Itaú S/A"), marque `polo_passivo_confirmado=false` + observação. Decisão: prossiga MAS reduza confiança.
-2. Se confirmado, prossiga pra `decisao` + `suspeita_devolucao` + `natureza_acao`.
-
-## ⚠️ REGRA CRÍTICA — vínculo advogado → parte específica
-
-Em processos com MÚLTIPLOS RÉUS no polo passivo (Banco Master + outro banco + empresa, etc.), CADA RÉU TEM SEU PRÓPRIO BLOCO DE ADVOGADOS. No PJe, a capa estrutura `polo_passivo` como uma lista de partes, e cada parte traz sua própria sub-lista `advogados`. Exemplo:
-
-```
-"polo_passivo": [
-  {"nome": "BANCO MASTER S.A.", "cnpj": "33.923.798/0001-00", "advogados": ["MARCOS DELLI"]},
-  {"nome": "BANCO WILL S.A.",   "cnpj": "00.000.000/0000-00", "advogados": ["DENNER DE BARROS E MASCARENHAS BARBOSA"]},
-  {"nome": "EFB REGIMES ESPECIAIS DE EMPRESAS LTDA.", "cnpj": "...", "advogados": []}
-]
-```
-
-Para a análise de patrocínio, **APENAS IMPORTAM os advogados linkados à VINCULADA MASTER que disparou a análise** (CNPJ casado da user message). Advogados de outros co-réus (Banco Will, BV, Itaú, EFB Regimes Especiais — qualquer entidade NÃO listada como vinculada Master) são IRRELEVANTES: cada banco/empresa contrata seu próprio escritório e a defesa deles não é nossa.
-
-Mesma regra para a íntegra: contestação, habilitação e procuração são SEMPRE assinadas em nome de UMA parte específica. Confira no cabeçalho/qualificação da petição QUEM o advogado está representando antes de contar como "outro escritório da Master". Frases típicas que identificam o vínculo: "vem, respeitosamente, BANCO X S/A, por seu advogado abaixo assinado…", "habilita-se nos autos como patrono do réu BANCO X S/A…".
-
-**Errado**: marcar `suspeita_devolucao=true` porque o advogado X habilitou antes do corte MDR, sem checar que X representa o Banco Will (não o Master). Esse foi o erro que motivou esta regra.
-**Certo**: ignorar advogados de outros co-réus. A regra do corte 18/03/2026 só roda contra advogados do bloco da vinculada Master.
-
-### Exemplo NEGATIVO concreto (NÃO marcar suspeita)
-
-Capa com polo passivo múltiplo: BANCO SANTANDER, NU FINANCEIRA, BANCO DAYCOVAL, BANCO SAFRA, BANCO DO BRASIL, **BANCO MASTER S/A (vinculada)**. Único advogado habilitado da defesa: ROBERTA DA CAMARA LIMA CAVALCANTI — OAB PE28467, contestação juntada em 17/04/2026. A contestação dela abre com *"vem, BANCO DAYCOVAL S/A, por sua advogada infra-assinada, apresentar contestação…"* — ou seja, a Roberta representa o **Daycoval**, NÃO o Master. **Resposta correta**: `decisao=MDR_ADVOCACIA`, `suspeita_devolucao=false`, `outro_advogado_nome=null`, e `fundamentacao` explicitando: *"Roberta da Camara Lima Cavalcanti representa o BANCO DAYCOVAL S/A (vide cabeçalho da contestação de 17/04/2026), não a vinculada Master — desconsiderada. Nenhum advogado externo habilitado pela vinculada Master."* **Resposta errada (o que estamos tentando evitar)**: atribuir a Roberta ao Banco Master só porque o nome dela aparece na capa/timeline + Master está no polo passivo.
-
-### ⚠️ CHECKPOINT OBRIGATÓRIO antes de marcar `OUTRO_ESCRITORIO` ou `suspeita_devolucao=true` por advogado externo
-
-ANTES de setar `outro_advogado_nome` + `suspeita_devolucao=true`, você DEVE conseguir citar no `motivo_suspeita` UMA das duas evidências abaixo (com o trecho literal entre aspas, curto, da íntegra ou da capa):
-
-1. **Frase explícita da contestação/habilitação** assinada pelo advogado externo onde ele se identifica como representante da vinculada Master — exemplos típicos: *"vem, respeitosamente, BANCO MASTER S/A, por seu advogado abaixo assinado…"*, *"habilita-se nos autos como patrono do réu BANCO MASTER S/A…"*, *"em nome do BANCO MASTER S/A…"*; OU
-2. **Bloco estruturado da capa** (`polo_passivo[i]`) onde o `documento`/CNPJ casa com uma vinculada Master da user message E o nome do advogado está na sub-lista `advogados` daquela parte específica.
-
-Se você NÃO consegue citar nenhuma dessas duas evidências, **NÃO marque** `suspeita_devolucao=true` e **NÃO preencha** `outro_advogado_*`. Default seguro: `decisao=MDR_ADVOCACIA`, `suspeita_devolucao=false`, e `fundamentacao` explicando que o advogado X foi visto na íntegra mas não foi possível confirmar vínculo com a vinculada Master (cite a parte que ele de fato representa, se identificável).
-
-Em caso de dúvida sobre o vínculo (capa truncada, petição sem qualificação clara, advogado listado fora dos blocos por parte), reduza `confianca` e descreva a dúvida em `polo_passivo_observacao` ou `motivo_suspeita`.
-
-## `natureza_acao` — sempre preencher quando aplicavel=true
-
-Lê pela CLASSE + CAUSA DE PEDIR da PI:
-- `CONSUMERISTA` — relação de consumo (CDC), descontos consignado, cartão, dano moral por SPC, revisão contratual bancária. **É o escopo padrão MDR/Master.**
-- `CIVIL_PUBLICA` — Ação Civil Pública, MP autor, defesa de direitos coletivos.
-- `INQUERITO_ADMINISTRATIVO` — IP, processo administrativo (BACEN, CVM, autarquias), CIP.
-- `TRABALHISTA` — Justiça do Trabalho, vínculo CLT.
-- `OUTRO` — qualquer coisa fora de consumo (penal, eleitoral, falência, recuperação judicial sem viés consumerista).
-
-## Advogados internos do MDR (NUNCA classificar como "outro escritório")
-
-O MDR Advocacia atua via 1 advogado nomeado em todas as habilitações:
-
-- **Marcos Délli** (variações: "Marcos Delli", "MARCOS DELLI", "Marcos D. de Sousa", iniciais "M. Delli")
-
-Quando QUALQUER habilitação no polo passivo da vinculada Master estiver
-em nome de Marcos Délli (com ou sem acento, com ou sem iniciais), ELE
-**É** o MDR. Não preencha `outro_advogado_*` com esse nome. Decisão
-default = `MDR_ADVOCACIA` + `suspeita_devolucao=false` (a menos que
-outra regra dispare, como natureza não-consumerista).
-
-Só ative `OUTRO_ESCRITORIO` ou `suspeita_devolucao=true` quando o
-advogado habilitado for nome **DIFERENTE** de Marcos Délli.
-
-## `decisao` — regra principal
-
-Identifique TODOS os advogados habilitados PELA VINCULADA MASTER no polo passivo (vide regra crítica acima — só conta advogado linkado ao bloco da Master, **não dos demais réus do processo**). Para cada um, anote nome + OAB + DATA DE HABILITAÇÃO (data da petição de habilitação ou da primeira manifestação). **Ignore Marcos Délli** — ele é interno (vide seção acima).
-
-**Data de corte: 18/03/2026** (início do contrato MDR/Master — hardcoded).
-
-| Cenário | decisão | suspeita_devolucao | observação |
-|---|---|---|---|
-| Nenhum advogado habilitado pela Master | `MDR_ADVOCACIA` | false | caso típico nosso |
-| Advogado **da Master** habilitado em data ≤ 18/03/2026 | `OUTRO_ESCRITORIO` | **true** | preencher nome/OAB/data; é deles, devolver |
-| Advogado **da Master** habilitado > 18/03/2026 + JÁ contestou pela Master | `MDR_ADVOCACIA` | **true** | preencher dados do outro advogado, motivo: "outro advogado X contestou em DD/MM **pela vinculada Master Y**" |
-| Advogado **da Master** habilitado > 18/03/2026, sem contestação | `MDR_ADVOCACIA` | false | caso normal, MDR pegando |
-| Advogado existe MAS está vinculado a OUTRO réu (Banco Will, EFB, etc. — fora das vinculadas Master) | `MDR_ADVOCACIA` | false | irrelevante — cada réu tem seu escritório próprio. NÃO conta pra regra do corte; documentar em `fundamentacao` que esses advogados foram desconsiderados. |
-
-**Sobreposição com natureza não-consumerista**: se `natureza_acao != CONSUMERISTA`, **decisao=CONDUCAO_INTERNA** + `suspeita_devolucao=true` + motivo citando a natureza. Independe da regra de advogados (cliente vai conduzir internamente).
-
-## Campos de identificação do outro advogado
-
-Quando `decisao=OUTRO_ESCRITORIO` ou `suspeita_devolucao=true` por contestação tardia:
-- `outro_advogado_nome` (texto, do bloco Partes/Advogados ou da assinatura da contestação)
-- `outro_advogado_oab` (formato típico OAB/UF NNNNN — ex: "OAB/SP 123.456")
-- `outro_advogado_data_habilitacao` (YYYY-MM-DD, da petição de habilitação OU da contestação se não houver petição prévia)
-- `outro_escritorio_nome` (texto livre — quando a assinatura traz "Pinheiro Neto Advogados", "Mattos Filho", etc.; null se não identificável)
-
-## `motivo_suspeita`
-
-Obrigatório quando `suspeita_devolucao=true`. Cite a evidência concreta em 1-2 frases: data da habilitação, nome do advogado **+ a parte que ele representa** (ex.: "habilitado pelo BANCO MASTER S.A. em 24/02/2026 — anterior ao corte 18/03/2026"), ou natureza fora de consumerista. Se o advogado representar OUTRO réu (não a vinculada Master), NÃO marque `suspeita_devolucao=true`.
-
-Quando a flag for por advogado externo (não por natureza), inclua **entre aspas** o trecho curto da íntegra/capa que prova o vínculo com a vinculada Master (vide CHECKPOINT OBRIGATÓRIO acima). Sem esse trecho citável, downgrade para `MDR_ADVOCACIA` + `suspeita_devolucao=false`.
-
-## `fundamentacao`
-
-Sempre preencher quando `aplicavel=true`. Texto curto (3-5 frases) explicando o raciocínio: "CNPJ X.XXX.XXX/XXXX-XX casa com vinculada Banco Master Múltiplo. Polo passivo confirmado pela PI. Advogado Y (OAB/UF NNNNN) **habilitado pelo BANCO MASTER S.A.** em DD/MM/AAAA. Natureza CONSUMERISTA (CDC, descontos consignado). Decisão: ..."
-
-**Quando houver outros réus no polo passivo com advogados próprios**, mencione explicitamente: "Demais réus do polo passivo (Banco Will — adv. DENNER DE BARROS / OAB MS 6835; EFB Regimes Especiais — sem advogado habilitado) **desconsiderados na análise por não vincularem a Master**." Isso confirma pro operador que a IA leu a estrutura per-party direito e não confundiu advogados de outras partes.
-
-## `confianca`
-
-- `alta`: CNPJ casa, advogado e datas claros, natureza inequívoca
-- `media`: alguma ambiguidade (advogado sem data clara, natureza limítrofe)
-- `baixa`: cadastro divergente PI/capa, dados incompletos
-
-# BLOCO `contestacao_existente` (raiz, análise PARALELA — não interfere em prazos/tasks/patrocínio)
+# BLOCO `contestacao_existente` (raiz, análise PARALELA — não interfere em prazos/tasks)
 
 Detecta se a íntegra **já contém uma contestação apresentada** (caso típico: reprocessamento de intake antigo, intake atrasado onde escritório anterior já contestou, ou processo herdado). Independe de haver prazo aberto pra nova contestação — pode coexistir com `contestar.aplica=true` (ex.: contestação anterior foi rejeitada e juiz reabriu prazo).
 
@@ -374,7 +284,8 @@ Exemplos:
   "agravo": null,
   "pedidos": [],
   "analise_estrategica": null,
-  "patrocinio": {"aplicavel": false, "decisao": null, "outro_escritorio_nome": null, "outro_advogado_nome": null, "outro_advogado_oab": null, "outro_advogado_data_habilitacao": null, "suspeita_devolucao": false, "motivo_suspeita": null, "natureza_acao": null, "polo_passivo_confirmado": true, "polo_passivo_observacao": null, "confianca": null, "fundamentacao": null},
+  "despacho_citacao": {"existe": false, "data_despacho": null, "modalidade": null, "citacao_efetivada": null, "justificativa": ""},
+  "vinculada_master": {"presente": false, "vinculada_nome": null, "vinculada_cnpj": null, "polo_passivo_confirmado": true, "observacao": null, "confianca": null},
   "contestacao_existente": {"existe": false, "apresentada_por_mdr": null, "apresentada_por_nome": null, "apresentada_por_oab": null, "parte_representada": null, "data_apresentacao": null, "generica": null, "analise_qualidade": null, "justificativa": ""},
   "confianca_geral": "alta",
   "observacoes": null
@@ -412,6 +323,8 @@ PI: revisão de cláusulas de contrato de empréstimo consignado; pede declaraç
     {"tipo_pedido": "DANO_MORAL", "natureza": "Consumidor", "valor_indicado": 10000.0, "valor_estimado": 3000.0, "fundamentacao_valor": "Padrão STJ para revisão contratual sem agravante: R$ 2-5k.", "probabilidade_perda": "remota", "aprovisionamento": 0, "fundamentacao_risco": "Mero descumprimento contratual não gera dano moral in re ipsa."}
   ],
   "analise_estrategica": "Êxito provável: tese de revisão isolada raramente gera condenação relevante; dano moral tem viabilidade remota. Aprovisionamento R$ 0 — pedido `possivel` de restituição em dobro requer nota explicativa.",
+  "despacho_citacao": {"existe": true, "data_despacho": null, "modalidade": "correio", "citacao_efetivada": true, "justificativa": "Cite-se a Ré para contestar; AR de citação juntado em 22/04/2026. O mesmo despacho designou audiência de conciliação."},
+  "vinculada_master": {"presente": true, "vinculada_nome": "BANCO MASTER S.A.", "vinculada_cnpj": null, "polo_passivo_confirmado": true, "observacao": null, "confianca": "alta"},
   "confianca_geral": "alta",
   "observacoes": null
 }
@@ -525,7 +438,7 @@ Bloco `contestacao_existente`:
 }
 ```
 
-(Demais blocos: `contestar.aplica=false` (já contestou), `sem_prazo_em_aberto=true` com `motivo_sem_prazo=AGUARDANDO_AUTOR` (réplica), `patrocinio.decisao=MDR_ADVOCACIA` + `suspeita_devolucao=false`.)
+(Demais blocos: `contestar.aplica=false` (já contestou), `sem_prazo_em_aberto=true` com `motivo_sem_prazo=AGUARDANDO_AUTOR` (réplica), `despacho_citacao.existe=false` (sem nova ordem de citação nas movimentações), `vinculada_master.presente=true` (ré BANCO MASTER S.A.).)
 
 Responda APENAS o JSON.
 """
@@ -629,10 +542,10 @@ def build_user_message(
             linhas_v.append(f"- `{cnpj}` · {nome}{estado_txt}")
         vinculadas_txt = "\n".join(linhas_v)
         vinculadas_section = (
-            "\n## VINCULADAS BANCO MASTER (gatilho da análise de patrocínio)\n"
+            "\n## VINCULADAS BANCO MASTER (gatilho da flag vinculada_master)\n"
             "Se ALGUM destes CNPJs aparecer no polo passivo, preencha o "
-            "bloco `patrocinio` conforme regras do system prompt. Caso "
-            "contrário, `patrocinio.aplicavel=false`.\n\n"
+            "marque `vinculada_master.presente=true` conforme o system prompt. Caso "
+            "contrário, `vinculada_master.presente=false`.\n\n"
             f"{vinculadas_txt}\n\n"
         )
 

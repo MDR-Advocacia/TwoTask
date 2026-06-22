@@ -86,142 +86,6 @@ logger = logging.getLogger(__name__)
 ANTHROPIC_STATUS_ENDED = "ended"
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Salvaguarda de patrocínio — defesa em profundidade contra falso
-# positivo de "outro escritório". Quando a IA marca suspeita_devolucao
-# por um advogado externo, validamos contra a estrutura per-party do
-# polo_passivo da capa. Se o advogado aparece linkado a OUTRO réu (não
-# vinculada Master), fazemos downgrade automático pra MDR_ADVOCACIA.
-# Casamento com o CHECKPOINT OBRIGATÓRIO em prazos_iniciais_prompts.py.
-# ──────────────────────────────────────────────────────────────────────
-
-
-def _norm_cnpj_digits(value: Any) -> str:
-    """Dígitos do CNPJ — bate '33.923.798/0001-00' com '33923798000100'."""
-    if not value:
-        return ""
-    return "".join(ch for ch in str(value) if ch.isdigit())
-
-
-def _norm_nome(value: Any) -> str:
-    """Lower + accent-fold + colapso de espaços pra comparar nomes."""
-    import unicodedata
-    if not value:
-        return ""
-    s = unicodedata.normalize("NFKD", str(value))
-    s = "".join(ch for ch in s if not unicodedata.combining(ch))
-    return " ".join(s.lower().split())
-
-
-# Preposições/artigos comuns em nomes brasileiros — removidos pra
-# evitar match espúrio só por "da", "de", "do".
-_NOME_STOPWORDS = frozenset({
-    "da", "de", "do", "das", "dos", "e", "di", "del", "la", "le", "dr", "dra",
-})
-
-
-def _nome_advogado_matches(target_norm: str, candidate_norm: str) -> bool:
-    """
-    Match tolerante entre dois nomes já normalizados. Aceita:
-      1. igualdade exata;
-      2. substring (um nome contido no outro — cobre 'Roberta Cavalcanti'
-         vs 'Roberta Cavalcanti - OAB PE12345');
-      3. interseção de tokens significativos (>=2 tokens em comum E
-         >=50% de cobertura do menor lado) — cobre divergência de
-         ordem ou abreviação parcial.
-    Retorna False quando algum lado é vazio.
-    """
-    if not target_norm or not candidate_norm:
-        return False
-    if target_norm == candidate_norm:
-        return True
-    if target_norm in candidate_norm or candidate_norm in target_norm:
-        return True
-    t_tokens = {t for t in target_norm.split() if t not in _NOME_STOPWORDS}
-    c_tokens = {t for t in candidate_norm.split() if t not in _NOME_STOPWORDS}
-    if not t_tokens or not c_tokens:
-        return False
-    common = t_tokens & c_tokens
-    if len(common) < 2:
-        return False
-    min_side = min(len(t_tokens), len(c_tokens))
-    return len(common) * 2 >= min_side
-
-
-def _validate_outro_advogado_vinculo(
-    intake: "PrazoInicialIntake",
-    patrocinio_resp: Any,
-    master_vinculadas: list[dict],
-) -> tuple[bool, Optional[str]]:
-    """
-    Verifica se o `outro_advogado_nome` apontado pela IA tem vínculo
-    com a vinculada Master no `polo_passivo` estruturado da capa.
-
-    Retorna `(ok, motivo_downgrade)`:
-      - `ok=True, motivo=None` → vínculo OK ou inconclusivo (segue).
-      - `ok=False, motivo=str` → advogado aparece linkado a OUTRO réu
-        (não-Master); chamador deve fazer downgrade.
-
-    Conservador por design: só derruba quando há sinal POSITIVO de
-    vínculo com outro réu. Quando a capa não tem advogados estruturados
-    ou o nome não bate em ninguém, confiamos no modelo (pode ter tirado
-    da íntegra). O objetivo é PEGAR o falso positivo clássico de capa
-    em layout 2 colunas, não bloquear casos legítimos.
-    """
-    nome_advogado = (
-        getattr(patrocinio_resp, "outro_advogado_nome", None) or ""
-    ).strip()
-    if not nome_advogado:
-        return True, None
-
-    capa = getattr(intake, "capa_json", None)
-    if not isinstance(capa, dict):
-        return True, None
-    polo_passivo = capa.get("polo_passivo") or []
-    if not isinstance(polo_passivo, list) or not polo_passivo:
-        return True, None
-
-    cnpjs_master = {
-        _norm_cnpj_digits(v.get("cnpj"))
-        for v in (master_vinculadas or [])
-        if isinstance(v, dict) and v.get("cnpj")
-    }
-    cnpjs_master.discard("")
-
-    nome_norm = _norm_nome(nome_advogado)
-    found_in_master = False
-    outro_reu_dono: Optional[str] = None
-
-    for parte in polo_passivo:
-        if not isinstance(parte, dict):
-            continue
-        cnpj_norm = _norm_cnpj_digits(parte.get("documento") or "")
-        advogados = parte.get("advogados") or []
-        if not isinstance(advogados, list):
-            continue
-        is_master = bool(cnpj_norm) and cnpj_norm in cnpjs_master
-        for adv in advogados:
-            if not isinstance(adv, str) or not adv:
-                continue
-            if _nome_advogado_matches(nome_norm, _norm_nome(adv)):
-                if is_master:
-                    found_in_master = True
-                elif outro_reu_dono is None:
-                    outro_reu_dono = parte.get("nome") or "outro réu"
-
-    if found_in_master:
-        return True, None
-
-    if outro_reu_dono is not None:
-        return False, (
-            f"Advogado '{nome_advogado}' aparece vinculado a OUTRO réu "
-            f"('{outro_reu_dono}') no polo passivo da capa, não à vinculada "
-            f"Master — downgrade automático para MDR_ADVOCACIA."
-        )
-
-    return True, None
-
-
 class PrazosIniciaisBatchClassifier:
     """Orquestra a classificação em lote de intakes via Anthropic Batch API."""
 
@@ -494,14 +358,21 @@ class PrazosIniciaisBatchClassifier:
             # Analise estratégica global (Bloco E) — texto livre da IA.
             intake.analise_estrategica = response_obj.analise_estrategica
 
-            # Patrocínio (pin018) — análise paralela. Persiste só quando
-            # a IA marcou aplicavel=true (polo passivo bate com vinculada
-            # Master). Falhas aqui NÃO interrompem o intake — só logam.
+            # Vinculada Master no polo passivo (flag neutra — substitui
+            # patrocínio) + despacho de citação (sinal-âncora). Falhas
+            # aqui NÃO interrompem o intake — só logam.
             try:
-                self._materialize_patrocinio(intake, response_obj)
+                self._materialize_vinculada_master(intake, response_obj)
             except Exception as exc:  # noqa: BLE001
                 logger.exception(
-                    "Erro materializando patrocínio do intake %s: %s",
+                    "Erro materializando vinculada Master do intake %s: %s",
+                    intake.id, exc,
+                )
+            try:
+                self._materialize_despacho_citacao(intake, response_obj)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "Erro materializando despacho de citação do intake %s: %s",
                     intake.id, exc,
                 )
 
@@ -651,142 +522,49 @@ class PrazosIniciaisBatchClassifier:
 
 
 
-    def _materialize_patrocinio(
-        self, intake, response_obj
-    ) -> None:
+    def _materialize_vinculada_master(self, intake, response_obj) -> None:
         """
-        Cria/atualiza o registro `prazo_inicial_patrocinio` 1:1 com o
-        intake quando a IA marcou `patrocinio.aplicavel=true`. Quando
-        false, REMOVE o registro existente (caso seja reprocessamento
-        e a vinculada saiu do polo passivo) — mantém o estado coerente
-        com a última classificação.
+        Persiste a flag NEUTRA de vinculada Master no polo passivo nas
+        colunas vinculada_master_* do intake. Substitui a antiga análise
+        de patrocínio (decisão/devolução superada). Idempotente — em
+        reprocessamento sobrescreve; quando ausente, zera as colunas.
         """
-        from app.models.prazo_inicial_patrocinio import (
-            PATROCINIO_DECISOES_VALIDAS,
-            PATROCINIO_NATUREZAS_VALIDAS,
-            PATROCINIO_REVIEW_PENDING,
-            PrazoInicialPatrocinio,
-        )
-
-        patrocinio_resp = getattr(response_obj, "patrocinio", None)
-        existing = (
-            self.db.query(PrazoInicialPatrocinio)
-            .filter(PrazoInicialPatrocinio.intake_id == intake.id)
-            .first()
-        )
-
-        # Diagnóstico — ajuda a entender por que um intake não ganhou
-        # registro de patrocínio (caso clássico: Sonnet marcou
-        # aplicavel=false mesmo com vinculada Master no polo).
-        if patrocinio_resp is None:
-            logger.info(
-                "patrocinio[intake=%s]: response_obj.patrocinio is None — "
-                "Sonnet não emitiu o bloco. Verificar prompt/schema.",
-                intake.id,
-            )
-        else:
-            logger.info(
-                "patrocinio[intake=%s]: aplicavel=%s decisao=%s "
-                "natureza=%s suspeita=%s polo_confirmado=%s confianca=%s",
-                intake.id,
-                patrocinio_resp.aplicavel,
-                patrocinio_resp.decisao,
-                patrocinio_resp.natureza_acao,
-                patrocinio_resp.suspeita_devolucao,
-                patrocinio_resp.polo_passivo_confirmado,
-                patrocinio_resp.confianca,
-            )
-
-        if patrocinio_resp is None or not patrocinio_resp.aplicavel:
-            # Reprocessamento que não bate mais com vinculada — limpa
-            # o registro pra não ficar dado obsoleto.
-            if existing is not None:
-                logger.info(
-                    "patrocinio[intake=%s]: aplicavel=false — removendo "
-                    "registro existente (id=%s).", intake.id, existing.id,
-                )
-                self.db.delete(existing)
+        bloco = getattr(response_obj, "vinculada_master", None)
+        if bloco is None or not getattr(bloco, "presente", False):
+            intake.vinculada_master_presente = False
+            intake.vinculada_master_nome = None
+            intake.vinculada_master_cnpj = None
+            intake.vinculada_master_polo_confirmado = None
+            intake.vinculada_master_observacao = None
             return
+        intake.vinculada_master_presente = True
+        intake.vinculada_master_nome = bloco.vinculada_nome
+        intake.vinculada_master_cnpj = bloco.vinculada_cnpj
+        intake.vinculada_master_polo_confirmado = bool(
+            bloco.polo_passivo_confirmado
+        )
+        intake.vinculada_master_observacao = bloco.observacao
 
-        decisao = patrocinio_resp.decisao
-        if decisao not in PATROCINIO_DECISOES_VALIDAS:
-            logger.warning(
-                "patrocinio: decisão inválida %r no intake %s — pulando.",
-                decisao, intake.id,
-            )
+
+    def _materialize_despacho_citacao(self, intake, response_obj) -> None:
+        """
+        Persiste o sinal-âncora de despacho de citação nas colunas
+        despacho_citacao_* do intake. Independente das sugestões de prazo
+        — não cria tarefa, só sinaliza. Idempotente; quando ausente, zera.
+        """
+        bloco = getattr(response_obj, "despacho_citacao", None)
+        if bloco is None or not getattr(bloco, "existe", False):
+            intake.despacho_citacao_existe = False
+            intake.despacho_citacao_data = None
+            intake.despacho_citacao_modalidade = None
+            intake.despacho_citacao_efetivada = None
+            intake.despacho_citacao_justificativa = None
             return
-
-        natureza = patrocinio_resp.natureza_acao
-        if natureza is not None and natureza not in PATROCINIO_NATUREZAS_VALIDAS:
-            natureza = None  # IA emitiu valor fora do enum — ignora
-
-        # Valores que vão pro banco — começam idênticos à resposta da IA
-        # e podem ser ajustados pela salvaguarda abaixo.
-        outro_escritorio_nome = patrocinio_resp.outro_escritorio_nome
-        outro_advogado_nome = patrocinio_resp.outro_advogado_nome
-        outro_advogado_oab = patrocinio_resp.outro_advogado_oab
-        outro_advogado_data_habilitacao = (
-            patrocinio_resp.outro_advogado_data_habilitacao
-        )
-        suspeita_devolucao = bool(patrocinio_resp.suspeita_devolucao)
-        motivo_suspeita = patrocinio_resp.motivo_suspeita
-
-        # Salvaguarda pin019 — quando a IA marca suspeita por advogado
-        # externo, checar se ele realmente pertence ao bloco da Master
-        # no polo passivo da capa. Quando aparece linkado a OUTRO réu
-        # (típico falso positivo de capa em 2 colunas), forçar downgrade.
-        if suspeita_devolucao and outro_advogado_nome:
-            ok, motivo_downgrade = _validate_outro_advogado_vinculo(
-                intake, patrocinio_resp, self._fetch_master_vinculadas(),
-            )
-            if not ok:
-                logger.warning(
-                    "patrocinio[intake=%s]: DOWNGRADE automático — %s "
-                    "(decisao IA=%s, advogado=%s, motivo IA=%r)",
-                    intake.id, motivo_downgrade,
-                    decisao, outro_advogado_nome, motivo_suspeita,
-                )
-                motivo_suspeita = (
-                    f"[Salvaguarda automática] {motivo_downgrade} "
-                    f"Decisão original da IA: {decisao}; "
-                    f"motivo original: {(motivo_suspeita or '').strip() or '—'}"
-                )
-                decisao = "MDR_ADVOCACIA"
-                suspeita_devolucao = False
-                outro_escritorio_nome = None
-                outro_advogado_nome = None
-                outro_advogado_oab = None
-                outro_advogado_data_habilitacao = None
-
-        if existing is None:
-            existing = PrazoInicialPatrocinio(
-                intake_id=intake.id,
-                review_status=PATROCINIO_REVIEW_PENDING,
-            )
-            self.db.add(existing)
-        else:
-            # Reprocessamento — reseta status pra pendente porque os
-            # campos da IA foram regenerados.
-            existing.review_status = PATROCINIO_REVIEW_PENDING
-            existing.reviewed_by_user_id = None
-            existing.reviewed_by_email = None
-            existing.reviewed_by_name = None
-            existing.reviewed_at = None
-
-        existing.decisao = decisao
-        existing.outro_escritorio_nome = outro_escritorio_nome
-        existing.outro_advogado_nome = outro_advogado_nome
-        existing.outro_advogado_oab = outro_advogado_oab
-        existing.outro_advogado_data_habilitacao = outro_advogado_data_habilitacao
-        existing.suspeita_devolucao = suspeita_devolucao
-        existing.motivo_suspeita = motivo_suspeita
-        existing.natureza_acao = natureza
-        existing.polo_passivo_confirmado = bool(
-            patrocinio_resp.polo_passivo_confirmado
-        )
-        existing.polo_passivo_observacao = patrocinio_resp.polo_passivo_observacao
-        existing.confianca = patrocinio_resp.confianca
-        existing.fundamentacao = patrocinio_resp.fundamentacao
+        intake.despacho_citacao_existe = True
+        intake.despacho_citacao_data = bloco.data_despacho
+        intake.despacho_citacao_modalidade = bloco.modalidade
+        intake.despacho_citacao_efetivada = bloco.citacao_efetivada
+        intake.despacho_citacao_justificativa = bloco.justificativa or None
 
 
     def _materialize_contestacao_existente(

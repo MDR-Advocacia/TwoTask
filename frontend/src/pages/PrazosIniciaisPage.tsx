@@ -2231,12 +2231,6 @@ export default function PrazosIniciaisPage() {
               Tratamento Web Agendamentos Iniciais
             </Link>
           </Button>
-          <Button asChild variant="outline" className="w-full sm:w-auto">
-            <Link to="/prazos-iniciais/patrocinio/relatorio">
-              <FileText className="mr-2 h-4 w-4" />
-              Relatório de Patrocínio
-            </Link>
-          </Button>
         </div>
       </div>
 
@@ -2950,6 +2944,24 @@ export default function PrazosIniciaisPage() {
                               title="Patrocínio: condução interna do cliente"
                             >
                               Condução interna
+                            </Badge>
+                          ) : null}
+                          {item.despacho_citacao_existe ? (
+                            <Badge
+                              variant="outline"
+                              className="bg-rose-100 text-rose-900 border-rose-400 text-xs font-semibold"
+                              title={`Despacho ordenando a citação${item.despacho_citacao_modalidade ? " · " + item.despacho_citacao_modalidade : ""}${item.despacho_citacao_efetivada === false ? " · ainda não efetivada" : item.despacho_citacao_efetivada ? " · citação efetivada" : ""}`}
+                            >
+                              Citação ordenada
+                            </Badge>
+                          ) : null}
+                          {item.vinculada_master_presente ? (
+                            <Badge
+                              variant="outline"
+                              className="bg-indigo-50 text-indigo-800 border-indigo-300 text-xs"
+                              title={`Vinculada Master no polo passivo${item.vinculada_master_nome ? ": " + item.vinculada_master_nome : ""}`}
+                            >
+                              Master no polo
                             </Badge>
                           ) : null}
                         </div>

@@ -283,6 +283,25 @@ export interface PrazoInicialIntakeSummary {
     | "rejeitado"
     | string
     | null;
+  // Despacho de citação (pin024) — sinal-âncora; badge forte na listagem.
+  despacho_citacao_existe?: boolean;
+  despacho_citacao_data?: string | null;
+  despacho_citacao_modalidade?:
+    | "eletronica"
+    | "correio"
+    | "oficial_justica"
+    | "edital"
+    | "outra"
+    | string
+    | null;
+  despacho_citacao_efetivada?: boolean | null;
+  despacho_citacao_justificativa?: string | null;
+  // Vinculada Master no polo passivo (pin024) — flag neutra, substitui patrocínio.
+  vinculada_master_presente?: boolean;
+  vinculada_master_nome?: string | null;
+  vinculada_master_cnpj?: string | null;
+  vinculada_master_polo_confirmado?: boolean | null;
+  vinculada_master_observacao?: string | null;
 }
 
 export interface PrazoInicialPatrocinio {

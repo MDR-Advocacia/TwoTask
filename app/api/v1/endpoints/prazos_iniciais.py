@@ -325,6 +325,18 @@ class IntakeSummary(BaseModel):
     contestacao_existe: bool = False
     contestacao_apresentada_por_mdr: Optional[bool] = None
     contestacao_generica: Optional[bool] = None
+    # Despacho de citação (sinal-âncora) — listagem exibe badge forte.
+    despacho_citacao_existe: bool = False
+    despacho_citacao_data: Optional[date] = None
+    despacho_citacao_modalidade: Optional[str] = None
+    despacho_citacao_efetivada: Optional[bool] = None
+    despacho_citacao_justificativa: Optional[str] = None
+    # Vinculada Master no polo passivo (flag neutra, substitui patrocínio).
+    vinculada_master_presente: bool = False
+    vinculada_master_nome: Optional[str] = None
+    vinculada_master_cnpj: Optional[str] = None
+    vinculada_master_polo_confirmado: Optional[bool] = None
+    vinculada_master_observacao: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -824,6 +836,16 @@ def _intake_to_summary(intake: PrazoInicialIntake) -> IntakeSummary:
             intake, "contestacao_apresentada_por_mdr", None
         ),
         contestacao_generica=getattr(intake, "contestacao_generica", None),
+        despacho_citacao_existe=bool(getattr(intake, "despacho_citacao_existe", False)),
+        despacho_citacao_data=getattr(intake, "despacho_citacao_data", None),
+        despacho_citacao_modalidade=getattr(intake, "despacho_citacao_modalidade", None),
+        despacho_citacao_efetivada=getattr(intake, "despacho_citacao_efetivada", None),
+        despacho_citacao_justificativa=getattr(intake, "despacho_citacao_justificativa", None),
+        vinculada_master_presente=bool(getattr(intake, "vinculada_master_presente", False)),
+        vinculada_master_nome=getattr(intake, "vinculada_master_nome", None),
+        vinculada_master_cnpj=getattr(intake, "vinculada_master_cnpj", None),
+        vinculada_master_polo_confirmado=getattr(intake, "vinculada_master_polo_confirmado", None),
+        vinculada_master_observacao=getattr(intake, "vinculada_master_observacao", None),
     )
 
 

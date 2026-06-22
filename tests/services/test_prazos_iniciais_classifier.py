@@ -933,3 +933,85 @@ class TestClassifierTemplateIntegration:
         notes = sug.payload_proposto["notes"]
         assert f"cnj={intake.cnj_number}" in notes
         assert "naoexiste=" in notes  # chave ausente colapsa pra vazio
+
+
+# ═════════════════════════════════════════════════════════════════════
+# pin024 — Despacho de citação (sinal-âncora) + vinculada_master (flag)
+# ═════════════════════════════════════════════════════════════════════
+
+
+class TestDespachoCitacaoEVinculadaMaster:
+    """
+    Detecção do despacho que ordena a citação + flag neutra de vinculada
+    Master. Não usam db_session (a materialização só seta colunas no
+    intake), então rodam mesmo com o fixture sqlite quebrado pela tabela
+    JSONB de pub004.
+    """
+
+    def test_despacho_citacao_parses_and_clears(self):
+        d = _empty_response_dict()
+        d["despacho_citacao"] = {
+            "existe": True, "data_despacho": "2026-04-20",
+            "modalidade": "correio", "citacao_efetivada": True,
+            "justificativa": "Cite-se a Re",
+        }
+        r = PrazoInicialClassificationResponse.model_validate(d)
+        assert r.despacho_citacao.existe is True
+        assert r.despacho_citacao.modalidade == "correio"
+        d["despacho_citacao"] = {"existe": False, "modalidade": "edital"}
+        r2 = PrazoInicialClassificationResponse.model_validate(d)
+        assert r2.despacho_citacao.existe is False
+        assert r2.despacho_citacao.modalidade is None  # validator zera
+
+    def test_vinculada_master_parses_and_clears(self):
+        d = _empty_response_dict()
+        d["vinculada_master"] = {
+            "presente": True, "vinculada_nome": "BANCO MASTER S.A.",
+            "vinculada_cnpj": "33.923.798/0001-00",
+            "polo_passivo_confirmado": True, "confianca": "alta",
+        }
+        r = PrazoInicialClassificationResponse.model_validate(d)
+        assert r.vinculada_master.presente is True
+        assert r.vinculada_master.vinculada_nome == "BANCO MASTER S.A."
+        d["vinculada_master"] = {"presente": False, "vinculada_nome": "X"}
+        r2 = PrazoInicialClassificationResponse.model_validate(d)
+        assert r2.vinculada_master.presente is False
+        assert r2.vinculada_master.vinculada_nome is None
+
+    def test_materialize_sets_and_zeros_intake_columns(self):
+        d = _empty_response_dict()
+        d["despacho_citacao"] = {
+            "existe": True, "data_despacho": "2026-04-20",
+            "modalidade": "oficial_justica", "citacao_efetivada": False,
+            "justificativa": "Expeca-se mandado de citacao",
+        }
+        d["vinculada_master"] = {
+            "presente": True, "vinculada_nome": "BANCO MASTER S.A.",
+            "vinculada_cnpj": "33923798000100",
+            "polo_passivo_confirmado": False, "observacao": "cadastro divergente",
+        }
+        r = PrazoInicialClassificationResponse.model_validate(d)
+
+        class _FakeIntake:
+            pass
+
+        it = _FakeIntake()
+        PrazosIniciaisBatchClassifier._materialize_despacho_citacao(None, it, r)
+        PrazosIniciaisBatchClassifier._materialize_vinculada_master(None, it, r)
+        assert it.despacho_citacao_existe is True
+        assert it.despacho_citacao_modalidade == "oficial_justica"
+        assert it.despacho_citacao_efetivada is False
+        assert it.vinculada_master_presente is True
+        assert it.vinculada_master_nome == "BANCO MASTER S.A."
+        assert it.vinculada_master_polo_confirmado is False
+        assert it.vinculada_master_observacao == "cadastro divergente"
+
+        # Ausente -> zera tudo.
+        r2 = PrazoInicialClassificationResponse.model_validate(_empty_response_dict())
+        it2 = _FakeIntake()
+        PrazosIniciaisBatchClassifier._materialize_despacho_citacao(None, it2, r2)
+        PrazosIniciaisBatchClassifier._materialize_vinculada_master(None, it2, r2)
+        assert it2.despacho_citacao_existe is False
+        assert it2.despacho_citacao_modalidade is None
+        assert it2.vinculada_master_presente is False
+        assert it2.vinculada_master_nome is None
