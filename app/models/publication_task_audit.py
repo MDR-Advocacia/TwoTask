@@ -8,10 +8,10 @@ da sugestão automática. Append-only — nunca atualiza/deleta.
 """
 
 from sqlalchemy import Boolean, Column, DateTime, Integer, String
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
 from app.db.session import Base
+from app.db.types import jsonb
 
 
 class PublicationTaskAudit(Base):
@@ -26,12 +26,12 @@ class PublicationTaskAudit(Base):
 
     # O que foi REALMENTE enviado ao L1 (após override do operador + squad
     # routing + defaults) e a proposta automática original, pra comparação.
-    sent_payload = Column(JSONB, nullable=True)
-    proposed_payload = Column(JSONB, nullable=True)
+    sent_payload = Column(jsonb(), nullable=True)
+    proposed_payload = Column(jsonb(), nullable=True)
 
     # True quando o enviado divergiu da proposta em subtipo/escritório/responsável.
     override_detected = Column(Boolean, nullable=False, server_default="false", index=True)
-    override_fields = Column(JSONB, nullable=True)  # {campo: {proposto, enviado}}
+    override_fields = Column(jsonb(), nullable=True)  # {campo: {proposto, enviado}}
 
     # Quem agendou (snapshot do operador — o L1 só guarda "Sistema").
     scheduled_by_user_id = Column(Integer, nullable=True, index=True)

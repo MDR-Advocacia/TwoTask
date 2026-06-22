@@ -20,11 +20,11 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
 from app.db.session import Base
+from app.db.types import jsonb
 
 # Status do processo no fluxo de citação. Alterado EXCLUSIVAMENTE pelo
 # operador (o scan automático nunca mexe nisto).
@@ -123,7 +123,7 @@ class CitacaoBMMovimento(Base):
     nome = Column(String, nullable=False)
     grau = Column(String(8), nullable=True)
     data_hora = Column(DateTime(timezone=True), nullable=True, index=True)
-    complementos = Column(JSONB, nullable=True)
+    complementos = Column(jsonb(), nullable=True)
     orgao_julgador = Column(String, nullable=True)
 
     # Hash estável (grau+codigo+data+nome+complementos) pra evitar reinserção.
