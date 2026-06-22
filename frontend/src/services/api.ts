@@ -531,6 +531,39 @@ export async function bulkDeletePrazoInicialIntakes(
 }
 
 
+export interface BulkArchiveIntakesResult {
+  archived_count: number;
+  archived_ids: number[];
+}
+
+/** Arquiva (soft-delete) intakes em lote — por IDs OU criterio (data+status). */
+export async function bulkArchivePrazoInicialIntakes(payload: {
+  intake_ids?: number[];
+  before_date?: string;
+  status_in?: string[];
+}): Promise<BulkArchiveIntakesResult> {
+  const response = await apiFetch(
+    `/api/v1/prazos-iniciais/intakes/bulk-archive`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+  if (!response.ok) {
+    let detail = "Falha ao arquivar em lote.";
+    try {
+      const data = await response.json();
+      detail = data?.detail || detail;
+    } catch (_) {
+      // sem body
+    }
+    throw new Error(detail);
+  }
+  return (await response.json()) as BulkArchiveIntakesResult;
+}
+
+
 /**
  * Onda 3 #5 — dispara o tratamento web (GED + enqueue cancel da legacy)
  * de um intake AGENDADO/CONCLUIDO_SEM_PROVIDENCIA. Idempotente — se

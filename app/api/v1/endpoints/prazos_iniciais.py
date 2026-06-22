@@ -44,6 +44,7 @@ from app.models.legal_one import LegalOneOffice, LegalOneTaskSubType, LegalOneUs
 from app.models.prazo_inicial import (
     INTAKE_SOURCE_EXTERNAL_API,
     INTAKE_SOURCE_USER_UPLOAD,
+    INTAKE_STATUS_ARCHIVED,
     INTAKE_STATUS_AWAITING_TEMPLATE_CONFIG,
     INTAKE_STATUS_CANCELLED,
     INTAKE_STATUS_CLASSIFICATION_ERROR,
@@ -1084,6 +1085,9 @@ def list_intakes(
             query = query.filter(PrazoInicialIntake.status == status_list[0])
         else:
             query = query.filter(PrazoInicialIntake.status.in_(status_list))
+    else:
+        # Sem filtro explícito → esconde arquivados da fila ativa (pin025).
+        query = query.filter(PrazoInicialIntake.status != INTAKE_STATUS_ARCHIVED)
 
     # office_id — CSV de ints
     office_ids = _parse_csv_ints(office_id)
@@ -2273,6 +2277,87 @@ def bulk_delete_intakes_admin(
         deleted_ids=deleted_ids,
         failed_ids=failed_ids,
         errors=errors,
+    )
+
+
+class BulkArchiveIntakesRequest(BaseModel):
+    """Arquivar em lote por IDs OU por critério (received_at < before_date,
+    restrito a status_in). Exatamente um dos modos."""
+    intake_ids: Optional[List[int]] = Field(default=None, max_length=500)
+    before_date: Optional[date] = None
+    status_in: Optional[List[str]] = None
+
+
+class BulkArchiveIntakesResponse(BaseModel):
+    archived_count: int
+    archived_ids: List[int]
+
+
+@router.post(
+    "/intakes/bulk-archive",
+    response_model=BulkArchiveIntakesResponse,
+    summary="Arquiva (soft-delete) N intakes em lote — por IDs ou por critério (data + status).",
+)
+def bulk_archive_intakes(
+    payload: BulkArchiveIntakesRequest,
+    db: Session = Depends(get_db),
+    current_user: LegalOneUser = Depends(
+        auth_security.require_permission("prazos_iniciais")
+    ),
+):
+    """
+    Soft-delete em lote: status vira ARQUIVADO, dados preservados, sai da
+    fila ativa (a listagem esconde arquivados por padrão). Idempotente —
+    intakes já ARQUIVADO são pulados. O status anterior fica em
+    metadata_json["archived_from_status"] pra eventual restauração.
+
+    Dois modos (exatamente um):
+      - intake_ids: lista explícita (multi-select na UI), max 500.
+      - critério: before_date (received_at <) e/ou status_in. Cap 500.
+    """
+    from datetime import datetime as _dt, time as _time, timezone as _tz
+
+    has_ids = bool(payload.intake_ids)
+    has_criteria = bool(payload.before_date or payload.status_in)
+    if has_ids == has_criteria:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Informe intake_ids OU um critério (before_date/status_in), não ambos.",
+        )
+
+    q = db.query(PrazoInicialIntake).filter(
+        PrazoInicialIntake.status != INTAKE_STATUS_ARCHIVED
+    )
+    if has_ids:
+        q = q.filter(PrazoInicialIntake.id.in_(payload.intake_ids))
+    else:
+        if payload.before_date:
+            cutoff = _dt.combine(payload.before_date, _time.min, tzinfo=_tz.utc)
+            q = q.filter(PrazoInicialIntake.received_at < cutoff)
+        if payload.status_in:
+            q = q.filter(PrazoInicialIntake.status.in_(payload.status_in))
+        q = q.limit(500)
+
+    now = _dt.now(_tz.utc)
+    archived_ids: List[int] = []
+    for intake in q.all():
+        meta = dict(intake.metadata_json or {})
+        meta["archived_from_status"] = intake.status
+        intake.metadata_json = meta
+        intake.status = INTAKE_STATUS_ARCHIVED
+        intake.archived_at = now
+        intake.archived_by_user_id = current_user.id
+        intake.archived_by_email = current_user.email
+        intake.archived_by_name = current_user.name
+        archived_ids.append(intake.id)
+    db.commit()
+    logger.info(
+        "bulk_archive_intakes: %d arquivados por %s (modo=%s)",
+        len(archived_ids), current_user.email, "ids" if has_ids else "criterio",
+    )
+    return BulkArchiveIntakesResponse(
+        archived_count=len(archived_ids),
+        archived_ids=archived_ids,
     )
 
 
@@ -3574,6 +3659,9 @@ def export_intakes_xlsx(
             q = q.filter(PrazoInicialIntake.status == status_list[0])
         else:
             q = q.filter(PrazoInicialIntake.status.in_(status_list))
+    else:
+        # Sem filtro explícito → esconde arquivados do export (pin025).
+        q = q.filter(PrazoInicialIntake.status != INTAKE_STATUS_ARCHIVED)
 
     # office_id: idem CSV. Pega ints de uma string "61,62" ou apenas "61".
     office_ids = _parse_csv_ints(office_id)

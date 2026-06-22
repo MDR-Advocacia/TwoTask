@@ -71,6 +71,10 @@ INTAKE_STATUS_CLASSIFICATION_ERROR = "ERRO_CLASSIFICACAO"
 INTAKE_STATUS_SCHEDULE_ERROR = "ERRO_AGENDAMENTO"
 INTAKE_STATUS_GED_ERROR = "ERRO_GED"
 INTAKE_STATUS_CANCELLED = "CANCELADO"
+# Arquivamento em lote (pin025) — soft-delete de entradas antigas/irrelevantes.
+# Distinto de CANCELADO (cancelamento manual pontual). A listagem ativa esconde
+# ARQUIVADO por padrão; dados preservados pra auditoria/relatório.
+INTAKE_STATUS_ARCHIVED = "ARQUIVADO"
 
 INTAKE_STATUSES_REINGEST_ALLOWED = frozenset({
     INTAKE_STATUS_RECEIVED,
@@ -303,6 +307,15 @@ class PrazoInicialIntake(Base):
     treated_by_email = Column(String(255), nullable=True)
     treated_by_name = Column(String(255), nullable=True)
     treated_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Arquivamento em lote (pin025) — soft-delete: status vira ARQUIVADO,
+    # dados preservados, fora da fila ativa. archived_by_* = auditoria de
+    # quem arquivou. O status anterior é guardado em metadata_json
+    # ("archived_from_status") pra eventual restauração.
+    archived_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    archived_by_user_id = Column(Integer, nullable=True)
+    archived_by_email = Column(String(255), nullable=True)
+    archived_by_name = Column(String(255), nullable=True)
 
     # Disparo desacoplado de GED + cancel da legacy task (pin012, Onda 3 #5).
     # Após confirmar/finalizar, o intake fica AGENDADO ou

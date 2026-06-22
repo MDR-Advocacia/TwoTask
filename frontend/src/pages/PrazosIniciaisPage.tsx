@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   AlertCircle,
+  Archive,
   CalendarClock,
   CheckCircle2,
   ChevronLeft,
@@ -71,6 +72,7 @@ import {
   encaminharIntakeParaDevolucao,
   fetchPrazoInicialDetail,
   deletePrazoInicialIntake,
+  bulkArchivePrazoInicialIntakes,
   bulkDeletePrazoInicialIntakes,
   fetchPrazosIniciaisBatches,
   fetchPrazosIniciaisEnums,
@@ -91,6 +93,8 @@ import {
   type ReapplyTemplatesResult,
 } from "@/services/api";
 import { UploadProcessoDialog } from "@/components/prazos-iniciais/UploadProcessoDialog";
+import { UploadProcessoLoteDialog } from "@/components/prazos-iniciais/UploadProcessoLoteDialog";
+import { ArquivarAntigosDialog } from "@/components/prazos-iniciais/ArquivarAntigosDialog";
 import { PatrocinioPanel } from "@/components/prazos-iniciais/PatrocinioPanel";
 import { ContestacaoExistentePanel } from "@/components/prazos-iniciais/ContestacaoExistentePanel";
 import { useAuth } from "@/hooks/useAuth";
@@ -496,6 +500,8 @@ export default function PrazosIniciaisPage() {
     "__all__",
   );
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+  const [loteDialogOpen, setLoteDialogOpen] = useState(false);
+  const [arquivarDialogOpen, setArquivarDialogOpen] = useState(false);
   const [offset, setOffset] = useState(0);
   const [pageSize, setPageSize] = useState<25 | 50 | 100>(PAGE_SIZE_DEFAULT);
   // Sentinela "Aplicar foi clicado" — incrementa em onAplicarFiltros e
@@ -527,6 +533,7 @@ export default function PrazosIniciaisPage() {
     new Set(),
   );
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [bulkArchiving, setBulkArchiving] = useState(false);
 
   // Tarefas recentes do processo no Legal One — carregadas quando o
   // detalhe abre com lawsuit_id resolvido. Reusa o endpoint de
@@ -1230,6 +1237,43 @@ export default function PrazosIniciaisPage() {
       });
     } finally {
       setBulkDeleting(false);
+    }
+  };
+
+  // Arquiva os intakes marcados (soft-delete pra ARQUIVADO). Disponível pra
+  // operador (diferente do delete, que é admin). Saem da fila ativa.
+  const onBulkArchiveIntakes = async () => {
+    const ids = Array.from(selectedIntakeIds);
+    if (ids.length === 0) return;
+    if (
+      !confirm(
+        `Arquivar ${ids.length} intake(s) marcado(s)?
+
+` +
+          "Eles saem da fila ativa (soft-delete). Os dados ficam preservados — " +
+          "você ainda os vê filtrando por status ARQUIVADO.",
+      )
+    ) {
+      return;
+    }
+    setBulkArchiving(true);
+    try {
+      const r = await bulkArchivePrazoInicialIntakes({ intake_ids: ids });
+      toast({
+        title: `${r.archived_count} arquivado(s)`,
+        description: "Saíram da fila ativa.",
+      });
+      setSelectedIntakeIds(new Set());
+      await loadIntakes();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Erro desconhecido";
+      toast({
+        title: "Falha ao arquivar",
+        description: msg,
+        variant: "destructive",
+      });
+    } finally {
+      setBulkArchiving(false);
     }
   };
 
@@ -2178,6 +2222,24 @@ export default function PrazosIniciaisPage() {
             Subir processo
           </Button>
           <Button
+            variant="outline"
+            className="w-full sm:w-auto"
+            onClick={() => setLoteDialogOpen(true)}
+            title="Sobe vários PDFs de processo de uma vez (extração mecânica por arquivo)."
+          >
+            <FileUp className="mr-2 h-4 w-4" />
+            Subir em lote
+          </Button>
+          <Button
+            variant="outline"
+            className="w-full sm:w-auto"
+            onClick={() => setArquivarDialogOpen(true)}
+            title="Arquiva em lote entradas antigas por data/status (soft-delete)."
+          >
+            <Archive className="mr-2 h-4 w-4" />
+            Arquivar antigos
+          </Button>
+          <Button
             className="w-full sm:w-auto"
             onClick={handleClassifyPending}
             disabled={classifyingPending}
@@ -2766,7 +2828,7 @@ export default function PrazosIniciaisPage() {
               ids marcados E o usuario eh admin. Bulk delete chama
               /intakes/bulk-delete com ate 500 ids; backend faz
               best-effort (commit por intake) e reporta falhas. */}
-          {isAdmin && selectedIntakeIds.size > 0 ? (
+          {selectedIntakeIds.size > 0 ? (
             <div className="mb-3 flex items-center justify-between gap-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2">
               <div className="text-sm text-blue-900">
                 <span className="font-semibold">{selectedIntakeIds.size}</span>{" "}
@@ -2777,23 +2839,39 @@ export default function PrazosIniciaisPage() {
                   size="sm"
                   variant="ghost"
                   onClick={() => setSelectedIntakeIds(new Set())}
-                  disabled={bulkDeleting}
+                  disabled={bulkDeleting || bulkArchiving}
                 >
                   Limpar seleção
                 </Button>
                 <Button
                   size="sm"
-                  variant="destructive"
-                  onClick={onBulkDeleteIntakes}
-                  disabled={bulkDeleting}
+                  variant="outline"
+                  onClick={onBulkArchiveIntakes}
+                  disabled={bulkDeleting || bulkArchiving}
+                  title="Arquiva os marcados (soft-delete — saem da fila ativa)."
                 >
-                  {bulkDeleting ? (
+                  {bulkArchiving ? (
                     <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
                   ) : (
-                    <Trash2 className="mr-1 h-3.5 w-3.5" />
+                    <Archive className="mr-1 h-3.5 w-3.5" />
                   )}
-                  Deletar marcados
+                  Arquivar marcados
                 </Button>
+                {isAdmin ? (
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    onClick={onBulkDeleteIntakes}
+                    disabled={bulkDeleting || bulkArchiving}
+                  >
+                    {bulkDeleting ? (
+                      <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Trash2 className="mr-1 h-3.5 w-3.5" />
+                    )}
+                    Deletar marcados
+                  </Button>
+                ) : null}
               </div>
             </div>
           ) : null}
@@ -2802,7 +2880,7 @@ export default function PrazosIniciaisPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  {isAdmin ? (
+                  {true ? (
                     <TableHead className="w-[40px]">
                       {/* Select-all: marca somente os ids do load atual.
                           Indeterminate (alguns mas nao todos) renderiza como
@@ -2847,7 +2925,7 @@ export default function PrazosIniciaisPage() {
               <TableBody>
                 {isLoading && items.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={isAdmin ? 9 : 8} className="py-10 text-center">
+                    <TableCell colSpan={9} className="py-10 text-center">
                       <Loader2 className="mr-2 inline-block h-5 w-5 animate-spin" />
                       Carregando intakes...
                     </TableCell>
@@ -2856,7 +2934,7 @@ export default function PrazosIniciaisPage() {
 
                 {!isLoading && items.length === 0 && !loadError ? (
                   <TableRow>
-                    <TableCell colSpan={isAdmin ? 9 : 8} className="py-10 text-center text-muted-foreground">
+                    <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
                       Nenhum intake encontrado.
                     </TableCell>
                   </TableRow>
@@ -2864,7 +2942,7 @@ export default function PrazosIniciaisPage() {
 
                 {items.map((item) => (
                   <TableRow key={item.id}>
-                    {isAdmin ? (
+                    {true ? (
                       <TableCell className="w-[40px]">
                         <input
                           type="checkbox"
@@ -3908,6 +3986,20 @@ export default function PrazosIniciaisPage() {
           // Recarrega listagem pra mostrar o novo intake.
           loadIntakes(true);
         }}
+      />
+
+      {/* ── Modal: Subir processos em lote ──────────────────────────── */}
+      <UploadProcessoLoteDialog
+        open={loteDialogOpen}
+        onOpenChange={setLoteDialogOpen}
+        onSuccess={() => loadIntakes(true)}
+      />
+
+      {/* ── Modal: Arquivar entradas antigas ────────────────────────── */}
+      <ArquivarAntigosDialog
+        open={arquivarDialogOpen}
+        onOpenChange={setArquivarDialogOpen}
+        onSuccess={() => loadIntakes(true)}
       />
 
       {/* ── Modal: Reaplicar templates em lote ─────────────────────── */}
