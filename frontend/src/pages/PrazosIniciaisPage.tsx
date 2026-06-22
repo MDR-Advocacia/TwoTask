@@ -2147,7 +2147,7 @@ export default function PrazosIniciaisPage() {
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div>
+        <div className="lg:max-w-md">
           <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
             <CalendarClock className="h-6 w-6" />
             Agendar Prazos Iniciais
@@ -2158,7 +2158,7 @@ export default function PrazosIniciaisPage() {
           </p>
         </div>
 
-        <div className="flex flex-col gap-2 sm:flex-row">
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end lg:flex-1">
           <Button
             variant="default"
             className="w-full sm:w-auto"
