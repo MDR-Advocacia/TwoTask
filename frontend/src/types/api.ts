@@ -689,9 +689,6 @@ export interface AjusCodAndamento {
   dias_fatal_offset_uteis: number;
   informacao_template: string;
   is_default: boolean;
-  // Pin019 — código usado pelo fluxo de devolução automática
-  // (POST /prazos-iniciais/intake/devolucao). Só 1 ativo por vez.
-  is_devolucao: boolean;
   is_active: boolean;
 }
 
@@ -704,7 +701,6 @@ export interface AjusCodAndamentoCreatePayload {
   dias_fatal_offset_uteis: number;
   informacao_template: string;
   is_default: boolean;
-  is_devolucao: boolean;
   is_active: boolean;
 }
 
@@ -715,7 +711,6 @@ export interface AjusAndamentoQueueItem {
   cod_andamento_id: number;
   cod_andamento_codigo: string | null;
   cod_andamento_label: string | null;
-  cod_andamento_is_devolucao: boolean;
   situacao: "A" | "C";
   data_evento: string;          // YYYY-MM-DD
   data_agendamento: string;
@@ -1084,13 +1079,6 @@ export interface AjusBlocklistUploadResponse {
   updated: number;
   removed: number;
   total_after: number;
-}
-
-export interface EncaminharDevolucaoResponse {
-  intake_id: number;
-  intake_status: string;
-  ajus_queue_item_id: number | null;
-  dispatch_pending: boolean;
 }
 
 export interface PatrocinioRelatorioFilters {

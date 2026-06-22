@@ -609,18 +609,6 @@ export default function AjusPage() {
               </AlertDescription>
             </Alert>
           )}
-          {codigos.length > 0 && !codigos.some((c) => c.is_devolucao && c.is_active) && (
-            <Alert>
-              <AlertCircle className="h-4 w-4" />
-              <AlertTitle>Sem código de devolução ativo</AlertTitle>
-              <AlertDescription>
-                Nenhum código de andamento está marcado como "Devolução
-                automática". Os intakes recebidos via{" "}
-                <code>/intake/devolucao</code> são criados, mas não vão pra
-                fila AJUS automaticamente até você marcar um código.
-              </AlertDescription>
-            </Alert>
-          )}
           {codigos.length === 0 && !codigosLoading && (
             <Alert>
               <AlertCircle className="h-4 w-4" />
@@ -881,13 +869,6 @@ export default function AjusPage() {
                               <FileText className="h-3.5 w-3.5" />
                               <Eye className="h-3 w-3" />
                             </button>
-                          ) : item.cod_andamento_is_devolucao ? (
-                            <span
-                              className="text-xs text-muted-foreground"
-                              title="Devolução não exige PDF"
-                            >
-                              —
-                            </span>
                           ) : selectable ? (
                             <button
                               type="button"
@@ -1083,7 +1064,6 @@ export default function AjusPage() {
                     <TableHead>Sit.</TableHead>
                     <TableHead>Offsets (úteis)</TableHead>
                     <TableHead>Default</TableHead>
-                    <TableHead>Devolução</TableHead>
                     <TableHead>Ativo</TableHead>
                     <TableHead className="text-right">Ações</TableHead>
                   </TableRow>
@@ -1091,7 +1071,7 @@ export default function AjusPage() {
                 <TableBody>
                   {codigos.length === 0 && !codigosLoading && (
                     <TableRow>
-                      <TableCell colSpan={8} className="text-center text-sm text-muted-foreground py-8">
+                      <TableCell colSpan={7} className="text-center text-sm text-muted-foreground py-8">
                         Nenhum código cadastrado. Clique em "Novo código" pra começar.
                       </TableCell>
                     </TableRow>
@@ -1113,13 +1093,6 @@ export default function AjusPage() {
                       <TableCell>
                         {c.is_default ? (
                           <Badge className="bg-emerald-100 text-emerald-800">Default</Badge>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">—</span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        {c.is_devolucao ? (
-                          <Badge className="bg-orange-100 text-orange-800">Devolução</Badge>
                         ) : (
                           <span className="text-xs text-muted-foreground">—</span>
                         )}

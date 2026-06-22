@@ -60,7 +60,6 @@ import {
   AjusBlocklistUploadResponse,
   AjusBulkResponse,
   AjusBulkVarsPayload,
-  EncaminharDevolucaoResponse,
   PatrocinioRelatorioFilters,
   PatrocinioRelatorioResponse,
   PrazoInicialLegacyTaskZombieListResponse,
@@ -1649,25 +1648,6 @@ export async function downloadPatrocinioRelatorioCsv(
     throw new Error(`HTTP ${res.status} ao baixar CSV do relatorio`);
   }
   return await res.blob();
-}
-
-/**
- * Encaminha um intake existente pra fila de devolucao do AJUS.
- * Marca patrocinio como aprovado/devolucao + status DEVOLUCAO_PENDENTE
- * + dispatch_pending=True. Backend faz tudo numa transacao soh.
- */
-export async function encaminharIntakeParaDevolucao(
-  intakeId: number,
-  motivo?: string,
-): Promise<EncaminharDevolucaoResponse> {
-  const res = await apiFetch(
-    `/api/v1/prazos-iniciais/intakes/${intakeId}/encaminhar-devolucao`,
-    {
-      method: "POST",
-      body: JSON.stringify({ motivo: motivo || null }),
-    },
-  );
-  return expectJson<EncaminharDevolucaoResponse>(res);
 }
 
 /** Lista paginada do relatorio de devolucoes aprovadas. */
