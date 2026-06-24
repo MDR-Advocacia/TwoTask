@@ -162,6 +162,8 @@ export interface Auditoria {
 export interface AlertaResponsavel {
   responsavel_user_id: number | null;
   responsavel_nome: string;
+  responsavel_email: string | null;
+  teams_disponivel: boolean;
   count: number;
   mensagem: string;
 }
@@ -295,6 +297,18 @@ export async function getAuditoria(id: number): Promise<Auditoria> {
 // Mensagens de alerta (uma por responsável) das DMIs que vencem hoje.
 export async function getAlertasVenceHoje(): Promise<AlertaResponsavel[]> {
   return json(await apiFetch(`${BASE}/alertas/vence-hoje`));
+}
+
+// Envia o alerta do responsável via Teams (webhook Power Automate, server-side).
+export async function enviarAlertaTeams(
+  responsavel_user_id: number,
+): Promise<{ ok: boolean; mensagem: string }> {
+  return json(
+    await apiFetch(`${BASE}/alertas/enviar-teams`, {
+      method: "POST",
+      body: JSON.stringify({ responsavel_user_id }),
+    }),
+  );
 }
 
 export async function addAnotacao(id: number, texto: string): Promise<Anotacao> {

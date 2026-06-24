@@ -67,6 +67,7 @@ import {
   AlertaResponsavel,
   Anotacao,
   Auditoria,
+  enviarAlertaTeams,
   Estado,
   Farol,
   FormUser,
@@ -340,6 +341,7 @@ export default function OnerequestPage() {
   const [alertasOpen, setAlertasOpen] = useState(false);
   const [alertas, setAlertas] = useState<AlertaResponsavel[]>([]);
   const [alertasLoading, setAlertasLoading] = useState(false);
+  const [enviandoTeams, setEnviandoTeams] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -474,6 +476,23 @@ export default function OnerequestPage() {
       toast({ title: "Copiado", description: "Mensagem na área de transferência." });
     } catch {
       toast({ title: "Não consegui copiar", description: "Selecione e copie manualmente.", variant: "destructive" });
+    }
+  };
+
+  const enviarTeams = async (g: AlertaResponsavel) => {
+    if (g.responsavel_user_id == null) return;
+    setEnviandoTeams(g.responsavel_user_id);
+    try {
+      const r = await enviarAlertaTeams(g.responsavel_user_id);
+      toast({
+        title: r.ok ? "Enviado no Teams" : "Não enviado",
+        description: r.mensagem,
+        variant: r.ok ? undefined : "destructive",
+      });
+    } catch (e) {
+      toast({ title: "Erro", description: String((e as Error).message), variant: "destructive" });
+    } finally {
+      setEnviandoTeams(null);
     }
   };
 
@@ -1307,10 +1326,27 @@ export default function OnerequestPage() {
                     <span className="text-sm font-medium">
                       {g.responsavel_nome} <span className="text-xs text-muted-foreground">· {g.count} DMI(s)</span>
                     </span>
-                    <Button size="sm" variant="outline" onClick={() => copiarMensagem(g.mensagem)}>
-                      <ClipboardCopy className="mr-2 h-4 w-4" />
-                      Copiar
-                    </Button>
+                    <div className="flex gap-2">
+                      {g.teams_disponivel && (
+                        <Button
+                          size="sm"
+                          onClick={() => enviarTeams(g)}
+                          disabled={enviandoTeams === g.responsavel_user_id}
+                          title={`Manda DM no Teams para ${g.responsavel_email}`}
+                        >
+                          {enviandoTeams === g.responsavel_user_id ? (
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          ) : (
+                            <Bell className="mr-2 h-4 w-4" />
+                          )}
+                          Enviar no Teams
+                        </Button>
+                      )}
+                      <Button size="sm" variant="outline" onClick={() => copiarMensagem(g.mensagem)}>
+                        <ClipboardCopy className="mr-2 h-4 w-4" />
+                        Copiar
+                      </Button>
+                    </div>
                   </div>
                   <pre className="whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">{g.mensagem}</pre>
                 </div>

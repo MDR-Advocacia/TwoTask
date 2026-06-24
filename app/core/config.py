@@ -275,6 +275,16 @@ class Settings(BaseSettings):
     # (rotação sem downtime). Vazio = endpoint de intake desativado.
     onerequest_intake_api_key: str | None = None
 
+    # ── OneRequest: alerta "vence hoje" via Teams ─────────────────────
+    # URL do fluxo Power Automate (Workflows) que recebe {destinatario,
+    # destinatario_nome, mensagem} e posta DM no Teams. Vazio = botão
+    # "Enviar no Teams" some (só "Copiar"). É SEGREDO (qualquer um com a URL
+    # dispara o fluxo) — fica só no backend, nunca vai pro front.
+    teams_alert_webhook_url: str | None = None
+    # Domínio M365 corporativo: só responsáveis com e-mail nesse domínio são
+    # endereçáveis no Teams (os demais usam e-mail pessoal → só Copiar).
+    teams_corporate_email_domain: str = "mdradvocacia.com"
+
     # ── AJUS (sistema do cliente — POST /inserir-prazos) ──────────────
     # Credenciais lidas do env (Coolify). NÃO fica em tabela porque é
     # uma conta única por instalação MDR. Se um dia precisar de conta

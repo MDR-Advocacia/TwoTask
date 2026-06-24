@@ -589,6 +589,8 @@ def auditoria(
 class AlertaResponsavel(BaseModel):
     responsavel_user_id: Optional[int] = None
     responsavel_nome: str
+    responsavel_email: Optional[str] = None
+    teams_disponivel: bool = False
     count: int
     mensagem: str
 
@@ -601,3 +603,22 @@ class AlertaResponsavel(BaseModel):
 )
 def alertas_vence_hoje(db: Session = Depends(get_db)):
     return OnerequestService(db).alertas_vence_hoje()
+
+
+class EnviarTeamsRequest(BaseModel):
+    responsavel_user_id: int
+
+
+class EnviarTeamsResponse(BaseModel):
+    ok: bool
+    mensagem: str
+
+
+@router.post(
+    "/alertas/enviar-teams",
+    response_model=EnviarTeamsResponse,
+    summary="Envia o alerta 'vence hoje' do responsável via Teams (webhook Power Automate)",
+    dependencies=[_perm],
+)
+def enviar_alerta_teams(payload: EnviarTeamsRequest, db: Session = Depends(get_db)):
+    return OnerequestService(db).enviar_alerta_teams(payload.responsavel_user_id)
