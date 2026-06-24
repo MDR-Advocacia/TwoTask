@@ -48,28 +48,39 @@ import UserSelector, { SelectableUser } from "@/components/ui/UserSelector";
 import { useToast } from "@/hooks/use-toast";
 import {
   AlertTriangle,
+  Bell,
   CalendarCheck,
   CheckCircle2,
+  ClipboardCopy,
   ExternalLink,
   Inbox,
   Lightbulb,
   Loader2,
+  Pause,
+  Play,
   RefreshCw,
   Search,
 } from "lucide-react";
 import {
   addAnotacao,
   agendarSolicitacao,
+  AlertaResponsavel,
   Anotacao,
+  Auditoria,
   Estado,
   Farol,
   FormUser,
+  getAlertasVenceHoje,
+  getAuditoria,
   getEstado,
   getFormUsers,
+  getL1Autorefresh,
   getL1Tarefas,
   getOptions,
   getSugestao,
+  L1Autorefresh,
   L1Tarefas,
+  setL1Autorefresh,
   ListParams,
   listAnotacoes,
   listSolicitacoes,
@@ -285,6 +296,8 @@ export default function OnerequestPage() {
   const [kpis, setKpis] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(false);
   const [estado, setEstado] = useState<Estado | null>(null);
+  const [autoref, setAutoref] = useState<L1Autorefresh | null>(null);
+  const [togglingAuto, setTogglingAuto] = useState(false);
 
   const [buscaInput, setBuscaInput] = useState("");
   const [busca, setBusca] = useState("");
@@ -313,6 +326,21 @@ export default function OnerequestPage() {
   const [checkingL1, setCheckingL1] = useState(false);
   const [l1Progress, setL1Progress] = useState({ done: 0, total: 0 });
 
+  // Filtro da aba Atrasadas: só as SEM anotação (precisam de ação).
+  const [soSemAnotacao, setSoSemAnotacao] = useState(false);
+
+  // Modal de Acompanhamento/Auditoria (DMIs já agendadas).
+  const [auditSel, setAuditSel] = useState<OnerequestSolicitacao | null>(null);
+  const [auditData, setAuditData] = useState<Auditoria | null>(null);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditNovaAnotacao, setAuditNovaAnotacao] = useState("");
+  const [auditSavingAnot, setAuditSavingAnot] = useState(false);
+
+  // Modal de Mensagens de Alerta (vence hoje, agrupadas por responsável).
+  const [alertasOpen, setAlertasOpen] = useState(false);
+  const [alertas, setAlertas] = useState<AlertaResponsavel[]>([]);
+  const [alertasLoading, setAlertasLoading] = useState(false);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -327,6 +355,7 @@ export default function OnerequestPage() {
       } else if (tab === "atrasadas") {
         params.status_sistema = "ABERTO";
         params.farol = "atrasado"; // prazo BB já venceu
+        if (soSemAnotacao) params.sem_anotacao = true; // só as que ainda precisam de ação
       } else if (tab === "hoje") {
         params.status_sistema = "ABERTO";
         params.farol = "vermelho";
@@ -346,7 +375,7 @@ export default function OnerequestPage() {
     } finally {
       setLoading(false);
     }
-  }, [tab, busca, page, pageSize, toast]);
+  }, [tab, busca, page, pageSize, soSemAnotacao, toast]);
 
   useEffect(() => {
     load();
@@ -355,7 +384,27 @@ export default function OnerequestPage() {
   useEffect(() => {
     getOptions().then((o) => setSetores(o.setores)).catch(() => {});
     getFormUsers().then(setUsers).catch(() => {});
+    getL1Autorefresh().then(setAutoref).catch(() => {});
   }, []);
+
+  const toggleAutorefresh = async () => {
+    if (!autoref) return;
+    setTogglingAuto(true);
+    try {
+      const novo = await setL1Autorefresh(!autoref.enabled);
+      setAutoref(novo);
+      toast({
+        title: novo.enabled ? "Auto-atualização ligada" : "Auto-atualização parada",
+        description: novo.enabled
+          ? "O status L1 das DMIs que vencem hoje será atualizado de hora em hora (já disparei uma agora)."
+          : "As DMIs que vencem hoje não serão mais atualizadas automaticamente.",
+      });
+    } catch (e) {
+      toast({ title: "Erro", description: String((e as Error).message), variant: "destructive" });
+    } finally {
+      setTogglingAuto(false);
+    }
+  };
 
   const selectableUsers: SelectableUser[] = useMemo(
     () => users.map((u) => ({ id: u.id, external_id: u.external_id, name: u.name, squads: u.squads ?? [], email: u.email ?? null })),
@@ -368,7 +417,64 @@ export default function OnerequestPage() {
 
   const trocarTab = (t: TabKey) => {
     setPage(1);
+    setSoSemAnotacao(false);
     setTab(t);
+  };
+
+  // ── Acompanhamento/Auditoria (DMIs já agendadas) ─────────────────────
+  const isAgendada = (sol: OnerequestSolicitacao) =>
+    sol.status_tratamento === "AGENDADO" || sol.created_task_id != null;
+
+  const carregarAuditoria = (id: number) => {
+    setAuditLoading(true);
+    getAuditoria(id)
+      .then(setAuditData)
+      .catch((e) => toast({ title: "Erro", description: String((e as Error).message), variant: "destructive" }))
+      .finally(() => setAuditLoading(false));
+  };
+
+  const abrirAuditoria = (sol: OnerequestSolicitacao) => {
+    setAuditSel(sol);
+    setAuditData(null);
+    setAuditNovaAnotacao("");
+    carregarAuditoria(sol.id);
+  };
+
+  const salvarAuditAnotacao = async () => {
+    if (!auditSel || !auditNovaAnotacao.trim()) return;
+    setAuditSavingAnot(true);
+    try {
+      await addAnotacao(auditSel.id, auditNovaAnotacao.trim());
+      setAuditNovaAnotacao("");
+      carregarAuditoria(auditSel.id); // recarrega anotações
+      load(); // atualiza o badge "anotada" na tabela
+    } catch (e) {
+      toast({ title: "Erro", description: String((e as Error).message), variant: "destructive" });
+    } finally {
+      setAuditSavingAnot(false);
+    }
+  };
+
+  // ── Mensagens de alerta (vence hoje, por responsável) ────────────────
+  const abrirAlertas = async () => {
+    setAlertasOpen(true);
+    setAlertasLoading(true);
+    try {
+      setAlertas(await getAlertasVenceHoje());
+    } catch (e) {
+      toast({ title: "Erro ao gerar alertas", description: String((e as Error).message), variant: "destructive" });
+    } finally {
+      setAlertasLoading(false);
+    }
+  };
+
+  const copiarMensagem = async (texto: string) => {
+    try {
+      await navigator.clipboard.writeText(texto);
+      toast({ title: "Copiado", description: "Mensagem na área de transferência." });
+    } catch {
+      toast({ title: "Não consegui copiar", description: "Selecione e copie manualmente.", variant: "destructive" });
+    }
   };
 
   const aplicarBusca = () => {
@@ -580,6 +686,47 @@ export default function OnerequestPage() {
         );
       })()}
 
+      {/* Regra: auto-atualização horária do Status L1 das DMIs que vencem hoje */}
+      {autoref && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border bg-muted/40 px-3 py-2 text-sm">
+          <span
+            className={`h-2.5 w-2.5 shrink-0 rounded-full ${autoref.enabled ? "bg-emerald-500" : "bg-slate-400"}`}
+          />
+          <span className="font-medium">
+            Auto-atualização do Status L1 (vence hoje):{" "}
+            <span className={autoref.enabled ? "text-emerald-700" : "text-slate-600"}>
+              {autoref.enabled ? "ligada" : "parada"}
+            </span>
+          </span>
+          <span className="text-muted-foreground">
+            de hora em hora
+            {autoref.last_run_at && (
+              <>
+                {" "}· última: {new Date(autoref.last_run_at).toLocaleString("pt-BR")}
+                {autoref.last_count != null && ` (${autoref.last_count} atualizadas)`}
+              </>
+            )}
+          </span>
+          <Button
+            size="sm"
+            variant={autoref.enabled ? "outline" : "default"}
+            className="ml-auto"
+            onClick={toggleAutorefresh}
+            disabled={togglingAuto}
+            title="Liga/desliga a atualização automática (de hora em hora) do status no Legal One das DMIs que vencem hoje"
+          >
+            {togglingAuto ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : autoref.enabled ? (
+              <Pause className="mr-2 h-4 w-4" />
+            ) : (
+              <Play className="mr-2 h-4 w-4" />
+            )}
+            {autoref.enabled ? "Parar" : "Ligar"}
+          </Button>
+        </div>
+      )}
+
       {/* KPIs */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         {KPI_DEFS.map((kpi) => (
@@ -607,6 +754,28 @@ export default function OnerequestPage() {
           </TabsList>
         </Tabs>
         <div className="flex gap-2">
+          {tab === "hoje" && (
+            <Button
+              variant="default"
+              onClick={abrirAlertas}
+              title="Gera uma mensagem de alerta por responsável das DMIs que vencem hoje (pra copiar e mandar no Teams/WhatsApp)"
+            >
+              <Bell className="mr-2 h-4 w-4" />
+              Gerar Mensagem de Alerta
+            </Button>
+          )}
+          {tab === "atrasadas" && (
+            <Button
+              variant={soSemAnotacao ? "default" : "outline"}
+              onClick={() => {
+                setPage(1);
+                setSoSemAnotacao((v) => !v);
+              }}
+              title="Mostra só as atrasadas SEM anotação (as que ainda precisam de ação)"
+            >
+              {soSemAnotacao ? "Só sem anotação ✓" : "Só sem anotação"}
+            </Button>
+          )}
           <Input
             className="w-full lg:w-72"
             placeholder="Nº solicitação, processo ou título"
@@ -720,6 +889,20 @@ export default function OnerequestPage() {
                             <span className="block text-[10px] font-normal">
                               atrasada há {diasAtraso(sol.prazo)} dia(s)
                             </span>
+                            <span
+                              className={`mt-0.5 inline-block rounded px-1 py-0.5 text-[10px] font-medium ${
+                                sol.tem_anotacao
+                                  ? "bg-emerald-100 text-emerald-800"
+                                  : "bg-amber-100 text-amber-800"
+                              }`}
+                              title={
+                                sol.tem_anotacao
+                                  ? "Tem anotação (ex.: atraso justificado, aguardando providência do cliente)"
+                                  : "Sem anotação — atraso ainda não justificado"
+                              }
+                            >
+                              {sol.tem_anotacao ? "✓ anotada" : "⚠ sem anotação"}
+                            </span>
                           </span>
                         ) : (
                           sol.prazo
@@ -736,9 +919,15 @@ export default function OnerequestPage() {
                         <StatusL1Cell sol={sol} />
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button size="sm" variant="outline" onClick={() => openModal(sol)}>
-                          Tratar
-                        </Button>
+                        {isAgendada(sol) ? (
+                          <Button size="sm" variant="ghost" onClick={() => abrirAuditoria(sol)}>
+                            Acompanhar
+                          </Button>
+                        ) : (
+                          <Button size="sm" variant="outline" onClick={() => openModal(sol)}>
+                            Tratar
+                          </Button>
+                        )}
                       </TableCell>
                     </TableRow>
                   ))
@@ -947,6 +1136,186 @@ export default function OnerequestPage() {
                 </div>
               </DialogFooter>
             </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de Acompanhamento / Auditoria (DMIs já agendadas) */}
+      <Dialog open={!!auditSel} onOpenChange={(o) => !o && setAuditSel(null)}>
+        <DialogContent className="max-h-[92vh] max-w-3xl overflow-y-auto">
+          {auditSel && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="font-mono text-base">
+                  Acompanhamento — DMI {auditSel.numero_solicitacao}
+                </DialogTitle>
+                <DialogDescription>{auditSel.titulo ?? "Sem título"}</DialogDescription>
+              </DialogHeader>
+
+              {auditLoading || !auditData ? (
+                <div className="py-10 text-center">
+                  <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground" />
+                </div>
+              ) : (
+                <div className="space-y-3 text-sm">
+                  {/* Agendamento: quem / quando / pra quem / o quê */}
+                  <div className="rounded-md border p-3">
+                    <div className="mb-2 text-sm font-medium">Agendamento</div>
+                    <dl className="grid grid-cols-2 gap-x-4 gap-y-1">
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Quem agendou</dt>
+                        <dd>
+                          {auditData.agendamento.scheduled_by_nome ?? "— (legado / fora do Flow)"}
+                          {auditData.agendamento.scheduled_by_email && (
+                            <span className="text-xs text-muted-foreground"> · {auditData.agendamento.scheduled_by_email}</span>
+                          )}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Quando</dt>
+                        <dd>{auditData.agendamento.scheduled_at ? fmtDateTime(auditData.agendamento.scheduled_at) : "—"}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Responsável (pra quem)</dt>
+                        <dd>{auditData.agendamento.responsavel_nome ?? "—"}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Setor (tipo de tarefa)</dt>
+                        <dd>{auditData.agendamento.setor ?? "—"}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Data agendada</dt>
+                        <dd>{auditData.agendamento.data_agendamento ?? "—"}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Prazo BB</dt>
+                        <dd>{auditData.agendamento.prazo_bb ?? "—"}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Status BB</dt>
+                        <dd>{auditData.agendamento.status_sistema ?? "—"}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Tratamento</dt>
+                        <dd>{auditData.agendamento.status_tratamento ?? "—"}</dd>
+                      </div>
+                    </dl>
+                    {auditData.numero_processo && (
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        CNJ: {auditData.numero_processo}
+                        {auditData.npj_direcionador ? ` · NPJ: ${auditData.npj_direcionador}` : ""}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Tarefa viva no L1 */}
+                  <div className="rounded-md border p-3">
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-sm font-medium">Tarefa no Legal One</span>
+                      {auditData.tarefa_l1?.l1_url && (
+                        <a
+                          href={auditData.tarefa_l1.l1_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                        >
+                          Abrir no L1 <ExternalLink className="h-3 w-3" />
+                        </a>
+                      )}
+                    </div>
+                    {auditData.tarefa_l1?.task_id ? (
+                      <div className="space-y-1">
+                        <Badge variant="outline">{auditData.tarefa_l1.status_label ?? "—"}</Badge>
+                        <div className="text-xs">{auditData.tarefa_l1.description ?? "—"}</div>
+                        <div className="text-xs text-muted-foreground">
+                          Prazo da tarefa: {auditData.tarefa_l1.end_date_time ? fmtDateTime(auditData.tarefa_l1.end_date_time) : "—"}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-xs text-muted-foreground">
+                        Tarefa da DMI não localizada no L1.
+                        {auditData.tarefa_l1?.lawsuit_url && (
+                          <>
+                            {" "}
+                            <a href={auditData.tarefa_l1.lawsuit_url} target="_blank" rel="noreferrer" className="text-primary hover:underline">
+                              Abrir a pasta no L1
+                            </a>
+                            .
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Anotações */}
+                  <div className="rounded-md border p-3">
+                    <div className="mb-2 text-sm font-medium">Anotações</div>
+                    <div className="flex gap-2">
+                      <Input
+                        placeholder="Ex.: aguardando documento do cliente…"
+                        value={auditNovaAnotacao}
+                        onChange={(e) => setAuditNovaAnotacao(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && salvarAuditAnotacao()}
+                      />
+                      <Button variant="secondary" onClick={salvarAuditAnotacao} disabled={auditSavingAnot || !auditNovaAnotacao.trim()}>
+                        {auditSavingAnot && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        Anotar
+                      </Button>
+                    </div>
+                    {auditData.anotacoes.length > 0 ? (
+                      <ul className="mt-2 max-h-40 space-y-1 overflow-auto text-xs">
+                        {auditData.anotacoes.map((a) => (
+                          <li key={a.id} className="border-b pb-1">
+                            <span className="text-muted-foreground">
+                              {fmtDateTime(a.created_at)} · {a.autor_nome ?? "—"}:
+                            </span>{" "}
+                            {a.texto}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="mt-2 text-xs text-muted-foreground">Sem anotações.</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de Mensagens de Alerta (vence hoje, por responsável) */}
+      <Dialog open={alertasOpen} onOpenChange={setAlertasOpen}>
+        <DialogContent className="max-h-[92vh] max-w-2xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Mensagens de alerta — vence hoje</DialogTitle>
+            <DialogDescription>
+              Uma mensagem por responsável. Copie e envie no Teams/WhatsApp.
+            </DialogDescription>
+          </DialogHeader>
+          {alertasLoading ? (
+            <div className="py-10 text-center">
+              <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : alertas.length === 0 ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">Nenhuma DMI vencendo hoje. 🎉</div>
+          ) : (
+            <div className="space-y-3">
+              {alertas.map((g) => (
+                <div key={g.responsavel_user_id ?? g.responsavel_nome} className="rounded-md border p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-sm font-medium">
+                      {g.responsavel_nome} <span className="text-xs text-muted-foreground">· {g.count} DMI(s)</span>
+                    </span>
+                    <Button size="sm" variant="outline" onClick={() => copiarMensagem(g.mensagem)}>
+                      <ClipboardCopy className="mr-2 h-4 w-4" />
+                      Copiar
+                    </Button>
+                  </div>
+                  <pre className="whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">{g.mensagem}</pre>
+                </div>
+              ))}
+            </div>
           )}
         </DialogContent>
       </Dialog>

@@ -122,6 +122,7 @@ class OnerequestService:
         busca: Optional[str] = None,
         farol: Optional[str] = None,
         sem_responsavel: Optional[bool] = None,
+        sem_anotacao: Optional[bool] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> dict:
@@ -178,6 +179,17 @@ class OnerequestService:
 
         if farol:
             enriquecidos = [e for e in enriquecidos if e[2] == farol]
+
+        # DMIs que já têm anotação (justificativa do atraso, ex.: aguardando
+        # providência do cliente). Set único pra badge "anotada"/"sem anotação"
+        # e pro filtro `sem_anotacao` (caçar atrasadas que ainda precisam de ação).
+        ids_com_anotacao = {
+            sid
+            for (sid,) in self.db.query(OnerequestAnotacao.solicitacao_id).distinct()
+        }
+        if sem_anotacao:
+            enriquecidos = [e for e in enriquecidos if e[0] not in ids_com_anotacao]
+
         total = len(enriquecidos)
         enriquecidos.sort(key=lambda x: x[1])
         page_ids = [i for (i, _d, _f) in enriquecidos[offset : offset + limit]]
@@ -223,6 +235,7 @@ class OnerequestService:
                     "setor": r.setor,
                     "data_agendamento": r.data_agendamento,
                     "anotacao": r.anotacao,
+                    "tem_anotacao": r.id in ids_com_anotacao,
                     "created_task_id": r.created_task_id,
                     "linked_lawsuit_id": r.linked_lawsuit_id,
                     "last_error": r.last_error,
@@ -658,6 +671,163 @@ class OnerequestService:
 
         self.db.commit()
         return self._status_l1_payload(solicitacao)
+
+    # ──────────────────────────────────────────────────────────────────
+    # Auditoria total (consulta por CNJ ou nº da DMI): quem agendou, o que,
+    # pra quem — reconstruído + tarefa VIVA no L1 + histórico de anotações.
+    # ──────────────────────────────────────────────────────────────────
+    _AUDIT_TASK_SELECT = (
+        "id,description,statusId,status,startDateTime,endDateTime,typeId,subTypeId"
+    )
+
+    def _fetch_audit_task(
+        self, s: OnerequestSolicitacao, client: LegalOneApiClient
+    ) -> Optional[dict]:
+        """A tarefa real da DMI no L1: pelo created_task_id (agendadas via Flow)
+        ou por match do número na descrição (legado). None se não achar."""
+        law = self.resolver_lawsuit(s, client)
+        lid = law.get("id") if law else None
+        if not lid:
+            return None
+        task = None
+        try:
+            if s.created_task_id:
+                found = client.search_tasks(
+                    filter_expression=f"id eq {int(s.created_task_id)}",
+                    top=1,
+                    select=self._AUDIT_TASK_SELECT,
+                )
+                task = found[0] if found else None
+            if task is None:
+                numero = (s.numero_solicitacao or "").strip()
+                if numero:
+                    rel = (
+                        "relationships/any("
+                        f"r: r/linkType eq 'Litigation' and r/linkId eq {int(lid)})"
+                    )
+                    esc = numero.replace("'", "''")
+                    matched = client.search_tasks(
+                        filter_expression=f"{rel} and contains(description,'{esc}')",
+                        top=30,
+                        orderby="id desc",
+                        select=self._AUDIT_TASK_SELECT,
+                    )
+                    task = self._pick_dmi_task(matched)
+        except Exception as e:
+            logger.warning(
+                "OneRequest auditoria: falha buscando tarefa no L1 da DMI %s: %s",
+                s.numero_solicitacao, e,
+            )
+            return None
+        if not task:
+            return {"lawsuit_url": _l1_lawsuit_url(lid), "task_id": None}
+        sid = self._task_status_id(task)
+        return {
+            "task_id": task.get("id"),
+            "description": task.get("description"),
+            "status_id": sid,
+            "status_label": L1_STATUS_LABELS_FULL.get(sid, str(sid)) if sid is not None else None,
+            "start_date_time": task.get("startDateTime"),
+            "end_date_time": task.get("endDateTime"),
+            "l1_url": _l1_task_url(task.get("id"), lid),
+            "lawsuit_url": _l1_lawsuit_url(lid),
+        }
+
+    def auditoria(self, s: OnerequestSolicitacao, client: LegalOneApiClient) -> dict:
+        """Auditoria reconstruída de uma DMI + tarefa viva no L1 + anotações."""
+        resp_nome = None
+        if s.responsavel_user_id:
+            u = (
+                self.db.query(LegalOneUser)
+                .filter(LegalOneUser.id == s.responsavel_user_id)
+                .first()
+            )
+            resp_nome = u.name if u else None
+        agendamento = {
+            "agendado": bool(s.created_task_id)
+            or s.status_tratamento == STATUS_TRATAMENTO_AGENDADO,
+            "scheduled_by_nome": s.scheduled_by_nome,
+            "scheduled_by_email": s.scheduled_by_email,
+            "scheduled_at": s.scheduled_at.isoformat() if s.scheduled_at else None,
+            "responsavel_nome": resp_nome,
+            "setor": s.setor,
+            "data_agendamento": s.data_agendamento,
+            "prazo_bb": s.prazo,
+            "created_task_id": s.created_task_id,
+            "status_sistema": s.status_sistema,
+            "status_tratamento": s.status_tratamento,
+            "last_error": s.last_error,
+        }
+        return {
+            "id": s.id,
+            "numero_solicitacao": s.numero_solicitacao,
+            "numero_processo": s.numero_processo,
+            "npj_direcionador": s.npj_direcionador,
+            "titulo": s.titulo,
+            "agendamento": agendamento,
+            "tarefa_l1": self._fetch_audit_task(s, client),
+            "anotacoes": self.list_anotacoes(s.id),
+        }
+
+    # ──────────────────────────────────────────────────────────────────
+    # Alertas "vence hoje" agrupados por responsável (texto pronto p/ copiar)
+    # ──────────────────────────────────────────────────────────────────
+    def alertas_vence_hoje(self) -> list[dict]:
+        """Agrupa as DMIs ABERTAS que vencem HOJE por responsável e monta uma
+        mensagem de alerta pronta pra copiar (Teams/WhatsApp)."""
+        hoje = date.today()
+        abertas = (
+            self.db.query(OnerequestSolicitacao)
+            .filter(OnerequestSolicitacao.status_sistema == STATUS_SISTEMA_ABERTO)
+            .all()
+        )
+        alvos = [s for s in abertas if _parse_prazo(s.prazo) == hoje]
+
+        uids = {s.responsavel_user_id for s in alvos if s.responsavel_user_id}
+        nomes = {}
+        if uids:
+            nomes = {
+                u.id: u.name
+                for u in self.db.query(LegalOneUser.id, LegalOneUser.name).filter(
+                    LegalOneUser.id.in_(uids)
+                )
+            }
+
+        grupos: dict = {}
+        for s in alvos:
+            grupos.setdefault(s.responsavel_user_id or 0, []).append(s)
+
+        hoje_br = hoje.strftime("%d/%m/%Y")
+        out = []
+        for key, lst in grupos.items():
+            nome = nomes.get(key) or "Sem responsável"
+            primeiro = nome.split()[0] if nome != "Sem responsável" else "pessoal"
+            linhas = []
+            for s in lst:
+                proc = s.numero_processo or s.npj_direcionador or "—"
+                tit = (s.titulo or "").strip()
+                linhas.append(
+                    f"• DMI {s.numero_solicitacao} — Proc {proc}"
+                    + (f" — {tit}" if tit else "")
+                )
+            mensagem = (
+                f"Olá, {primeiro}! As DMIs do Banco do Brasil abaixo estão "
+                f"PENDENTES DE RESPOSTA e o prazo é HOJE ({hoje_br}):\n\n"
+                + "\n".join(linhas)
+                + "\n\nPor favor, dê andamento ainda hoje. Se estiver aguardando "
+                "alguma providência (ex.: do cliente), registre uma anotação na "
+                "DMI pra justificar. Obrigada!"
+            )
+            out.append(
+                {
+                    "responsavel_user_id": key or None,
+                    "responsavel_nome": nome,
+                    "count": len(lst),
+                    "mensagem": mensagem,
+                }
+            )
+        out.sort(key=lambda g: (g["responsavel_nome"] == "Sem responsável", g["responsavel_nome"]))
+        return out
 
     def estado(self) -> dict:
         """Heartbeat da última ingestão + contagem de abertas (pro aviso da UI)."""

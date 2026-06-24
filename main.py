@@ -297,6 +297,20 @@ async def lifespan(_: FastAPI):
             "Falha ao registrar job diário do Citações BM no startup."
         )
 
+    # Auto-refresh horário do status L1 do OneRequest (DMIs que vencem hoje).
+    # A regra liga/desliga via setting (play/stop na UI); o job só faz trabalho
+    # quando habilitada (default LIGADO).
+    try:
+        from app.services.onerequest.l1_autorefresh_worker import (
+            register_onerequest_l1_autorefresh_job,
+        )
+
+        register_onerequest_l1_autorefresh_job(scheduler)
+    except Exception:
+        logger.exception(
+            "Falha ao registrar job de auto-refresh L1 do OneRequest no startup."
+        )
+
     try:
         yield
     finally:

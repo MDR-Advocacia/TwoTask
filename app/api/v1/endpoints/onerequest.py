@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.core.auth import get_current_user, require_permission
 from app.core.config import settings
 from app.core.dependencies import get_api_client, get_db
+from app.core.scheduler import get_scheduler
 from app.models.legal_one import LegalOneUser
 from app.services.legal_one_client import LegalOneApiClient
 from app.services.onerequest import suggestions
@@ -172,6 +173,7 @@ class SolicitacaoOut(BaseModel):
     setor: Optional[str] = None
     data_agendamento: Optional[str] = None
     anotacao: Optional[str] = None
+    tem_anotacao: bool = False
     created_task_id: Optional[int] = None
     linked_lawsuit_id: Optional[int] = None
     last_error: Optional[str] = None
@@ -230,8 +232,9 @@ def listar_solicitacoes(
     status_tratamento: Optional[str] = Query(None),
     responsavel_user_id: Optional[int] = Query(None),
     busca: Optional[str] = Query(None),
-    farol: Optional[str] = Query(None, description="Filtra por farol: cinza|vermelho|amarelo|roxo|verde"),
+    farol: Optional[str] = Query(None, description="Filtra por farol: cinza|atrasado|vermelho|amarelo|roxo|verde"),
     sem_responsavel: Optional[bool] = Query(None, description="Apenas DMIs sem responsável (não distribuídas)"),
+    sem_anotacao: Optional[bool] = Query(None, description="Apenas DMIs SEM anotação (ex.: atrasadas que ainda precisam de ação)"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -244,6 +247,7 @@ def listar_solicitacoes(
         busca=busca,
         farol=farol,
         sem_responsavel=sem_responsavel,
+        sem_anotacao=sem_anotacao,
         limit=limit,
         offset=offset,
     )
@@ -409,6 +413,79 @@ def status_l1(
     return service.verificar_status_l1(row, client)
 
 
+# ── Auto-refresh horário do status L1 (DMIs que vencem hoje) ───────────
+class L1AutorefreshState(BaseModel):
+    enabled: bool
+    last_run_at: Optional[str] = None
+    last_count: Optional[int] = None
+    intervalo: str = "1h"
+    alvo: str = "DMIs que vencem hoje"
+
+
+class L1AutorefreshToggle(BaseModel):
+    enabled: bool
+
+
+def _l1_autorefresh_state() -> "L1AutorefreshState":
+    from app.services.app_settings import get_setting
+    from app.services.onerequest.l1_autorefresh_worker import (
+        SETTING_LAST_COUNT,
+        SETTING_LAST_RUN,
+        is_enabled,
+    )
+
+    lc = get_setting(SETTING_LAST_COUNT)
+    try:
+        last_count = int(lc) if lc is not None else None
+    except (TypeError, ValueError):
+        last_count = None
+    return L1AutorefreshState(
+        enabled=is_enabled(),
+        last_run_at=get_setting(SETTING_LAST_RUN),
+        last_count=last_count,
+    )
+
+
+@router.get(
+    "/l1-autorefresh",
+    response_model=L1AutorefreshState,
+    summary="Estado da regra de auto-atualização horária do status L1 (vence hoje)",
+    dependencies=[_perm],
+)
+def l1_autorefresh_estado():
+    return _l1_autorefresh_state()
+
+
+@router.post(
+    "/l1-autorefresh",
+    response_model=L1AutorefreshState,
+    summary="Liga/desliga (play/stop) a auto-atualização horária; ao ligar, já dispara uma execução",
+    dependencies=[_perm],
+)
+def l1_autorefresh_toggle(
+    payload: L1AutorefreshToggle,
+    scheduler=Depends(get_scheduler),
+):
+    from datetime import datetime
+
+    from app.services.app_settings import set_setting
+    from app.services.onerequest.l1_autorefresh_worker import JOB_ID, SETTING_ENABLED
+
+    set_setting(SETTING_ENABLED, "true" if payload.enabled else "false")
+    # Ao LIGAR, não espera a próxima hora: adianta a próxima execução pra agora.
+    if payload.enabled:
+        try:
+            job = scheduler.get_job(JOB_ID)
+            if job is not None:
+                job.modify(next_run_time=datetime.now())
+        except Exception:
+            logger.warning(
+                "OneRequest: não consegui adiantar o job de auto-refresh L1.",
+                exc_info=True,
+            )
+    return _l1_autorefresh_state()
+
+
 # ── Anotações (log de auditoria) ───────────────────────────────────────
 class AnotacaoItem(BaseModel):
     id: int
@@ -450,3 +527,77 @@ def criar_anotacao(
     if not (payload.texto or "").strip():
         raise HTTPException(status_code=400, detail="Anotação vazia.")
     return service.add_anotacao(solicitacao_id, payload.texto, current_user)
+
+
+# ── Auditoria total (consulta por CNJ ou nº da DMI) ────────────────────
+class AuditTarefaL1(BaseModel):
+    task_id: Optional[int] = None
+    description: Optional[str] = None
+    status_id: Optional[int] = None
+    status_label: Optional[str] = None
+    start_date_time: Optional[str] = None
+    end_date_time: Optional[str] = None
+    l1_url: Optional[str] = None
+    lawsuit_url: Optional[str] = None
+
+
+class AuditAgendamento(BaseModel):
+    agendado: bool = False
+    scheduled_by_nome: Optional[str] = None
+    scheduled_by_email: Optional[str] = None
+    scheduled_at: Optional[str] = None
+    responsavel_nome: Optional[str] = None
+    setor: Optional[str] = None
+    data_agendamento: Optional[str] = None
+    prazo_bb: Optional[str] = None
+    created_task_id: Optional[int] = None
+    status_sistema: Optional[str] = None
+    status_tratamento: Optional[str] = None
+    last_error: Optional[str] = None
+
+
+class AuditoriaResponse(BaseModel):
+    id: int
+    numero_solicitacao: str
+    numero_processo: Optional[str] = None
+    npj_direcionador: Optional[str] = None
+    titulo: Optional[str] = None
+    agendamento: AuditAgendamento
+    tarefa_l1: Optional[AuditTarefaL1] = None
+    anotacoes: List[AnotacaoItem]
+
+
+@router.get(
+    "/solicitacoes/{solicitacao_id}/auditoria",
+    response_model=AuditoriaResponse,
+    summary="Auditoria total da DMI: quem agendou, o que, pra quem + tarefa viva no L1 + anotações",
+    dependencies=[_perm],
+)
+def auditoria(
+    solicitacao_id: int,
+    db: Session = Depends(get_db),
+    client: LegalOneApiClient = Depends(get_api_client),
+):
+    service = OnerequestService(db)
+    row = service.get(solicitacao_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Solicitação não encontrada.")
+    return service.auditoria(row, client)
+
+
+# ── Alertas "vence hoje" (agrupados por responsável, texto pronto) ─────
+class AlertaResponsavel(BaseModel):
+    responsavel_user_id: Optional[int] = None
+    responsavel_nome: str
+    count: int
+    mensagem: str
+
+
+@router.get(
+    "/alertas/vence-hoje",
+    response_model=List[AlertaResponsavel],
+    summary="Mensagens de alerta (uma por responsável) das DMIs que vencem hoje",
+    dependencies=[_perm],
+)
+def alertas_vence_hoje(db: Session = Depends(get_db)):
+    return OnerequestService(db).alertas_vence_hoje()

@@ -25,6 +25,7 @@ export interface OnerequestSolicitacao {
   setor: string | null;
   data_agendamento: string | null;
   anotacao: string | null;
+  tem_anotacao: boolean;
   created_task_id: number | null;
   linked_lawsuit_id: number | null;
   last_error: string | null;
@@ -54,6 +55,7 @@ export interface ListParams {
   busca?: string;
   farol?: string;
   sem_responsavel?: boolean;
+  sem_anotacao?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -112,6 +114,58 @@ export interface Estado {
   abertas: number;
 }
 
+export interface L1Autorefresh {
+  enabled: boolean;
+  last_run_at: string | null;
+  last_count: number | null;
+  intervalo: string;
+  alvo: string;
+}
+
+export interface AuditAgendamento {
+  agendado: boolean;
+  scheduled_by_nome: string | null;
+  scheduled_by_email: string | null;
+  scheduled_at: string | null;
+  responsavel_nome: string | null;
+  setor: string | null;
+  data_agendamento: string | null;
+  prazo_bb: string | null;
+  created_task_id: number | null;
+  status_sistema: string | null;
+  status_tratamento: string | null;
+  last_error: string | null;
+}
+
+export interface AuditTarefaL1 {
+  task_id: number | null;
+  description: string | null;
+  status_id: number | null;
+  status_label: string | null;
+  start_date_time: string | null;
+  end_date_time: string | null;
+  l1_url: string | null;
+  lawsuit_url: string | null;
+}
+
+export interface Auditoria {
+  id: number;
+  numero_solicitacao: string;
+  numero_processo: string | null;
+  npj_direcionador: string | null;
+  titulo: string | null;
+  agendamento: AuditAgendamento;
+  tarefa_l1: AuditTarefaL1 | null;
+  anotacoes: Anotacao[];
+}
+
+export interface AlertaResponsavel {
+  responsavel_user_id: number | null;
+  responsavel_nome: string;
+  count: number;
+  mensagem: string;
+}
+
 export interface UpdateTratamentoBody {
   responsavel_user_id?: number | null;
   setor?: string | null;
@@ -158,6 +212,7 @@ export async function listSolicitacoes(params: ListParams): Promise<ListResponse
   if (params.busca) qs.set("busca", params.busca);
   if (params.farol) qs.set("farol", params.farol);
   if (params.sem_responsavel) qs.set("sem_responsavel", "true");
+  if (params.sem_anotacao) qs.set("sem_anotacao", "true");
   qs.set("limit", String(params.limit ?? 50));
   qs.set("offset", String(params.offset ?? 0));
   return json(await apiFetch(`${BASE}/solicitacoes?${qs.toString()}`));
@@ -198,6 +253,20 @@ export async function getEstado(): Promise<Estado> {
   return json(await apiFetch(`${BASE}/estado`));
 }
 
+// Regra de auto-atualização horária do status L1 (DMIs que vencem hoje).
+export async function getL1Autorefresh(): Promise<L1Autorefresh> {
+  return json(await apiFetch(`${BASE}/l1-autorefresh`));
+}
+
+export async function setL1Autorefresh(enabled: boolean): Promise<L1Autorefresh> {
+  return json(
+    await apiFetch(`${BASE}/l1-autorefresh`, {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    }),
+  );
+}
+
 export async function getSugestao(id: number): Promise<Sugestao> {
   return json(await apiFetch(`${BASE}/solicitacoes/${id}/sugestao`));
 }
@@ -216,6 +285,16 @@ export async function verificarStatusL1(id: number): Promise<StatusL1> {
 
 export async function listAnotacoes(id: number): Promise<Anotacao[]> {
   return json(await apiFetch(`${BASE}/solicitacoes/${id}/anotacoes`));
+}
+
+// Auditoria total da DMI (quem agendou, o que, pra quem + tarefa viva no L1 + anotações).
+export async function getAuditoria(id: number): Promise<Auditoria> {
+  return json(await apiFetch(`${BASE}/solicitacoes/${id}/auditoria`));
+}
+
+// Mensagens de alerta (uma por responsável) das DMIs que vencem hoje.
+export async function getAlertasVenceHoje(): Promise<AlertaResponsavel[]> {
+  return json(await apiFetch(`${BASE}/alertas/vence-hoje`));
 }
 
 export async function addAnotacao(id: number, texto: string): Promise<Anotacao> {
