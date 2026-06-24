@@ -607,6 +607,8 @@ def alertas_vence_hoje(db: Session = Depends(get_db)):
 
 class EnviarTeamsRequest(BaseModel):
     responsavel_user_id: int
+    # Token delegado do Graph (MSAL no front), pra mandar a DM no nome da operadora.
+    graph_token: str
 
 
 class EnviarTeamsResponse(BaseModel):
@@ -617,8 +619,10 @@ class EnviarTeamsResponse(BaseModel):
 @router.post(
     "/alertas/enviar-teams",
     response_model=EnviarTeamsResponse,
-    summary="Envia o alerta 'vence hoje' do responsável via Teams (webhook Power Automate)",
+    summary="Envia o alerta 'vence hoje' do responsável via Teams (Microsoft Graph, no nome da operadora)",
     dependencies=[_perm],
 )
 def enviar_alerta_teams(payload: EnviarTeamsRequest, db: Session = Depends(get_db)):
-    return OnerequestService(db).enviar_alerta_teams(payload.responsavel_user_id)
+    return OnerequestService(db).enviar_alerta_teams(
+        payload.responsavel_user_id, payload.graph_token
+    )

@@ -299,14 +299,16 @@ export async function getAlertasVenceHoje(): Promise<AlertaResponsavel[]> {
   return json(await apiFetch(`${BASE}/alertas/vence-hoje`));
 }
 
-// Envia o alerta do responsável via Teams (webhook Power Automate, server-side).
+// Envia o alerta do responsável via Teams (Microsoft Graph). O token delegado
+// (MSAL, no nome da operadora) vai junto e o backend faz a chamada ao Graph.
 export async function enviarAlertaTeams(
   responsavel_user_id: number,
+  graph_token: string,
 ): Promise<{ ok: boolean; mensagem: string }> {
   return json(
     await apiFetch(`${BASE}/alertas/enviar-teams`, {
       method: "POST",
-      body: JSON.stringify({ responsavel_user_id }),
+      body: JSON.stringify({ responsavel_user_id, graph_token }),
     }),
   );
 }

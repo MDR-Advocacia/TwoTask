@@ -275,12 +275,13 @@ class Settings(BaseSettings):
     # (rotação sem downtime). Vazio = endpoint de intake desativado.
     onerequest_intake_api_key: str | None = None
 
-    # ── OneRequest: alerta "vence hoje" via Teams ─────────────────────
-    # URL do fluxo Power Automate (Workflows) que recebe {destinatario,
-    # destinatario_nome, mensagem} e posta DM no Teams. Vazio = botão
-    # "Enviar no Teams" some (só "Copiar"). É SEGREDO (qualquer um com a URL
-    # dispara o fluxo) — fica só no backend, nunca vai pro front.
-    teams_alert_webhook_url: str | None = None
+    # ── OneRequest: alerta "vence hoje" via Teams (Microsoft Graph) ────
+    # Liga o botão "Enviar no Teams". A DM sai NO NOME da operadora logada,
+    # via Graph delegado (MSAL no front + token repassado ao backend). Default
+    # FALSE: enquanto não for true, o botão nem aparece (só "Copiar"). Setar no
+    # Coolify quando o app do Entra estiver com plataforma SPA + permissões
+    # Graph (Chat.Create, ChatMessage.Send, User.Read.All) consentidas.
+    teams_alert_enabled: bool = False
     # Domínio M365 corporativo: só responsáveis com e-mail nesse domínio são
     # endereçáveis no Teams (os demais usam e-mail pessoal → só Copiar).
     teams_corporate_email_domain: str = "mdradvocacia.com"

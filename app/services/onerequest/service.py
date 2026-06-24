@@ -834,25 +834,33 @@ class OnerequestService:
 
     @staticmethod
     def _teams_disponivel(email: Optional[str]) -> bool:
-        """Endereçável no Teams? Só com e-mail corporativo M365 E webhook
-        configurado (os demais usam e-mail pessoal → só Copiar)."""
+        """Endereçável no Teams? Só com e-mail corporativo M365 E o envio
+        habilitado (os demais usam e-mail pessoal → só Copiar)."""
         from app.core.config import settings
 
-        if not settings.teams_alert_webhook_url:
+        if not settings.teams_alert_enabled:
             return False
         dominio = (settings.teams_corporate_email_domain or "").strip().lower()
         return bool(email) and bool(dominio) and email.strip().lower().endswith("@" + dominio)
 
-    def enviar_alerta_teams(self, responsavel_user_id: int) -> dict:
-        """Envia o alerta 'vence hoje' do responsável via webhook do Power
-        Automate (que posta DM no Teams). Recalcula a mensagem no servidor
-        (não confia no texto do cliente). O webhook é SEGREDO — fica aqui."""
+    def enviar_alerta_teams(self, responsavel_user_id: int, graph_token: str) -> dict:
+        """Manda a DM de alerta 'vence hoje' no Teams via Microsoft Graph, com o
+        token DELEGADO da operadora (a mensagem sai NO NOME dela). Recalcula a
+        mensagem no servidor (não confia no texto do cliente). Passos: /me ->
+        /users/{email} -> POST /chats (1:1) -> POST /chats/{id}/messages."""
+        import html
+
         import requests
 
         from app.core.config import settings
 
-        if not settings.teams_alert_webhook_url:
-            return {"ok": False, "mensagem": "Envio pelo Teams não está configurado."}
+        GRAPH = "https://graph.microsoft.com/v1.0"
+
+        if not settings.teams_alert_enabled:
+            return {"ok": False, "mensagem": "Envio pelo Teams não está habilitado."}
+        if not (graph_token or "").strip():
+            return {"ok": False, "mensagem": "Sessão do Teams não autenticada. Tente de novo."}
+
         grupos = {g["responsavel_user_id"]: g for g in self.alertas_vence_hoje()}
         g = grupos.get(responsavel_user_id)
         if not g:
@@ -862,29 +870,74 @@ class OnerequestService:
                 "ok": False,
                 "mensagem": "Responsável sem e-mail corporativo M365 — use Copiar e envie manualmente.",
             }
-        payload = {
-            "destinatario": g["responsavel_email"],
-            "destinatario_nome": g["responsavel_nome"],
-            "mensagem": g["mensagem"],
+
+        email = g["responsavel_email"]
+        headers = {
+            "Authorization": f"Bearer {graph_token}",
+            "Content-Type": "application/json",
         }
         try:
-            resp = requests.post(
-                settings.teams_alert_webhook_url, json=payload, timeout=20
+            me = requests.get(f"{GRAPH}/me?$select=id", headers=headers, timeout=15)
+            me.raise_for_status()
+            my_id = me.json().get("id")
+
+            usr = requests.get(
+                f"{GRAPH}/users/{email}?$select=id", headers=headers, timeout=15
             )
-            resp.raise_for_status()
+            if usr.status_code == 404:
+                return {
+                    "ok": False,
+                    "mensagem": f"{g['responsavel_nome']} não tem conta no Teams da empresa.",
+                }
+            usr.raise_for_status()
+            target_id = usr.json().get("id")
+
+            chat = requests.post(
+                f"{GRAPH}/chats",
+                headers=headers,
+                json={
+                    "chatType": "oneOnOne",
+                    "members": [
+                        {
+                            "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                            "roles": ["owner"],
+                            "user@odata.bind": f"{GRAPH}/users('{my_id}')",
+                        },
+                        {
+                            "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                            "roles": ["owner"],
+                            "user@odata.bind": f"{GRAPH}/users('{target_id}')",
+                        },
+                    ],
+                },
+                timeout=20,
+            )
+            chat.raise_for_status()
+            chat_id = chat.json().get("id")
+
+            content = html.escape(g["mensagem"]).replace("\n", "<br>")
+            msg = requests.post(
+                f"{GRAPH}/chats/{chat_id}/messages",
+                headers=headers,
+                json={"body": {"contentType": "html", "content": content}},
+                timeout=20,
+            )
+            msg.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            detalhe = e.response.text[:300] if e.response is not None else str(e)
+            logger.error("OneRequest Teams/Graph erro p/ %s: %s", email, detalhe)
+            return {"ok": False, "mensagem": f"Falha no Teams (Graph): {detalhe[:160]}"}
         except Exception as e:
-            logger.error(
-                "OneRequest: falha ao enviar alerta Teams p/ %s: %s",
-                g["responsavel_email"], e,
-            )
+            logger.error("OneRequest Teams/Graph erro inesperado p/ %s: %s", email, e)
             return {"ok": False, "mensagem": f"Falha ao enviar pelo Teams: {e}"}
+
         logger.info(
-            "OneRequest: alerta Teams enviado p/ %s (%s DMIs).",
-            g["responsavel_email"], g["count"],
+            "OneRequest: alerta Teams (Graph) enviado p/ %s (%s DMIs).",
+            email, g["count"],
         )
         return {
             "ok": True,
-            "mensagem": f"Alerta enviado pelo Teams para {g['responsavel_nome']}.",
+            "mensagem": f"Alerta enviado no Teams para {g['responsavel_nome']}.",
         }
 
     def estado(self) -> dict:

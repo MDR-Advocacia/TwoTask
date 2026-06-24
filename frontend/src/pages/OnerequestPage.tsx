@@ -46,6 +46,8 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import UserSelector, { SelectableUser } from "@/components/ui/UserSelector";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/useAuth";
+import { getGraphTokenForTeams } from "@/lib/teams-graph";
 import {
   AlertTriangle,
   Bell,
@@ -291,6 +293,7 @@ function ingestInfo(iso: string | null): { texto: string; tone: "ok" | "warn" | 
 
 export default function OnerequestPage() {
   const { toast } = useToast();
+  const { user } = useAuth();
   const [tab, setTab] = useState<TabKey>("novas");
   const [items, setItems] = useState<OnerequestSolicitacao[]>([]);
   const [total, setTotal] = useState(0);
@@ -483,14 +486,20 @@ export default function OnerequestPage() {
     if (g.responsavel_user_id == null) return;
     setEnviandoTeams(g.responsavel_user_id);
     try {
-      const r = await enviarAlertaTeams(g.responsavel_user_id);
+      // Token do Graph no nome da operadora logada (MSAL, silencioso quando possível).
+      const token = await getGraphTokenForTeams(user?.email ?? "");
+      const r = await enviarAlertaTeams(g.responsavel_user_id, token);
       toast({
         title: r.ok ? "Enviado no Teams" : "Não enviado",
         description: r.mensagem,
         variant: r.ok ? undefined : "destructive",
       });
     } catch (e) {
-      toast({ title: "Erro", description: String((e as Error).message), variant: "destructive" });
+      toast({
+        title: "Erro no Teams",
+        description: String((e as Error).message),
+        variant: "destructive",
+      });
     } finally {
       setEnviandoTeams(null);
     }
