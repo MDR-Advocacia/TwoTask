@@ -99,6 +99,20 @@ class OnerequestSolicitacao(Base):
     linked_lawsuit_id = Column(Integer, nullable=True, index=True)
     last_error = Column(Text, nullable=True)
 
+    # ── Acompanhamento no L1 (sob demanda — botão "Atualizar status L1") ──
+    # Cacheia a última checagem do Legal One pra "planilha" mostrar o sinal
+    # sem re-consultar a cada reload. Ver service.verificar_status_l1.
+    # Quando foi a última checagem (None = nunca checado).
+    l1_checked_at = Column(DateTime(timezone=True), nullable=True)
+    # Tarefa da DMI achada na pasta (match por nº da solicitação na descrição).
+    # None = não encontrada (mesmo tendo checado).
+    l1_dmi_task_id = Column(Integer, nullable=True)
+    # Status dessa tarefa: 0 Pendente, 1 Cumprido, 2 Não cumprido, 3 Cancelado,
+    # 4 Iniciado, 5 Reagendado. "Respondida no L1" = 1 (Cumprido).
+    l1_dmi_status_id = Column(Integer, nullable=True)
+    # Nº de tarefas Pendente/Iniciado na pasta (0 = sem pendência). None = não checado.
+    l1_pendentes_count = Column(Integer, nullable=True)
+
     # ── Auditoria do agendamento (padrão de Publicações, pub002) ──────
     scheduled_by_user_id = Column(
         Integer,

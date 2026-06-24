@@ -60,13 +60,14 @@ def _parse_prazo(prazo: Optional[str]) -> Optional[date]:
 
 
 def _farol(prazo_date: Optional[date], hoje: date) -> str:
-    """Espelha a lógica de farol do OneRequest legado (server.py:index)."""
+    """Farol do prazo BB. DISTINGUE atrasado (vencido) de sem prazo — antes os
+    dois caíam em 'cinza', escondendo as vencidas. Vence hoje é 'vermelho'."""
     if prazo_date is None:
-        return "cinza"
+        return "cinza"  # sem prazo informado
     if prazo_date < hoje:
-        return "cinza"  # vencida
+        return "atrasado"  # vencida (o prazo já passou)
     if prazo_date == hoje:
-        return "vermelho"
+        return "vermelho"  # vence hoje
     if (prazo_date - hoje).days == 1:
         return "amarelo"
     if prazo_date.weekday() >= 5:  # sáb/dom
@@ -155,13 +156,13 @@ class OnerequestService:
         leves = q.with_entities(
             OnerequestSolicitacao.id, OnerequestSolicitacao.prazo
         ).all()
-        kpis = {"vencidas": 0, "hoje": 0, "amanha": 0, "fds": 0, "futuras": 0}
+        kpis = {"atrasadas": 0, "hoje": 0, "amanha": 0, "fds": 0, "futuras": 0, "sem_prazo": 0}
         enriquecidos = []
         for _id, prazo in leves:
             pdate = _parse_prazo(prazo)
             farol_row = _farol(pdate, hoje)
-            if farol_row == "cinza":
-                kpis["vencidas"] += 1 if pdate is not None and pdate < hoje else 0
+            if farol_row == "atrasado":
+                kpis["atrasadas"] += 1
             elif farol_row == "vermelho":
                 kpis["hoje"] += 1
             elif farol_row == "amarelo":
@@ -170,6 +171,8 @@ class OnerequestService:
                 kpis["fds"] += 1
             elif farol_row == "verde":
                 kpis["futuras"] += 1
+            else:  # cinza = sem prazo informado
+                kpis["sem_prazo"] += 1
             # ordena por prazo asc; sem data vai pro fim
             enriquecidos.append((_id, pdate or date.max, farol_row))
 
@@ -224,6 +227,28 @@ class OnerequestService:
                     "linked_lawsuit_id": r.linked_lawsuit_id,
                     "last_error": r.last_error,
                     "farol": _farol(_parse_prazo(r.prazo), hoje),
+                    # Status no L1 (cacheado pelo botão "Atualizar status L1").
+                    "l1_checked_at": r.l1_checked_at.isoformat() if r.l1_checked_at else None,
+                    "l1_dmi_task_id": r.l1_dmi_task_id,
+                    "l1_dmi_status_id": r.l1_dmi_status_id,
+                    "l1_dmi_status_label": (
+                        L1_STATUS_LABELS_FULL.get(r.l1_dmi_status_id)
+                        if r.l1_dmi_status_id is not None
+                        else None
+                    ),
+                    "l1_dmi_respondida": r.l1_dmi_status_id == 1,
+                    "l1_dmi_encontrada": r.l1_dmi_task_id is not None,
+                    "l1_pendentes_count": r.l1_pendentes_count,
+                    "l1_sem_pendencia": (
+                        (r.l1_pendentes_count == 0)
+                        if r.l1_pendentes_count is not None
+                        else None
+                    ),
+                    "l1_task_url": (
+                        _l1_task_url(r.l1_dmi_task_id, r.linked_lawsuit_id)
+                        if (r.l1_dmi_task_id and r.linked_lawsuit_id)
+                        else None
+                    ),
                 }
             )
 
@@ -534,6 +559,105 @@ class OnerequestService:
             "resolvido": True,
             "check_failed": False,
         }
+
+    # ──────────────────────────────────────────────────────────────────
+    # Acompanhamento no L1 (sob demanda): a tarefa da DMI foi respondida?
+    # ──────────────────────────────────────────────────────────────────
+    @staticmethod
+    def _task_status_id(task: dict) -> Optional[int]:
+        sid = task.get("statusId")
+        if sid is None and isinstance(task.get("status"), dict):
+            sid = task["status"].get("id")
+        return sid
+
+    def _pick_dmi_task(self, tasks: list) -> Optional[dict]:
+        """Dentre as tarefas que casam com o número da DMI, escolhe a mais
+        representativa: prioriza uma Cumprida (a DMI foi respondida); senão a
+        mais recente (a busca já vem em id desc)."""
+        if not tasks:
+            return None
+        for t in tasks:
+            if self._task_status_id(t) == 1:  # Cumprido
+                return t
+        return tasks[0]
+
+    def _status_l1_payload(self, s: OnerequestSolicitacao) -> dict:
+        sid = s.l1_dmi_status_id
+        lid = s.linked_lawsuit_id
+        return {
+            "checked_at": s.l1_checked_at.isoformat() if s.l1_checked_at else None,
+            "resolvido": lid is not None,
+            "lawsuit_id": lid,
+            "l1_url": _l1_lawsuit_url(lid) if lid else None,
+            "dmi_task_id": s.l1_dmi_task_id,
+            "dmi_task_url": _l1_task_url(s.l1_dmi_task_id, lid) if (s.l1_dmi_task_id and lid) else None,
+            "dmi_status_id": sid,
+            "dmi_status_label": L1_STATUS_LABELS_FULL.get(sid) if sid is not None else None,
+            "dmi_respondida": sid == 1,
+            "dmi_encontrada": s.l1_dmi_task_id is not None,
+            "pendentes_count": s.l1_pendentes_count,
+            "sem_pendencia": (s.l1_pendentes_count == 0) if s.l1_pendentes_count is not None else None,
+        }
+
+    def verificar_status_l1(
+        self, solicitacao: OnerequestSolicitacao, client: LegalOneApiClient
+    ) -> dict:
+        """Checa no Legal One, sob demanda, e cacheia na linha:
+          (A) a TAREFA DA DMI está Cumprida? (match por nº da solicitação na
+              descrição — legado `<num>\\t…`, `… | DMI: <num>`, reativações);
+          (B) a PASTA tem tarefa Pendente/Iniciado? (0 = sem pendência).
+        Não exige CNJ (resolve por NPJ). Best-effort: falha de rede num sinal
+        não derruba o outro."""
+        solicitacao.l1_checked_at = datetime.now(timezone.utc)
+        solicitacao.l1_dmi_task_id = None
+        solicitacao.l1_dmi_status_id = None
+        solicitacao.l1_pendentes_count = None
+
+        law = self.resolver_lawsuit(solicitacao, client)
+        lid = law.get("id") if law else None
+        if not lid:
+            self.db.commit()
+            return self._status_l1_payload(solicitacao)
+
+        # Sinal A: tarefa da DMI. Usa o número COMPLETO no contains (preciso —
+        # o curto dá falso-positivo, ex.: '061732' ⊂ '0617321').
+        numero = (solicitacao.numero_solicitacao or "").strip()
+        if numero:
+            rel = (
+                "relationships/any("
+                f"r: r/linkType eq 'Litigation' and r/linkId eq {int(lid)})"
+            )
+            esc = numero.replace("'", "''")
+            try:
+                matched = client.search_tasks(
+                    filter_expression=f"{rel} and contains(description,'{esc}')",
+                    top=30,
+                    orderby="id desc",
+                    select="id,description,statusId,status,endDateTime",
+                )
+            except Exception as e:
+                logger.warning(
+                    "OneRequest status L1: busca da tarefa da DMI %s falhou: %s", numero, e
+                )
+                matched = []
+            best = self._pick_dmi_task(matched)
+            if best:
+                solicitacao.l1_dmi_task_id = best.get("id")
+                solicitacao.l1_dmi_status_id = self._task_status_id(best)
+
+        # Sinal B: pendências na pasta (Pendente/Iniciado).
+        try:
+            pendentes = client.find_tasks_for_lawsuit(
+                lid, status_ids=list(L1_BLOCKING_STATUS_IDS), top=30
+            )
+            solicitacao.l1_pendentes_count = len(pendentes)
+        except Exception as e:
+            logger.warning(
+                "OneRequest status L1: contagem de pendentes da pasta %s falhou: %s", lid, e
+            )
+
+        self.db.commit()
+        return self._status_l1_payload(solicitacao)
 
     def estado(self) -> dict:
         """Heartbeat da última ingestão + contagem de abertas (pro aviso da UI)."""

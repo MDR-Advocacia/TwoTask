@@ -12,7 +12,7 @@ listas/constantes abaixo recalibra as sugestões sem mexer no resto.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -55,13 +55,20 @@ def sugerir_setor(titulo: Optional[str], polo: Optional[str]) -> tuple[str, bool
 
 
 def sugerir_data(prazo: Optional[str]) -> Optional[str]:
-    """prazo (DD/MM/YYYY do BB) − DATA_OFFSET_DIAS -> DD/MM/YYYY."""
+    """prazo (DD/MM/YYYY do BB) − DATA_OFFSET_DIAS -> DD/MM/YYYY.
+
+    Se a data sugerida cair no PASSADO (DMI já vencida, ou prazo a menos de
+    DATA_OFFSET_DIAS de hoje), sugere HOJE — não dá pra agendar tarefa
+    retroativa no Legal One e a atrasada precisa ser respondida o quanto antes.
+    """
     s = (prazo or "").strip()
     try:
         d = datetime.strptime(s, "%d/%m/%Y").date()
     except (ValueError, TypeError):
         return None
-    return (d - timedelta(days=DATA_OFFSET_DIAS)).strftime("%d/%m/%Y")
+    sugerida = d - timedelta(days=DATA_OFFSET_DIAS)
+    hoje = date.today()
+    return max(sugerida, hoje).strftime("%d/%m/%Y")
 
 
 def sugerir(db: Session, *, titulo: Optional[str], polo: Optional[str], prazo: Optional[str]) -> dict:

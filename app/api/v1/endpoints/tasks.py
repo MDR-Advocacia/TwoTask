@@ -160,7 +160,11 @@ class HierarchicalTaskTypeSchema(BaseModel):
 
 class UserForTaskForm(BaseModel):
     id: int
-    external_id: int
+    # Nullable: usuários criados via SSO/JIT podem ainda não ter external_id
+    # do L1. Sem Optional, um único usuário sem external_id fazia o endpoint
+    # inteiro estourar 500 (pydantic int_type) e derrubava o dropdown de
+    # responsável (Publicações + OneRequest).
+    external_id: Optional[int] = None
     name: str
     squads: List[Dict[str, Any]]
 
@@ -486,7 +490,9 @@ def get_data_for_task_form(db: Session = Depends(get_db)):
         .order_by(LegalOneOffice.name)
         .all()
     )
-    users = db.query(LegalOneUser)
+    # Só usuários com external_id (contato no L1) podem ser responsável por
+    # tarefa — os sem external_id (SSO/JIT não sincronizado) ficam de fora.
+    users = db.query(LegalOneUser).filter(LegalOneUser.external_id.isnot(None))
     users_for_form = [
         UserForTaskForm(
             id=user.id,

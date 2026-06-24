@@ -74,32 +74,36 @@ import {
   listAnotacoes,
   listSolicitacoes,
   OnerequestSolicitacao,
+  StatusL1,
   Sugestao,
   updateTratamento,
+  verificarStatusL1,
 } from "@/services/onerequest";
 
 const PAGE_SIZES = [25, 50, 100];
 
 const FAROL_DOT: Record<Farol, string> = {
-  cinza: "bg-slate-400",
-  vermelho: "bg-red-500",
+  cinza: "bg-slate-400", // sem prazo
+  atrasado: "bg-rose-700", // vencida (prazo já passou)
+  vermelho: "bg-red-500", // vence hoje
   amarelo: "bg-amber-400",
   roxo: "bg-purple-500",
   verde: "bg-emerald-500",
 };
 
 const KPI_DEFS: { key: string; label: string; dot: string }[] = [
-  { key: "vencidas", label: "Vencidas", dot: "bg-slate-400" },
-  { key: "hoje", label: "Hoje", dot: "bg-red-500" },
+  { key: "atrasadas", label: "Atrasadas", dot: "bg-rose-700" },
+  { key: "hoje", label: "Vence hoje", dot: "bg-red-500" },
   { key: "amanha", label: "Amanhã", dot: "bg-amber-400" },
   { key: "fds", label: "Fim de semana", dot: "bg-purple-500" },
   { key: "futuras", label: "Futuras", dot: "bg-emerald-500" },
 ];
 
-type TabKey = "novas" | "hoje" | "todas" | "respondidas" | "busca";
+type TabKey = "novas" | "atrasadas" | "hoje" | "todas" | "respondidas" | "busca";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "novas", label: "Novas (sem responsável)" },
+  { key: "atrasadas", label: "Atrasadas" },
   { key: "hoje", label: "Vence Hoje" },
   { key: "todas", label: "Todas (abertas)" },
   { key: "respondidas", label: "Respondidas" },
@@ -123,6 +127,94 @@ function StatusBadge({ sol }: { sol: OnerequestSolicitacao }) {
   if (sol.responsavel_user_id)
     return <Badge className="bg-sky-600 hover:bg-sky-600">Distribuída</Badge>;
   return <Badge variant="secondary">Nova</Badge>;
+}
+
+// Aplica o resultado da checagem no L1 (StatusL1) sobre os campos cacheados da linha.
+function aplicarStatusL1(it: OnerequestSolicitacao, r: StatusL1): OnerequestSolicitacao {
+  return {
+    ...it,
+    l1_checked_at: r.checked_at,
+    l1_dmi_task_id: r.dmi_task_id,
+    l1_dmi_status_id: r.dmi_status_id,
+    l1_dmi_status_label: r.dmi_status_label,
+    l1_dmi_respondida: r.dmi_respondida,
+    l1_dmi_encontrada: r.dmi_encontrada,
+    l1_pendentes_count: r.pendentes_count,
+    l1_sem_pendencia: r.sem_pendencia,
+    l1_task_url: r.dmi_task_url,
+    linked_lawsuit_id: r.lawsuit_id ?? it.linked_lawsuit_id,
+  };
+}
+
+// Coluna "Status L1": (A) a tarefa da DMI foi respondida (Cumprida)? e
+// (B) a pasta tem pendência? Lê do cache da linha (preenchido sob demanda).
+function StatusL1Cell({ sol }: { sol: OnerequestSolicitacao }) {
+  if (!sol.l1_checked_at)
+    return <span className="text-xs text-muted-foreground">não checado</span>;
+  if (!sol.linked_lawsuit_id)
+    return (
+      <Badge variant="outline" className="border-slate-300 text-slate-500">
+        pasta não localizada
+      </Badge>
+    );
+
+  // (A) tarefa da DMI
+  let badgeA: JSX.Element;
+  if (!sol.l1_dmi_encontrada) {
+    badgeA = (
+      <Badge variant="outline" className="border-slate-300 text-slate-500">
+        tarefa não localizada
+      </Badge>
+    );
+  } else if (sol.l1_dmi_respondida) {
+    badgeA = <Badge className="bg-emerald-600 hover:bg-emerald-600">Respondida (Cumprido)</Badge>;
+  } else if (sol.l1_dmi_status_id === 2) {
+    badgeA = <Badge variant="destructive">{sol.l1_dmi_status_label ?? "Não cumprido"}</Badge>;
+  } else {
+    badgeA = (
+      <Badge className="bg-amber-500 hover:bg-amber-500">
+        {sol.l1_dmi_status_label ?? "Pendente"}
+      </Badge>
+    );
+  }
+  const cellA = sol.l1_task_url ? (
+    <a
+      href={sol.l1_task_url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex"
+      title="Abrir a tarefa da DMI no Legal One"
+    >
+      {badgeA}
+    </a>
+  ) : (
+    badgeA
+  );
+
+  // (B) pendências na pasta
+  let badgeB: JSX.Element | null = null;
+  if (sol.l1_sem_pendencia === true)
+    badgeB = (
+      <Badge variant="outline" className="border-emerald-300 text-emerald-700">
+        pasta sem pendência
+      </Badge>
+    );
+  else if (sol.l1_sem_pendencia === false)
+    badgeB = (
+      <Badge variant="outline" className="border-amber-300 text-amber-700">
+        {sol.l1_pendentes_count} pendente(s) na pasta
+      </Badge>
+    );
+
+  return (
+    <div className="flex flex-col items-start gap-1">
+      {cellA}
+      {badgeB}
+      <span className="text-[10px] text-muted-foreground">
+        checado {fmtDateTime(sol.l1_checked_at)}
+      </span>
+    </div>
+  );
 }
 
 function fmtDateTime(value: string | null): string {
@@ -149,6 +241,18 @@ function toISODate(s: string | null): string {
 function toBRDate(iso: string): string {
   const m = (iso || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
   return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
+}
+
+// Quantos dias o prazo BB (DD/MM/YYYY) já passou em relação a hoje. 0 se futuro/hoje/inválido.
+function diasAtraso(prazo: string | null): number {
+  const iso = toISODate(prazo);
+  if (!iso) return 0;
+  const [y, m, d] = iso.split("-").map(Number);
+  const due = new Date(y, m - 1, d);
+  const hoje = new Date();
+  hoje.setHours(0, 0, 0, 0);
+  const diff = Math.floor((hoje.getTime() - due.getTime()) / 86400000);
+  return diff > 0 ? diff : 0;
 }
 
 function ingestInfo(iso: string | null): { texto: string; tone: "ok" | "warn" | "danger" } {
@@ -205,6 +309,10 @@ export default function OnerequestPage() {
   const [novaAnotacao, setNovaAnotacao] = useState("");
   const [resolvingL1Id, setResolvingL1Id] = useState<number | null>(null);
 
+  // "Atualizar status L1": checa em lote (client-loop) as DMIs da página.
+  const [checkingL1, setCheckingL1] = useState(false);
+  const [l1Progress, setL1Progress] = useState({ done: 0, total: 0 });
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -216,6 +324,9 @@ export default function OnerequestPage() {
       if (tab === "novas") {
         params.status_sistema = "ABERTO";
         params.sem_responsavel = true; // "novas" = ainda sem responsável (não distribuídas)
+      } else if (tab === "atrasadas") {
+        params.status_sistema = "ABERTO";
+        params.farol = "atrasado"; // prazo BB já venceu
       } else if (tab === "hoje") {
         params.status_sistema = "ABERTO";
         params.farol = "vermelho";
@@ -329,6 +440,42 @@ export default function OnerequestPage() {
       toast({ title: "Erro ao abrir no L1", description: String((e as Error).message), variant: "destructive" });
     } finally {
       setResolvingL1Id(null);
+    }
+  };
+
+  // Checa o status no L1 das DMIs da página atual (só as com processo/NPJ),
+  // em paralelo limitado, atualizando os badges conforme cada uma resolve.
+  const atualizarStatusL1Pagina = async () => {
+    const alvo = items.filter((s) => s.proc_utilizavel || s.npj_direcionador);
+    if (alvo.length === 0) {
+      toast({ title: "Nada para checar", description: "Nenhuma DMI com CNJ/NPJ nesta página." });
+      return;
+    }
+    setCheckingL1(true);
+    setL1Progress({ done: 0, total: alvo.length });
+    const fila = [...alvo];
+    let done = 0;
+    const CONC = 4;
+    const worker = async () => {
+      while (fila.length) {
+        const sol = fila.shift();
+        if (!sol) break;
+        try {
+          const r = await verificarStatusL1(sol.id);
+          setItems((prev) => prev.map((it) => (it.id === sol.id ? aplicarStatusL1(it, r) : it)));
+        } catch {
+          /* mantém a linha como estava; segue pras demais */
+        } finally {
+          done += 1;
+          setL1Progress({ done, total: alvo.length });
+        }
+      }
+    };
+    try {
+      await Promise.all(Array.from({ length: Math.min(CONC, alvo.length) }, worker));
+      toast({ title: "Status L1 atualizado", description: `${done} DMI(s) checada(s) no Legal One.` });
+    } finally {
+      setCheckingL1(false);
     }
   };
 
@@ -473,6 +620,24 @@ export default function OnerequestPage() {
           <Button variant="outline" onClick={() => load()} disabled={loading}>
             <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
           </Button>
+          <Button
+            variant="outline"
+            onClick={atualizarStatusL1Pagina}
+            disabled={checkingL1 || loading || items.length === 0}
+            title="Checa no Legal One se a tarefa de cada DMI desta página foi respondida (Cumprida) e se a pasta tem pendência"
+          >
+            {checkingL1 ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                {l1Progress.done}/{l1Progress.total}
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="mr-2 h-4 w-4" />
+                Status L1
+              </>
+            )}
+          </Button>
         </div>
       </div>
 
@@ -491,19 +656,20 @@ export default function OnerequestPage() {
                   <TableHead>Responsável</TableHead>
                   <TableHead>Setor</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead className="min-w-[160px]">Status L1</TableHead>
                   <TableHead className="text-right">Ação</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {loading && items.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="py-10 text-center">
+                    <TableCell colSpan={10} className="py-10 text-center">
                       <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground" />
                     </TableCell>
                   </TableRow>
                 ) : items.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
+                    <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
                       Nenhuma solicitação encontrada.
                     </TableCell>
                   </TableRow>
@@ -545,13 +711,29 @@ export default function OnerequestPage() {
                           </Badge>
                         )}
                       </TableCell>
-                      <TableCell className="whitespace-nowrap text-sm">{sol.prazo ?? "—"}</TableCell>
+                      <TableCell className="whitespace-nowrap text-sm">
+                        {!sol.prazo ? (
+                          "—"
+                        ) : sol.farol === "atrasado" ? (
+                          <span className="font-medium text-rose-700">
+                            {sol.prazo}
+                            <span className="block text-[10px] font-normal">
+                              atrasada há {diasAtraso(sol.prazo)} dia(s)
+                            </span>
+                          </span>
+                        ) : (
+                          sol.prazo
+                        )}
+                      </TableCell>
                       <TableCell className="text-sm">
                         {sol.responsavel_nome ?? <span className="text-muted-foreground">—</span>}
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-sm">{sol.setor ?? "—"}</TableCell>
                       <TableCell>
                         <StatusBadge sol={sol} />
+                      </TableCell>
+                      <TableCell>
+                        <StatusL1Cell sol={sol} />
                       </TableCell>
                       <TableCell className="text-right">
                         <Button size="sm" variant="outline" onClick={() => openModal(sol)}>

@@ -176,6 +176,16 @@ class SolicitacaoOut(BaseModel):
     linked_lawsuit_id: Optional[int] = None
     last_error: Optional[str] = None
     farol: str
+    # Status no L1 (cacheado pelo botão "Atualizar status L1").
+    l1_checked_at: Optional[str] = None
+    l1_dmi_task_id: Optional[int] = None
+    l1_dmi_status_id: Optional[int] = None
+    l1_dmi_status_label: Optional[str] = None
+    l1_dmi_respondida: bool = False
+    l1_dmi_encontrada: bool = False
+    l1_pendentes_count: Optional[int] = None
+    l1_sem_pendencia: Optional[bool] = None
+    l1_task_url: Optional[str] = None
 
 
 class ListResponse(BaseModel):
@@ -361,6 +371,42 @@ def l1_tarefas(
     if not row:
         raise HTTPException(status_code=404, detail="Solicitação não encontrada.")
     return service.tarefas_na_pasta(row, client)
+
+
+# ── Status no Legal One (sob demanda) ──────────────────────────────────
+class StatusL1Response(BaseModel):
+    checked_at: Optional[str] = None
+    resolvido: bool = False
+    lawsuit_id: Optional[int] = None
+    l1_url: Optional[str] = None
+    # Sinal A: a tarefa da DMI (match por número da solicitação).
+    dmi_task_id: Optional[int] = None
+    dmi_task_url: Optional[str] = None
+    dmi_status_id: Optional[int] = None
+    dmi_status_label: Optional[str] = None
+    dmi_respondida: bool = False
+    dmi_encontrada: bool = False
+    # Sinal B: pendências na pasta.
+    pendentes_count: Optional[int] = None
+    sem_pendencia: Optional[bool] = None
+
+
+@router.post(
+    "/solicitacoes/{solicitacao_id}/status-l1",
+    response_model=StatusL1Response,
+    summary="Checa no Legal One se a tarefa da DMI foi respondida (Cumprida) e se a pasta tem pendência",
+    dependencies=[_perm],
+)
+def status_l1(
+    solicitacao_id: int,
+    db: Session = Depends(get_db),
+    client: LegalOneApiClient = Depends(get_api_client),
+):
+    service = OnerequestService(db)
+    row = service.get(solicitacao_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Solicitação não encontrada.")
+    return service.verificar_status_l1(row, client)
 
 
 # ── Anotações (log de auditoria) ───────────────────────────────────────

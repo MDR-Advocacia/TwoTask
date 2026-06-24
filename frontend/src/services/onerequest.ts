@@ -5,7 +5,7 @@ import { apiFetch } from "@/lib/api-client";
 
 const BASE = "/api/v1/onerequest";
 
-export type Farol = "cinza" | "vermelho" | "amarelo" | "roxo" | "verde";
+export type Farol = "cinza" | "atrasado" | "vermelho" | "amarelo" | "roxo" | "verde";
 
 export interface OnerequestSolicitacao {
   id: number;
@@ -29,6 +29,16 @@ export interface OnerequestSolicitacao {
   linked_lawsuit_id: number | null;
   last_error: string | null;
   farol: Farol;
+  // Status no L1 (cacheado pelo botão "Atualizar status L1").
+  l1_checked_at: string | null;
+  l1_dmi_task_id: number | null;
+  l1_dmi_status_id: number | null;
+  l1_dmi_status_label: string | null;
+  l1_dmi_respondida: boolean;
+  l1_dmi_encontrada: boolean;
+  l1_pendentes_count: number | null;
+  l1_sem_pendencia: boolean | null;
+  l1_task_url: string | null;
 }
 
 export interface ListResponse {
@@ -80,6 +90,21 @@ export interface Anotacao {
   texto: string;
   autor_nome: string | null;
   created_at: string | null;
+}
+
+export interface StatusL1 {
+  checked_at: string | null;
+  resolvido: boolean;
+  lawsuit_id: number | null;
+  l1_url: string | null;
+  dmi_task_id: number | null;
+  dmi_task_url: string | null;
+  dmi_status_id: number | null;
+  dmi_status_label: string | null;
+  dmi_respondida: boolean;
+  dmi_encontrada: boolean;
+  pendentes_count: number | null;
+  sem_pendencia: boolean | null;
 }
 
 export interface Estado {
@@ -179,6 +204,14 @@ export async function getSugestao(id: number): Promise<Sugestao> {
 
 export async function getL1Tarefas(id: number): Promise<L1Tarefas> {
   return json(await apiFetch(`${BASE}/solicitacoes/${id}/l1-tarefas`));
+}
+
+// Checa no L1 se a tarefa da DMI foi respondida (Cumprida) + pendências na pasta.
+// Cacheia no backend; devolve o resultado já calculado.
+export async function verificarStatusL1(id: number): Promise<StatusL1> {
+  return json(
+    await apiFetch(`${BASE}/solicitacoes/${id}/status-l1`, { method: "POST" }),
+  );
 }
 
 export async function listAnotacoes(id: number): Promise<Anotacao[]> {
