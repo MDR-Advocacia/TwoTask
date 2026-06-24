@@ -99,6 +99,27 @@ class LegalOneUser(BaseModel):
     is_active: bool
     model_config = ConfigDict(from_attributes=True)
 
+
+class UserMe(BaseModel):
+    """Resposta do GET /me. Diferente de LegalOneUser, inclui papel + permissões
+    para que o FRONTEND use o banco como fonte de verdade (e não o JWT, que é um
+    snapshot de até 24h). Sem isto, liberar/revogar acesso no admin só "pega"
+    quando o token expira — e o usuário fica preso na tela de espera nesse meio
+    tempo, mesmo já liberado."""
+    id: int
+    external_id: Optional[int] = None
+    name: str
+    email: str
+    is_active: bool
+    role: Optional[str] = None
+    can_schedule_batch: bool = False
+    can_use_publications: bool = False
+    can_use_prazos_iniciais: bool = False
+    can_use_onerequest: bool = False
+    must_change_password: bool = False
+    model_config = ConfigDict(from_attributes=True)
+
+
 class SquadMember(BaseModel):
     """
     Representa a associação de um usuário a um squad, aninhando os detalhes do usuário.

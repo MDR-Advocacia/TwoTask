@@ -122,7 +122,16 @@ class MetadataSyncService:
 
                     if user:
                         user.name = user_data.get("name")
-                        user.email = email
+                        # NÃO sincroniza o e-mail de quem já tem login via Entra/SSO
+                        # (last_sso_at preenchido). O e-mail virou IDENTIDADE DE LOGIN
+                        # e passou a ser gerido só pelo Entra ID: sobrescrever com o
+                        # e-mail do cadastro do Legal One revertia o login (ex.:
+                        # institucional -> e-mail antigo), recriava conta pendente e
+                        # jogava o usuário pra tela de espera a cada sync. Demais
+                        # campos (nome/ativo) seguem sincronizando para os outros
+                        # módulos — a sync continua intocada fora deste vínculo.
+                        if user.last_sso_at is None:
+                            user.email = email
                         user.is_active = user_data.get("isActive", False)
                     else:
                         new_user = LegalOneUser(

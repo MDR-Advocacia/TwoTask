@@ -13,6 +13,7 @@ interface User {
   can_use_prazos_iniciais?: boolean;
   can_use_onerequest?: boolean;
   must_change_password?: boolean;
+  is_active?: boolean;
 }
 
 interface TokenData {
@@ -195,7 +196,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     login,
     logout,
     isLoading,
-    canScheduleBatch: tokenData?.can_schedule_batch ?? false,
+    // Fonte de verdade = /me (banco). O JWT é só fallback no boot, pois é um
+    // snapshot de até 24h: sem isto, liberar permissão no admin só "pega" quando
+    // o token expira — e a usuária fica presa na tela de espera nesse meio tempo.
+    canScheduleBatch: user?.can_schedule_batch ?? tokenData?.can_schedule_batch ?? false,
     // Default FALSE: 1º acesso entra sem permissão (vê a tela de boas-vindas).
     // Usa o /me (banco) como fonte de verdade pra refletir liberação sem re-login.
     canUsePublications: user?.can_use_publications ?? tokenData?.can_use_publications ?? false,
@@ -205,7 +209,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       user?.can_use_prazos_iniciais ?? tokenData?.can_use_prazos_iniciais ?? false,
     canUseOnerequest:
       user?.can_use_onerequest ?? tokenData?.can_use_onerequest ?? false,
-    isAdmin: tokenData?.role === 'admin',
+    isAdmin: (user?.role ?? tokenData?.role) === 'admin',
     refreshMe,
   };
 
