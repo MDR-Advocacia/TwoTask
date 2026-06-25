@@ -311,6 +311,19 @@ async def lifespan(_: FastAPI):
             "Falha ao registrar job de auto-refresh L1 do OneRequest no startup."
         )
 
+    # Sync read-only do Postgres da FONTE do OneRequest (a RPA grava lá; o Flow
+    # lê e espelha pro onr_solicitacoes). Só roda se ONEREQUEST_SOURCE_DB_URL setada.
+    try:
+        from app.services.onerequest.source_sync_worker import (
+            register_onerequest_source_sync_job,
+        )
+
+        register_onerequest_source_sync_job(scheduler)
+    except Exception:
+        logger.exception(
+            "Falha ao registrar job de sync da fonte do OneRequest no startup."
+        )
+
     try:
         yield
     finally:

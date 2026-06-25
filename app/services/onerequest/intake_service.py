@@ -38,6 +38,45 @@ def _chunk(seq: list, size: int) -> Iterable[list]:
         yield seq[i : i + size]
 
 
+# ── Helpers do sync da fonte (Postgres do OneRequest) ─────────────────
+# Campos CAPTURADOS pela RPA que o Flow espelha (o resto = tratamento do Flow,
+# preservado). status_sistema e recebido_em tratados à parte.
+_SOURCE_CAPTURED = ("titulo", "npj_direcionador", "prazo", "numero_processo", "polo")
+
+
+def _src_clean(value):
+    """Normaliza string da fonte: None/''/'N/A' -> None."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s or s.upper() == "N/A":
+        return None
+    return s
+
+
+def _src_status(value) -> str:
+    """'Aberto'/'Respondido' (texto da fonte) -> ABERTO/RESPONDIDO."""
+    s = str(value).strip().lower() if value is not None else ""
+    return STATUS_SISTEMA_RESPONDIDO if s.startswith("respond") else STATUS_SISTEMA_ABERTO
+
+
+def _src_dt(value):
+    """recebido_em (texto) -> datetime aware (UTC). None se não parsear."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    s = str(value).strip()
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
 class OnerequestIntakeService:
     def __init__(self, db: Session):
         self.db = db
@@ -201,4 +240,73 @@ class OnerequestIntakeService:
             atualizados,
             len(nao_encontrados),
         )
+        return resultado
+
+    # ──────────────────────────────────────────────────────────────────
+    # Sync READ-ONLY do Postgres da fonte (OneRequest/RPA). Flow é dono do
+    # tratamento: espelha só os campos CAPTURADOS + status_sistema; PRESERVA
+    # responsável/setor/data/anotação/created_task_id/l1_*/scheduled_by do
+    # Flow. Nunca deleta. `rows` = lista de dicts lidos do Postgres da fonte.
+    # ──────────────────────────────────────────────────────────────────
+    def sync_from_source(self, rows: list) -> dict:
+        existentes = {
+            r.numero_solicitacao: r
+            for r in self.db.query(OnerequestSolicitacao).all()
+        }
+        inseridos = atualizados = 0
+        st_count = {STATUS_SISTEMA_ABERTO: 0, STATUS_SISTEMA_RESPONDIDO: 0}
+
+        for r in rows:
+            numero = _src_clean(r.get("numero_solicitacao"))
+            if not numero:
+                continue
+            status = _src_status(r.get("status_sistema"))
+            st_count[status] += 1
+            texto = r.get("texto_dmi") or None
+
+            row = existentes.get(numero)
+            if row is None:
+                self.db.add(
+                    OnerequestSolicitacao(
+                        numero_solicitacao=numero,
+                        titulo=_src_clean(r.get("titulo")),
+                        npj_direcionador=_src_clean(r.get("npj_direcionador")),
+                        prazo=_src_clean(r.get("prazo")),
+                        texto_dmi=texto,
+                        numero_processo=_src_clean(r.get("numero_processo")),
+                        polo=_src_clean(r.get("polo")),
+                        recebido_em=_src_dt(r.get("recebido_em")),
+                        status_sistema=status,
+                        status_tratamento=STATUS_TRATAMENTO_NOVO,
+                    )
+                )
+                inseridos += 1
+                continue
+
+            # Existente: atualiza SÓ capturados + status; tratamento intocado.
+            changed = False
+            for f in _SOURCE_CAPTURED:
+                novo = _src_clean(r.get(f))
+                if getattr(row, f) != novo:
+                    setattr(row, f, novo)
+                    changed = True
+            if (row.texto_dmi or None) != texto:
+                row.texto_dmi = texto
+                changed = True
+            if row.status_sistema != status:
+                row.status_sistema = status
+                changed = True
+            if changed:
+                atualizados += 1
+
+        self.db.commit()
+        self._touch_ingest()
+        resultado = {
+            "recebidos": len(rows),
+            "inseridos": inseridos,
+            "atualizados": atualizados,
+            "abertos": st_count[STATUS_SISTEMA_ABERTO],
+            "respondidos": st_count[STATUS_SISTEMA_RESPONDIDO],
+        }
+        logger.info("OneRequest sync da fonte: %s", resultado)
         return resultado

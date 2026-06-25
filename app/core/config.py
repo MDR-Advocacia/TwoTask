@@ -286,6 +286,13 @@ class Settings(BaseSettings):
     # endereçáveis no Teams (os demais usam e-mail pessoal → só Copiar).
     teams_corporate_email_domain: str = "mdradvocacia.com"
 
+    # ── OneRequest: sync read-only do Postgres da fonte (RPA escreve lá) ──
+    # A RPA local escreve num Postgres separado (recurso Coolify do OneRequest);
+    # o Flow LÊ de hora em hora e espelha pro onr_solicitacoes. NUNCA escreve na
+    # fonte. Vazio = job de sync desligado. Ex.: postgresql://onerequest:SENHA@db:5432/onerequest
+    # (o api do Flow precisa estar na rede do recurso OneRequest pra resolver "db").
+    onerequest_source_db_url: str | None = None
+
     # ── AJUS (sistema do cliente — POST /inserir-prazos) ──────────────
     # Credenciais lidas do env (Coolify). NÃO fica em tabela porque é
     # uma conta única por instalação MDR. Se um dia precisar de conta

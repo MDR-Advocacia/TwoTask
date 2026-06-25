@@ -61,6 +61,14 @@ services:
       # SSO Entra (Fase 1): ativa GET /auth/sso/session. Default false (seguro);
       # ponha true no painel do Coolify quando for ligar o login.
       SSO_HEADER_AUTH_ENABLED: ${SSO_HEADER_AUTH_ENABLED:-false}
+      # Sync read-only do Postgres do OneRequest (a RPA grava lá). Setar no Coolify.
+      ONEREQUEST_SOURCE_DB_URL: ${ONEREQUEST_SOURCE_DB_URL:-}
+    # `default` = rede do projeto (Coolify) — mantém api↔postgres↔frontend.
+    # `onerequest_source` = rede do recurso OneRequest, pro job de sync ler o
+    # Postgres da RPA (host `db`). Ver networks no fim do arquivo.
+    networks:
+      - default
+      - onerequest_source
     depends_on:
       postgres:
         condition: service_healthy
@@ -122,6 +130,15 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+
+# Rede EXTERNA do recurso OneRequest (Postgres onde a RPA grava). external=true:
+# o Coolify nao cria, so conecta na que ja existe. Nome via env var (o UUID muda
+# se o recurso OneRequest for recriado — ai basta sobrescrever ONEREQUEST_SOURCE_NETWORK
+# no painel). So o `api` entra nela; os demais servicos seguem so na rede default.
+networks:
+  onerequest_source:
+    external: true
+    name: ${ONEREQUEST_SOURCE_NETWORK:-lkk8c0o4c08swo4cosocgcw8}
 
 # Volumes blindados com external: true + nome configuravel via env var.
 # Sem isso, Coolify pode recriar volumes ao detectar mudanca no compose,
