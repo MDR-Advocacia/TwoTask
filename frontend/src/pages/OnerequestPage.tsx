@@ -1158,6 +1158,7 @@ export default function OnerequestPage() {
                   <TableHead>Nº Solicitação</TableHead>
                   <TableHead className="min-w-[200px]">Título</TableHead>
                   <TableHead>Processo</TableHead>
+                  <TableHead>Polo</TableHead>
                   <TableHead className="whitespace-nowrap">Disponibilizada</TableHead>
                   <TableHead>Prazo BB</TableHead>
                   <TableHead>Responsável</TableHead>
@@ -1170,13 +1171,13 @@ export default function OnerequestPage() {
               <TableBody>
                 {loading && items.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={11} className="py-10 text-center">
+                    <TableCell colSpan={12} className="py-10 text-center">
                       <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground" />
                     </TableCell>
                   </TableRow>
                 ) : items.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={11} className="py-10 text-center text-muted-foreground">
+                    <TableCell colSpan={12} className="py-10 text-center text-muted-foreground">
                       Nenhuma solicitação encontrada.
                     </TableCell>
                   </TableRow>
@@ -1216,6 +1217,15 @@ export default function OnerequestPage() {
                           <Badge variant="outline" className="border-amber-300 text-amber-700">
                             sem processo
                           </Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        {sol.polo ? (
+                          <Badge variant="outline" className="capitalize">
+                            {sol.polo}
+                          </Badge>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
                         )}
                       </TableCell>
                       <TableCell
