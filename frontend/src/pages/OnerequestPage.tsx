@@ -774,67 +774,79 @@ export default function OnerequestPage() {
         </div>
       </div>
 
-      {/* Aviso persistente: data da última ingestão (RPA heartbeat) */}
+      {/* Barra de status condensada: ingestão (RPA heartbeat) + auto-atualização
+          L1 + abertas. Neutra quando saudável; ganha cor só se a ingestão atrasa. */}
       {(() => {
         const info = ingestInfo(estado?.last_ingest_at ?? null);
-        const cls =
+        const bar =
           info.tone === "ok"
-            ? "border-emerald-300 bg-emerald-50 text-emerald-900"
+            ? "border bg-card"
             : info.tone === "warn"
-              ? "border-amber-300 bg-amber-50 text-amber-900"
-              : "border-red-300 bg-red-50 text-red-900";
+              ? "border-amber-300 bg-amber-50"
+              : "border-red-300 bg-red-50";
+        const iconTone =
+          info.tone === "ok"
+            ? "text-emerald-600"
+            : info.tone === "warn"
+              ? "text-amber-600"
+              : "text-red-600";
         const Icon = info.tone === "ok" ? CheckCircle2 : AlertTriangle;
         return (
-          <div className={`flex flex-wrap items-center gap-3 rounded-lg border-2 p-3 text-base font-semibold ${cls}`}>
-            <Icon className="h-6 w-6 shrink-0" />
-            <span>{info.texto}</span>
+          <div className={`flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg px-3 py-2 text-sm ${bar}`}>
+            <div className="flex items-center gap-2">
+              <Icon className={`h-4 w-4 shrink-0 ${iconTone}`} />
+              <span className="font-medium">{info.texto}</span>
+            </div>
+
+            {autoref && (
+              <>
+                <span className="hidden h-4 w-px bg-border sm:block" />
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`h-2 w-2 shrink-0 rounded-full ${autoref.enabled ? "bg-emerald-500" : "bg-slate-400"}`}
+                  />
+                  <span className="text-muted-foreground">
+                    Auto-atualização L1:{" "}
+                    <span className={autoref.enabled ? "font-medium text-emerald-700" : "font-medium text-slate-600"}>
+                      {autoref.enabled ? "ligada" : "parada"}
+                    </span>
+                    {autoref.last_run_at && (
+                      <span className="hidden md:inline">
+                        {" "}· última{" "}
+                        {new Date(autoref.last_run_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                        {autoref.last_count != null && ` (${autoref.last_count})`}
+                      </span>
+                    )}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2"
+                    onClick={toggleAutorefresh}
+                    disabled={togglingAuto}
+                    title="Liga/desliga a atualização automática (de hora em hora) do Status L1 das DMIs que vencem hoje"
+                  >
+                    {togglingAuto ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : autoref.enabled ? (
+                      <Pause className="h-3.5 w-3.5" />
+                    ) : (
+                      <Play className="h-3.5 w-3.5" />
+                    )}
+                    <span className="ml-1">{autoref.enabled ? "Parar" : "Ligar"}</span>
+                  </Button>
+                </div>
+              </>
+            )}
+
             {estado && (
-              <span className="ml-auto text-sm font-normal opacity-80">{estado.abertas} DMIs abertas</span>
+              <span className="ml-auto shrink-0 rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary">
+                {estado.abertas} DMIs abertas
+              </span>
             )}
           </div>
         );
       })()}
-
-      {/* Regra: auto-atualização horária do Status L1 das DMIs que vencem hoje */}
-      {autoref && (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border bg-muted/40 px-3 py-2 text-sm">
-          <span
-            className={`h-2.5 w-2.5 shrink-0 rounded-full ${autoref.enabled ? "bg-emerald-500" : "bg-slate-400"}`}
-          />
-          <span className="font-medium">
-            Auto-atualização do Status L1 (vence hoje):{" "}
-            <span className={autoref.enabled ? "text-emerald-700" : "text-slate-600"}>
-              {autoref.enabled ? "ligada" : "parada"}
-            </span>
-          </span>
-          <span className="text-muted-foreground">
-            de hora em hora
-            {autoref.last_run_at && (
-              <>
-                {" "}· última: {new Date(autoref.last_run_at).toLocaleString("pt-BR")}
-                {autoref.last_count != null && ` (${autoref.last_count} atualizadas)`}
-              </>
-            )}
-          </span>
-          <Button
-            size="sm"
-            variant={autoref.enabled ? "outline" : "default"}
-            className="ml-auto"
-            onClick={toggleAutorefresh}
-            disabled={togglingAuto}
-            title="Liga/desliga a atualização automática (de hora em hora) do status no Legal One das DMIs que vencem hoje"
-          >
-            {togglingAuto ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : autoref.enabled ? (
-              <Pause className="mr-2 h-4 w-4" />
-            ) : (
-              <Play className="mr-2 h-4 w-4" />
-            )}
-            {autoref.enabled ? "Parar" : "Ligar"}
-          </Button>
-        </div>
-      )}
 
       {/* KPIs */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
@@ -917,16 +929,16 @@ export default function OnerequestPage() {
               {soSemAnotacao ? "Só sem anotação ✓" : "Só sem anotação"}
             </Button>
           )}
-          <Input
-            className="w-full lg:w-72"
-            placeholder="Nº solicitação, processo ou título"
-            value={buscaInput}
-            onChange={(e) => setBuscaInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && aplicarBusca()}
-          />
-          <Button variant="secondary" onClick={aplicarBusca}>
-            <Search className="h-4 w-4" />
-          </Button>
+          <div className="relative w-full lg:w-72">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              className="w-full pl-8"
+              placeholder="Nº solicitação, processo ou título"
+              value={buscaInput}
+              onChange={(e) => setBuscaInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && aplicarBusca()}
+            />
+          </div>
           <Button variant="outline" onClick={() => load()} disabled={loading}>
             <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
           </Button>
@@ -1057,8 +1069,8 @@ export default function OnerequestPage() {
                     </TableCell>
                   </TableRow>
                 ) : (
-                  items.map((sol) => (
-                    <TableRow key={sol.id}>
+                  items.map((sol, idx) => (
+                    <TableRow key={sol.id} className={idx % 2 === 1 ? "bg-muted/20" : undefined}>
                       <TableCell>
                         <span
                           className={`inline-block h-3 w-3 rounded-full ${FAROL_DOT[sol.farol]}`}
