@@ -10,6 +10,7 @@ L1 entram em fases seguintes — ver `docs/onerequest-integracao-plano.md`.
 """
 
 import logging
+from datetime import date
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -168,6 +169,7 @@ class SolicitacaoOut(BaseModel):
     recebido_em: Optional[str] = None
     status_sistema: str
     status_tratamento: str
+    desfecho: Optional[str] = None
     responsavel_user_id: Optional[int] = None
     responsavel_nome: Optional[str] = None
     setor: Optional[str] = None
@@ -238,6 +240,11 @@ def listar_solicitacoes(
     farol: Optional[str] = Query(None, description="Filtra por farol: cinza|atrasado|vermelho|amarelo|roxo|verde"),
     sem_responsavel: Optional[bool] = Query(None, description="Apenas DMIs sem responsável (não distribuídas)"),
     sem_anotacao: Optional[bool] = Query(None, description="Apenas DMIs SEM anotação (ex.: atrasadas que ainda precisam de ação)"),
+    concluidas: Optional[bool] = Query(None, description="Concluídas = BB respondeu (RESPONDIDO) ou operador encerrou sem providência (IGNORADO)"),
+    disp_de: Optional[date] = Query(None, description="Disponibilização (recebido_em) a partir desta data (BRT)"),
+    disp_ate: Optional[date] = Query(None, description="Disponibilização (recebido_em) até esta data (BRT)"),
+    prazo_de: Optional[date] = Query(None, description="Prazo fatal a partir desta data"),
+    prazo_ate: Optional[date] = Query(None, description="Prazo fatal até esta data"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -251,8 +258,60 @@ def listar_solicitacoes(
         farol=farol,
         sem_responsavel=sem_responsavel,
         sem_anotacao=sem_anotacao,
+        concluidas=concluidas,
+        disp_de=disp_de,
+        disp_ate=disp_ate,
+        prazo_de=prazo_de,
+        prazo_ate=prazo_ate,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.get(
+    "/solicitacoes/export",
+    summary="Exporta as DMIs filtradas em Excel (xlsx), respeitando os mesmos filtros da listagem",
+    dependencies=[_perm],
+)
+def exportar_solicitacoes(
+    status_sistema: Optional[str] = Query(None),
+    status_tratamento: Optional[str] = Query(None),
+    responsavel_user_id: Optional[int] = Query(None),
+    busca: Optional[str] = Query(None),
+    farol: Optional[str] = Query(None),
+    sem_responsavel: Optional[bool] = Query(None),
+    sem_anotacao: Optional[bool] = Query(None),
+    concluidas: Optional[bool] = Query(None),
+    disp_de: Optional[date] = Query(None),
+    disp_ate: Optional[date] = Query(None),
+    prazo_de: Optional[date] = Query(None),
+    prazo_ate: Optional[date] = Query(None),
+    db: Session = Depends(get_db),
+):
+    from datetime import datetime as _dt
+
+    from fastapi import Response
+
+    service = OnerequestService(db)
+    xlsx = service.export_xlsx(
+        status_sistema=status_sistema or None,
+        status_tratamento=status_tratamento,
+        responsavel_user_id=responsavel_user_id,
+        busca=busca,
+        farol=farol,
+        sem_responsavel=sem_responsavel,
+        sem_anotacao=sem_anotacao,
+        concluidas=concluidas,
+        disp_de=disp_de,
+        disp_ate=disp_ate,
+        prazo_de=prazo_de,
+        prazo_ate=prazo_ate,
+    )
+    fname = f"onerequest-dmis-{_dt.now().strftime('%Y%m%d-%H%M')}.xlsx"
+    return Response(
+        content=xlsx,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
 
 

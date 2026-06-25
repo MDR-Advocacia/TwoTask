@@ -20,6 +20,7 @@ export interface OnerequestSolicitacao {
   recebido_em: string | null;
   status_sistema: string;
   status_tratamento: string;
+  desfecho: string | null;
   responsavel_user_id: number | null;
   responsavel_nome: string | null;
   setor: string | null;
@@ -56,6 +57,14 @@ export interface ListParams {
   farol?: string;
   sem_responsavel?: boolean;
   sem_anotacao?: boolean;
+  // Concluídas = BB respondeu (RESPONDIDO) ou operador encerrou sem providência (IGNORADO).
+  concluidas?: boolean;
+  // Recortes de data (ISO YYYY-MM-DD). disp_* = disponibilização (recebido_em);
+  // prazo_* = prazo fatal do BB.
+  disp_de?: string;
+  disp_ate?: string;
+  prazo_de?: string;
+  prazo_ate?: string;
   limit?: number;
   offset?: number;
 }
@@ -215,7 +224,9 @@ async function json<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function listSolicitacoes(params: ListParams): Promise<ListResponse> {
+// Builder ÚNICO de query — listagem e exportação usam exatamente os mesmos
+// filtros (eles "conversam" por construção). Não inclui limit/offset.
+function buildListQuery(params: ListParams): URLSearchParams {
   const qs = new URLSearchParams();
   if (params.status_sistema) qs.set("status_sistema", params.status_sistema);
   if (params.status_tratamento) qs.set("status_tratamento", params.status_tratamento);
@@ -225,9 +236,43 @@ export async function listSolicitacoes(params: ListParams): Promise<ListResponse
   if (params.farol) qs.set("farol", params.farol);
   if (params.sem_responsavel) qs.set("sem_responsavel", "true");
   if (params.sem_anotacao) qs.set("sem_anotacao", "true");
+  if (params.concluidas) qs.set("concluidas", "true");
+  if (params.disp_de) qs.set("disp_de", params.disp_de);
+  if (params.disp_ate) qs.set("disp_ate", params.disp_ate);
+  if (params.prazo_de) qs.set("prazo_de", params.prazo_de);
+  if (params.prazo_ate) qs.set("prazo_ate", params.prazo_ate);
+  return qs;
+}
+
+export async function listSolicitacoes(params: ListParams): Promise<ListResponse> {
+  const qs = buildListQuery(params);
   qs.set("limit", String(params.limit ?? 50));
   qs.set("offset", String(params.offset ?? 0));
   return json(await apiFetch(`${BASE}/solicitacoes?${qs.toString()}`));
+}
+
+// Exporta as DMIs com os MESMOS filtros da listagem (sem paginação) e baixa o xlsx.
+export async function downloadSolicitacoesExcel(params: ListParams): Promise<void> {
+  const qs = buildListQuery(params);
+  const res = await apiFetch(`${BASE}/solicitacoes/export?${qs.toString()}`);
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      detail = (await res.json())?.detail || detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `onerequest-dmis-${new Date().toISOString().slice(0, 10)}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 export async function getOptions(): Promise<{ setores: string[] }> {

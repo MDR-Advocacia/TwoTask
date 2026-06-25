@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import or_
@@ -22,6 +22,7 @@ from app.models.onerequest import (
     OnerequestAnotacao,
     OnerequestSolicitacao,
     STATUS_SISTEMA_ABERTO,
+    STATUS_SISTEMA_RESPONDIDO,
     STATUS_TRATAMENTO_AGENDADO,
     STATUS_TRATAMENTO_AGUARDANDO_PROCESSO,
     STATUS_TRATAMENTO_ERRO,
@@ -57,6 +58,30 @@ def _parse_prazo(prazo: Optional[str]) -> Optional[date]:
         return datetime.strptime(prazo.strip(), "%d/%m/%Y").date()
     except (ValueError, TypeError):
         return None
+
+
+# Horário de Brasília (sem DST desde 2019) — recorte de "disponibilização".
+_BRT = timezone(timedelta(hours=-3))
+
+
+def _brt_date(dt: Optional[datetime]) -> Optional[date]:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(_BRT).date()
+
+
+def _fmt_iso_brt(iso: Optional[str]) -> Optional[str]:
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso)
+    except (ValueError, TypeError):
+        return iso
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(_BRT).strftime("%d/%m/%Y %H:%M")
 
 
 def _farol(prazo_date: Optional[date], hoje: date) -> str:
@@ -123,11 +148,25 @@ class OnerequestService:
         farol: Optional[str] = None,
         sem_responsavel: Optional[bool] = None,
         sem_anotacao: Optional[bool] = None,
+        concluidas: Optional[bool] = None,
+        disp_de: Optional[date] = None,
+        disp_ate: Optional[date] = None,
+        prazo_de: Optional[date] = None,
+        prazo_ate: Optional[date] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> dict:
         q = self.db.query(OnerequestSolicitacao)
-        if status_sistema:
+        if concluidas:
+            # "Concluídas" = BB respondeu (RESPONDIDO) OU operador encerrou sem
+            # providência (IGNORADO). Ignora o filtro de status_sistema.
+            q = q.filter(
+                or_(
+                    OnerequestSolicitacao.status_sistema == STATUS_SISTEMA_RESPONDIDO,
+                    OnerequestSolicitacao.status_tratamento == STATUS_TRATAMENTO_IGNORADO,
+                )
+            )
+        elif status_sistema:
             q = q.filter(OnerequestSolicitacao.status_sistema == status_sistema)
         if status_tratamento:
             q = q.filter(OnerequestSolicitacao.status_tratamento == status_tratamento)
@@ -153,14 +192,29 @@ class OnerequestService:
 
         hoje = date.today()
 
-        # Passo 1: (id, prazo) de TODO o conjunto filtrado pra farol/KPIs/ordenação.
+        # Passo 1: (id, prazo, recebido_em) de TODO o conjunto filtrado pra
+        # farol/KPIs/ordenação + recortes de data (disponibilização e prazo fatal).
         leves = q.with_entities(
-            OnerequestSolicitacao.id, OnerequestSolicitacao.prazo
+            OnerequestSolicitacao.id,
+            OnerequestSolicitacao.prazo,
+            OnerequestSolicitacao.recebido_em,
         ).all()
         kpis = {"atrasadas": 0, "hoje": 0, "amanha": 0, "fds": 0, "futuras": 0, "sem_prazo": 0}
         enriquecidos = []
-        for _id, prazo in leves:
+        for _id, prazo, recebido_em in leves:
             pdate = _parse_prazo(prazo)
+            # Recorte por PRAZO FATAL (campo prazo, do BB).
+            if prazo_de and (pdate is None or pdate < prazo_de):
+                continue
+            if prazo_ate and (pdate is None or pdate > prazo_ate):
+                continue
+            # Recorte por DISPONIBILIZAÇÃO (recebido_em, em horário de Brasília).
+            if disp_de or disp_ate:
+                rdate = _brt_date(recebido_em)
+                if disp_de and (rdate is None or rdate < disp_de):
+                    continue
+                if disp_ate and (rdate is None or rdate > disp_ate):
+                    continue
             farol_row = _farol(pdate, hoje)
             if farol_row == "atrasado":
                 kpis["atrasadas"] += 1
@@ -230,6 +284,11 @@ class OnerequestService:
                     "recebido_em": r.recebido_em.isoformat() if r.recebido_em else None,
                     "status_sistema": r.status_sistema,
                     "status_tratamento": r.status_tratamento,
+                    "desfecho": (
+                        "respondida"
+                        if r.status_sistema == STATUS_SISTEMA_RESPONDIDO
+                        else ("arquivada" if r.status_tratamento == STATUS_TRATAMENTO_IGNORADO else None)
+                    ),
                     "responsavel_user_id": r.responsavel_user_id,
                     "responsavel_nome": nomes.get(r.responsavel_user_id),
                     "setor": r.setor,
@@ -266,6 +325,65 @@ class OnerequestService:
             )
 
         return {"total": total, "kpis": kpis, "items": items}
+
+    # ──────────────────────────────────────────────────────────────────
+    # Exportação Excel (reusa exatamente os filtros do list)
+    # ──────────────────────────────────────────────────────────────────
+    def export_xlsx(self, **filtros) -> bytes:
+        from io import BytesIO
+
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill
+        from openpyxl.utils import get_column_letter
+
+        filtros.pop("limit", None)
+        filtros.pop("offset", None)
+        items = self.list_solicitacoes(limit=100000, offset=0, **filtros)["items"]
+
+        desfecho_lbl = {"respondida": "Respondida", "arquivada": "Arquivada"}
+        farol_lbl = {
+            "atrasado": "Atrasada", "vermelho": "Vence hoje", "amarelo": "Amanhã",
+            "roxo": "Fim de semana", "verde": "Futura", "cinza": "Sem prazo",
+        }
+        # (título, largura, getter)
+        colunas = [
+            ("DMI", 16, lambda i: i["numero_solicitacao"]),
+            ("Título", 42, lambda i: i.get("titulo")),
+            ("NPJ direcionador", 16, lambda i: i.get("npj_direcionador")),
+            ("Processo", 24, lambda i: i.get("numero_processo")),
+            ("Polo", 10, lambda i: i.get("polo")),
+            ("Disponibilizada", 18, lambda i: _fmt_iso_brt(i.get("recebido_em"))),
+            ("Prazo fatal", 12, lambda i: i.get("prazo")),
+            ("Situação do prazo", 16, lambda i: farol_lbl.get(i.get("farol"), "")),
+            ("Status BB", 12, lambda i: i.get("status_sistema")),
+            ("Tratamento", 18, lambda i: i.get("status_tratamento")),
+            ("Desfecho", 12, lambda i: desfecho_lbl.get(i.get("desfecho") or "", "")),
+            ("Responsável", 24, lambda i: i.get("responsavel_nome")),
+            ("Setor", 18, lambda i: i.get("setor")),
+            ("Agendada para", 14, lambda i: i.get("data_agendamento")),
+            ("Status no L1", 14, lambda i: i.get("l1_dmi_status_label")),
+            ("Tarefa L1", 12, lambda i: i.get("created_task_id")),
+            ("Anotação", 50, lambda i: i.get("anotacao")),
+        ]
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "DMIs"
+        head_font = Font(bold=True, color="FFFFFF")
+        head_fill = PatternFill("solid", fgColor="1F4E79")
+        for col, (titulo, largura, _g) in enumerate(colunas, start=1):
+            cell = ws.cell(row=1, column=col, value=titulo)
+            cell.font = head_font
+            cell.fill = head_fill
+            ws.column_dimensions[get_column_letter(col)].width = largura
+        for row, item in enumerate(items, start=2):
+            for col, (_t, _w, getter) in enumerate(colunas, start=1):
+                ws.cell(row=row, column=col, value=getter(item))
+        ws.freeze_panes = "A2"
+
+        buf = BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
 
     def get(self, solicitacao_id: int) -> Optional[OnerequestSolicitacao]:
         return (

@@ -54,6 +54,7 @@ import {
   CalendarCheck,
   CheckCircle2,
   ClipboardCopy,
+  Download,
   ExternalLink,
   Inbox,
   Lightbulb,
@@ -66,6 +67,7 @@ import {
 import {
   addAnotacao,
   agendarSolicitacao,
+  downloadSolicitacoesExcel,
   AlertaResponsavel,
   Anotacao,
   Auditoria,
@@ -113,16 +115,22 @@ const KPI_DEFS: { key: string; label: string; dot: string }[] = [
   { key: "futuras", label: "Futuras", dot: "bg-emerald-500" },
 ];
 
-type TabKey = "novas" | "atrasadas" | "hoje" | "todas" | "respondidas" | "busca";
+type TabKey = "novas" | "atrasadas" | "hoje" | "todas" | "concluidas" | "busca";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "novas", label: "Novas (sem responsável)" },
   { key: "atrasadas", label: "Atrasadas" },
   { key: "hoje", label: "Vence Hoje" },
   { key: "todas", label: "Todas (abertas)" },
-  { key: "respondidas", label: "Respondidas" },
+  { key: "concluidas", label: "Concluídas" },
   { key: "busca", label: "Busca / Auditoria" },
 ];
+
+// Desfecho das DMIs concluídas: BB respondeu vs operador encerrou sem providência.
+const DESFECHO_BADGE: Record<string, { label: string; cls: string }> = {
+  respondida: { label: "Respondida", cls: "bg-emerald-100 text-emerald-800 border-emerald-200" },
+  arquivada: { label: "Arquivada", cls: "bg-slate-100 text-slate-700 border-slate-200" },
+};
 
 // Status derivado do estado da DMI (não só do status_tratamento bruto):
 // sem responsável = Nova; com responsável = Distribuída; com tarefa = Agendada.
@@ -340,6 +348,14 @@ export default function OnerequestPage() {
   // Filtro da aba Atrasadas: só as SEM anotação (precisam de ação).
   const [soSemAnotacao, setSoSemAnotacao] = useState(false);
 
+  // Recortes de data (ISO YYYY-MM-DD) — disponibilização (recebido_em) e prazo
+  // fatal (BB). Compõem com a aba/filtros e alimentam listagem E exportação.
+  const [dispDe, setDispDe] = useState("");
+  const [dispAte, setDispAte] = useState("");
+  const [prazoDe, setPrazoDe] = useState("");
+  const [prazoAte, setPrazoAte] = useState("");
+  const [exporting, setExporting] = useState(false);
+
   // Modal de Acompanhamento/Auditoria (DMIs já agendadas).
   const [auditSel, setAuditSel] = useState<OnerequestSolicitacao | null>(null);
   const [auditData, setAuditData] = useState<Auditoria | null>(null);
@@ -353,30 +369,44 @@ export default function OnerequestPage() {
   const [alertasLoading, setAlertasLoading] = useState(false);
   const [enviandoTeams, setEnviandoTeams] = useState<number | null>(null);
 
+  // Monta os filtros a partir da aba + recortes de data. SEM paginação —
+  // usado tanto pela listagem (que adiciona limit/offset) quanto pela
+  // exportação (que exporta tudo). Garante que os dois "conversam".
+  const buildParams = useCallback((): ListParams => {
+    const params: ListParams = {
+      busca: busca || undefined,
+    };
+    if (dispDe) params.disp_de = dispDe;
+    if (dispAte) params.disp_ate = dispAte;
+    if (prazoDe) params.prazo_de = prazoDe;
+    if (prazoAte) params.prazo_ate = prazoAte;
+    if (tab === "novas") {
+      params.status_sistema = "ABERTO";
+      params.sem_responsavel = true; // "novas" = ainda sem responsável (não distribuídas)
+    } else if (tab === "atrasadas") {
+      params.status_sistema = "ABERTO";
+      params.farol = "atrasado"; // prazo BB já venceu
+      if (soSemAnotacao) params.sem_anotacao = true; // só as que ainda precisam de ação
+    } else if (tab === "hoje") {
+      params.status_sistema = "ABERTO";
+      params.farol = "vermelho";
+    } else if (tab === "todas") {
+      params.status_sistema = "ABERTO";
+    } else if (tab === "concluidas") {
+      params.concluidas = true; // BB respondeu OU operador encerrou sem providência
+    }
+    // "busca": sem filtro de status (todas as situações)
+    return params;
+  }, [tab, busca, soSemAnotacao, dispDe, dispAte, prazoDe, prazoAte]);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const params: ListParams = {
-        busca: busca || undefined,
+        ...buildParams(),
         limit: pageSize,
         offset: (page - 1) * pageSize,
       };
-      if (tab === "novas") {
-        params.status_sistema = "ABERTO";
-        params.sem_responsavel = true; // "novas" = ainda sem responsável (não distribuídas)
-      } else if (tab === "atrasadas") {
-        params.status_sistema = "ABERTO";
-        params.farol = "atrasado"; // prazo BB já venceu
-        if (soSemAnotacao) params.sem_anotacao = true; // só as que ainda precisam de ação
-      } else if (tab === "hoje") {
-        params.status_sistema = "ABERTO";
-        params.farol = "vermelho";
-      } else if (tab === "todas") {
-        params.status_sistema = "ABERTO";
-      } else if (tab === "respondidas") {
-        params.status_sistema = "RESPONDIDO";
-      }
-      // "busca": sem filtro de status (todas as situações)
       const resp = await listSolicitacoes(params);
       setItems(resp.items);
       setTotal(resp.total);
@@ -387,7 +417,22 @@ export default function OnerequestPage() {
     } finally {
       setLoading(false);
     }
-  }, [tab, busca, page, pageSize, soSemAnotacao, toast]);
+  }, [buildParams, page, pageSize, toast]);
+
+  const exportarExcel = async () => {
+    setExporting(true);
+    try {
+      await downloadSolicitacoesExcel(buildParams());
+      toast({
+        title: "Exportação iniciada",
+        description: "O Excel com os filtros atuais está sendo baixado.",
+      });
+    } catch (e) {
+      toast({ title: "Erro ao exportar", description: String((e as Error).message), variant: "destructive" });
+    } finally {
+      setExporting(false);
+    }
+  };
 
   useEffect(() => {
     load();
@@ -859,6 +904,78 @@ export default function OnerequestPage() {
         </div>
       </div>
 
+      {/* Filtros de data + exportação — os dois recortes (disponibilização e
+          prazo fatal) compõem com a aba/busca, e o export usa os MESMOS filtros. */}
+      <div className="flex flex-col gap-3 rounded-lg border bg-muted/30 p-3 lg:flex-row lg:items-end lg:justify-between">
+        <div className="flex flex-wrap items-end gap-x-3 gap-y-2">
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">Disponibilizada — de</Label>
+            <Input
+              type="date"
+              className="h-9 w-[150px]"
+              value={dispDe}
+              max={dispAte || undefined}
+              onChange={(e) => { setPage(1); setDispDe(e.target.value); }}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">até</Label>
+            <Input
+              type="date"
+              className="h-9 w-[150px]"
+              value={dispAte}
+              min={dispDe || undefined}
+              onChange={(e) => { setPage(1); setDispAte(e.target.value); }}
+            />
+          </div>
+          <div className="hidden w-px self-stretch bg-border sm:block" />
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">Prazo fatal — de</Label>
+            <Input
+              type="date"
+              className="h-9 w-[150px]"
+              value={prazoDe}
+              max={prazoAte || undefined}
+              onChange={(e) => { setPage(1); setPrazoDe(e.target.value); }}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">até</Label>
+            <Input
+              type="date"
+              className="h-9 w-[150px]"
+              value={prazoAte}
+              min={prazoDe || undefined}
+              onChange={(e) => { setPage(1); setPrazoAte(e.target.value); }}
+            />
+          </div>
+          {(dispDe || dispAte || prazoDe || prazoAte) && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-9"
+              onClick={() => { setPage(1); setDispDe(""); setDispAte(""); setPrazoDe(""); setPrazoAte(""); }}
+            >
+              Limpar datas
+            </Button>
+          )}
+        </div>
+        <Button
+          variant="outline"
+          className="h-9 shrink-0"
+          onClick={exportarExcel}
+          disabled={exporting || loading}
+          title="Exporta as DMIs com os filtros atuais (datas, aba e busca) para Excel"
+        >
+          {exporting ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          ) : (
+            <Download className="mr-2 h-4 w-4" />
+          )}
+          Exportar Excel
+        </Button>
+      </div>
+
       {/* Tabela */}
       <Card>
         <CardContent className="p-0">
@@ -970,12 +1087,20 @@ export default function OnerequestPage() {
                       <TableCell className="whitespace-nowrap text-sm">{sol.setor ?? "—"}</TableCell>
                       <TableCell>
                         <StatusBadge sol={sol} />
+                        {sol.desfecho && DESFECHO_BADGE[sol.desfecho] && (
+                          <Badge
+                            variant="outline"
+                            className={`mt-1 block w-fit text-[10px] ${DESFECHO_BADGE[sol.desfecho].cls}`}
+                          >
+                            {DESFECHO_BADGE[sol.desfecho].label}
+                          </Badge>
+                        )}
                       </TableCell>
                       <TableCell>
                         <StatusL1Cell sol={sol} />
                       </TableCell>
                       <TableCell className="text-right">
-                        {isAgendada(sol) ? (
+                        {isAgendada(sol) || tab === "concluidas" ? (
                           <Button size="sm" variant="ghost" onClick={() => abrirAuditoria(sol)}>
                             Acompanhar
                           </Button>
@@ -1024,7 +1149,7 @@ export default function OnerequestPage() {
 
       {/* Modal de tratamento */}
       <Dialog open={!!selected} onOpenChange={(o) => !o && closeModal()}>
-        <DialogContent className="max-h-[92vh] max-w-3xl overflow-y-auto overflow-x-hidden">
+        <DialogContent className="max-h-[92vh] max-w-5xl overflow-y-auto overflow-x-hidden">
           {selected && (
             <>
               <DialogHeader>
@@ -1200,9 +1325,9 @@ export default function OnerequestPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Modal de Acompanhamento / Auditoria (DMIs já agendadas) */}
+      {/* Modal de Acompanhamento / Auditoria (DMIs já agendadas ou concluídas) */}
       <Dialog open={!!auditSel} onOpenChange={(o) => !o && setAuditSel(null)}>
-        <DialogContent className="max-h-[92vh] max-w-3xl overflow-y-auto overflow-x-hidden">
+        <DialogContent className="max-h-[92vh] max-w-4xl overflow-y-auto overflow-x-hidden">
           {auditSel && (
             <>
               <DialogHeader>
