@@ -219,6 +219,9 @@ class AgendarResponse(BaseModel):
     status_tratamento: str
     created_task_id: Optional[int] = None
     mensagem: str
+    # Trava-duplo: quando True, há tarefa PENDENTE pra DMI; o front confirma e reenvia.
+    requires_confirmation: bool = False
+    tarefa_existente: Optional[Dict] = None
 
 
 @router.get(
@@ -305,6 +308,7 @@ def atualizar_tratamento(
 )
 def agendar_solicitacao(
     solicitacao_id: int,
+    confirmar: bool = Query(False, description="Criar mesmo havendo tarefa pendente pra DMI (trava-duplo)"),
     db: Session = Depends(get_db),
     client: LegalOneApiClient = Depends(get_api_client),
     current_user: LegalOneUser = Depends(get_current_user),
@@ -313,7 +317,7 @@ def agendar_solicitacao(
     row = service.get(solicitacao_id)
     if not row:
         raise HTTPException(status_code=404, detail="Solicitação não encontrada.")
-    return service.agendar(row, client, current_user)
+    return service.agendar(row, client, current_user, confirmar=confirmar)
 
 
 # ── Sugestão (motor de pré-preenchimento) ──────────────────────────────

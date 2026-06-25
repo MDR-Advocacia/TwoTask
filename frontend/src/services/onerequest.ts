@@ -176,11 +176,21 @@ export interface UpdateTratamentoBody {
   status_tratamento?: string | null;
 }
 
+export interface TarefaExistente {
+  task_id: number;
+  status_id: number | null;
+  status_label: string | null;
+  description: string | null;
+  l1_url: string | null;
+}
+
 export interface AgendarResult {
   ok: boolean;
   status_tratamento: string;
   created_task_id: number | null;
   mensagem: string;
+  requires_confirmation?: boolean;
+  tarefa_existente?: TarefaExistente | null;
 }
 
 export interface FormUser {
@@ -236,9 +246,13 @@ export async function updateTratamento(
   );
 }
 
-export async function agendarSolicitacao(id: number): Promise<AgendarResult> {
+export async function agendarSolicitacao(
+  id: number,
+  confirmar = false,
+): Promise<AgendarResult> {
+  const qs = confirmar ? "?confirmar=true" : "";
   return json(
-    await apiFetch(`${BASE}/solicitacoes/${id}/agendar`, { method: "POST" }),
+    await apiFetch(`${BASE}/solicitacoes/${id}/agendar${qs}`, { method: "POST" }),
   );
 }
 

@@ -286,6 +286,47 @@ class OnerequestService:
         return solicitacao
 
     # ──────────────────────────────────────────────────────────────────
+    # Trava-duplo: tarefa da DMI já PENDENTE na pasta? (evita 2 tarefas em
+    # aberto pra mesma DMI durante a transição). Cumprida NÃO bloqueia
+    # (reiteração é legítima). Fail-open: se a checagem cair, não trava.
+    # ──────────────────────────────────────────────────────────────────
+    def _tarefa_pendente_da_dmi(
+        self, solicitacao: OnerequestSolicitacao, lawsuit_id: int, client: LegalOneApiClient
+    ) -> Optional[dict]:
+        numero = (solicitacao.numero_solicitacao or "").strip()
+        if not numero:
+            return None
+        rel = (
+            "relationships/any("
+            f"r: r/linkType eq 'Litigation' and r/linkId eq {int(lawsuit_id)})"
+        )
+        esc = numero.replace("'", "''")
+        try:
+            matched = client.search_tasks(
+                filter_expression=f"{rel} and contains(description,'{esc}')",
+                top=30,
+                orderby="id desc",
+                select="id,description,statusId,status,endDateTime",
+            )
+        except Exception as e:
+            logger.warning(
+                "OneRequest trava-duplo: checagem da DMI %s falhou (%s) — não bloqueia.",
+                numero, e,
+            )
+            return None
+        for t in matched:
+            sid = self._task_status_id(t)
+            if sid in L1_BLOCKING_STATUS_IDS:  # 0 Pendente, 4 Iniciado
+                return {
+                    "task_id": t.get("id"),
+                    "status_id": sid,
+                    "status_label": L1_STATUS_LABELS_FULL.get(sid, str(sid)),
+                    "description": t.get("description"),
+                    "l1_url": _l1_task_url(t.get("id"), lawsuit_id),
+                }
+        return None
+
+    # ──────────────────────────────────────────────────────────────────
     # Agendamento no Legal One (reusa helpers da OnerequestStrategy)
     # ──────────────────────────────────────────────────────────────────
     def agendar(
@@ -293,6 +334,7 @@ class OnerequestService:
         solicitacao: OnerequestSolicitacao,
         client: LegalOneApiClient,
         current_user: LegalOneUser,
+        confirmar: bool = False,
     ) -> dict:
         """
         Cria a tarefa no L1 pra uma solicitação tratada. Retorna
@@ -365,6 +407,22 @@ class OnerequestService:
             office_id = lawsuit.get("responsibleOfficeId")
             if not office_id:
                 raise Exception(f"Processo {lawsuit_id} sem responsibleOfficeId no L1.")
+
+            # Trava-duplo: se já há tarefa PENDENTE pra esta DMI, pede confirmação
+            # (a não ser que o operador já tenha confirmado). Cumprida não trava.
+            if not confirmar:
+                pendente = self._tarefa_pendente_da_dmi(solicitacao, lawsuit_id, client)
+                if pendente:
+                    return {
+                        "ok": False,
+                        "requires_confirmation": True,
+                        "status_tratamento": solicitacao.status_tratamento,
+                        "mensagem": (
+                            f"Já existe tarefa PENDENTE no Legal One para esta DMI "
+                            f"({pendente['status_label']}). Criar mesmo assim?"
+                        ),
+                        "tarefa_existente": pendente,
+                    }
 
             publish_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             task_payload = {

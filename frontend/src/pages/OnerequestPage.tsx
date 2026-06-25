@@ -640,7 +640,18 @@ export default function OnerequestPage() {
     if (!ok) return;
     setScheduling(true);
     try {
-      const res = await agendarSolicitacao(selected.id);
+      let res = await agendarSolicitacao(selected.id);
+      // Trava-duplo: já existe tarefa PENDENTE pra esta DMI → confirma e reenvia.
+      if (res.requires_confirmation) {
+        const det = res.tarefa_existente?.description
+          ? `\n\nTarefa existente: ${res.tarefa_existente.description}`
+          : "";
+        if (window.confirm(`${res.mensagem}${det}`)) {
+          res = await agendarSolicitacao(selected.id, true);
+        } else {
+          return; // operador cancelou — não cria 2ª tarefa
+        }
+      }
       toast({
         title: res.ok ? "Agendado no Legal One" : "Não agendado",
         description: res.mensagem,
