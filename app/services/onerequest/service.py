@@ -14,7 +14,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import or_
+from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
 from app.models.legal_one import LegalOneUser
@@ -384,6 +384,118 @@ class OnerequestService:
         buf = BytesIO()
         wb.save(buf)
         return buf.getvalue()
+
+    # ──────────────────────────────────────────────────────────────────
+    # Dashboard — visão operacional + risco (KPIs, séries, distribuições)
+    # ──────────────────────────────────────────────────────────────────
+    def dashboard_data(self, days: int = 30) -> dict:
+        hoje = date.today()
+        start_date = hoje - timedelta(days=days - 1)
+
+        # Base = DMIs abertas (em tratamento) — alimenta farol/responsável/setor.
+        abertas = self.db.query(
+            OnerequestSolicitacao.prazo,
+            OnerequestSolicitacao.responsavel_user_id,
+            OnerequestSolicitacao.setor,
+            OnerequestSolicitacao.status_tratamento,
+        ).filter(OnerequestSolicitacao.status_sistema == STATUS_SISTEMA_ABERTO).all()
+
+        farol_dist = {"atrasado": 0, "vermelho": 0, "amarelo": 0, "roxo": 0, "verde": 0, "cinza": 0}
+        resp_acc: dict = {}
+        setor_acc: dict = {}
+        sem_responsavel = 0
+        agendadas_abertas = 0
+        for prazo, ruid, setor, st in abertas:
+            f = _farol(_parse_prazo(prazo), hoje)
+            farol_dist[f] = farol_dist.get(f, 0) + 1
+            if st == STATUS_TRATAMENTO_AGENDADO:
+                agendadas_abertas += 1
+            if ruid is None and st != STATUS_TRATAMENTO_IGNORADO:
+                sem_responsavel += 1
+            if ruid is not None:
+                acc = resp_acc.setdefault(ruid, {"abertas": 0, "atrasadas": 0, "agendadas": 0})
+                acc["abertas"] += 1
+                if f == "atrasado":
+                    acc["atrasadas"] += 1
+                if st == STATUS_TRATAMENTO_AGENDADO:
+                    acc["agendadas"] += 1
+            setor_acc[setor or "(sem setor)"] = setor_acc.get(setor or "(sem setor)", 0) + 1
+
+        nomes = {}
+        if resp_acc:
+            nomes = {
+                u.id: u.name
+                for u in self.db.query(LegalOneUser.id, LegalOneUser.name).filter(
+                    LegalOneUser.id.in_(list(resp_acc.keys()))
+                )
+            }
+        por_responsavel = sorted(
+            [{"nome": nomes.get(uid) or f"#{uid}", **v} for uid, v in resp_acc.items()],
+            key=lambda x: x["abertas"],
+            reverse=True,
+        )
+        por_setor = sorted(
+            [{"setor": s, "n": n} for s, n in setor_acc.items()],
+            key=lambda x: x["n"],
+            reverse=True,
+        )
+
+        concluidas_total = (
+            self.db.query(OnerequestSolicitacao.id)
+            .filter(
+                or_(
+                    OnerequestSolicitacao.status_sistema == STATUS_SISTEMA_RESPONDIDO,
+                    OnerequestSolicitacao.status_tratamento == STATUS_TRATAMENTO_IGNORADO,
+                )
+            )
+            .count()
+        )
+
+        # Séries diárias (BRT), densificadas (dias sem dado = 0).
+        rec_rows = self.db.execute(
+            text(
+                "SELECT (recebido_em AT TIME ZONE 'America/Sao_Paulo')::date AS dia, count(*) AS n "
+                "FROM onr_solicitacoes WHERE recebido_em IS NOT NULL "
+                "AND (recebido_em AT TIME ZONE 'America/Sao_Paulo')::date >= :sd GROUP BY 1"
+            ),
+            {"sd": start_date},
+        ).all()
+        age_rows = self.db.execute(
+            text(
+                "SELECT (scheduled_at AT TIME ZONE 'America/Sao_Paulo')::date AS dia, count(*) AS n "
+                "FROM onr_solicitacoes WHERE scheduled_at IS NOT NULL "
+                "AND (scheduled_at AT TIME ZONE 'America/Sao_Paulo')::date >= :sd GROUP BY 1"
+            ),
+            {"sd": start_date},
+        ).all()
+
+        def _serie(rows) -> list:
+            m = {r[0].isoformat(): int(r[1]) for r in rows}
+            out, d = [], start_date
+            while d <= hoje:
+                out.append({"dia": d.isoformat(), "n": m.get(d.isoformat(), 0)})
+                d += timedelta(days=1)
+            return out
+
+        recebimentos = _serie(rec_rows)
+        agendamentos = _serie(age_rows)
+
+        return {
+            "kpis": {
+                "abertas": len(abertas),
+                "atrasadas": farol_dist["atrasado"],
+                "hoje": farol_dist["vermelho"],
+                "sem_responsavel": sem_responsavel,
+                "agendadas": agendadas_abertas,
+                "concluidas": concluidas_total,
+            },
+            "farol": farol_dist,
+            "recebimentos": recebimentos,
+            "agendamentos": agendamentos,
+            "por_responsavel": por_responsavel,
+            "por_setor": por_setor,
+            "periodo_dias": days,
+        }
 
     def get(self, solicitacao_id: int) -> Optional[OnerequestSolicitacao]:
         return (

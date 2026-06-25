@@ -107,12 +107,12 @@ const FAROL_DOT: Record<Farol, string> = {
   verde: "bg-emerald-500",
 };
 
-const KPI_DEFS: { key: string; label: string; dot: string }[] = [
-  { key: "atrasadas", label: "Atrasadas", dot: "bg-rose-700" },
-  { key: "hoje", label: "Vence hoje", dot: "bg-red-500" },
-  { key: "amanha", label: "Amanhã", dot: "bg-amber-400" },
-  { key: "fds", label: "Fim de semana", dot: "bg-purple-500" },
-  { key: "futuras", label: "Futuras", dot: "bg-emerald-500" },
+const KPI_DEFS: { key: string; label: string; dot: string; farol: Farol }[] = [
+  { key: "atrasadas", label: "Atrasadas", dot: "bg-rose-700", farol: "atrasado" },
+  { key: "hoje", label: "Vence hoje", dot: "bg-red-500", farol: "vermelho" },
+  { key: "amanha", label: "Amanhã", dot: "bg-amber-400", farol: "amarelo" },
+  { key: "fds", label: "Fim de semana", dot: "bg-purple-500", farol: "roxo" },
+  { key: "futuras", label: "Futuras", dot: "bg-emerald-500", farol: "verde" },
 ];
 
 type TabKey = "novas" | "atrasadas" | "hoje" | "todas" | "concluidas" | "busca";
@@ -356,6 +356,10 @@ export default function OnerequestPage() {
   const [prazoAte, setPrazoAte] = useState("");
   const [exporting, setExporting] = useState(false);
 
+  // Filtro por farol vindo do clique nos KPI cards (toggle). Sobrepõe só o
+  // farol, mantendo a base da aba — assim a contagem do card bate com a tabela.
+  const [farolFilter, setFarolFilter] = useState<Farol | null>(null);
+
   // Modal de Acompanhamento/Auditoria (DMIs já agendadas).
   const [auditSel, setAuditSel] = useState<OnerequestSolicitacao | null>(null);
   const [auditData, setAuditData] = useState<Auditoria | null>(null);
@@ -395,9 +399,11 @@ export default function OnerequestPage() {
     } else if (tab === "concluidas") {
       params.concluidas = true; // BB respondeu OU operador encerrou sem providência
     }
+    // Clique num KPI card sobrepõe o farol, mantendo a base da aba atual.
+    if (farolFilter) params.farol = farolFilter;
     // "busca": sem filtro de status (todas as situações)
     return params;
-  }, [tab, busca, soSemAnotacao, dispDe, dispAte, prazoDe, prazoAte]);
+  }, [tab, busca, soSemAnotacao, dispDe, dispAte, prazoDe, prazoAte, farolFilter]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -475,6 +481,7 @@ export default function OnerequestPage() {
   const trocarTab = (t: TabKey) => {
     setPage(1);
     setSoSemAnotacao(false);
+    setFarolFilter(null);
     setTab(t);
   };
 
@@ -821,17 +828,43 @@ export default function OnerequestPage() {
 
       {/* KPIs */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        {KPI_DEFS.map((kpi) => (
-          <Card key={kpi.key}>
-            <CardContent className="flex items-center gap-3 p-4">
-              <span className={`h-3 w-3 shrink-0 rounded-full ${kpi.dot}`} />
-              <div className="min-w-0">
-                <div className="text-2xl font-bold">{kpis[kpi.key] ?? 0}</div>
-                <div className="truncate text-xs text-muted-foreground">{kpi.label}</div>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+        {KPI_DEFS.map((kpi) => {
+          const ativo = farolFilter === kpi.farol;
+          const toggle = () => {
+            setPage(1);
+            setFarolFilter((cur) => (cur === kpi.farol ? null : kpi.farol));
+          };
+          return (
+            <Card
+              key={kpi.key}
+              role="button"
+              tabIndex={0}
+              onClick={toggle}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  toggle();
+                }
+              }}
+              className={`cursor-pointer transition hover:border-primary/40 hover:shadow-sm ${
+                ativo ? "border-primary ring-1 ring-primary" : ""
+              }`}
+              title={
+                ativo
+                  ? `Clique para limpar o filtro "${kpi.label}"`
+                  : `Ver as DMIs: ${kpi.label.toLowerCase()}`
+              }
+            >
+              <CardContent className="flex items-center gap-3 p-4">
+                <span className={`h-3 w-3 shrink-0 rounded-full ${kpi.dot}`} />
+                <div className="min-w-0">
+                  <div className="text-2xl font-bold">{kpis[kpi.key] ?? 0}</div>
+                  <div className="truncate text-xs text-muted-foreground">{kpi.label}</div>
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })}
       </div>
 
       {/* Abas + busca */}

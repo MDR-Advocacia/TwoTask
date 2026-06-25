@@ -315,6 +315,29 @@ def exportar_solicitacoes(
     )
 
 
+class DashboardResponse(BaseModel):
+    kpis: Dict[str, int]
+    farol: Dict[str, int]
+    recebimentos: List[Dict]
+    agendamentos: List[Dict]
+    por_responsavel: List[Dict]
+    por_setor: List[Dict]
+    periodo_dias: int
+
+
+@router.get(
+    "/dashboard",
+    response_model=DashboardResponse,
+    summary="Dashboard do OneRequest: KPIs, séries diárias e distribuições (operacional + risco)",
+    dependencies=[_perm],
+)
+def dashboard(
+    days: int = Query(30, ge=5, le=180),
+    db: Session = Depends(get_db),
+):
+    return OnerequestService(db).dashboard_data(days=days)
+
+
 @router.get(
     "/options",
     response_model=OptionsResponse,

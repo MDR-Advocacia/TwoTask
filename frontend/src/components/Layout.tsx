@@ -7,6 +7,7 @@ import {
   Contact,
   FileUp,
   Gavel,
+  BarChart3,
   Inbox,
   LayoutDashboard,
   ListChecks,
@@ -109,6 +110,7 @@ export default function Layout({ children }: PropsWithChildren) {
       title: "OneRequest",
       items: [
         { to: "/onerequest", icon: Inbox, label: "DMIs Banco do Brasil", requirePermission: 'canUseOnerequest' },
+        { to: "/onerequest/dashboard", icon: BarChart3, label: "DMIs — Dashboard", requirePermission: 'canUseOnerequest' },
       ],
     },
     {

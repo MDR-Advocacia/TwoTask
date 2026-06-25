@@ -314,6 +314,21 @@ export async function getEstado(): Promise<Estado> {
   return json(await apiFetch(`${BASE}/estado`));
 }
 
+export interface DashboardData {
+  kpis: Record<string, number>;
+  farol: Record<string, number>;
+  recebimentos: { dia: string; n: number }[];
+  agendamentos: { dia: string; n: number }[];
+  por_responsavel: { nome: string; abertas: number; atrasadas: number; agendadas: number }[];
+  por_setor: { setor: string; n: number }[];
+  periodo_dias: number;
+}
+
+// Dashboard do OneRequest (KPIs + séries diárias + distribuições, operacional + risco).
+export async function getDashboard(days = 30): Promise<DashboardData> {
+  return json(await apiFetch(`${BASE}/dashboard?days=${days}`));
+}
+
 // Regra de auto-atualização horária do status L1 (DMIs que vencem hoje).
 export async function getL1Autorefresh(): Promise<L1Autorefresh> {
   return json(await apiFetch(`${BASE}/l1-autorefresh`));
