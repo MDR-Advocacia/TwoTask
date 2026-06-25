@@ -18,6 +18,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 logger = logging.getLogger(__name__)
 
 JOB_ID = "onerequest_l1_autorefresh_hourly"
+# Advisory lock: só um worker do uvicorn roda o auto-refresh por vez.
+_LOCK_KEY = 826100002
 
 SETTING_ENABLED = "onerequest_l1_autorefresh_enabled"
 SETTING_LAST_RUN = "onerequest_l1_autorefresh_last_run"
@@ -40,48 +42,55 @@ def _tick() -> None:
     from app.models.onerequest import OnerequestSolicitacao, STATUS_SISTEMA_ABERTO
     from app.services.app_settings import set_setting
     from app.services.legal_one_client import LegalOneApiClient
+    from app.services.onerequest._concurrency import single_worker_lock
     from app.services.onerequest.service import OnerequestService, _parse_prazo
 
     if not is_enabled():
         logger.info("OneRequest auto-refresh L1: regra DESLIGADA — tick ignorado.")
         return
 
-    db = SessionLocal()
-    try:
-        service = OnerequestService(db)
-        hoje = date.today()
-        # Abertas; o prazo é string DD/MM/YYYY, então filtra "vence hoje" em Python.
-        abertas = (
-            db.query(OnerequestSolicitacao)
-            .filter(OnerequestSolicitacao.status_sistema == STATUS_SISTEMA_ABERTO)
-            .all()
-        )
-        alvos = [s for s in abertas if _parse_prazo(s.prazo) == hoje]
-        logger.info("OneRequest auto-refresh L1: %s DMIs vencendo hoje.", len(alvos))
+    # Só um worker do uvicorn roda (evita 4× chamadas ao L1 + corrida nos l1_*).
+    with single_worker_lock(_LOCK_KEY) as got:
+        if not got:
+            logger.info("OneRequest auto-refresh L1: outro worker já rodando — pulando.")
+            return
 
-        ok = err = 0
-        if alvos:
-            client = LegalOneApiClient()
-            for s in alvos:
-                try:
-                    service.verificar_status_l1(s, client)
-                    ok += 1
-                except Exception:
-                    err += 1
-                    logger.exception(
-                        "OneRequest auto-refresh L1: falha na DMI %s.",
-                        s.numero_solicitacao,
-                    )
-        logger.info(
-            "OneRequest auto-refresh L1: concluído — %s ok, %s erro de %s.",
-            ok, err, len(alvos),
-        )
-        set_setting(SETTING_LAST_RUN, datetime.now(timezone.utc).isoformat())
-        set_setting(SETTING_LAST_COUNT, str(ok))
-    except Exception:
-        logger.exception("OneRequest auto-refresh L1: erro inesperado no tick.")
-    finally:
-        db.close()
+        db = SessionLocal()
+        try:
+            service = OnerequestService(db)
+            hoje = date.today()
+            # Abertas; prazo é string DD/MM/YYYY, filtra "vence hoje" em Python.
+            abertas = (
+                db.query(OnerequestSolicitacao)
+                .filter(OnerequestSolicitacao.status_sistema == STATUS_SISTEMA_ABERTO)
+                .all()
+            )
+            alvos = [s for s in abertas if _parse_prazo(s.prazo) == hoje]
+            logger.info("OneRequest auto-refresh L1: %s DMIs vencendo hoje.", len(alvos))
+
+            ok = err = 0
+            if alvos:
+                client = LegalOneApiClient()
+                for s in alvos:
+                    try:
+                        service.verificar_status_l1(s, client)
+                        ok += 1
+                    except Exception:
+                        err += 1
+                        logger.exception(
+                            "OneRequest auto-refresh L1: falha na DMI %s.",
+                            s.numero_solicitacao,
+                        )
+            logger.info(
+                "OneRequest auto-refresh L1: concluído — %s ok, %s erro de %s.",
+                ok, err, len(alvos),
+            )
+            set_setting(SETTING_LAST_RUN, datetime.now(timezone.utc).isoformat())
+            set_setting(SETTING_LAST_COUNT, str(ok))
+        except Exception:
+            logger.exception("OneRequest auto-refresh L1: erro inesperado no tick.")
+        finally:
+            db.close()
 
 
 def register_onerequest_l1_autorefresh_job(scheduler) -> None:

@@ -19,6 +19,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 logger = logging.getLogger(__name__)
 
 JOB_ID = "onerequest_source_sync_hourly"
+# Chave do advisory lock (só um worker do uvicorn sincroniza por vez).
+_LOCK_KEY = 826100001
 
 # Só os campos CAPTURADOS pela RPA (o tratamento vive no Flow e é preservado).
 _SOURCE_QUERY = (
@@ -33,6 +35,7 @@ def _tick() -> None:
 
     from app.core.config import settings
     from app.db.session import SessionLocal
+    from app.services.onerequest._concurrency import single_worker_lock
     from app.services.onerequest.intake_service import OnerequestIntakeService
 
     dsn = settings.onerequest_source_db_url
@@ -40,31 +43,38 @@ def _tick() -> None:
         logger.info("OneRequest sync: ONEREQUEST_SOURCE_DB_URL não setada — pulando tick.")
         return
 
-    # 1) LÊ a fonte — sessão READ-ONLY (o Postgres barra qualquer escrita).
-    try:
-        conn = psycopg2.connect(dsn, connect_timeout=15)
+    # Só UM worker do uvicorn sincroniza por vez (senão inserts concorrentes
+    # batem em duplicate key). Os demais workers pulam este tick.
+    with single_worker_lock(_LOCK_KEY) as got:
+        if not got:
+            logger.info("OneRequest sync: outro worker já está sincronizando — pulando.")
+            return
+
+        # 1) LÊ a fonte — sessão READ-ONLY (o Postgres barra qualquer escrita).
         try:
-            conn.set_session(readonly=True, autocommit=True)
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(_SOURCE_QUERY)
-                rows = [dict(r) for r in cur.fetchall()]
+            conn = psycopg2.connect(dsn, connect_timeout=15)
+            try:
+                conn.set_session(readonly=True, autocommit=True)
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute(_SOURCE_QUERY)
+                    rows = [dict(r) for r in cur.fetchall()]
+            finally:
+                conn.close()
+        except Exception:
+            logger.exception("OneRequest sync: falha ao LER o Postgres da fonte.")
+            return
+
+        logger.info("OneRequest sync: %s linhas lidas da fonte.", len(rows))
+
+        # 2) Espelha pro onr_solicitacoes (preserva tratamento do Flow).
+        db = SessionLocal()
+        try:
+            res = OnerequestIntakeService(db).sync_from_source(rows)
+            logger.info("OneRequest sync concluído: %s", res)
+        except Exception:
+            logger.exception("OneRequest sync: falha ao espelhar pro onr_solicitacoes.")
         finally:
-            conn.close()
-    except Exception:
-        logger.exception("OneRequest sync: falha ao LER o Postgres da fonte.")
-        return
-
-    logger.info("OneRequest sync: %s linhas lidas da fonte.", len(rows))
-
-    # 2) Espelha pro onr_solicitacoes (preserva tratamento do Flow).
-    db = SessionLocal()
-    try:
-        res = OnerequestIntakeService(db).sync_from_source(rows)
-        logger.info("OneRequest sync concluído: %s", res)
-    except Exception:
-        logger.exception("OneRequest sync: falha ao espelhar pro onr_solicitacoes.")
-    finally:
-        db.close()
+            db.close()
 
 
 def register_onerequest_source_sync_job(scheduler) -> None:
