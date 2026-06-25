@@ -532,16 +532,17 @@ export default function OnerequestPage() {
     getSugestao(sol.id)
       .then((s) => {
         setSugestao(s);
-        // Pré-preenche campos VAZIOS com a sugestão, em qualquer DMI ainda
-        // sem tarefa criada (o operador confirma/ajusta).
+        // Pré-preenche os 3 campos com a sugestão em qualquer DMI ainda sem
+        // tarefa criada (o operador confirma/ajusta). Setor, responsável E data.
         const naoAgendada = !sol.created_task_id;
         if (naoAgendada) {
-          if (s.setor && !sol.setor) setEditSetor(s.setor);
-          if (s.responsavel_user_id && !sol.responsavel_user_id) {
+          // "N/A" não é setor válido no Select — deixa vazio pro operador escolher.
+          if (s.setor && s.setor !== "N/A") setEditSetor(s.setor);
+          if (s.responsavel_user_id) {
             const su = users.find((x) => x.id === s.responsavel_user_id);
             if (su) setEditResponsavelExt(String(su.external_id));
           }
-          if (s.data_agendamento && !sol.data_agendamento) setEditData(toISODate(s.data_agendamento));
+          if (s.data_agendamento) setEditData(toISODate(s.data_agendamento));
           setSugerido(true);
         }
       })
@@ -772,16 +773,18 @@ export default function OnerequestPage() {
 
       {/* Abas + busca */}
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <Tabs value={tab} onValueChange={(v) => trocarTab(v as TabKey)}>
-          <TabsList>
-            {TABS.map((t) => (
-              <TabsTrigger key={t.key} value={t.key}>
-                {t.label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-        <div className="flex gap-2">
+        <div className="min-w-0 max-w-full overflow-x-auto">
+          <Tabs value={tab} onValueChange={(v) => trocarTab(v as TabKey)}>
+            <TabsList>
+              {TABS.map((t) => (
+                <TabsTrigger key={t.key} value={t.key}>
+                  {t.label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+        </div>
+        <div className="flex flex-wrap gap-2">
           {tab === "hoje" && (
             <Button
               variant="default"

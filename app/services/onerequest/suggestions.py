@@ -25,14 +25,14 @@ SETOR_RULES: list[tuple[str, re.Pattern]] = [
     ("BB Autor", re.compile(r"HONOR|SUCUMB|COMPROVANTE|REPASSE|DESTINA|SUBS[IÍ]DIO|CONTRATUA|RATEIO|REEMBOLS", re.I)),
     ("BB Réu", re.compile(r"AJUIZAMENTO|VIABILIDADE|PER[IÍ]CIA|CADASTRAMENTO|ASSISTENTE|OPERA[ÇC]|PREFIXO|AG[EÊ]NCIA|COLABORADOR", re.I)),
     ("BB Recurso", re.compile(r"RECURSO|APELA[ÇC]|AGRAVO|EMBARGOS", re.I)),
-    ("BB Encerramento", re.compile(r"ANALISAR|PUBLICA[ÇC]|BAIXAD|CIRCULAR|ANDAMENTO|NPJ", re.I)),
+    ("BB Execução e Encerramento", re.compile(r"ANALISAR|PUBLICA[ÇC]|BAIXAD|CIRCULAR|ANDAMENTO|NPJ", re.I)),
 ]
-SETOR_FALLBACK_POLO = {"ativo": "BB Autor", "passivo": "BB Encerramento"}
+SETOR_FALLBACK_POLO = {"ativo": "BB Autor", "passivo": "BB Execução e Encerramento"}
 
 # Setor previsto -> (nome do responsável modal no histórico, confiança %).
 # Sem entrada = sem sugestão de responsável (ex.: BB Réu não tem padrão forte).
 RESPONSAVEL_POR_SETOR: dict[str, tuple[str, int]] = {
-    "BB Encerramento": ("Hellen Sthefane Dos Santos Fernandes", 80),
+    "BB Execução e Encerramento": ("Hellen Sthefane Dos Santos Fernandes", 80),
     "BB Recurso": ("Hellen Sthefane Dos Santos Fernandes", 85),
     "BB Autor": ("Luiz Eduardo Oliveira da Silva", 55),
     "N/A": ("Eduardo Henrique de Oliveira", 37),

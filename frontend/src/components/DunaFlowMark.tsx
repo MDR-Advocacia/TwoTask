@@ -9,16 +9,17 @@ interface DunaFlowMarkProps {
 }
 
 const SIZES: Record<'sm' | 'md' | 'lg', { icon: number; text: string; gap: string }> = {
-  sm: { icon: 26, text: 'text-sm tracking-[0.18em]', gap: 'gap-2' },
-  md: { icon: 32, text: 'text-xl tracking-[0.16em]', gap: 'gap-2.5' },
-  lg: { icon: 52, text: 'text-3xl tracking-[0.14em]', gap: 'gap-3' },
+  sm: { icon: 26, text: 'text-sm tracking-[0.08em]', gap: 'gap-2' },
+  md: { icon: 32, text: 'text-xl tracking-[0.07em]', gap: 'gap-2.5' },
+  lg: { icon: 52, text: 'text-3xl tracking-[0.06em]', gap: 'gap-3' },
 };
 
 export function DunaFlowMark({ size = 'md', className = '' }: DunaFlowMarkProps) {
   const s = SIZES[size];
   return (
-    <span className={`inline-flex items-center ${s.gap} ${className}`}>
+    <span className={`inline-flex items-center whitespace-nowrap ${s.gap} ${className}`}>
       <svg
+        className="shrink-0"
         width={s.icon}
         height={Math.round(s.icon * 0.6)}
         viewBox="0 0 40 24"

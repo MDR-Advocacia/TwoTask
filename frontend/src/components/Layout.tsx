@@ -186,7 +186,7 @@ export default function Layout({ children }: PropsWithChildren) {
         </div>
       </div>
 
-      <div className="flex flex-col">
+      <div className="flex min-w-0 flex-col">
         <header className="sticky top-0 z-40 flex h-14 items-center gap-4 border-b bg-background px-4 lg:h-[60px] lg:px-6">
           <Sheet>
             <SheetTrigger asChild>
