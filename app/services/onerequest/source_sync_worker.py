@@ -25,7 +25,9 @@ _LOCK_KEY = 826100001
 # Só os campos CAPTURADOS pela RPA (o tratamento vive no Flow e é preservado).
 _SOURCE_QUERY = (
     "SELECT numero_solicitacao, titulo, npj_direcionador, prazo, texto_dmi, "
-    "numero_processo, polo, recebido_em, status_sistema FROM solicitacoes"
+    "numero_processo, polo, recebido_em, status_sistema, "
+    # Campos de tratamento (espelhados quando onerequest_sync_espelha_tratamento=True).
+    "responsavel, setor, data_agendamento, anotacao FROM solicitacoes"
 )
 
 
