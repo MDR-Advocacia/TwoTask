@@ -292,6 +292,11 @@ class Settings(BaseSettings):
     # fonte. Vazio = job de sync desligado. Ex.: postgresql://onerequest:SENHA@db:5432/onerequest
     # (o api do Flow precisa estar na rede do recurso OneRequest pra resolver "db").
     onerequest_source_db_url: str | None = None
+    # Fase de transição: o tratamento (responsável/setor/data/anotação) é feito no
+    # SISTEMA ANTIGO (a fonte). True = o sync ESPELHA esse tratamento no Flow
+    # (sobrescreve). Na migração pro Flow, troque pra False no Coolify: o Flow vira
+    # dono e o sync para de tocar no tratamento (só campos capturados + status).
+    onerequest_sync_espelha_tratamento: bool = True
 
     # ── AJUS (sistema do cliente — POST /inserir-prazos) ──────────────
     # Credenciais lidas do env (Coolify). NÃO fica em tabela porque é

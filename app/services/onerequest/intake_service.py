@@ -243,16 +243,50 @@ class OnerequestIntakeService:
         return resultado
 
     # ──────────────────────────────────────────────────────────────────
-    # Sync READ-ONLY do Postgres da fonte (OneRequest/RPA). Flow é dono do
-    # tratamento: espelha só os campos CAPTURADOS + status_sistema; PRESERVA
-    # responsável/setor/data/anotação/created_task_id/l1_*/scheduled_by do
-    # Flow. Nunca deleta. `rows` = lista de dicts lidos do Postgres da fonte.
+    # Sync READ-ONLY do Postgres da fonte (OneRequest/RPA). Espelha os campos
+    # CAPTURADOS + status_sistema. O TRATAMENTO (responsável/setor/data/anotação)
+    # depende do flag `onerequest_sync_espelha_tratamento`:
+    #   True  (transição): espelha o tratamento da fonte (SOBRESCREVE) — hoje as
+    #          meninas tratam no sistema antigo, então o Flow reflete.
+    #   False (pós-migração): Flow é dono; o sync NÃO toca no tratamento nem nos
+    #          created_task_id/l1_*/scheduled_by.
+    # Nunca deleta. `rows` = lista de dicts lidos do Postgres da fonte.
     # ──────────────────────────────────────────────────────────────────
     def sync_from_source(self, rows: list) -> dict:
+        from app.core.config import settings
+
+        espelhar = settings.onerequest_sync_espelha_tratamento
+
         existentes = {
             r.numero_solicitacao: r
             for r in self.db.query(OnerequestSolicitacao).all()
         }
+
+        # A fonte guarda o responsável por NOME — resolve pra id do LegalOneUser.
+        nome_to_id: dict = {}
+        if espelhar:
+            from app.models.legal_one import LegalOneUser
+
+            for uid, uname in self.db.query(LegalOneUser.id, LegalOneUser.name).all():
+                if uname:
+                    nome_to_id.setdefault(uname.strip().lower(), uid)
+
+        def _aplica_tratamento(row, r) -> bool:
+            """Espelha responsável/setor/data/anotação da fonte (sobrescreve).
+            Retorna True se mudou algo."""
+            mudou = False
+            nome = _src_clean(r.get("responsavel"))
+            resp_id = nome_to_id.get(nome.lower()) if nome else None
+            if row.responsavel_user_id != resp_id:
+                row.responsavel_user_id = resp_id
+                mudou = True
+            for campo in ("setor", "data_agendamento", "anotacao"):
+                novo = _src_clean(r.get(campo))
+                if getattr(row, campo) != novo:
+                    setattr(row, campo, novo)
+                    mudou = True
+            return mudou
+
         inseridos = atualizados = 0
         st_count = {STATUS_SISTEMA_ABERTO: 0, STATUS_SISTEMA_RESPONDIDO: 0}
 
@@ -266,35 +300,38 @@ class OnerequestIntakeService:
 
             row = existentes.get(numero)
             if row is None:
-                self.db.add(
-                    OnerequestSolicitacao(
-                        numero_solicitacao=numero,
-                        titulo=_src_clean(r.get("titulo")),
-                        npj_direcionador=_src_clean(r.get("npj_direcionador")),
-                        prazo=_src_clean(r.get("prazo")),
-                        texto_dmi=texto,
-                        numero_processo=_src_clean(r.get("numero_processo")),
-                        polo=_src_clean(r.get("polo")),
-                        recebido_em=_src_dt(r.get("recebido_em")),
-                        status_sistema=status,
-                        status_tratamento=STATUS_TRATAMENTO_NOVO,
-                    )
+                novo = OnerequestSolicitacao(
+                    numero_solicitacao=numero,
+                    titulo=_src_clean(r.get("titulo")),
+                    npj_direcionador=_src_clean(r.get("npj_direcionador")),
+                    prazo=_src_clean(r.get("prazo")),
+                    texto_dmi=texto,
+                    numero_processo=_src_clean(r.get("numero_processo")),
+                    polo=_src_clean(r.get("polo")),
+                    recebido_em=_src_dt(r.get("recebido_em")),
+                    status_sistema=status,
+                    status_tratamento=STATUS_TRATAMENTO_NOVO,
                 )
+                if espelhar:
+                    _aplica_tratamento(novo, r)
+                self.db.add(novo)
                 inseridos += 1
                 continue
 
-            # Existente: atualiza SÓ capturados + status; tratamento intocado.
+            # Existente: capturados + status sempre; tratamento só se espelhar.
             changed = False
             for f in _SOURCE_CAPTURED:
-                novo = _src_clean(r.get(f))
-                if getattr(row, f) != novo:
-                    setattr(row, f, novo)
+                nv = _src_clean(r.get(f))
+                if getattr(row, f) != nv:
+                    setattr(row, f, nv)
                     changed = True
             if (row.texto_dmi or None) != texto:
                 row.texto_dmi = texto
                 changed = True
             if row.status_sistema != status:
                 row.status_sistema = status
+                changed = True
+            if espelhar and _aplica_tratamento(row, r):
                 changed = True
             if changed:
                 atualizados += 1
@@ -307,6 +344,7 @@ class OnerequestIntakeService:
             "atualizados": atualizados,
             "abertos": st_count[STATUS_SISTEMA_ABERTO],
             "respondidos": st_count[STATUS_SISTEMA_RESPONDIDO],
+            "espelha_tratamento": espelhar,
         }
         logger.info("OneRequest sync da fonte: %s", resultado)
         return resultado
