@@ -179,6 +179,8 @@ class SolicitacaoOut(BaseModel):
     created_task_id: Optional[int] = None
     linked_lawsuit_id: Optional[int] = None
     last_error: Optional[str] = None
+    scheduled_by_nome: Optional[str] = None
+    scheduled_at: Optional[str] = None
     farol: str
     # Status no L1 (cacheado pelo botão "Atualizar status L1").
     l1_checked_at: Optional[str] = None

@@ -30,6 +30,8 @@ export interface OnerequestSolicitacao {
   created_task_id: number | null;
   linked_lawsuit_id: number | null;
   last_error: string | null;
+  scheduled_by_nome: string | null;
+  scheduled_at: string | null;
   farol: Farol;
   // Status no L1 (cacheado pelo botão "Atualizar status L1").
   l1_checked_at: string | null;

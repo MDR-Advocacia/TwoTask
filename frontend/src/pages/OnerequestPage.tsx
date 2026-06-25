@@ -59,6 +59,7 @@ import {
   Clock,
   Download,
   ExternalLink,
+  FileSearch,
   Inbox,
   Lightbulb,
   Loader2,
@@ -125,7 +126,7 @@ const KPI_DEFS: {
   { key: "futuras", label: "Futuras", farol: "verde", icon: CalendarCheck, chip: "bg-emerald-100 text-emerald-700" },
 ];
 
-type TabKey = "novas" | "atrasadas" | "hoje" | "todas" | "concluidas" | "busca";
+type TabKey = "novas" | "atrasadas" | "hoje" | "todas" | "concluidas";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "novas", label: "Novas (sem responsável)" },
@@ -133,7 +134,6 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "hoje", label: "Vence Hoje" },
   { key: "todas", label: "Todas (abertas)" },
   { key: "concluidas", label: "Concluídas" },
-  { key: "busca", label: "Busca / Auditoria" },
 ];
 
 // Desfecho das DMIs concluídas: BB respondeu vs operador encerrou sem providência.
@@ -383,6 +383,13 @@ export default function OnerequestPage() {
   const [alertasLoading, setAlertasLoading] = useState(false);
   const [enviandoTeams, setEnviandoTeams] = useState<number | null>(null);
 
+  // Modal de Auditoria de processo/DMI — busca cross-status (todas as DMIs de um processo).
+  const [auditoriaOpen, setAuditoriaOpen] = useState(false);
+  const [auditoriaTermo, setAuditoriaTermo] = useState("");
+  const [auditoriaResultados, setAuditoriaResultados] = useState<OnerequestSolicitacao[]>([]);
+  const [auditoriaBuscando, setAuditoriaBuscando] = useState(false);
+  const [auditoriaBuscou, setAuditoriaBuscou] = useState(false);
+
   // Monta os filtros a partir da aba + recortes de data. SEM paginação —
   // usado tanto pela listagem (que adiciona limit/offset) quanto pela
   // exportação (que exporta tudo). Garante que os dois "conversam".
@@ -411,7 +418,6 @@ export default function OnerequestPage() {
     }
     // Clique num KPI card sobrepõe o farol, mantendo a base da aba atual.
     if (farolFilter) params.farol = farolFilter;
-    // "busca": sem filtro de status (todas as situações)
     return params;
   }, [tab, busca, soSemAnotacao, dispDe, dispAte, prazoDe, prazoAte, farolFilter]);
 
@@ -512,6 +518,23 @@ export default function OnerequestPage() {
     setAuditData(null);
     setAuditNovaAnotacao("");
     carregarAuditoria(sol.id);
+  };
+
+  // Auditoria de processo/DMI: busca SEM filtro de status — encontra a DMI em
+  // qualquer situação e mostra todas as vinculadas ao mesmo processo.
+  const buscarAuditoria = async () => {
+    const termo = auditoriaTermo.trim();
+    if (!termo) return;
+    setAuditoriaBuscando(true);
+    setAuditoriaBuscou(true);
+    try {
+      const resp = await listSolicitacoes({ busca: termo, limit: 200 });
+      setAuditoriaResultados(resp.items);
+    } catch (e) {
+      toast({ title: "Erro na auditoria", description: String((e as Error).message), variant: "destructive" });
+    } finally {
+      setAuditoriaBuscando(false);
+    }
   };
 
   const salvarAuditAnotacao = async () => {
@@ -764,14 +787,20 @@ export default function OnerequestPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-3">
-        <Inbox className="h-6 w-6 shrink-0 text-primary" />
-        <div>
-          <h1 className="text-xl font-semibold">OneRequest — DMIs do Banco do Brasil</h1>
-          <p className="text-sm text-muted-foreground">
-            Capturadas do Portal Jurídico do BB. Direcione, agende no Legal One e acompanhe.
-          </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <Inbox className="h-6 w-6 shrink-0 text-primary" />
+          <div>
+            <h1 className="text-xl font-semibold">OneRequest — DMIs do Banco do Brasil</h1>
+            <p className="text-sm text-muted-foreground">
+              Capturadas do Portal Jurídico do BB. Direcione, agende no Legal One e acompanhe.
+            </p>
+          </div>
         </div>
+        <Button variant="outline" className="shrink-0" onClick={() => setAuditoriaOpen(true)}>
+          <FileSearch className="mr-2 h-4 w-4" />
+          Auditoria de processo / DMI
+        </Button>
       </div>
 
       {/* Barra de status condensada: ingestão (RPA heartbeat) + auto-atualização
@@ -1525,6 +1554,133 @@ export default function OnerequestPage() {
               )}
             </>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de Auditoria de processo / DMI (busca cross-status) */}
+      <Dialog open={auditoriaOpen} onOpenChange={setAuditoriaOpen}>
+        <DialogContent className="max-h-[92vh] max-w-4xl overflow-y-auto overflow-x-hidden">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileSearch className="h-5 w-5 text-primary" />
+              Auditoria de processo / DMI
+            </DialogTitle>
+            <DialogDescription>
+              Digite o nº do processo (CNJ) ou da DMI. Mostra todas as DMIs vinculadas — em qualquer
+              status — com agendamento, responsável e conclusão.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                autoFocus
+                className="w-full pl-8"
+                placeholder="Nº do processo (CNJ) ou da DMI"
+                value={auditoriaTermo}
+                onChange={(e) => setAuditoriaTermo(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && buscarAuditoria()}
+              />
+            </div>
+            <Button onClick={buscarAuditoria} disabled={auditoriaBuscando || !auditoriaTermo.trim()}>
+              {auditoriaBuscando ? <Loader2 className="h-4 w-4 animate-spin" /> : "Buscar"}
+            </Button>
+          </div>
+
+          <div className="mt-1 space-y-2">
+            {!auditoriaBuscou ? (
+              <p className="py-8 text-center text-sm text-muted-foreground">
+                Busque por um processo ou DMI para ver o histórico de tratamento.
+              </p>
+            ) : auditoriaBuscando ? (
+              <div className="py-8 text-center">
+                <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground" />
+              </div>
+            ) : auditoriaResultados.length === 0 ? (
+              <p className="py-8 text-center text-sm text-muted-foreground">
+                Nenhuma DMI encontrada para “{auditoriaTermo}”.
+              </p>
+            ) : (
+              <>
+                <div className="text-xs text-muted-foreground">
+                  {auditoriaResultados.length} DMI(s) encontrada(s)
+                </div>
+                {auditoriaResultados.map((sol) => (
+                  <div key={sol.id} className="rounded-lg border p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-sm font-medium">{sol.numero_solicitacao}</span>
+                          <StatusBadge sol={sol} />
+                          {sol.desfecho && DESFECHO_BADGE[sol.desfecho] && (
+                            <Badge variant="outline" className={`text-[10px] ${DESFECHO_BADGE[sol.desfecho].cls}`}>
+                              {DESFECHO_BADGE[sol.desfecho].label}
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="truncate text-xs text-muted-foreground" title={sol.titulo ?? ""}>
+                          {sol.titulo ?? "Sem título"}
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="shrink-0"
+                        onClick={() => {
+                          setAuditoriaOpen(false);
+                          abrirAuditoria(sol);
+                        }}
+                      >
+                        Ver detalhe
+                      </Button>
+                    </div>
+                    <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-3">
+                      <div>
+                        <dt className="text-muted-foreground">Processo</dt>
+                        <dd className="font-mono">{sol.numero_processo ?? "—"}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted-foreground">Prazo BB</dt>
+                        <dd>{sol.prazo ?? "—"}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted-foreground">Responsável</dt>
+                        <dd>{sol.responsavel_nome ?? "—"}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted-foreground">Setor</dt>
+                        <dd>{sol.setor ?? "—"}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted-foreground">Agendada p/</dt>
+                        <dd>{sol.data_agendamento ?? "—"}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted-foreground">Agendada por</dt>
+                        <dd>
+                          {sol.scheduled_by_nome ?? "—"}
+                          {sol.scheduled_at ? ` · ${fmtDataBR(sol.scheduled_at)}` : ""}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted-foreground">Status BB</dt>
+                        <dd>{sol.status_sistema}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted-foreground">Tratamento</dt>
+                        <dd>{sol.status_tratamento}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted-foreground">Status L1</dt>
+                        <dd>{sol.l1_dmi_status_label ?? "—"}</dd>
+                      </div>
+                    </dl>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
         </DialogContent>
       </Dialog>
 

@@ -298,6 +298,8 @@ class OnerequestService:
                     "created_task_id": r.created_task_id,
                     "linked_lawsuit_id": r.linked_lawsuit_id,
                     "last_error": r.last_error,
+                    "scheduled_by_nome": r.scheduled_by_nome,
+                    "scheduled_at": r.scheduled_at.isoformat() if r.scheduled_at else None,
                     "farol": _farol(_parse_prazo(r.prazo), hoje),
                     # Status no L1 (cacheado pelo botão "Atualizar status L1").
                     "l1_checked_at": r.l1_checked_at.isoformat() if r.l1_checked_at else None,
