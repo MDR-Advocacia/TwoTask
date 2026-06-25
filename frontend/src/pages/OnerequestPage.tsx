@@ -9,6 +9,7 @@
 // tarefas pendentes/concluídas na pasta, e log de anotações por DMI.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Card,
   CardContent,
@@ -68,6 +69,7 @@ import {
   Play,
   RefreshCw,
   Search,
+  X,
 } from "lucide-react";
 import {
   addAnotacao,
@@ -141,6 +143,31 @@ const DESFECHO_BADGE: Record<string, { label: string; cls: string }> = {
   respondida: { label: "Respondida", cls: "bg-emerald-100 text-emerald-800 border-emerald-200" },
   arquivada: { label: "Arquivada", cls: "bg-slate-100 text-slate-700 border-slate-200" },
 };
+
+const STATUS_TRAT_LABEL: Record<string, string> = {
+  NOVO: "Novas",
+  AGENDADO: "Agendadas",
+  IGNORADO: "Sem providência",
+  ERRO: "Com erro",
+  AGUARDANDO_PROCESSO: "Aguardando processo",
+};
+
+// Chip de filtro ativo (drill-through do dashboard) — removível.
+function FilterChip({ label, onClear }: { label: string; onClear: () => void }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border bg-muted/50 px-2.5 py-1 text-xs">
+      {label}
+      <button
+        type="button"
+        onClick={onClear}
+        className="text-muted-foreground hover:text-foreground"
+        aria-label="Remover filtro"
+      >
+        <X className="h-3 w-3" />
+      </button>
+    </span>
+  );
+}
 
 // Status derivado do estado da DMI (não só do status_tratamento bruto):
 // sem responsável = Nova; com responsável = Distribuída; com tarefa = Agendada.
@@ -370,6 +397,13 @@ export default function OnerequestPage() {
   // farol, mantendo a base da aba — assim a contagem do card bate com a tabela.
   const [farolFilter, setFarolFilter] = useState<Farol | null>(null);
 
+  // Drill-through vindo do dashboard (via URL): setor, responsável e status de
+  // tratamento. Aparecem como chips removíveis e compõem com a aba.
+  const [setorFilter, setSetorFilter] = useState<string | null>(null);
+  const [responsavelFilter, setResponsavelFilter] = useState<number | null>(null);
+  const [statusTratFilter, setStatusTratFilter] = useState<string | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+
   // Modal de Acompanhamento/Auditoria (DMIs já agendadas).
   const [auditSel, setAuditSel] = useState<OnerequestSolicitacao | null>(null);
   const [auditData, setAuditData] = useState<Auditoria | null>(null);
@@ -418,8 +452,12 @@ export default function OnerequestPage() {
     }
     // Clique num KPI card sobrepõe o farol, mantendo a base da aba atual.
     if (farolFilter) params.farol = farolFilter;
+    // Drill-through do dashboard (setor / responsável / status de tratamento).
+    if (setorFilter) params.setor = setorFilter;
+    if (responsavelFilter) params.responsavel_user_id = responsavelFilter;
+    if (statusTratFilter) params.status_tratamento = statusTratFilter;
     return params;
-  }, [tab, busca, soSemAnotacao, dispDe, dispAte, prazoDe, prazoAte, farolFilter]);
+  }, [tab, busca, soSemAnotacao, dispDe, dispAte, prazoDe, prazoAte, farolFilter, setorFilter, responsavelFilter, statusTratFilter]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -466,6 +504,24 @@ export default function OnerequestPage() {
     getL1Autorefresh().then(setAutoref).catch(() => {});
   }, []);
 
+  // Drill-through do dashboard: lê os filtros da URL uma vez, aplica como chips
+  // e limpa a URL pra não "grudar" o filtro num refresh.
+  useEffect(() => {
+    const t = searchParams.get("tab");
+    const f = searchParams.get("farol");
+    const s = searchParams.get("setor");
+    const r = searchParams.get("responsavel");
+    const st = searchParams.get("status_tratamento");
+    let mudou = false;
+    if (t && TABS.some((x) => x.key === t)) { setTab(t as TabKey); mudou = true; }
+    if (f) { setFarolFilter(f as Farol); mudou = true; }
+    if (s) { setSetorFilter(s); mudou = true; }
+    if (r) { setResponsavelFilter(Number(r)); mudou = true; }
+    if (st) { setStatusTratFilter(st); mudou = true; }
+    if (mudou) { setPage(1); setSearchParams({}, { replace: true }); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const toggleAutorefresh = async () => {
     if (!autoref) return;
     setTogglingAuto(true);
@@ -490,6 +546,8 @@ export default function OnerequestPage() {
     [users],
   );
 
+  const responsavelNome = (id: number) => users.find((u) => u.id === id)?.name ?? `#${id}`;
+
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const firstRow = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const lastRow = Math.min(total, page * pageSize);
@@ -498,6 +556,9 @@ export default function OnerequestPage() {
     setPage(1);
     setSoSemAnotacao(false);
     setFarolFilter(null);
+    setSetorFilter(null);
+    setResponsavelFilter(null);
+    setStatusTratFilter(null);
     setTab(t);
   };
 
@@ -921,6 +982,28 @@ export default function OnerequestPage() {
           );
         })}
       </div>
+
+      {/* Chips de filtro ativo (drill-through do dashboard) */}
+      {(setorFilter || responsavelFilter || statusTratFilter) && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-muted-foreground">Filtrando:</span>
+          {setorFilter && (
+            <FilterChip label={`Setor: ${setorFilter}`} onClear={() => { setPage(1); setSetorFilter(null); }} />
+          )}
+          {responsavelFilter && (
+            <FilterChip
+              label={`Responsável: ${responsavelNome(responsavelFilter)}`}
+              onClear={() => { setPage(1); setResponsavelFilter(null); }}
+            />
+          )}
+          {statusTratFilter && (
+            <FilterChip
+              label={STATUS_TRAT_LABEL[statusTratFilter] ?? statusTratFilter}
+              onClear={() => { setPage(1); setStatusTratFilter(null); }}
+            />
+          )}
+        </div>
+      )}
 
       {/* Abas + busca */}
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">

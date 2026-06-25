@@ -71,14 +71,32 @@ function Kpi({
   value,
   icon: Icon,
   tone,
+  to,
 }: {
   label: string;
   value: number;
   icon: LucideIcon;
   tone: string;
+  to?: string;
 }) {
+  const navigate = useNavigate();
   return (
-    <Card>
+    <Card
+      role={to ? "button" : undefined}
+      tabIndex={to ? 0 : undefined}
+      onClick={to ? () => navigate(to) : undefined}
+      onKeyDown={
+        to
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                navigate(to);
+              }
+            }
+          : undefined
+      }
+      className={to ? "cursor-pointer transition-all hover:-translate-y-0.5 hover:shadow-md" : ""}
+    >
       <CardContent className="flex items-center gap-3 p-4">
         <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${tone}`}>
           <Icon className="h-4 w-4" />
@@ -156,7 +174,8 @@ export default function OnerequestDashboardPage() {
             Dashboard — OneRequest
           </h1>
           <p className="text-sm text-muted-foreground">
-            Visão operacional e de risco das DMIs do Banco do Brasil.
+            Visão operacional e de risco das DMIs do Banco do Brasil. Clique em qualquer indicador
+            para abrir os casos no painel de tratamento.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -180,12 +199,12 @@ export default function OnerequestDashboardPage() {
 
       {/* KPIs */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <Kpi label="Abertas (em tratamento)" value={k.abertas ?? 0} icon={Inbox} tone="bg-blue-100 text-blue-700" />
-        <Kpi label="Atrasadas" value={k.atrasadas ?? 0} icon={AlertTriangle} tone="bg-rose-100 text-rose-700" />
-        <Kpi label="Vencem hoje" value={k.hoje ?? 0} icon={CalendarClock} tone="bg-red-100 text-red-700" />
-        <Kpi label="Sem responsável" value={k.sem_responsavel ?? 0} icon={UserX} tone="bg-amber-100 text-amber-700" />
-        <Kpi label="Agendadas no L1" value={k.agendadas ?? 0} icon={CheckCircle2} tone="bg-emerald-100 text-emerald-700" />
-        <Kpi label="Concluídas (total)" value={k.concluidas ?? 0} icon={CheckCircle2} tone="bg-slate-100 text-slate-700" />
+        <Kpi label="Abertas (em tratamento)" value={k.abertas ?? 0} icon={Inbox} tone="bg-blue-100 text-blue-700" to="/onerequest?tab=todas" />
+        <Kpi label="Atrasadas" value={k.atrasadas ?? 0} icon={AlertTriangle} tone="bg-rose-100 text-rose-700" to="/onerequest?tab=todas&farol=atrasado" />
+        <Kpi label="Vencem hoje" value={k.hoje ?? 0} icon={CalendarClock} tone="bg-red-100 text-red-700" to="/onerequest?tab=hoje" />
+        <Kpi label="Sem responsável" value={k.sem_responsavel ?? 0} icon={UserX} tone="bg-amber-100 text-amber-700" to="/onerequest?tab=novas" />
+        <Kpi label="Agendadas no L1" value={k.agendadas ?? 0} icon={CheckCircle2} tone="bg-emerald-100 text-emerald-700" to="/onerequest?tab=todas&status_tratamento=AGENDADO" />
+        <Kpi label="Concluídas (total)" value={k.concluidas ?? 0} icon={CheckCircle2} tone="bg-slate-100 text-slate-700" to="/onerequest?tab=concluidas" />
       </div>
 
       {/* Recebimentos × Agendamentos */}
@@ -231,7 +250,13 @@ export default function OnerequestDashboardPage() {
               <p className="py-8 text-center text-sm text-muted-foreground">Sem DMIs abertas.</p>
             ) : (
               farolData.rows.map((f) => (
-                <div key={f.key} className="flex items-center gap-2">
+                <button
+                  key={f.key}
+                  type="button"
+                  onClick={() => navigate(`/onerequest?tab=todas&farol=${f.key}`)}
+                  title={`Ver as ${f.label.toLowerCase()} no painel de tratamento`}
+                  className="flex w-full items-center gap-2 rounded px-1 py-0.5 text-left transition-colors hover:bg-muted/60"
+                >
                   <span className="w-28 shrink-0 text-xs text-muted-foreground">{f.label}</span>
                   <div className="h-4 flex-1 overflow-hidden rounded bg-muted">
                     <div
@@ -240,7 +265,7 @@ export default function OnerequestDashboardPage() {
                     />
                   </div>
                   <span className="w-8 text-right text-xs font-medium tabular-nums">{f.n}</span>
-                </div>
+                </button>
               ))
             )}
           </CardContent>
@@ -261,7 +286,17 @@ export default function OnerequestDashboardPage() {
                     <XAxis type="number" fontSize={11} allowDecimals={false} />
                     <YAxis type="category" dataKey="setor" width={120} fontSize={11} tickLine={false} />
                     <RTooltip />
-                    <Bar dataKey="n" name="Abertas" fill="#3b82f6" radius={[0, 4, 4, 0]} />
+                    <Bar
+                      dataKey="n"
+                      name="Abertas"
+                      fill="#3b82f6"
+                      radius={[0, 4, 4, 0]}
+                      cursor="pointer"
+                      onClick={(d: any) =>
+                        d?.payload?.setor &&
+                        navigate(`/onerequest?tab=todas&setor=${encodeURIComponent(d.payload.setor)}`)
+                      }
+                    />
                   </BarChart>
                 </ResponsiveContainer>
               )}
@@ -295,7 +330,11 @@ export default function OnerequestDashboardPage() {
                   </TableRow>
                 ) : (
                   (data?.por_responsavel ?? []).map((r) => (
-                    <TableRow key={r.nome}>
+                    <TableRow
+                      key={r.nome}
+                      className="cursor-pointer"
+                      onClick={() => navigate(`/onerequest?tab=todas&responsavel=${r.id}`)}
+                    >
                       <TableCell className="text-sm">{r.nome}</TableCell>
                       <TableCell className="text-right tabular-nums">{r.abertas}</TableCell>
                       <TableCell className="text-right tabular-nums">

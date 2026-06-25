@@ -55,6 +55,7 @@ export interface ListParams {
   status_sistema?: string;
   status_tratamento?: string;
   responsavel_user_id?: number;
+  setor?: string;
   busca?: string;
   farol?: string;
   sem_responsavel?: boolean;
@@ -234,6 +235,7 @@ function buildListQuery(params: ListParams): URLSearchParams {
   if (params.status_tratamento) qs.set("status_tratamento", params.status_tratamento);
   if (params.responsavel_user_id)
     qs.set("responsavel_user_id", String(params.responsavel_user_id));
+  if (params.setor) qs.set("setor", params.setor);
   if (params.busca) qs.set("busca", params.busca);
   if (params.farol) qs.set("farol", params.farol);
   if (params.sem_responsavel) qs.set("sem_responsavel", "true");
@@ -321,7 +323,7 @@ export interface DashboardData {
   farol: Record<string, number>;
   recebimentos: { dia: string; n: number }[];
   agendamentos: { dia: string; n: number }[];
-  por_responsavel: { nome: string; abertas: number; atrasadas: number; agendadas: number }[];
+  por_responsavel: { id: number; nome: string; abertas: number; atrasadas: number; agendadas: number }[];
   por_setor: { setor: string; n: number }[];
   periodo_dias: number;
 }

@@ -144,6 +144,7 @@ class OnerequestService:
         status_sistema: Optional[str] = STATUS_SISTEMA_ABERTO,
         status_tratamento: Optional[str] = None,
         responsavel_user_id: Optional[int] = None,
+        setor: Optional[str] = None,
         busca: Optional[str] = None,
         farol: Optional[str] = None,
         sem_responsavel: Optional[bool] = None,
@@ -172,6 +173,12 @@ class OnerequestService:
             q = q.filter(OnerequestSolicitacao.status_tratamento == status_tratamento)
         if responsavel_user_id:
             q = q.filter(OnerequestSolicitacao.responsavel_user_id == responsavel_user_id)
+        if setor:
+            # "(sem setor)" vem do dashboard pra drill-through das DMIs sem setor.
+            if setor == "(sem setor)":
+                q = q.filter(OnerequestSolicitacao.setor.is_(None))
+            else:
+                q = q.filter(OnerequestSolicitacao.setor == setor)
         if busca:
             termo = f"%{busca.strip()}%"
             q = q.filter(
@@ -432,7 +439,7 @@ class OnerequestService:
                 )
             }
         por_responsavel = sorted(
-            [{"nome": nomes.get(uid) or f"#{uid}", **v} for uid, v in resp_acc.items()],
+            [{"id": uid, "nome": nomes.get(uid) or f"#{uid}", **v} for uid, v in resp_acc.items()],
             key=lambda x: x["abertas"],
             reverse=True,
         )
