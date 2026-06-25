@@ -52,13 +52,17 @@ import {
   AlertTriangle,
   Bell,
   CalendarCheck,
+  CalendarClock,
+  CalendarDays,
   CheckCircle2,
   ClipboardCopy,
+  Clock,
   Download,
   ExternalLink,
   Inbox,
   Lightbulb,
   Loader2,
+  type LucideIcon,
   Pause,
   Play,
   RefreshCw,
@@ -107,12 +111,18 @@ const FAROL_DOT: Record<Farol, string> = {
   verde: "bg-emerald-500",
 };
 
-const KPI_DEFS: { key: string; label: string; dot: string; farol: Farol }[] = [
-  { key: "atrasadas", label: "Atrasadas", dot: "bg-rose-700", farol: "atrasado" },
-  { key: "hoje", label: "Vence hoje", dot: "bg-red-500", farol: "vermelho" },
-  { key: "amanha", label: "Amanhã", dot: "bg-amber-400", farol: "amarelo" },
-  { key: "fds", label: "Fim de semana", dot: "bg-purple-500", farol: "roxo" },
-  { key: "futuras", label: "Futuras", dot: "bg-emerald-500", farol: "verde" },
+const KPI_DEFS: {
+  key: string;
+  label: string;
+  farol: Farol;
+  icon: LucideIcon;
+  chip: string;
+}[] = [
+  { key: "atrasadas", label: "Atrasadas", farol: "atrasado", icon: AlertTriangle, chip: "bg-rose-100 text-rose-700" },
+  { key: "hoje", label: "Vence hoje", farol: "vermelho", icon: CalendarClock, chip: "bg-red-100 text-red-600" },
+  { key: "amanha", label: "Amanhã", farol: "amarelo", icon: Clock, chip: "bg-amber-100 text-amber-700" },
+  { key: "fds", label: "Fim de semana", farol: "roxo", icon: CalendarDays, chip: "bg-purple-100 text-purple-700" },
+  { key: "futuras", label: "Futuras", farol: "verde", icon: CalendarCheck, chip: "bg-emerald-100 text-emerald-700" },
 ];
 
 type TabKey = "novas" | "atrasadas" | "hoje" | "todas" | "concluidas" | "busca";
@@ -846,8 +856,10 @@ export default function OnerequestPage() {
                   toggle();
                 }
               }}
-              className={`cursor-pointer transition hover:border-primary/40 hover:shadow-sm ${
-                ativo ? "border-primary ring-1 ring-primary" : ""
+              className={`cursor-pointer transition-all hover:-translate-y-0.5 hover:shadow-md ${
+                ativo
+                  ? "border-primary bg-primary/5 ring-2 ring-primary/60"
+                  : "hover:border-foreground/20"
               }`}
               title={
                 ativo
@@ -856,10 +868,12 @@ export default function OnerequestPage() {
               }
             >
               <CardContent className="flex items-center gap-3 p-4">
-                <span className={`h-3 w-3 shrink-0 rounded-full ${kpi.dot}`} />
+                <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${kpi.chip}`}>
+                  <kpi.icon className="h-5 w-5" />
+                </span>
                 <div className="min-w-0">
-                  <div className="text-2xl font-bold">{kpis[kpi.key] ?? 0}</div>
-                  <div className="truncate text-xs text-muted-foreground">{kpi.label}</div>
+                  <div className="text-2xl font-bold leading-none tabular-nums">{kpis[kpi.key] ?? 0}</div>
+                  <div className="mt-1 truncate text-xs text-muted-foreground">{kpi.label}</div>
                 </div>
               </CardContent>
             </Card>
