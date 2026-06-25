@@ -269,6 +269,13 @@ function diasAtraso(prazo: string | null): number {
   return diff > 0 ? diff : 0;
 }
 
+// recebido_em (ISO com hora) -> DD/MM/YYYY (data que a DMI chegou/foi disponibilizada).
+function fmtDataBR(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? "—" : d.toLocaleDateString("pt-BR");
+}
+
 function ingestInfo(iso: string | null): { texto: string; tone: "ok" | "warn" | "danger" } {
   if (!iso) return { texto: "Nenhuma ingestão de dados registrada ainda.", tone: "danger" };
   const d = new Date(iso);
@@ -863,6 +870,7 @@ export default function OnerequestPage() {
                   <TableHead>Nº Solicitação</TableHead>
                   <TableHead className="min-w-[200px]">Título</TableHead>
                   <TableHead>Processo</TableHead>
+                  <TableHead className="whitespace-nowrap">Disponibilizada</TableHead>
                   <TableHead>Prazo BB</TableHead>
                   <TableHead>Responsável</TableHead>
                   <TableHead>Setor</TableHead>
@@ -874,13 +882,13 @@ export default function OnerequestPage() {
               <TableBody>
                 {loading && items.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={10} className="py-10 text-center">
+                    <TableCell colSpan={11} className="py-10 text-center">
                       <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground" />
                     </TableCell>
                   </TableRow>
                 ) : items.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
+                    <TableCell colSpan={11} className="py-10 text-center text-muted-foreground">
                       Nenhuma solicitação encontrada.
                     </TableCell>
                   </TableRow>
@@ -921,6 +929,12 @@ export default function OnerequestPage() {
                             sem processo
                           </Badge>
                         )}
+                      </TableCell>
+                      <TableCell
+                        className="whitespace-nowrap text-xs text-muted-foreground"
+                        title={sol.recebido_em ? `Disponibilizada/recebida em ${sol.recebido_em}` : ""}
+                      >
+                        {fmtDataBR(sol.recebido_em)}
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-sm">
                         {!sol.prazo ? (
@@ -1022,6 +1036,7 @@ export default function OnerequestPage() {
                 <div><span className="text-muted-foreground">NPJ:</span> {selected.npj_direcionador ?? "—"}</div>
                 <div><span className="text-muted-foreground">Polo:</span> {selected.polo ?? "—"}</div>
                 <div><span className="text-muted-foreground">Prazo BB:</span> {selected.prazo ?? "—"}</div>
+                <div><span className="text-muted-foreground">Disponibilizada:</span> {fmtDataBR(selected.recebido_em)}</div>
                 <div className="truncate"><span className="text-muted-foreground">Proc.:</span> {selected.numero_processo ?? "—"}</div>
               </div>
 
