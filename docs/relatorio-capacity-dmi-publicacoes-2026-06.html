@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Relatório de Capacity — DMI e Publicações | DunaFlow / MDR Advocacia</title>
+<style>
+  :root{
+    --ink:#1c1c1a; --muted:#5f5e5a; --hint:#888780; --line:#d3d1c7;
+    --blue:#378ADD; --blue-d:#0c447c; --teal:#1d9e75; --teal-d:#0f6e56;
+    --gray:#b4b2a9; --graybg:#f1efe8; --amber:#ba7517; --red:#a32d2d;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--ink); font-size:12.5px; line-height:1.55;
+    background:#fff; -webkit-print-color-adjust:exact; print-color-adjust:exact;
+  }
+  .page{
+    width:210mm; min-height:296mm; padding:18mm 17mm 16mm; margin:0 auto;
+    background:#fff; position:relative;
+  }
+  @media screen{ .page{ box-shadow:0 1px 10px rgba(0,0,0,.12); margin:16px auto; } body{background:#e9e7e0;} }
+  @media print{ .page{ box-shadow:none; margin:0; } @page{ size:A4; margin:0; } }
+  .brk{ page-break-after:always; }
+  h1{ font-size:25px; font-weight:600; margin:0 0 2px; letter-spacing:-.4px; }
+  h2{ font-size:17px; font-weight:600; margin:22px 0 8px; padding-bottom:5px; border-bottom:2px solid var(--ink); letter-spacing:-.2px;}
+  h3{ font-size:13.5px; font-weight:600; margin:16px 0 5px; color:var(--ink);}
+  p{ margin:0 0 8px; }
+  .sub{ color:var(--muted); font-size:12px; }
+  .meta{ color:var(--hint); font-size:10.5px; margin-top:3px;}
+  .lede{ font-size:13px; color:var(--ink); }
+  strong{ font-weight:600; }
+  .tag{ display:inline-block; font-size:9.5px; font-weight:600; letter-spacing:.4px; text-transform:uppercase;
+        padding:2px 7px; border-radius:4px; background:var(--graybg); color:var(--muted); }
+  .head{ display:flex; justify-content:space-between; align-items:flex-end; border-bottom:3px solid var(--ink); padding-bottom:10px; margin-bottom:4px;}
+  .head .logo{ font-size:15px; font-weight:700; letter-spacing:-.3px;}
+  .head .logo span{ color:var(--blue); }
+  /* cards */
+  .kpis{ display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin:12px 0;}
+  .kpi{ background:var(--graybg); border-radius:7px; padding:9px 10px;}
+  .kpi .l{ font-size:10px; color:var(--muted); }
+  .kpi .v{ font-size:19px; font-weight:600; line-height:1.15; margin-top:2px;}
+  .kpi .h{ font-size:9.5px; color:var(--hint); margin-top:1px;}
+  .two{ display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  /* table */
+  table{ width:100%; border-collapse:collapse; margin:8px 0 10px; font-size:11.5px;}
+  th{ text-align:left; font-weight:600; color:var(--muted); border-bottom:1.5px solid var(--ink); padding:5px 7px; font-size:10.5px; text-transform:uppercase; letter-spacing:.3px;}
+  td{ padding:5px 7px; border-bottom:1px solid var(--line); }
+  td.n,th.n{ text-align:right; font-variant-numeric:tabular-nums;}
+  tr.tot td{ font-weight:600; border-top:1.5px solid var(--ink); border-bottom:none;}
+  /* bars */
+  .bar{ position:relative; height:16px; background:var(--graybg); border-radius:4px; overflow:hidden; display:inline-block; vertical-align:middle; width:100%;}
+  .bar > i{ position:absolute; left:0; top:0; bottom:0; border-radius:4px; }
+  .barrow{ display:grid; grid-template-columns:150px 1fr 56px; gap:9px; align-items:center; margin:4px 0; font-size:11px;}
+  .barrow .lab{ color:var(--ink); } .barrow .val{ text-align:right; font-variant-numeric:tabular-nums; color:var(--muted);}
+  .stack{ display:flex; height:16px; border-radius:4px; overflow:hidden;}
+  .note{ background:var(--graybg); border-left:3px solid var(--blue); border-radius:0 6px 6px 0; padding:9px 11px; margin:10px 0; font-size:11.5px;}
+  .note.warn{ border-left-color:var(--amber);}
+  .note.ok{ border-left-color:var(--teal);}
+  ul{ margin:5px 0 10px; padding-left:17px;} li{ margin:3px 0;}
+  .legend{ display:flex; gap:14px; font-size:10px; color:var(--muted); margin:2px 0 6px;}
+  .legend i{ display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:4px; vertical-align:middle;}
+  .foot{ position:absolute; bottom:9mm; left:17mm; right:17mm; display:flex; justify-content:space-between;
+         font-size:9px; color:var(--hint); border-top:1px solid var(--line); padding-top:5px;}
+  .verdict{ border:2px solid var(--ink); border-radius:9px; padding:12px 14px; margin:12px 0; }
+  .verdict h3{ margin-top:0;}
+  .pill{ font-size:10px; font-weight:600; padding:2px 8px; border-radius:20px; }
+  .pill.blue{ background:#e6f1fb; color:var(--blue-d);} .pill.teal{ background:#e1f5ee; color:var(--teal-d);}
+  .pill.gray{ background:var(--graybg); color:var(--muted);} .pill.amber{ background:#faeeda; color:var(--amber);}
+</style>
+</head>
+<body>
+
+<!-- ============ PÁGINA 1 — RESUMO EXECUTIVO ============ -->
+<section class="page">
+  <div class="head">
+    <div>
+      <div class="tag">Relatório operacional · uso interno</div>
+      <h1>Capacity da operação — DMI e Publicações</h1>
+      <div class="sub">Estudo de volume × trabalho e dimensionamento de equipe</div>
+    </div>
+    <div style="text-align:right">
+      <div class="logo">Duna<span>Flow</span></div>
+      <div class="meta">MDR Advocacia · 25/06/2026</div>
+    </div>
+  </div>
+  <div class="meta" style="margin:6px 0 10px">
+    Período: <strong>jun/2026</strong> (publicações: janela limpa 02–25/06) · Fonte: Postgres de produção (Flow + OneRequest) ·
+    Medições por timestamp real de cada decisão, sem amostragem.
+  </div>
+
+  <p class="lede">Esta investigação respondeu a duas perguntas operacionais com dados de produção: <strong>quanto trabalho
+  custa, de fato, recepcionar e direcionar as DMIs</strong> e <strong>qual a capacity real da equipe de Publicações —
+  e se ela pode ser reduzida.</strong> As duas primeiras páginas trazem os resultados; o restante, o detalhamento.</p>
+
+  <h2>Os números que importam</h2>
+  <div class="kpis">
+    <div class="kpi"><div class="l">DMI — triagem/dia útil</div><div class="v">~30 min</div><div class="h">~45 DMIs × ~30 s</div></div>
+    <div class="kpi"><div class="l">Publicações — decisões/dia</div><div class="v">~662</div><div class="h">~12 h hands-on</div></div>
+    <div class="kpi"><div class="l">IA descarta sozinha</div><div class="v">38%</div><div class="h">antes do humano</div></div>
+    <div class="kpi"><div class="l">Equipe Publicações</div><div class="v">5 → 4</div><div class="h">viável c/ rebalance</div></div>
+  </div>
+
+  <h2>Bloco 1 — DMI (recepção e direcionamento)</h2>
+  <p class="sub">A pergunta era se a triagem diária de DMIs — receber, ver que chegou e mandar pro setor — era um trabalho
+  pesado. <strong>Não é.</strong></p>
+  <ul>
+    <li><strong>Volume:</strong> ~40–50 DMIs por dia útil (mediana 41), fim de semana 2–5, com picos esporádicos de 96 a 178.</li>
+    <li><strong>Custo:</strong> com a sugestão de setor/responsável/data pré-preenchida, cada DMI custa <strong>~30 s</strong> de triagem.</li>
+    <li><strong>Resultado:</strong> um dia normal é <strong>~22–35 min de trabalho</strong>. A intuição de "meia hora por dia" está correta.</li>
+    <li><strong>Atenção:</strong> dias de pico (96–178) viram 1–2 h — precisam de cobertura pontual, não de equipe permanente maior.</li>
+  </ul>
+  <div class="note ok"><strong>Conclusão DMI:</strong> trabalho de baixa carga e alta frequência. Cabe com folga em
+  <strong>uma pessoa</strong>, desde que haja plano de cobertura nos dias de enxurrada.</div>
+
+  <h2>Bloco 2 — Publicações (leitura e tratamento)</h2>
+  <p class="sub">A ferramenta nova entrega muito mais produção por pessoa — mas a equipe pode ser reduzida sem cortar
+  produtividade, <strong>rebalanceando o trabalho</strong>.</p>
+  <ul>
+    <li><strong>A IA tira 38% do funil:</strong> de 40.953 publicações capturadas, 15.721 são descartadas automaticamente
+      (duplicadas/obsoletas). O humano só toca nos 62% que importam.</li>
+    <li><strong>Custo real cronometrado:</strong> agendar ~45 s, ignorar ~30 s; metade das decisões sai em menos de 30 s.</li>
+    <li><strong>Equilíbrio:</strong> demanda ~570/dia útil (picos 1.300–1.540), vazão da equipe ~665/dia, backlog de só 802. A equipe acompanha a demanda.</li>
+    <li><strong>O gargalo não é capacidade — é o silo por escritório:</strong> cada pessoa está presa a um pool, e os pools
+      são desiguais (BB/Réu ~326/dia vs Ativos/Réu ~55/dia).</li>
+  </ul>
+
+  <div class="foot"><span>DunaFlow · Capacity DMI + Publicações</span><span>Confidencial — MDR Advocacia</span><span>Pág. 1 de 6</span></div>
+</section>
+
+<!-- ============ PÁGINA 2 — RESUMO EXECUTIVO (cont.) ============ -->
+<section class="page brk">
+  <h2 style="margin-top:0">Bloco 2 — Publicações: a prova da capacidade ociosa</h2>
+  <p class="sub">Medindo o tempo real de mão na massa e o horário de término de cada operador (horário de Brasília):</p>
+
+  <div class="legend"><span><i style="background:var(--blue)"></i>Trabalho real (hands-on)</span><span><i style="background:var(--line)"></i>Capacidade ociosa (ref. ~7 h)</span></div>
+  <div id="idlebars">
+    <div class="barrow"><div class="lab">Vinícius <span class="meta">· sai 17:47</span></div>
+      <div class="stack"><div style="width:46%;background:var(--blue)"></div><div style="width:54%;background:var(--line)"></div></div><div class="val">3,2 h</div></div>
+    <div class="barrow"><div class="lab">Rayana <span class="meta">· sai 15:53</span></div>
+      <div class="stack"><div style="width:37%;background:var(--blue)"></div><div style="width:63%;background:var(--line)"></div></div><div class="val">2,6 h</div></div>
+    <div class="barrow"><div class="lab">Anderson <span class="meta">· sai 16:29</span></div>
+      <div class="stack"><div style="width:24%;background:var(--blue)"></div><div style="width:76%;background:var(--line)"></div></div><div class="val">1,7 h</div></div>
+    <div class="barrow"><div class="lab">Marcos <span class="meta">· sai 14:03</span></div>
+      <div class="stack"><div style="width:23%;background:var(--blue)"></div><div style="width:77%;background:var(--line)"></div></div><div class="val">1,6 h</div></div>
+    <div class="barrow"><div class="lab">Camilla <span class="meta">· sai 12:11</span></div>
+      <div class="stack"><div style="width:14%;background:var(--blue)"></div><div style="width:86%;background:var(--line)"></div></div><div class="val">1,0 h</div></div>
+  </div>
+  <div class="note"><strong>Camilla esvazia o pool dela por volta do meio-dia em 12 de 14 dias</strong> — ~1 h de trabalho real.
+  É a operadora mais rápida da equipe (31 s/decisão), mas o escritório dela (Ativos/Réu) só gera ~55 publicações/dia.
+  Volume baixo é <strong>pool baixo, não capacidade baixa.</strong></div>
+
+  <h2>Recomendação consolidada</h2>
+  <div class="verdict">
+    <h3>Publicações: operar com 4 pessoas é viável — via rebalance, não corte por volume</h3>
+    <ul>
+      <li><strong>1. Despoolar a fila (prioridade).</strong> Acabar com "cada um no seu escritório": fila única e atribuição
+        por capacidade. A ociosidade da Camilla e a tarde livre do Marcos escoam pro firehose do BB/Réu, onde a fila aperta.</li>
+      <li><strong>2. Subir o ritmo do Anderson.</strong> Ele faz 160 s/decisão contra ~45 s do Marcos no <em>mesmo</em>
+        escritório (Master/Réu). No ritmo normal, dá conta sozinho do pool dele e libera o Marcos por inteiro.</li>
+      <li><strong>A Camilla não é candidata a corte</strong> — é quem sustenta a produtividade; precisa de mais pool, não de menos colegas.</li>
+      <li>A <strong>5ª cadeira deixa de ser rotina e vira buffer</strong> dos dias de pico (896–1.300+ chegando).</li>
+    </ul>
+    <p style="margin:6px 0 0" class="sub">Quatro métodos independentes convergiram para o mesmo número — <strong>4 pessoas</strong>:
+    contagem de cabeças, estimativa de tempo, relógio observado e capacidade ociosa cronometrada.</p>
+  </div>
+  <div class="verdict" style="border-color:var(--teal)">
+    <h3>DMI: uma pessoa basta</h3>
+    <p style="margin:0">A triagem diária é ~30 min de trabalho efetivo. A função é compatível com uma única pessoa, idealmente
+    a mesma que cubra os picos com apoio sob demanda. Não há caso para equipe dedicada à recepção de DMI.</p>
+  </div>
+
+  <div class="foot"><span>DunaFlow · Capacity DMI + Publicações</span><span>Confidencial — MDR Advocacia</span><span>Pág. 2 de 6</span></div>
+</section>
+
+<!-- ============ PÁGINA 3 — DETALHE DMI ============ -->
+<section class="page brk">
+  <div class="tag">Detalhamento</div>
+  <h1 style="font-size:21px">A · DMI — Recepção e direcionamento</h1>
+  <p class="sub">Fonte: Postgres da fonte (RPA OneRequest), tabela <code>solicitacoes</code> · 7.275 DMIs de 24/09/2025 a 25/06/2026.</p>
+
+  <h2>A.1 Volume diário</h2>
+  <p>A demanda de triagem é o número de DMIs novas por dia. O padrão é estável (não está crescendo): ~40 DMIs/dia útil
+  ao longo de 9 meses, batendo com o ritmo recente.</p>
+  <table>
+    <tr><th>Métrica</th><th class="n">Valor</th><th>Observação</th></tr>
+    <tr><td>DMIs por dia útil (mediana)</td><td class="n">41</td><td>média 51, puxada por picos</td></tr>
+    <tr><td>Fim de semana</td><td class="n">2–5</td><td>triagem praticamente nula</td></tr>
+    <tr><td>Pico recente</td><td class="n">178</td><td>24/06 — represamento, fora da curva</td></tr>
+    <tr><td>Total no período</td><td class="n">7.275</td><td>~40/dia útil em 9 meses</td></tr>
+  </table>
+  <div class="legend"><span><i style="background:var(--blue)"></i>Dia útil</span><span><i style="background:var(--gray)"></i>Fim de semana</span></div>
+  <div style="display:flex; align-items:flex-end; gap:3px; height:90px; border-bottom:1px solid var(--line); padding-top:4px;">
+    <!-- mini histograma: 24/05..25/06 -->
+    <div style="width:100%;background:var(--gray);height:2%"></div><div style="width:100%;background:var(--blue);height:36%"></div>
+    <div style="width:100%;background:var(--blue);height:19%"></div><div style="width:100%;background:var(--blue);height:23%"></div>
+    <div style="width:100%;background:var(--blue);height:22%"></div><div style="width:100%;background:var(--blue);height:22%"></div>
+    <div style="width:100%;background:var(--gray);height:3%"></div><div style="width:100%;background:var(--gray);height:2%"></div>
+    <div style="width:100%;background:var(--blue);height:16%"></div><div style="width:100%;background:var(--blue);height:21%"></div>
+    <div style="width:100%;background:var(--blue);height:16%"></div><div style="width:100%;background:var(--blue);height:20%"></div>
+    <div style="width:100%;background:var(--blue);height:38%"></div><div style="width:100%;background:var(--gray);height:2%"></div>
+    <div style="width:100%;background:var(--blue);height:28%"></div><div style="width:100%;background:var(--blue);height:23%"></div>
+    <div style="width:100%;background:var(--blue);height:11%"></div><div style="width:100%;background:var(--blue);height:39%"></div>
+    <div style="width:100%;background:var(--blue);height:23%"></div><div style="width:100%;background:var(--gray);height:3%"></div>
+    <div style="width:100%;background:var(--blue);height:28%"></div><div style="width:100%;background:var(--blue);height:18%"></div>
+    <div style="width:100%;background:var(--blue);height:32%"></div><div style="width:100%;background:var(--blue);height:25%"></div>
+    <div style="width:100%;background:var(--blue);height:27%"></div><div style="width:100%;background:var(--gray);height:2%"></div>
+    <div style="width:100%;background:var(--blue);height:54%"></div><div style="width:100%;background:var(--blue);height:24%"></div>
+    <div style="width:100%;background:var(--blue);height:100%"></div><div style="width:100%;background:var(--blue);height:22%"></div>
+  </div>
+  <div class="meta" style="text-align:center">DMIs recebidas por dia · 24/05 → 25/06/2026 (pico 178 = barra cheia)</div>
+
+  <h2>A.2 Estimativa de tempo</h2>
+  <p>O trabalho de triagem é: abrir a DMI, ver que chegou e direcionar ao setor. Com o motor de sugestão pré-preenchendo
+  setor + responsável + data, a maioria é só conferir e salvar.</p>
+  <table>
+    <tr><th>Cenário</th><th class="n">DMIs</th><th>Conta</th><th class="n">Tempo</th></tr>
+    <tr><td>Dia típico</td><td class="n">~45</td><td>45 × ~30 s</td><td class="n">22–35 min</td></tr>
+    <tr><td>Dia movimentado</td><td class="n">~70</td><td>70 × ~30 s</td><td class="n">35–50 min</td></tr>
+    <tr><td>Pico (96)</td><td class="n">96</td><td>96 × ~30 s</td><td class="n">~50 min</td></tr>
+    <tr><td>Pico extremo (178)</td><td class="n">178</td><td>178 × ~30 s</td><td class="n">~1 h 45</td></tr>
+  </table>
+  <div class="note warn"><strong>Dependência crítica:</strong> os ~30 s/DMI dependem do motor de sugestão funcionando. Em
+  triagem manual (sem pré-preenchimento), o custo dobra para ~1 min/DMI e o dia típico vai a ~1 h. A sugestão é o que sustenta a meia hora.</div>
+
+  <h2>A.3 Veredito DMI</h2>
+  <p>A recepção e direcionamento é <strong>~30 min/dia útil</strong> em rotina, com tetos de 1–2 h em dias de represamento.
+  É um trabalho de baixa carga e alta frequência — adequado a uma pessoa, com plano de cobertura para os picos. "Ver que
+  chegou" é praticamente grátis: a fila já vem pronta no painel (aba "Novas" + farol).</p>
+
+  <div class="foot"><span>DunaFlow · Capacity DMI + Publicações</span><span>Confidencial — MDR Advocacia</span><span>Pág. 3 de 6</span></div>
+</section>
+
+<!-- ============ PÁGINA 4 — DETALHE PUBLICAÇÕES: FUNIL + CUSTO ============ -->
+<section class="page brk">
+  <div class="tag">Detalhamento</div>
+  <h1 style="font-size:21px">B · Publicações — Capacity da equipe</h1>
+  <p class="sub">Fonte: Postgres de produção do Flow, tabela <code>publicacao_registros</code> · janela limpa 02–25/06/2026 (~18 dias úteis).</p>
+
+  <h2>B.1 Funil — onde a IA poupa trabalho</h2>
+  <table>
+    <tr><th>Etapa</th><th class="n">Volume</th><th class="n">%</th></tr>
+    <tr><td>Capturado do Legal One</td><td class="n">40.953</td><td class="n">100%</td></tr>
+    <tr><td>IA descarta sozinha (duplicada + obsoleta)</td><td class="n">15.721</td><td class="n">38%</td></tr>
+    <tr><td>Precisou de decisão humana</td><td class="n">25.232</td><td class="n">62%</td></tr>
+    <tr class="tot"><td>Backlog ainda pendente</td><td class="n">802</td><td class="n">2%</td></tr>
+  </table>
+  <div class="note ok">38% do funil morre antes de um humano olhar. Esse é o multiplicador real de produtividade da ferramenta:
+  o operador só trata os 62% relevantes, e o backlog estável em 802 mostra que a equipe acompanha a demanda.</div>
+
+  <h2>B.2 Custo real por decisão (cronometrado)</h2>
+  <p>Medido pelo intervalo entre decisões consecutivas de cada operador (descontando cliques em lote e pausas):</p>
+  <table>
+    <tr><th>Tipo de decisão</th><th class="n">% do volume</th><th class="n">Custo mediano</th><th class="n">% do tempo</th></tr>
+    <tr><td>Agendar (cria tarefa, escolhe responsável)</td><td class="n">62%</td><td class="n">~45 s</td><td class="n">82%</td></tr>
+    <tr><td>Ignorar (dar ciência / sem providência)</td><td class="n">38%</td><td class="n">~30 s</td><td class="n">18%</td></tr>
+    <tr class="tot"><td>Efetivo team-wide (inclui lote)</td><td class="n">100%</td><td class="n">~64 s</td><td class="n">~12 h/dia</td></tr>
+  </table>
+  <p class="sub">Metade das decisões sai em menos de 30 s. A pré-classificação da IA e a multi-seleção em lote (33–38% das
+  decisões dos operadores mais rápidos) comprimem o custo. <strong>Agendar é só 62% do volume mas consome 82% do tempo</strong>
+  — é onde o trabalho mora.</p>
+
+  <h2>B.3 Demanda × vazão</h2>
+  <div class="kpis" style="grid-template-columns:repeat(3,1fr)">
+    <div class="kpi"><div class="l">Demanda humana</div><div class="v">~570/dia</div><div class="h">picos 1.300–1.540</div></div>
+    <div class="kpi"><div class="l">Vazão da equipe (5 pessoas)</div><div class="v">~665/dia</div><div class="h">margem +17%</div></div>
+    <div class="kpi"><div class="l">Trabalho hands-on/dia</div><div class="v">~12 h</div><div class="h">~662 decisões</div></div>
+  </div>
+  <p>A equipe está ~17% acima da demanda média — ganhando, não afogando. O backlog de 802 é absorvido nos dias de pico e
+  recuperado em seguida.</p>
+
+  <div class="foot"><span>DunaFlow · Capacity DMI + Publicações</span><span>Confidencial — MDR Advocacia</span><span>Pág. 4 de 6</span></div>
+</section>
+
+<!-- ============ PÁGINA 5 — DETALHE PUBLICAÇÕES: PESSOAS + POOL ============ -->
+<section class="page brk">
+  <div class="tag">Detalhamento</div>
+  <h2 style="margin-top:0">B.4 Produção individual e velocidade</h2>
+  <table>
+    <tr><th>Operador</th><th class="n">Decisões/dia</th><th class="n">Velocidade</th><th>Pool (escritório)</th><th>Diagnóstico</th></tr>
+    <tr><td>Vinícius</td><td class="n">212</td><td class="n">47 s</td><td>BB / Réu</td><td>firehose, quase saturado</td></tr>
+    <tr><td>Rayana</td><td class="n">145</td><td class="n">37 s</td><td>universo Ativo/Autor</td><td>quase solo, bem usada</td></tr>
+    <tr><td>Marcos</td><td class="n">142</td><td class="n">36 s</td><td>flutua entre 3 Réus</td><td>coringa rápido</td></tr>
+    <tr><td>Camilla</td><td class="n">71</td><td class="n">31 s ⚡</td><td>Ativos / Réu</td><td>rápida + pool pequeno = ociosa</td></tr>
+    <tr><td>Anderson</td><td class="n">60</td><td class="n">160 s 🐢</td><td>Banco Master / Réu</td><td>lento — gargalo real</td></tr>
+  </table>
+  <div class="note"><strong>O volume/dia engana:</strong> ele reflete em grande parte o tamanho do pool, não a capacidade da
+  pessoa. A Camilla é a mais rápida e produz pouco; o Vinícius senta no maior pool e produz muito.</div>
+
+  <h2>B.5 Pools por escritório — a desigualdade</h2>
+  <p class="sub">Cada operador "possui" um escritório. Os pools (publicações/dia que precisam de humano) são muito desiguais:</p>
+  <div class="legend"><span><i style="background:var(--blue)"></i>Passivo (Réu)</span><span><i style="background:var(--teal)"></i>Ativo (Autor)</span></div>
+  <div class="barrow"><div class="lab">BB / Réu</div><div class="bar"><i style="width:100%;background:var(--blue)"></i></div><div class="val">326</div></div>
+  <div class="barrow"><div class="lab">Banco Master / Réu</div><div class="bar"><i style="width:36%;background:var(--blue)"></i></div><div class="val">118</div></div>
+  <div class="barrow"><div class="lab">BB / Autor</div><div class="bar"><i style="width:35%;background:var(--teal)"></i></div><div class="val">115</div></div>
+  <div class="barrow"><div class="lab">Ativos / Réu (Camilla)</div><div class="bar"><i style="width:17%;background:var(--blue)"></i></div><div class="val">55</div></div>
+  <div class="barrow"><div class="lab">Multi-escritório ativo</div><div class="bar"><i style="width:14%;background:var(--teal)"></i></div><div class="val">46</div></div>
+  <div class="barrow"><div class="lab">BB / Trabalhista</div><div class="bar"><i style="width:2%;background:var(--blue)"></i></div><div class="val">5</div></div>
+  <p class="sub" style="margin-top:8px">O firehose (BB/Réu, ~326/dia) é 6× o pool da Camilla (~55/dia). É essa amarração por
+  escritório que deixa gente rápida ociosa enquanto um pool concentra a fila.</p>
+
+  <h2>B.6 Capacidade ociosa (cronometrada, horário de Brasília)</h2>
+  <table>
+    <tr><th>Operador</th><th class="n">Janela logada</th><th class="n">Hands-on</th><th class="n">Utilização</th><th class="n">Termina</th><th class="n">Dias até 15h</th></tr>
+    <tr><td>Vinícius</td><td class="n">8,5 h</td><td class="n">3,2 h</td><td class="n">37%</td><td class="n">17:47</td><td class="n">4/23</td></tr>
+    <tr><td>Rayana</td><td class="n">5,3 h</td><td class="n">2,6 h</td><td class="n">49%</td><td class="n">15:53</td><td class="n">5/18</td></tr>
+    <tr><td>Anderson</td><td class="n">6,8 h</td><td class="n">1,7 h</td><td class="n">25%</td><td class="n">16:29</td><td class="n">4/18</td></tr>
+    <tr><td>Marcos</td><td class="n">3,5 h</td><td class="n">1,6 h</td><td class="n">46%</td><td class="n">14:03</td><td class="n">7/14</td></tr>
+    <tr><td>Camilla</td><td class="n">2,9 h</td><td class="n">1,0 h</td><td class="n">35%</td><td class="n">12:11</td><td class="n">12/14</td></tr>
+  </table>
+  <p class="sub">A Camilla termina o pool por volta do meio-dia em quase todos os dias. O Marcos fica livre às 14h em metade
+  deles. O Anderson fica logado o dia todo, mas com 25% de utilização e ritmo lento — o problema dele é pace, não pool.</p>
+
+  <div class="foot"><span>DunaFlow · Capacity DMI + Publicações</span><span>Confidencial — MDR Advocacia</span><span>Pág. 5 de 6</span></div>
+</section>
+
+<!-- ============ PÁGINA 6 — RECOMENDAÇÃO + MÉTODO ============ -->
+<section class="page">
+  <div class="tag">Detalhamento</div>
+  <h2 style="margin-top:0">B.7 Recomendação detalhada — Publicações</h2>
+  <p>A equipe <strong>pode operar com 4 pessoas no dia normal</strong>. O caminho não é demitir por volume — é destravar a
+  folga que já existe:</p>
+  <h3>Ação 1 — Despoolar a fila <span class="pill blue">prioridade</span></h3>
+  <p style="margin:0 0 8px">Substituir "cada um no seu escritório" por uma fila única com atribuição por capacidade. A
+  capacidade ociosa da Camilla (tarde inteira) e a tarde livre do Marcos passam a escoar para o firehose do BB/Réu, que é
+  onde a fila realmente aperta. Só isso elimina a necessidade de uma cabeça extra no pool grande.</p>
+  <h3>Ação 2 — Subir o ritmo do Anderson <span class="pill amber">coaching</span></h3>
+  <p style="margin:0 0 8px">160 s/decisão contra ~45 s do Marcos no mesmo escritório (Master/Réu) — não é pool difícil, é
+  ritmo. No ritmo normal, o Anderson cobre sozinho os ~118/dia do Master/Réu e libera o Marcos por inteiro. Se não evoluir,
+  é o candidato natural à realocação.</p>
+  <h3>Não fazer <span class="pill gray">evitar erro</span></h3>
+  <p style="margin:0 0 8px">Não cortar a Camilla por "volume baixo". Ela é a operadora mais eficiente (31 s/decisão) e
+  sustenta a produtividade da equipe; o volume baixo é consequência do pool pequeno. Ela precisa de <strong>mais pool, não de
+  menos gente ao lado</strong>. A 5ª cadeira deixa de ser rotina e vira buffer dos dias de pico (896–1.300+).</p>
+
+  <div class="verdict">
+    <h3>Convergência de 4 métodos → 4 pessoas</h3>
+    <table style="margin:4px 0 0">
+      <tr><th>Método</th><th>Resultado</th></tr>
+      <tr><td>Contagem de cabeças (vazão ÷ demanda)</td><td>~4 no ritmo provado</td></tr>
+      <tr><td>Estimativa de tempo (volume × custo)</td><td>~3,5–4 pessoas-dia</td></tr>
+      <tr><td>Relógio observado (custo real ~64 s)</td><td>~12 h de trabalho = ~4</td></tr>
+      <tr><td>Capacidade ociosa cronometrada</td><td>folga de 2–3 pessoas</td></tr>
+    </table>
+  </div>
+
+  <h2>C · Metodologia e ressalvas</h2>
+  <ul>
+    <li><strong>Janela limpa (02–25/06):</strong> a autoria do "ignorar" só passou a ser gravada em 02/06 (migration pub003).
+      Toda a análise de Publicações usa essa janela, onde agendar e ignorar têm timestamp e autoria completos.</li>
+    <li><strong>Custo por decisão:</strong> medido pelo intervalo entre decisões consecutivas (<code>LAG</code> sobre o
+      timestamp), descartando gaps &lt; 5 s (lote) e &gt; 10 min (pausa). É o número observado, não estimado.</li>
+    <li><strong>Hands-on subestima o trabalho real:</strong> não captura a publicação difícil que leva &gt; 10 min nem leitura
+      que não termina em decisão. Por isso a recomendação é 4 e não 3, apesar de o volume puro sugerir 3.</li>
+    <li><strong>Qualidade de dado:</strong> "Marília de" e "Marília de Melo Oliveira" são a mesma pessoa (nome gravado
+      truncado em alguns dias) — vale corrigir o snapshot de <code>scheduled_by_name</code>.</li>
+    <li><strong>DMI:</strong> volume medido no Postgres da fonte (RPA); o custo por DMI (~30 s) é estimado com base no fluxo
+      com sugestão pré-preenchida, não cronometrado como em Publicações.</li>
+  </ul>
+
+  <div class="foot"><span>DunaFlow · Capacity DMI + Publicações</span><span>Confidencial — MDR Advocacia</span><span>Pág. 6 de 6</span></div>
+</section>
+
+</body>
+</html>

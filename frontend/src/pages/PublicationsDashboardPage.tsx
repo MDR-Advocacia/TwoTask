@@ -7,6 +7,7 @@ import {
   ArrowRight,
   CheckCircle2,
   Clock,
+  FileBarChart2,
   FileText,
   Inbox,
   ListChecks,
@@ -33,7 +34,18 @@ import { useToast } from '@/hooks/use-toast';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { apiFetch } from '@/lib/api-client';
+import { downloadPublicationsPerformanceReport } from '@/services/api';
 
 // ──────────────────────────────────────────────────────────────
 // Types
@@ -327,7 +339,8 @@ const FunnelStep = ({
 const PublicationsDashboardPage = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { canUsePublications, user } = useAuth();
+  const { canUsePublications, user, isAdmin } = useAuth();
+  const [reportOpen, setReportOpen] = useState(false);
 
   // Granularidade do grafico de velocidade (Bloco 2): 'day' (N dias) ou 'hour' (24h)
   const [chartGranularity, setChartGranularity] = useState<'day' | 'hour'>('day');
@@ -461,15 +474,32 @@ const PublicationsDashboardPage = () => {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div>
-        <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
-          <Activity className="h-6 w-6 text-[hsl(var(--dunatech-blue))]" />
-          Dashboard de Publicações
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          Visão operacional das publicações — últimos {windowDays} dias.
-        </p>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
+            <Activity className="h-6 w-6 text-[hsl(var(--dunatech-blue))]" />
+            Dashboard de Publicações
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Visão operacional das publicações — últimos {windowDays} dias.
+          </p>
+        </div>
+        {isAdmin && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-2"
+            onClick={() => setReportOpen(true)}
+          >
+            <FileBarChart2 className="h-4 w-4" />
+            Relatório Crítico de Performance
+          </Button>
+        )}
       </div>
+
+      {isAdmin && (
+        <PerformanceReportDialog open={reportOpen} onOpenChange={setReportOpen} />
+      )}
 
       {canUsePublications && (
         <>
@@ -1041,3 +1071,116 @@ const PublicationsDashboardPage = () => {
 };
 
 export default PublicationsDashboardPage;
+
+// ──────────────────────────────────────────────────────────────
+// Relatório Crítico de Performance (admin-only) — modal com período
+// (calendário) e período mínimo de 5 dias. Baixa o PDF gerado no servidor.
+// ──────────────────────────────────────────────────────────────
+
+interface PerformanceReportDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}
+
+function PerformanceReportDialog({ open, onOpenChange }: PerformanceReportDialogProps) {
+  const { toast } = useToast();
+  const today = new Date().toISOString().slice(0, 10);
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState(today);
+  const [loading, setLoading] = useState(false);
+
+  const days = useMemo(() => {
+    if (!dateFrom || !dateTo) return 0;
+    const a = new Date(`${dateFrom}T00:00:00`).getTime();
+    const b = new Date(`${dateTo}T00:00:00`).getTime();
+    if (Number.isNaN(a) || Number.isNaN(b) || b < a) return 0;
+    return Math.floor((b - a) / 86_400_000) + 1;
+  }, [dateFrom, dateTo]);
+
+  const valid = Boolean(dateFrom) && Boolean(dateTo) && days >= 5;
+
+  const handleGenerate = async () => {
+    if (!valid || loading) return;
+    setLoading(true);
+    try {
+      await downloadPublicationsPerformanceReport(dateFrom, dateTo);
+      toast({
+        title: 'Relatório gerado',
+        description: 'O download do PDF foi iniciado.',
+      });
+      onOpenChange(false);
+    } catch (e) {
+      toast({
+        title: 'Falha ao gerar relatório',
+        description: e instanceof Error ? e.message : 'Erro inesperado ao gerar o relatório.',
+        variant: 'destructive',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !loading && onOpenChange(v)}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <FileBarChart2 className="h-5 w-5 text-[hsl(var(--dunatech-blue))]" />
+            Relatório Crítico de Performance
+          </DialogTitle>
+          <DialogDescription>
+            Compila as métricas de capacity da equipe de tratamento de publicações no período
+            escolhido e gera um PDF executivo. Período mínimo de 5 dias.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid grid-cols-2 gap-3 py-1">
+          <div className="space-y-1.5">
+            <Label htmlFor="perf-from">Início</Label>
+            <Input
+              id="perf-from"
+              type="date"
+              value={dateFrom}
+              max={dateTo || today}
+              onChange={(e) => setDateFrom(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="perf-to">Fim</Label>
+            <Input
+              id="perf-to"
+              type="date"
+              value={dateTo}
+              min={dateFrom || undefined}
+              max={today}
+              onChange={(e) => setDateTo(e.target.value)}
+            />
+          </div>
+        </div>
+
+        {dateFrom && dateTo && days > 0 && days < 5 && (
+          <p className="text-xs text-destructive">
+            O período mínimo é de 5 dias (selecionado: {days}).
+          </p>
+        )}
+        {valid && (
+          <p className="text-xs text-muted-foreground">{days} dias selecionados.</p>
+        )}
+
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={loading}>
+            Cancelar
+          </Button>
+          <Button onClick={handleGenerate} disabled={!valid || loading} className="gap-2">
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <FileBarChart2 className="h-4 w-4" />
+            )}
+            {loading ? 'Gerando…' : 'Gerar PDF'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

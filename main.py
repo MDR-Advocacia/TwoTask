@@ -32,6 +32,7 @@ from app.api.v1.endpoints import (
     prazos_iniciais_scheduling,
     publication_treatment,
     publications,
+    publications_performance,
     squads,
     task_templates,
     tasks,
@@ -385,6 +386,8 @@ app.include_router(classificador.router, prefix="/api/v1", tags=["Classificador 
 app.include_router(classificador.intake_router, prefix="/api/v1")
 app.include_router(publications.router, prefix="/api/v1/publications", tags=["Publicações"], dependencies=protected_dependencies)
 app.include_router(publication_treatment.router, prefix="/api/v1/publications", tags=["Publicações"], dependencies=protected_dependencies)
+# Relatório Crítico de Performance (admin-only; gate dentro do endpoint via require_admin).
+app.include_router(publications_performance.router, prefix="/api/v1/publications", tags=["Publicações"], dependencies=protected_dependencies)
 # Citações BM — monitoramento de citação via DataJud (CNJ). Seção dentro de
 # Tratamento de Publicações. JWT + permissão publications.
 app.include_router(citacoes_bm.router, prefix="/api/v1/publications", tags=["Citações BM"], dependencies=protected_dependencies)

@@ -2720,6 +2720,35 @@ export async function downloadClassificadorRelatorio(
 }
 
 
+/**
+ * Relatório Crítico de Performance (Publicações) — admin-only. Baixa o PDF
+ * gerado server-side para o período [dateFrom, dateTo] (datas ISO YYYY-MM-DD).
+ * O backend exige período mínimo de 5 dias.
+ */
+export async function downloadPublicationsPerformanceReport(
+  dateFrom: string,
+  dateTo: string,
+): Promise<void> {
+  const url = `/api/v1/publications/performance-report.pdf?date_from=${encodeURIComponent(
+    dateFrom,
+  )}&date_to=${encodeURIComponent(dateTo)}`;
+  const res = await apiFetch(url);
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || `Erro ao gerar relatório (HTTP ${res.status})`);
+  }
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = `relatorio-performance-publicacoes-${dateFrom}_${dateTo}.pdf`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
+
 // ─── Varredura de andamentos (modulo incidental) ─────────────────────
 
 export interface VarreduraOfficeOption {
