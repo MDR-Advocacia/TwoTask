@@ -996,7 +996,7 @@ export default function OnerequestPage() {
 
       {/* Modal de tratamento */}
       <Dialog open={!!selected} onOpenChange={(o) => !o && closeModal()}>
-        <DialogContent className="max-h-[92vh] max-w-3xl overflow-y-auto">
+        <DialogContent className="max-h-[92vh] max-w-3xl overflow-y-auto overflow-x-hidden">
           {selected && (
             <>
               <DialogHeader>
@@ -1012,8 +1012,11 @@ export default function OnerequestPage() {
               </div>
 
               {selected.texto_dmi && (
-                <div className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 text-sm leading-relaxed">
-                  {selected.texto_dmi}
+                <div>
+                  <Label className="text-xs text-muted-foreground">Conteúdo da DMI</Label>
+                  <div className="mt-1 max-h-[55vh] min-h-[8rem] overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted p-3 text-sm leading-relaxed">
+                    {selected.texto_dmi}
+                  </div>
                 </div>
               )}
 
@@ -1051,9 +1054,9 @@ export default function OnerequestPage() {
                       ) : (
                         <ul className="mt-1 space-y-1">
                           {l1.pendentes.map((t) => (
-                            <li key={t.task_id} className="flex items-start gap-2">
+                            <li key={t.task_id} className="flex min-w-0 items-start gap-2">
                               <Badge variant="secondary" className="shrink-0">{t.status_label}</Badge>
-                              <a href={t.l1_url ?? "#"} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                              <a href={t.l1_url ?? "#"} target="_blank" rel="noopener noreferrer" className="min-w-0 break-words text-primary hover:underline">
                                 {t.description || `Tarefa ${t.task_id}`}
                               </a>
                             </li>
@@ -1066,7 +1069,7 @@ export default function OnerequestPage() {
                         <span className="font-medium text-emerald-700">Concluídas (recentes)</span>
                         <ul className="mt-1 space-y-1 text-muted-foreground">
                           {l1.concluidas.slice(0, 5).map((t) => (
-                            <li key={t.task_id} className="truncate">
+                            <li key={t.task_id} className="break-words">
                               {t.status_label} · {t.description || `Tarefa ${t.task_id}`}
                             </li>
                           ))}
@@ -1170,7 +1173,7 @@ export default function OnerequestPage() {
 
       {/* Modal de Acompanhamento / Auditoria (DMIs já agendadas) */}
       <Dialog open={!!auditSel} onOpenChange={(o) => !o && setAuditSel(null)}>
-        <DialogContent className="max-h-[92vh] max-w-3xl overflow-y-auto">
+        <DialogContent className="max-h-[92vh] max-w-3xl overflow-y-auto overflow-x-hidden">
           {auditSel && (
             <>
               <DialogHeader>
@@ -1314,7 +1317,7 @@ export default function OnerequestPage() {
 
       {/* Modal de Mensagens de Alerta (vence hoje, por responsável) */}
       <Dialog open={alertasOpen} onOpenChange={setAlertasOpen}>
-        <DialogContent className="max-h-[92vh] max-w-2xl overflow-y-auto">
+        <DialogContent className="max-h-[92vh] max-w-2xl overflow-y-auto overflow-x-hidden">
           <DialogHeader>
             <DialogTitle>Mensagens de alerta — vence hoje</DialogTitle>
             <DialogDescription>
