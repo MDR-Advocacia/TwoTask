@@ -15,10 +15,22 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date, datetime
+from decimal import Decimal
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _json_default(o):
+    """Serializa tipos vindos do Postgres (Decimal de round/numeric, datas)."""
+    if isinstance(o, Decimal):
+        f = float(o)
+        return int(f) if f.is_integer() else f
+    if isinstance(o, (date, datetime)):
+        return o.isoformat()
+    return str(o)
 
 _SECOES = (
     "sumario_executivo",
@@ -76,7 +88,7 @@ def build_narrative(metrics: dict) -> dict:
             system=_SYSTEM,
             messages=[{
                 "role": "user",
-                "content": _INSTRUCAO + json.dumps(metrics, ensure_ascii=False),
+                "content": _INSTRUCAO + json.dumps(metrics, ensure_ascii=False, default=_json_default),
             }],
         )
         raw = "".join(block.text for block in resp.content if getattr(block, "type", None) == "text")
