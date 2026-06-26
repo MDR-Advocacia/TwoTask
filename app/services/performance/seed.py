@@ -111,10 +111,10 @@ def seed_pessoas(db) -> dict:
     return {p.nome_norm: p.id for p in db.query(PerfPessoa).all()}
 
 
-def seed_tarefas(db, name_to_id: dict) -> int:
+def seed_tarefas(db, name_to_id: dict, agenda_path: str = AGENDA_XLSX) -> int:
     db.query(PerfTarefa).delete()
     db.commit()
-    wb = openpyxl.load_workbook(AGENDA_XLSX, read_only=True, data_only=True)
+    wb = openpyxl.load_workbook(agenda_path, read_only=True, data_only=True)
     ws = wb.active
     rows = ws.iter_rows(values_only=True)
     next(rows)

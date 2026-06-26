@@ -165,3 +165,30 @@ def baixar_relatorio(
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="relatorio-minha-equipe-{relatorio_id}.pdf"'},
     )
+
+
+# ── Ingestão dos dados (download do relatório do L1) ──────────────────────
+@router.get("/sync", summary="Último sync da ingestão (download do relatório do L1)", dependencies=[_admin])
+def sync_status(db: Session = Depends(get_db)):
+    from app.services.performance.report_ingest import get_last_sync, ja_sincronizou_hoje
+
+    return {"last_sync": get_last_sync(), "ja_sincronizou_hoje": ja_sincronizou_hoje()}
+
+
+def _run_sync_bg() -> None:
+    from app.db.session import SessionLocal
+    from app.services.performance.report_ingest import baixar_e_ingerir
+
+    db = SessionLocal()
+    try:
+        baixar_e_ingerir(db, force=True)
+    except Exception:  # noqa: BLE001
+        logger.exception("Minha Equipe: falha na ingestão manual.")
+    finally:
+        db.close()
+
+
+@router.post("/sync", summary="Dispara a ingestão agora (baixa o relatório mais recente do L1)", dependencies=[_admin])
+def sync_now(background: BackgroundTasks):
+    background.add_task(_run_sync_bg)
+    return {"ok": True, "mensagem": "Ingestão disparada — baixando o relatório do L1 e atualizando os dados."}

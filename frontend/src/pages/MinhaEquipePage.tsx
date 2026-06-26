@@ -15,6 +15,7 @@ import {
   CalendarClock,
   CheckCircle2,
   Clock,
+  Database,
   FileText,
   Gauge,
   type LucideIcon,
@@ -64,9 +65,12 @@ import {
   type Categoria,
   type EquipeResponse,
   type PessoaDetalhe,
+  type SyncStatus,
   criarRelatorio,
   getCargos,
   getEquipe,
+  getSyncStatus,
+  triggerSync,
 } from "@/services/performance";
 
 const PERIODOS = [7, 14, 30, 60, 90, 180];
@@ -175,10 +179,48 @@ export default function MinhaEquipePage() {
   const [buscaOpen, setBuscaOpen] = useState(false);
   const [gerandoRel, setGerandoRel] = useState(false);
   const [relReloadKey, setRelReloadKey] = useState(0);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [syncing, setSyncing] = useState(false);
 
   useEffect(() => {
     getCargos().then(setCargos).catch(() => undefined);
+    getSyncStatus().then(setSyncStatus).catch(() => undefined);
   }, []);
+
+  const handleSyncNow = async () => {
+    setSyncing(true);
+    const prev = syncStatus?.last_sync?.em ?? null;
+    try {
+      await triggerSync();
+      toast({
+        title: "Atualização disparada",
+        description: "Baixando o relatório do L1 e atualizando os dados — roda no servidor (~1–2 min).",
+      });
+      let tries = 0;
+      const poll = setInterval(async () => {
+        tries += 1;
+        try {
+          const st = await getSyncStatus();
+          setSyncStatus(st);
+          if (st.last_sync?.em && st.last_sync.em !== prev) {
+            clearInterval(poll);
+            setSyncing(false);
+            toast({ title: "Dados atualizados!", description: `${st.last_sync.tarefas} tarefas · relatório de ${st.last_sync.data}.` });
+            load();
+          }
+        } catch {
+          /* ignore */
+        }
+        if (tries > 24) {
+          clearInterval(poll);
+          setSyncing(false);
+        }
+      }, 15000);
+    } catch (e) {
+      toast({ title: "Erro ao disparar atualização", description: String((e as Error).message), variant: "destructive" });
+      setSyncing(false);
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -236,6 +278,27 @@ export default function MinhaEquipePage() {
             </span>{" "}
             de cada métrica pra entender o que ela significa.
           </p>
+          <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <Database className="h-3.5 w-3.5" />
+            {syncStatus?.last_sync ? (
+              <span>
+                Dados de <span className="font-medium text-foreground">{syncStatus.last_sync.data}</span> ·{" "}
+                {syncStatus.last_sync.tarefas.toLocaleString("pt-BR")} tarefas
+              </span>
+            ) : (
+              <span>Sincronização automática diária (9h)</span>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 gap-1 px-2 text-xs"
+              onClick={handleSyncNow}
+              disabled={syncing}
+            >
+              <RefreshCw className={`h-3 w-3 ${syncing ? "animate-spin" : ""}`} />
+              {syncing ? "Atualizando…" : "Atualizar agora"}
+            </Button>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" className="gap-2" onClick={() => setBuscaOpen(true)}>

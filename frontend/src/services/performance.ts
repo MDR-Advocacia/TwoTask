@@ -263,3 +263,24 @@ export async function listarRelatorios(): Promise<RelatorioItem[]> {
 export async function downloadRelatorioById(id: number): Promise<void> {
   return fetchPdfAndDownload(`${BASE}/relatorios/${id}/download`, `relatorio-minha-equipe-${id}.pdf`);
 }
+
+// ── Ingestão dos dados (download do relatório do L1) ──
+export interface SyncStatus {
+  last_sync: {
+    ok: boolean;
+    tarefas: number;
+    data: string;
+    relatorio: string;
+    em: string;
+    bytes: number;
+  } | null;
+  ja_sincronizou_hoje: boolean;
+}
+
+export async function getSyncStatus(): Promise<SyncStatus> {
+  return json(await apiFetch(`${BASE}/sync`));
+}
+
+export async function triggerSync(): Promise<{ ok: boolean; mensagem: string }> {
+  return json(await apiFetch(`${BASE}/sync`, { method: "POST" }));
+}

@@ -69,15 +69,114 @@ participante é um contato (usuário) com um ou mais papéis.
 
 ---
 
-## 3. Autenticação e base URL
+## 3. Login e autenticação
 
-- **Base URL:** `https://api.thomsonreuters.com/legalone/v1/api/rest`
-- **Auth:** OAuth2 (Bearer token). No projeto, o `LegalOneApiClient` renova o
-  token automaticamente (`Renovando token OAuth...`) e injeta o header em todas
-  as chamadas. **Use sempre o client**, não monte requisição crua.
-- **Rate limit:** o L1 responde **HTTP 429** sob carga. O método interno
-  `_request_with_retry` já faz backoff exponencial (8 tentativas). Em lote,
-  conte com ~0,3–0,5 tarefa/s de throughput efetivo por causa disso.
+Existem **dois mecanismos de login distintos** no Legal One, para dois mundos
+diferentes. Para reatribuir participantes via API você usa o **(A) OAuth2**. O
+**(B) cookie de sessão web** só entra em cena se você for tratar tarefas de
+Workflow via RPA/UI (§6).
+
+### 3.A — OAuth2 Bearer (API REST) — *este é o login da reatribuição*
+
+- **Base URL da API:** `https://api.thomsonreuters.com/legalone/v1/api/rest`
+- **Endpoint de token:**
+  `POST https://api.thomsonreuters.com/legalone/oauth?grant_type=client_credentials`
+- **Tipo:** OAuth2 *client_credentials* (machine-to-machine, sem usuário).
+- **Credenciais:** enviadas como **HTTP Basic Auth** (`client_id` : `client_secret`).
+- **Resposta:** `{ "access_token": "...", "expires_in": 1800 }` (token válido
+  por ~30 min).
+- **Uso:** cada request da API leva o header `Authorization: Bearer <access_token>`.
+
+**Variáveis de ambiente** (lidas via `settings`, com fallback pra `os.environ`):
+
+| Env var | settings | Exemplo |
+|---|---|---|
+| `LEGAL_ONE_BASE_URL` | `legal_one_base_url` | `https://api.thomsonreuters.com/legalone/v1/api/rest` |
+| `LEGAL_ONE_CLIENT_ID` | `legal_one_client_id` | *(secreto — painel Coolify)* |
+| `LEGAL_ONE_CLIENT_SECRET` | `legal_one_client_secret` | *(secreto — painel Coolify)* |
+
+> No ambiente da casa essas env vars já estão setadas no Coolify; localmente o
+> `LegalOneApiClient()` lê do `settings`/ambiente. Se faltar qualquer uma, o
+> construtor levanta `ValueError`.
+
+**Como o client gerencia o token (você não precisa fazer manualmente):**
+
+1. **Cache de token compartilhado.** O token vive na classe interna `_Auth`
+   (nível de classe, compartilhado entre todas as instâncias do client no
+   processo), protegido por `threading.Lock`.
+2. **Renovação automática com folga (`LEEWAY = 120s`).** Antes de cada chamada,
+   `_refresh_token_if_needed()` renova o token se faltar menos de 2 min pra
+   expirar. Log: `Renovando token OAuth (force=...)` → `Novo token obtido.
+   Valido ate: <UTC>`.
+3. **Auto-recuperação de 401.** Se uma chamada volta `401`, o client força um
+   refresh (`force=True`) e **repete a chamada uma vez** automaticamente
+   (`_authenticated_request`).
+4. **Erro de credencial.** `401/403` na renovação do token vira
+   `LegalOneAuthenticationError` ("Verifique LEGAL_ONE_CLIENT_ID e
+   LEGAL_ONE_CLIENT_SECRET").
+
+**Resumo prático:** basta instanciar `LegalOneApiClient()` e chamar os métodos
+/ `_request_with_retry`. Login, refresh, header e retry de 401 são
+transparentes. **Nunca monte a request crua nem gerencie token na mão.**
+
+```python
+from app.services.legal_one_client import LegalOneApiClient
+client = LegalOneApiClient()           # login é lazy: token só é obtido na 1ª chamada
+client.get_task_by_id(368544)          # dispara refresh do token se necessário
+```
+
+### Rate limit e retry (vale pra toda a API)
+
+- O L1 permite ~**90 req/min** (~1,5 req/s). O client tem um **rate limiter
+  global** (token bucket, **1,2 req/s**, burst 5) compartilhado entre threads —
+  `_GlobalRateLimiter`. Ou seja, mesmo paralelizando, o throughput é limitado de
+  propósito pra não tomar 429.
+- `_request_with_retry` faz **8 tentativas** com backoff exponencial + jitter
+  para `429/500/502/503/504` e erros de conexão. No 429 o backoff é mais longo
+  (`3**attempt`, teto 60s) pra evitar *thundering herd*.
+- **Throughput efetivo em lote:** ~**0,3–0,5 tarefa/s** na prática (cada
+  reatribuição faz 1 GET + 1 PATCH, e o L1 ainda joga 429 esporádico). Planeje
+  lotes grandes como processos de fundo (ver §9).
+
+### 3.B — Cookie de sessão web `.ASPXAUTH` (Playwright/OnePass) — *só p/ RPA*
+
+Necessário **apenas** se você for mexer em tarefas de Workflow (que a API
+bloqueia, §6) automatizando a UI/endpoints web do Legal One — é o mesmo login
+que o fluxo de **cancelamento via RPA** usa. **Não é usado pela reatribuição via
+API.** Documentado aqui para o agente entender o caminho alternativo.
+
+- **O que é:** login interativo no portal web (`mdradvocacia.novajus.com.br` /
+  Thomson Reuters **OnePass** SSO) feito por um runner **Playwright (Node)**
+  (`app/runners/legalone/cancel-legacy-task.js --login-only`). O produto final é
+  o cookie **`.ASPXAUTH`** (+ companhia), que autentica chamadas aos endpoints
+  web (ex.: `ModalEnvolvimentoEmLote`).
+- **Credenciais (env):**
+
+| Env var | settings | Papel |
+|---|---|---|
+| `LEGAL_ONE_WEB_USERNAME` | `legal_one_web_username` | usuário do portal |
+| `LEGAL_ONE_WEB_PASSWORD` | `legal_one_web_password` | senha |
+| `LEGAL_ONE_WEB_KEY_LABEL` | `legal_one_web_key_label` | rótulo da "chave de registro" (seleção de tenant no OnePass) |
+
+- **Cache de cookie + lock entre workers.** O cookie é persistido em
+  `/app/data/legacy_task_http_session.json` (volume compartilhado pelos 4
+  workers Uvicorn) com um `.lock` (`filelock`) ao lado. **Por quê:** o L1
+  **rotaciona a sessão a cada novo login** — se os 4 workers logarem em
+  paralelo, 3 ficam com cookie morto (403 em massa). O filelock serializa: o
+  primeiro loga, os outros esperam e reusam o cookie do arquivo (padrão
+  double-checked locking).
+- **TTL:** `prazos_iniciais_legacy_task_session_ttl_minutes` (default **30 min**).
+  Expirou → próximo uso re-loga via Playwright (custa ~1 min: subprocess Node +
+  SSO). `403` numa chamada web também dispara invalidação + relogin.
+- **Implementação de referência:**
+  `app/services/prazos_iniciais/legacy_task_http_cancellation_service.py`
+  (métodos `_ensure_session`, `_login_via_node`, `_read/_write_session_file`).
+
+> **Para reatribuir responsável/executante em tarefa de Workflow:** seria
+> preciso estender o runner Playwright para dirigir a UI de "Envolvidos" da
+> tarefa (analogamente ao que o `cancel-legacy-task.js` faz no modal de
+> cancelamento). Reusa este mesmo login `.ASPXAUTH`. É o caminho lento/frágil —
+> priorize a API e só caia aqui para as `workflow_locked`.
 
 ---
 

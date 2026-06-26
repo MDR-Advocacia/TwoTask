@@ -339,6 +339,15 @@ async def lifespan(_: FastAPI):
             "Falha ao registrar job de verificação de processo no L1 do OneRequest no startup."
         )
 
+    # Minha Equipe: ingestão diária via download do relatório "Agenda Analytics"
+    # do L1 (9h-12h30 BRT, 30/30min até o relatório do dia aparecer).
+    try:
+        from app.services.performance.ingest_worker import register_perf_ingest_job
+
+        register_perf_ingest_job(scheduler)
+    except Exception:
+        logger.exception("Falha ao registrar job de ingestão do Minha Equipe no startup.")
+
     try:
         yield
     finally:
