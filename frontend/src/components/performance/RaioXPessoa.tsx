@@ -58,6 +58,14 @@ const fmtCad = (s: number | null): string =>
   s == null ? "—" : s < 60 ? `${s}s` : s % 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 60)}m`;
 const pct = (v: number | null): string => (v == null ? "—" : `${v}%`);
 const diasFmt = (v: number | null): string => (v == null ? "—" : `${v}d`);
+const pad2 = (n: number): string => String(n).padStart(2, "0");
+const fmtHora = (h: number | null): string =>
+  h == null ? "—" : `${pad2(Math.floor(h))}:${pad2(Math.round((h % 1) * 60))}`;
+const fmtJanela = (a: number | null, b: number | null): string | null => {
+  if (a == null || b == null || b <= a) return null;
+  const m = Math.round((b - a) * 60);
+  return `${Math.floor(m / 60)}h${pad2(m % 60)}`;
+};
 
 function prazoLabel(dias: number | null): { text: string; cls: string } {
   if (dias == null) return { text: "sem prazo", cls: "text-muted-foreground" };
@@ -87,6 +95,8 @@ const H = {
   cadencia: "Tempo mediano entre uma conclusão e a próxima no mesmo dia (>30 min = pausa). Custo de tempo por tarefa. Confiável sobretudo no operacional.",
   ocio: "% do tempo da jornada (1ª→última conclusão) gasto em pausas, não em concluir tarefas.",
   oper_share: "Quanto das conclusões é operacional. Quanto maior, mais confiável a leitura de cadência/ócio.",
+  jornada: "Horário mediano da 1ª e da última conclusão do dia ao longo do período. É um proxy de chegada/saída pelo registro de tarefas no L1 — não é ponto eletrônico.",
+  tempo_tarefa: "Tempo de decisão: mediana do intervalo entre concluir a tarefa anterior e concluir uma deste tipo (pausas >30 min ignoradas). É quanto a pessoa leva, na prática, pra resolver uma tarefa desse tipo.",
   pendente: "Tarefas em aberto (não concluídas) sob responsabilidade da pessoa — a carga futura.",
   atrasado: "Pendentes cujo prazo já passou. É o que está vencido e precisa de ação.",
   sem_prazo: "Pendentes sem data de prazo definida.",
@@ -107,6 +117,18 @@ function PassadoSection({ d }: { d: PessoaDetalhe }) {
         <Tile label="No prazo" hint={H.no_prazo} value={pct(k.no_prazo_pct)} />
         <Tile label="Cycle time" hint={H.cycle} value={diasFmt(k.cycle_dias)} />
         <Tile label="Dias ativos" hint={H.dias_ativos} value={String(k.dias_ativos)} />
+      </div>
+
+      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-sky-200 bg-sky-50/60 px-3 py-2 text-sm">
+        <span className="flex items-center gap-1.5 font-semibold text-[hsl(var(--dunatech-blue))]">
+          <Clock className="h-4 w-4" /> Jornada típica
+        </span>
+        <span>Chega <b className="tabular-nums">~{fmtHora(r.inicio_h)}</b></span>
+        <span>Sai <b className="tabular-nums">~{fmtHora(r.fim_h)}</b></span>
+        {fmtJanela(r.inicio_h, r.fim_h) && (
+          <span className="text-muted-foreground">janela de {fmtJanela(r.inicio_h, r.fim_h)}</span>
+        )}
+        <InfoHint text={H.jornada} />
       </div>
 
       <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -132,6 +154,9 @@ function PassadoSection({ d }: { d: PessoaDetalhe }) {
               <TableHead>Tipo de tarefa</TableHead>
               <TableHead>Natureza</TableHead>
               <TableHead className="text-right">Volume</TableHead>
+              <TableHead className="text-right">
+                <span className="inline-flex items-center gap-1">Tempo/tarefa <InfoHint text={H.tempo_tarefa} /></span>
+              </TableHead>
               <TableHead className="text-right">Cycle</TableHead>
               <TableHead className="text-right">No prazo</TableHead>
             </TableRow>
@@ -146,6 +171,7 @@ function PassadoSection({ d }: { d: PessoaDetalhe }) {
                   </span>
                 </TableCell>
                 <TableCell className="text-right tabular-nums">{m.volume}</TableCell>
+                <TableCell className="text-right tabular-nums font-medium">{fmtCad(m.tempo_tarefa_seg)}</TableCell>
                 <TableCell className="text-right tabular-nums">{diasFmt(m.cycle_dias)}</TableCell>
                 <TableCell className="text-right tabular-nums">{pct(m.no_prazo_pct)}</TableCell>
               </TableRow>

@@ -57,6 +57,7 @@ export interface MixItem {
   volume: number;
   cycle_dias: number | null;
   no_prazo_pct: number | null;
+  tempo_tarefa_seg: number | null;
 }
 
 export interface RitmoOcio {
@@ -65,6 +66,8 @@ export interface RitmoOcio {
   ocio_pct: number | null;
   dias: number;
   oper_share: number | null;
+  inicio_h: number | null;
+  fim_h: number | null;
 }
 
 export interface PassadoKpis {

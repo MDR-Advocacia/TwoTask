@@ -293,7 +293,9 @@ _INSTR_INDIV = (
     "Com base nas métricas da pessoa a seguir, redija a avaliação. Responda ESTRITAMENTE "
     "em JSON válido, sem texto fora do JSON, com as chaves exatas:\n"
     '  "sumario": parágrafo único (3-5 frases) com o panorama da pessoa;\n'
-    '  "desempenho": parágrafo sobre produção, ritmo e cumprimento de prazo no período;\n'
+    '  "desempenho": parágrafo sobre produção, ritmo, jornada típica (horário de chegada/saída pelo '
+    "registro de tarefas) e o tempo de decisão por tipo (quanto leva pra concluir cada tarefa), além do "
+    "cumprimento de prazo no período;\n"
     '  "carga_futura": parágrafo sobre as tarefas pendentes e vencidas;\n'
     '  "riscos": parágrafo sobre os principais focos de atraso;\n'
     '  "intervencoes": lista de 2 a 4 ações concretas sugeridas (frases imperativas formais), ou lista com um item indicando que não há intervenção imediata;\n'
@@ -312,6 +314,12 @@ def _individual_fallback(d: dict) -> dict:
         f"Mantém {_n(f['pendente'])} tarefas em aberto, das quais {_n(f['atrasado'])} estão vencidas."
     )
     desempenho = f"O tempo mediano de ciclo é de {_n(k['cycle_dias'])} dias. "
+    if r.get("inicio_h") is not None and r.get("fim_h") is not None:
+        ih, fh = r["inicio_h"], r["fim_h"]
+        desempenho += (
+            f"A jornada típica vai de {int(ih):02d}h{int(round((ih % 1) * 60)):02d} "
+            f"a {int(fh):02d}h{int(round((fh % 1) * 60)):02d}, pela primeira e última conclusão do dia. "
+        )
     if r.get("oper_share") is not None:
         desempenho += (
             f"A fatia operacional do trabalho é de {_n(r['oper_share'])}%, "
@@ -376,12 +384,23 @@ def _render_indiv(d: dict, nar: dict) -> str:
     o.append(_kpi("Ócio", _n(r.get("ocio_pct"), "%"), "da jornada"))
     o.append(_kpi("Fatia operacional", _n(r.get("oper_share"), "%"), "confiabilidade do ritmo"))
     o.append("</div>")
+    ini, fim = r.get("inicio_h"), r.get("fim_h")
+    if ini is not None or fim is not None:
+        ch = "—" if ini is None else f"~{int(ini):02d}:{int(round((ini % 1) * 60)):02d}"
+        sa = "—" if fim is None else f"~{int(fim):02d}:{int(round((fim % 1) * 60)):02d}"
+        o.append('<div class="kpis k3">')
+        o.append(_kpi("Chega", ch, "1ª conclusão típica do dia"))
+        o.append(_kpi("Sai", sa, "última conclusão típica do dia"))
+        o.append(_kpi("Dias com ritmo", _n(r.get("dias")), "base do cálculo"))
+        o.append("</div>")
     o.append(f"<p>{_e(nar.get('desempenho',''))}</p>")
     if d["passado"]["mix"]:
         o.append('<div class="avoid"><h3>Composição das concluídas</h3>')
-        o.append("<table><tr><th>Tipo de tarefa</th><th>Natureza</th><th class='n'>Volume</th><th class='n'>Cycle</th><th class='n'>No prazo</th></tr>")
+        o.append("<table><tr><th>Tipo de tarefa</th><th>Natureza</th><th class='n'>Volume</th><th class='n'>Tempo/tarefa</th><th class='n'>Cycle</th><th class='n'>No prazo</th></tr>")
         for m in d["passado"]["mix"][:10]:
-            o.append(f"<tr><td>{_e(m['subtipo'])}</td><td>{_CAT_PILL.get(m['categoria'],'')}</td><td class='n'>{_n(m['volume'])}</td><td class='n'>{_n(m['cycle_dias'],' d')}</td><td class='n'>{_n(m['no_prazo_pct'],'%')}</td></tr>")
+            _ts = m.get("tempo_tarefa_seg")
+            _tt = "—" if _ts is None else (f"{_ts} s" if _ts < 90 else f"{round(_ts / 60)} min")
+            o.append(f"<tr><td>{_e(m['subtipo'])}</td><td>{_CAT_PILL.get(m['categoria'],'')}</td><td class='n'>{_n(m['volume'])}</td><td class='n'>{_tt}</td><td class='n'>{_n(m['cycle_dias'],' d')}</td><td class='n'>{_n(m['no_prazo_pct'],'%')}</td></tr>")
         o.append("</table></div>")
 
     o.append("<h2>Futuro — carga aberta</h2>")

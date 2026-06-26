@@ -162,6 +162,7 @@ class PerformanceService:
             {"id": pessoa_id, "start": start, "end": now},
         ).fetchall()
 
+        ritmo, tempo_sub = self._ritmo_jornada(pessoa_id, start, now)
         mix_out = [
             {
                 "subtipo": m.subtipo or "(sem subtipo)",
@@ -169,6 +170,7 @@ class PerformanceService:
                 "volume": m.vol,
                 "cycle_dias": round(m.cycle_seg / 86400.0, 1) if m.cycle_seg is not None else None,
                 "no_prazo_pct": round(100.0 * m.no_prazo / m.com_prazo) if m.com_prazo else None,
+                "tempo_tarefa_seg": tempo_sub.get(m.subtipo),
             }
             for m in mix
         ]
@@ -258,7 +260,7 @@ class PerformanceService:
             "periodo_dias": days,
             "passado": {
                 "kpis": passado_kpis,
-                "ritmo": self._ritmo_ocio(pessoa_id, start, now),
+                "ritmo": ritmo,
                 "mix": mix_out,
             },
             "futuro": {
@@ -273,18 +275,20 @@ class PerformanceService:
             },
         }
 
-    def _ritmo_ocio(self, pessoa_id: int, start, end) -> dict:
-        """Ritmo (tempo entre entregas) e ócio a partir das conclusões do período.
+    def _ritmo_jornada(self, pessoa_id: int, start, end):
+        """Ritmo (tempo entre entregas), ócio, JORNADA (horário típico de chegada/
+        saída) e o TEMPO DE DECISÃO por subtipo (quanto a pessoa leva, em média,
+        pra concluir uma tarefa de cada tipo). Tudo sobre as conclusões do período;
+        informa a fatia operacional (quanto maior, mais confiável a leitura).
 
-        Calculado sobre TODAS as conclusões (operacional + profundo) pra não
-        contar trabalho profundo como ócio. Informa a fatia operacional —
-        quanto maior, mais confiável a leitura de ritmo/ócio.
+        Devolve (ritmo: dict, tempo_por_subtipo: {subtipo: segundos}).
         """
         rows = self.db.execute(
             text(
                 """
                 SELECT (t.concluido_em AT TIME ZONE 'America/Sao_Paulo') AS c,
-                       COALESCE(cat.categoria, 'profundo') AS categoria
+                       COALESCE(cat.categoria, 'profundo') AS categoria,
+                       t.subtipo AS subtipo
                 FROM perf_l1_tarefa t
                 LEFT JOIN perf_subtipo_categoria cat ON cat.subtipo = t.subtipo
                 WHERE t.pessoa_id = :id AND t.status = 'Cumprido'
@@ -295,34 +299,48 @@ class PerformanceService:
             {"id": pessoa_id, "start": start, "end": end},
         ).fetchall()
 
-        times = [(r.c, r.categoria) for r in rows if r.c]
-        total = len(times)
+        items = [(r.c, r.categoria, r.subtipo) for r in rows if r.c]
+        total = len(items)
+        vazio = {
+            "volume": total, "cadencia_seg": None, "ocio_pct": None, "dias": 0,
+            "oper_share": None, "inicio_h": None, "fim_h": None,
+        }
         if total < 2:
-            return {"volume": total, "cadencia_seg": None, "ocio_pct": None, "dias": 0, "oper_share": None}
+            return vazio, {}
 
-        oper = sum(1 for _, cat in times if cat == "operacional")
+        oper = sum(1 for _, cat, _ in items if cat == "operacional")
         by_day = defaultdict(list)
-        for ts, _ in times:
-            by_day[ts.date()].append(ts)
+        for ts, _cat, sub in items:
+            by_day[ts.date()].append((ts, sub))
 
         gaps, hands_on, window = [], 0.0, 0.0
-        for _, ts in by_day.items():
-            ts.sort()
-            for i in range(1, len(ts)):
-                g = (ts[i] - ts[i - 1]).total_seconds()
+        starts, ends = [], []
+        tempo_sub = defaultdict(list)
+        for _d, lst in by_day.items():
+            lst.sort(key=lambda x: x[0])
+            starts.append(lst[0][0].hour + lst[0][0].minute / 60.0)
+            ends.append(lst[-1][0].hour + lst[-1][0].minute / 60.0)
+            for i in range(1, len(lst)):
+                g = (lst[i][0] - lst[i - 1][0]).total_seconds()
                 if 0 < g <= _CAP_SEG:
                     gaps.append(g)
                     hands_on += g
-            if len(ts) >= 2:
-                window += (ts[-1] - ts[0]).total_seconds()
+                    if lst[i][1]:
+                        tempo_sub[lst[i][1]].append(g)
+            if len(lst) >= 2:
+                window += (lst[-1][0] - lst[0][0]).total_seconds()
 
-        return {
+        ritmo = {
             "volume": total,
             "cadencia_seg": round(statistics.median(gaps)) if gaps else None,
             "ocio_pct": round(100.0 * (1 - hands_on / window)) if window > 0 else None,
             "dias": len(by_day),
             "oper_share": round(100.0 * oper / total),
+            "inicio_h": round(statistics.median(starts), 2) if starts else None,
+            "fim_h": round(statistics.median(ends), 2) if ends else None,
         }
+        tempo_por_sub = {sub: round(statistics.median(v)) for sub, v in tempo_sub.items() if v}
+        return ritmo, tempo_por_sub
 
     # ── mapa de impacto por tipo ──────────────────────────────────────────
     def tipos(self, days: int = 30, team: str | None = None) -> list:
