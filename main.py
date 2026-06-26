@@ -325,6 +325,19 @@ async def lifespan(_: FastAPI):
             "Falha ao registrar job de sync da fonte do OneRequest no startup."
         )
 
+    # Verificação PROATIVA de existência do processo no L1 (CNJ->NPJ, sem criar
+    # tarefa): sinaliza no painel se a pasta existe antes do agendamento.
+    try:
+        from app.services.onerequest.proc_l1_check_worker import (
+            register_onerequest_proc_l1_check_job,
+        )
+
+        register_onerequest_proc_l1_check_job(scheduler)
+    except Exception:
+        logger.exception(
+            "Falha ao registrar job de verificação de processo no L1 do OneRequest no startup."
+        )
+
     try:
         yield
     finally:

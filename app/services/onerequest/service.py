@@ -149,6 +149,7 @@ class OnerequestService:
         farol: Optional[str] = None,
         sem_responsavel: Optional[bool] = None,
         sem_anotacao: Optional[bool] = None,
+        sem_processo_l1: Optional[bool] = None,
         concluidas: Optional[bool] = None,
         disp_de: Optional[date] = None,
         disp_ate: Optional[date] = None,
@@ -179,6 +180,9 @@ class OnerequestService:
                 q = q.filter(OnerequestSolicitacao.setor.is_(None))
             else:
                 q = q.filter(OnerequestSolicitacao.setor == setor)
+        if sem_processo_l1:
+            # "Fora do L1": checadas e NÃO encontradas (exclui as não-checadas).
+            q = q.filter(OnerequestSolicitacao.proc_l1_encontrado.is_(False))
         if busca:
             termo = f"%{busca.strip()}%"
             q = q.filter(
@@ -189,11 +193,16 @@ class OnerequestService:
                 )
             )
         if sem_responsavel:
-            # "Novas" = ainda SEM RESPONSÁVEL (não distribuídas), excluindo as
-            # marcadas como sem providência. No painel antigo, atribuir
-            # responsável = distribuir a DMI.
+            # "Novas" = ainda SEM RESPONSÁVEL (não distribuídas) OU travadas
+            # (AGUARDANDO_PROCESSO / ERRO) — pra uma DMI que o operador tentou
+            # agendar mas falhou NÃO sumir do radar. Exclui só as ignoradas.
             q = q.filter(
-                OnerequestSolicitacao.responsavel_user_id.is_(None),
+                or_(
+                    OnerequestSolicitacao.responsavel_user_id.is_(None),
+                    OnerequestSolicitacao.status_tratamento.in_(
+                        (STATUS_TRATAMENTO_AGUARDANDO_PROCESSO, STATUS_TRATAMENTO_ERRO)
+                    ),
+                ),
                 OnerequestSolicitacao.status_tratamento != STATUS_TRATAMENTO_IGNORADO,
             )
 
@@ -330,6 +339,10 @@ class OnerequestService:
                         if (r.l1_dmi_task_id and r.linked_lawsuit_id)
                         else None
                     ),
+                    # Verificação proativa de existência do processo no L1.
+                    "proc_l1_checado_em": r.proc_l1_checado_em.isoformat() if r.proc_l1_checado_em else None,
+                    "proc_l1_encontrado": r.proc_l1_encontrado,
+                    "proc_l1_via": r.proc_l1_via,
                 }
             )
 
@@ -630,26 +643,38 @@ class OnerequestService:
 
             # Resolução do processo: CNJ -> NPJ(notes/title). Não exige CNJ.
             lawsuit = self.resolver_lawsuit(solicitacao, client)
-            if not lawsuit or not lawsuit.get("id"):
-                solicitacao.status_tratamento = STATUS_TRATAMENTO_AGUARDANDO_PROCESSO
-                solicitacao.last_error = (
-                    "Processo não encontrado no Legal One por CNJ nem por NPJ. Aguardando processo."
-                )
-                self.db.commit()
-                return {
-                    "ok": False,
-                    "status_tratamento": solicitacao.status_tratamento,
-                    "mensagem": "Processo não encontrado no L1 (CNJ/NPJ). Marcado como AGUARDANDO_PROCESSO.",
-                }
-
-            lawsuit_id = lawsuit["id"]
-            office_id = lawsuit.get("responsibleOfficeId")
-            if not office_id:
-                raise Exception(f"Processo {lawsuit_id} sem responsibleOfficeId no L1.")
+            avulsa = False
+            if lawsuit and lawsuit.get("id"):
+                lawsuit_id = lawsuit["id"]
+                office_id = lawsuit.get("responsibleOfficeId")
+                if not office_id:
+                    raise Exception(f"Processo {lawsuit_id} sem responsibleOfficeId no L1.")
+            else:
+                # Sem pasta no L1 -> TAREFA AVULSA (sem vínculo com processo). O
+                # escritório vem do polo/setor da DMI — igual à interface do L1,
+                # onde você cria a tarefa, escolhe o "Escritório responsável" e
+                # não vincula processo. O create_task já é independente da pasta;
+                # o vínculo (link_task_to_lawsuit) é um passo à parte que pulamos.
+                avulsa = True
+                lawsuit_id = None
+                office_id = self._office_avulso_id(solicitacao)
+                if not office_id:
+                    solicitacao.status_tratamento = STATUS_TRATAMENTO_AGUARDANDO_PROCESSO
+                    solicitacao.last_error = (
+                        "Sem pasta no L1 e não foi possível derivar o escritório "
+                        "(polo/setor) para criar a tarefa avulsa."
+                    )
+                    self.db.commit()
+                    return {
+                        "ok": False,
+                        "status_tratamento": solicitacao.status_tratamento,
+                        "mensagem": "Sem pasta no L1 e sem escritório derivável (polo/setor). Aguardando processo.",
+                    }
 
             # Trava-duplo: se já há tarefa PENDENTE pra esta DMI, pede confirmação
             # (a não ser que o operador já tenha confirmado). Cumprida não trava.
-            if not confirmar:
+            # Só faz sentido com pasta — a busca de pendentes é dentro da pasta.
+            if not confirmar and lawsuit_id:
                 pendente = self._tarefa_pendente_da_dmi(solicitacao, lawsuit_id, client)
                 if pendente:
                     return {
@@ -691,7 +716,8 @@ class OnerequestService:
                 raise Exception("Falha na criação da tarefa (resposta inválida da API).")
             task_id = created["id"]
 
-            if not client.link_task_to_lawsuit(
+            # Vínculo com a pasta SÓ quando há pasta. Avulsa fica sem vínculo.
+            if lawsuit_id and not client.link_task_to_lawsuit(
                 task_id, {"linkType": "Litigation", "linkId": lawsuit_id}
             ):
                 logger.warning("Tarefa %s criada mas falha ao vincular ao processo %s.", task_id, lawsuit_id)
@@ -709,7 +735,12 @@ class OnerequestService:
                 "ok": True,
                 "status_tratamento": solicitacao.status_tratamento,
                 "created_task_id": task_id,
-                "mensagem": "Tarefa criada no Legal One com sucesso.",
+                "mensagem": (
+                    "Tarefa AVULSA criada no Legal One (sem vínculo com processo, "
+                    "no escritório do polo/setor)."
+                    if avulsa
+                    else "Tarefa criada no Legal One com sucesso."
+                ),
             }
 
         except Exception as e:
@@ -818,6 +849,69 @@ class OnerequestService:
             self.db.commit()
             return law
         return None
+
+    def verificar_processo_l1(
+        self, solicitacao: OnerequestSolicitacao, client: LegalOneApiClient
+    ) -> dict:
+        """Resolve o processo (CNJ -> NPJ) SEM criar tarefa, só pra sinalizar se a
+        pasta existe no L1 antes do agendamento. Grava proc_l1_checado_em/
+        encontrado/via. Idempotente — pode rodar de novo (re-checagem)."""
+        encontrado = False
+        via = None
+        lawsuit_id = solicitacao.linked_lawsuit_id
+        if lawsuit_id:
+            encontrado, via = True, "cache"
+        else:
+            law = None
+            if _proc_utilizavel(solicitacao.numero_processo):
+                try:
+                    law = client.search_lawsuit_by_cnj(solicitacao.numero_processo)
+                except Exception as e:
+                    logger.warning(
+                        "verificar_processo_l1: busca por CNJ %s falhou: %s",
+                        solicitacao.numero_processo, e,
+                    )
+                    law = None
+                if law and law.get("id"):
+                    via = "cnj"
+            if not (law and law.get("id")):
+                law = self._resolver_por_npj(client, solicitacao.npj_direcionador)
+                if law and law.get("id"):
+                    via = "npj"
+            if law and law.get("id"):
+                encontrado = True
+                lawsuit_id = law["id"]
+                solicitacao.linked_lawsuit_id = lawsuit_id
+
+        solicitacao.proc_l1_checado_em = datetime.now(timezone.utc)
+        solicitacao.proc_l1_encontrado = encontrado
+        solicitacao.proc_l1_via = via
+        self.db.commit()
+        return {"encontrado": encontrado, "via": via, "lawsuit_id": lawsuit_id}
+
+    def _office_avulso_id(self, solicitacao: OnerequestSolicitacao) -> Optional[int]:
+        """Escritório (L1) pra TAREFA AVULSA (sem pasta), derivado do polo/setor:
+        BB é Autor no polo ATIVO, Réu no PASSIVO. Busca o external_id (= id do
+        escritório no L1) em legal_one_offices, sem hardcode. None = não derivável."""
+        from app.models.legal_one import LegalOneOffice
+
+        polo = (solicitacao.polo or "").strip().lower()
+        setor = (solicitacao.setor or "").strip().lower()
+        if polo == "ativo" or "autor" in setor:
+            alvo = "Autor"
+        elif polo == "passivo" or "réu" in setor or "reu" in setor:
+            alvo = "Réu"
+        else:
+            return None
+        row = (
+            self.db.query(LegalOneOffice.external_id)
+            .filter(
+                LegalOneOffice.path.ilike("%Banco do Brasil%"),
+                LegalOneOffice.name == alvo,
+            )
+            .first()
+        )
+        return int(row[0]) if row and row[0] else None
 
     def tarefas_na_pasta(
         self, solicitacao: OnerequestSolicitacao, client: LegalOneApiClient

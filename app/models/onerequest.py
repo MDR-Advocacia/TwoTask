@@ -12,6 +12,7 @@ Tabela (prefixo onr*):
 """
 
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
     ForeignKey,
@@ -112,6 +113,14 @@ class OnerequestSolicitacao(Base):
     l1_dmi_status_id = Column(Integer, nullable=True)
     # Nº de tarefas Pendente/Iniciado na pasta (0 = sem pendência). None = não checado.
     l1_pendentes_count = Column(Integer, nullable=True)
+
+    # ── Verificação proativa de existência do processo no L1 (onr004) ──
+    # Resolve CNJ->NPJ SEM criar tarefa, só pra sinalizar no painel se a pasta
+    # existe no L1 antes do agendamento. Ver service.verificar_processo_l1.
+    # None = não checado; True = pasta achada; False = checado e não achado.
+    proc_l1_checado_em = Column(DateTime(timezone=True), nullable=True)
+    proc_l1_encontrado = Column(Boolean, nullable=True)
+    proc_l1_via = Column(String, nullable=True)  # "cnj" / "npj" / "cache"
 
     # ── Auditoria do agendamento (padrão de Publicações, pub002) ──────
     scheduled_by_user_id = Column(

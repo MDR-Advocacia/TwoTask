@@ -43,6 +43,10 @@ export interface OnerequestSolicitacao {
   l1_pendentes_count: number | null;
   l1_sem_pendencia: boolean | null;
   l1_task_url: string | null;
+  // Verificação proativa de existência do processo no L1.
+  proc_l1_checado_em: string | null;
+  proc_l1_encontrado: boolean | null;
+  proc_l1_via: string | null;
 }
 
 export interface ListResponse {
@@ -60,6 +64,8 @@ export interface ListParams {
   farol?: string;
   sem_responsavel?: boolean;
   sem_anotacao?: boolean;
+  // Apenas DMIs cujo processo NÃO foi encontrado no L1 (checado e não achado).
+  sem_processo_l1?: boolean;
   // Concluídas = BB respondeu (RESPONDIDO) ou operador encerrou sem providência (IGNORADO).
   concluidas?: boolean;
   // Recortes de data (ISO YYYY-MM-DD). disp_* = disponibilização (recebido_em);
@@ -240,6 +246,7 @@ function buildListQuery(params: ListParams): URLSearchParams {
   if (params.farol) qs.set("farol", params.farol);
   if (params.sem_responsavel) qs.set("sem_responsavel", "true");
   if (params.sem_anotacao) qs.set("sem_anotacao", "true");
+  if (params.sem_processo_l1) qs.set("sem_processo_l1", "true");
   if (params.concluidas) qs.set("concluidas", "true");
   if (params.disp_de) qs.set("disp_de", params.disp_de);
   if (params.disp_ate) qs.set("disp_ate", params.disp_ate);
@@ -360,6 +367,19 @@ export async function getL1Tarefas(id: number): Promise<L1Tarefas> {
 export async function verificarStatusL1(id: number): Promise<StatusL1> {
   return json(
     await apiFetch(`${BASE}/solicitacoes/${id}/status-l1`, { method: "POST" }),
+  );
+}
+
+export interface ProcessoL1Resultado {
+  encontrado: boolean;
+  via: string | null;
+  lawsuit_id: number | null;
+}
+
+// Verifica se o processo da DMI existe no L1 (CNJ->NPJ) sem criar tarefa.
+export async function verificarProcessoL1(id: number): Promise<ProcessoL1Resultado> {
+  return json(
+    await apiFetch(`${BASE}/solicitacoes/${id}/verificar-processo-l1`, { method: "POST" }),
   );
 }
 

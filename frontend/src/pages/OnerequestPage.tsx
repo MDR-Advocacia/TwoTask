@@ -100,6 +100,7 @@ import {
   StatusL1,
   Sugestao,
   updateTratamento,
+  verificarProcessoL1,
   verificarStatusL1,
 } from "@/services/onerequest";
 
@@ -382,6 +383,12 @@ export default function OnerequestPage() {
   const [checkingL1, setCheckingL1] = useState(false);
   const [l1Progress, setL1Progress] = useState({ done: 0, total: 0 });
 
+  // "Verificar no L1": checa em lote se o processo de cada DMI da página existe.
+  const [checkingProc, setCheckingProc] = useState(false);
+  const [procProgress, setProcProgress] = useState({ done: 0, total: 0 });
+  // Filtro "Fora do L1" (processo checado e não encontrado).
+  const [soForaDoL1, setSoForaDoL1] = useState(false);
+
   // Filtro da aba Atrasadas: só as SEM anotação (precisam de ação).
   const [soSemAnotacao, setSoSemAnotacao] = useState(false);
 
@@ -456,8 +463,9 @@ export default function OnerequestPage() {
     if (setorFilter) params.setor = setorFilter;
     if (responsavelFilter) params.responsavel_user_id = responsavelFilter;
     if (statusTratFilter) params.status_tratamento = statusTratFilter;
+    if (soForaDoL1) params.sem_processo_l1 = true;
     return params;
-  }, [tab, busca, soSemAnotacao, dispDe, dispAte, prazoDe, prazoAte, farolFilter, setorFilter, responsavelFilter, statusTratFilter]);
+  }, [tab, busca, soSemAnotacao, dispDe, dispAte, prazoDe, prazoAte, farolFilter, setorFilter, responsavelFilter, statusTratFilter, soForaDoL1]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -767,6 +775,52 @@ export default function OnerequestPage() {
     }
   };
 
+  // Verifica em lote se o PROCESSO de cada DMI da página existe no L1 (sem agendar).
+  const verificarProcessoL1Pagina = async () => {
+    const alvo = items.filter((s) => s.proc_utilizavel || s.npj_direcionador);
+    if (alvo.length === 0) {
+      toast({ title: "Nada para verificar", description: "Nenhuma DMI com CNJ/NPJ nesta página." });
+      return;
+    }
+    setCheckingProc(true);
+    setProcProgress({ done: 0, total: alvo.length });
+    const fila = [...alvo];
+    let done = 0;
+    let achados = 0;
+    const CONC = 4;
+    const worker = async () => {
+      while (fila.length) {
+        const sol = fila.shift();
+        if (!sol) break;
+        try {
+          const r = await verificarProcessoL1(sol.id);
+          if (r.encontrado) achados += 1;
+          setItems((prev) =>
+            prev.map((it) =>
+              it.id === sol.id
+                ? { ...it, proc_l1_encontrado: r.encontrado, proc_l1_via: r.via, proc_l1_checado_em: new Date().toISOString() }
+                : it,
+            ),
+          );
+        } catch {
+          /* mantém a linha; segue */
+        } finally {
+          done += 1;
+          setProcProgress({ done, total: alvo.length });
+        }
+      }
+    };
+    try {
+      await Promise.all(Array.from({ length: Math.min(CONC, alvo.length) }, worker));
+      toast({
+        title: "Verificação no L1 concluída",
+        description: `${done} checada(s) · ${achados} no L1 · ${done - achados} fora.`,
+      });
+    } finally {
+      setCheckingProc(false);
+    }
+  };
+
   const saveTratamento = async (): Promise<boolean> => {
     if (!selected) return false;
     setSaving(true);
@@ -1072,6 +1126,35 @@ export default function OnerequestPage() {
               </>
             )}
           </Button>
+          <Button
+            variant="outline"
+            onClick={verificarProcessoL1Pagina}
+            disabled={checkingProc || loading || items.length === 0}
+            title="Verifica no Legal One se o processo de cada DMI desta página existe (CNJ/NPJ) — sem criar tarefa"
+          >
+            {checkingProc ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                {procProgress.done}/{procProgress.total}
+              </>
+            ) : (
+              <>
+                <FileSearch className="mr-2 h-4 w-4" />
+                Verificar L1
+              </>
+            )}
+          </Button>
+          <Button
+            variant={soForaDoL1 ? "default" : "outline"}
+            onClick={() => {
+              setPage(1);
+              setSoForaDoL1((v) => !v);
+            }}
+            title="Mostra só as DMIs cujo processo NÃO foi encontrado no Legal One"
+          >
+            <AlertTriangle className="mr-2 h-4 w-4" />
+            {soForaDoL1 ? "Fora do L1 ✓" : "Fora do L1"}
+          </Button>
         </div>
       </div>
 
@@ -1217,6 +1300,22 @@ export default function OnerequestPage() {
                           <Badge variant="outline" className="border-amber-300 text-amber-700">
                             sem processo
                           </Badge>
+                        )}
+                        {sol.proc_l1_encontrado === false && (
+                          <div
+                            className="mt-0.5 flex w-fit items-center gap-1 rounded bg-red-100 px-1 py-0.5 text-[10px] font-medium text-red-700"
+                            title="Verificado: processo não encontrado no Legal One (nem por CNJ nem por NPJ)"
+                          >
+                            <AlertTriangle className="h-3 w-3" /> fora do L1
+                          </div>
+                        )}
+                        {sol.proc_l1_encontrado === true && (
+                          <div
+                            className="mt-0.5 flex w-fit items-center gap-1 text-[10px] text-emerald-700"
+                            title={`Processo encontrado no L1${sol.proc_l1_via ? ` (por ${sol.proc_l1_via.toUpperCase()})` : ""}`}
+                          >
+                            <CheckCircle2 className="h-3 w-3" /> no L1
+                          </div>
                         )}
                       </TableCell>
                       <TableCell className="text-xs">

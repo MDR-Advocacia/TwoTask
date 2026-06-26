@@ -192,6 +192,10 @@ class SolicitacaoOut(BaseModel):
     l1_pendentes_count: Optional[int] = None
     l1_sem_pendencia: Optional[bool] = None
     l1_task_url: Optional[str] = None
+    # Verificação proativa de existência do processo no L1.
+    proc_l1_checado_em: Optional[str] = None
+    proc_l1_encontrado: Optional[bool] = None
+    proc_l1_via: Optional[str] = None
 
 
 class ListResponse(BaseModel):
@@ -243,6 +247,7 @@ def listar_solicitacoes(
     farol: Optional[str] = Query(None, description="Filtra por farol: cinza|atrasado|vermelho|amarelo|roxo|verde"),
     sem_responsavel: Optional[bool] = Query(None, description="Apenas DMIs sem responsável (não distribuídas)"),
     sem_anotacao: Optional[bool] = Query(None, description="Apenas DMIs SEM anotação (ex.: atrasadas que ainda precisam de ação)"),
+    sem_processo_l1: Optional[bool] = Query(None, description="Apenas DMIs cujo processo NÃO foi encontrado no Legal One"),
     concluidas: Optional[bool] = Query(None, description="Concluídas = BB respondeu (RESPONDIDO) ou operador encerrou sem providência (IGNORADO)"),
     disp_de: Optional[date] = Query(None, description="Disponibilização (recebido_em) a partir desta data (BRT)"),
     disp_ate: Optional[date] = Query(None, description="Disponibilização (recebido_em) até esta data (BRT)"),
@@ -262,6 +267,7 @@ def listar_solicitacoes(
         farol=farol,
         sem_responsavel=sem_responsavel,
         sem_anotacao=sem_anotacao,
+        sem_processo_l1=sem_processo_l1,
         concluidas=concluidas,
         disp_de=disp_de,
         disp_ate=disp_ate,
@@ -286,6 +292,7 @@ def exportar_solicitacoes(
     farol: Optional[str] = Query(None),
     sem_responsavel: Optional[bool] = Query(None),
     sem_anotacao: Optional[bool] = Query(None),
+    sem_processo_l1: Optional[bool] = Query(None),
     concluidas: Optional[bool] = Query(None),
     disp_de: Optional[date] = Query(None),
     disp_ate: Optional[date] = Query(None),
@@ -307,6 +314,7 @@ def exportar_solicitacoes(
         farol=farol,
         sem_responsavel=sem_responsavel,
         sem_anotacao=sem_anotacao,
+        sem_processo_l1=sem_processo_l1,
         concluidas=concluidas,
         disp_de=disp_de,
         disp_ate=disp_ate,
@@ -467,6 +475,31 @@ def l1_tarefas(
     if not row:
         raise HTTPException(status_code=404, detail="Solicitação não encontrada.")
     return service.tarefas_na_pasta(row, client)
+
+
+# ── Verificação proativa: o processo existe no L1? (sob demanda) ────────
+class VerificarProcessoResponse(BaseModel):
+    encontrado: bool
+    via: Optional[str] = None
+    lawsuit_id: Optional[int] = None
+
+
+@router.post(
+    "/solicitacoes/{solicitacao_id}/verificar-processo-l1",
+    response_model=VerificarProcessoResponse,
+    summary="Resolve o processo no L1 (CNJ->NPJ) sem criar tarefa — só sinaliza se a pasta existe",
+    dependencies=[_perm],
+)
+def verificar_processo_l1(
+    solicitacao_id: int,
+    db: Session = Depends(get_db),
+    client: LegalOneApiClient = Depends(get_api_client),
+):
+    service = OnerequestService(db)
+    row = service.get(solicitacao_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Solicitação não encontrada.")
+    return service.verificar_processo_l1(row, client)
 
 
 # ── Status no Legal One (sob demanda) ──────────────────────────────────
