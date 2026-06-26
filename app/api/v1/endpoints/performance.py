@@ -22,12 +22,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/performance", tags=["Performance (Minha Equipe)"])
 
 
+_TEAM_KEY = "bb-reu"  # piloto: o Minha Equipe hoje só tem a equipe BB Réu.
+
+
 def _require_admin(current_user: LegalOneUser = Depends(get_current_user)) -> LegalOneUser:
-    if getattr(current_user, "role", "user") != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Acesso restrito a administradores.",
-        )
+    """Acesso ao Minha Equipe: admin OU (permissão do menu + equipe liberada na árvore)."""
+    if getattr(current_user, "role", "user") == "admin":
+        return current_user
+    if not getattr(current_user, "can_use_minha_equipe", False):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sem permissão para o Minha Equipe.")
+    equipes = [x for x in (getattr(current_user, "minha_equipe_equipes", None) or "").split(",") if x]
+    if _TEAM_KEY not in equipes:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sem acesso a esta equipe.")
     return current_user
 
 

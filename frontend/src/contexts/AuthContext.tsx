@@ -12,6 +12,8 @@ interface User {
   can_use_publications?: boolean;
   can_use_prazos_iniciais?: boolean;
   can_use_onerequest?: boolean;
+  can_use_minha_equipe?: boolean;
+  minha_equipe_equipes?: string[];
   must_change_password?: boolean;
   is_active?: boolean;
 }
@@ -40,6 +42,8 @@ interface AuthContextType {
   canUsePublications: boolean;
   canUsePrazosIniciais: boolean;
   canUseOnerequest: boolean;
+  canUseMinhaEquipe: boolean;
+  minhaEquipeEquipes: string[];
   isAdmin: boolean;
   refreshMe: () => Promise<void>;
 }
@@ -209,6 +213,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       user?.can_use_prazos_iniciais ?? tokenData?.can_use_prazos_iniciais ?? false,
     canUseOnerequest:
       user?.can_use_onerequest ?? tokenData?.can_use_onerequest ?? false,
+    canUseMinhaEquipe: user?.can_use_minha_equipe ?? false,
+    minhaEquipeEquipes: user?.minha_equipe_equipes ?? [],
     isAdmin: (user?.role ?? tokenData?.role) === 'admin',
     refreshMe,
   };

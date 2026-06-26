@@ -21,6 +21,16 @@ import {
 } from "recharts";
 import { AlertTriangle, Clock, Download, type LucideIcon, TrendingUp } from "lucide-react";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { InfoHint } from "@/components/performance/InfoHint";
@@ -147,6 +157,9 @@ export default function PainelEquipe({ days }: { days: number }) {
   const { toast } = useToast();
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [pendingExport, setPendingExport] = useState<
+    { escopo: "atrasado" | "pendente" | "concluido"; extra: { subtipo?: string; pessoa_id?: number }; label: string } | null
+  >(null);
 
   useEffect(() => {
     setLoading(true);
@@ -175,11 +188,25 @@ export default function PainelEquipe({ days }: { days: number }) {
   const jornadaH = Math.max(300, jornada.length * 22);
   const topTipos = data.top_tipos.map((t) => ({ ...t, emdia: Math.max(0, t.pendente - t.atrasado) }));
 
-  const handleExport = (escopo: "atrasado" | "pendente" | "concluido") => {
-    downloadExport({ escopo, days }).catch((e) =>
+  const handleExport = (
+    escopo: "atrasado" | "pendente" | "concluido",
+    extra: { subtipo?: string; pessoa_id?: number } = {},
+  ) => {
+    downloadExport({ escopo, days, ...extra }).catch((e) =>
       toast({ title: "Erro ao exportar", description: String((e as Error).message), variant: "destructive" }),
     );
   };
+  // recharts entrega o ponto clicado ora no topo, ora em .payload — cobre os dois.
+  const barSub = (d: any): string | undefined => d?.subtipo ?? d?.payload?.subtipo;
+  const barPid = (d: any): number | undefined => d?.id ?? d?.payload?.id;
+  const barName = (d: any): string => d?.nome ?? d?.payload?.nome ?? "pessoa";
+  const ESC_LABEL: Record<string, string> = { atrasado: "Atrasadas", pendente: "Pendentes", concluido: "Concluídas" };
+  // Clique no gráfico não baixa direto — abre confirmação (evita travar baixando tudo).
+  const requestExport = (
+    escopo: "atrasado" | "pendente" | "concluido",
+    extra: { subtipo?: string; pessoa_id?: number },
+    alvo: string,
+  ) => setPendingExport({ escopo, extra, label: `${ESC_LABEL[escopo]} de ${alvo}` });
 
   return (
     <div className="space-y-4">
@@ -239,14 +266,17 @@ export default function PainelEquipe({ days }: { days: number }) {
             </div>
           }
         >
+          <p className="mb-1 text-[10px] text-muted-foreground">Clique na barra de uma pessoa para exportar as tarefas dela em Excel (vermelho = atrasadas, âmbar = pendentes).</p>
           <ResponsiveContainer width="100%" height={Math.max(280, backlog.length * 26)}>
             <BarChart data={backlog} layout="vertical" margin={{ left: 8, right: 28, top: 4 }}>
               <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="hsl(var(--border))" />
               <XAxis type="number" fontSize={11} allowDecimals={false} />
               <YAxis type="category" dataKey="nome" width={118} fontSize={11} tickFormatter={firstName} tickLine={false} axisLine={false} />
               <RTooltip cursor={{ fill: "hsl(var(--muted))", opacity: 0.4 }} />
-              <Bar dataKey="atrasado" name="Atrasadas" stackId="b" fill="#e11d48" />
-              <Bar dataKey="emdia" name="No prazo" stackId="b" fill="#f59e0b" radius={[0, 4, 4, 0]} />
+              <Bar dataKey="atrasado" name="Atrasadas" stackId="b" fill="#e11d48" cursor="pointer"
+                onClick={(d: any) => barPid(d) && requestExport("atrasado", { pessoa_id: barPid(d) }, barName(d))} />
+              <Bar dataKey="emdia" name="No prazo" stackId="b" fill="#f59e0b" radius={[0, 4, 4, 0]} cursor="pointer"
+                onClick={(d: any) => barPid(d) && requestExport("pendente", { pessoa_id: barPid(d) }, barName(d))} />
             </BarChart>
           </ResponsiveContainer>
         </ChartCard>
@@ -289,22 +319,48 @@ export default function PainelEquipe({ days }: { days: number }) {
           </div>
         }
       >
+        <p className="mb-1 text-[10px] text-muted-foreground">Clique numa barra para exportar as tarefas daquele tipo em Excel — vermelho = atrasadas (campanha focada), âmbar = pendentes, colorido = concluídas.</p>
         <ResponsiveContainer width="100%" height={Math.max(300, topTipos.length * 30)}>
           <BarChart data={topTipos} layout="vertical" margin={{ left: 8, right: 28, top: 4 }}>
             <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="hsl(var(--border))" />
             <XAxis type="number" fontSize={11} allowDecimals={false} />
             <YAxis type="category" dataKey="subtipo" width={170} fontSize={10} tickFormatter={truncTipo} tickLine={false} axisLine={false} />
             <RTooltip content={<TopTipoTooltip />} cursor={{ fill: "hsl(var(--muted))", opacity: 0.4 }} />
-            <Bar dataKey="volume" name="Concluídas" stackId="s">
+            <Bar dataKey="volume" name="Concluídas" stackId="s" cursor="pointer"
+              onClick={(d: any) => barSub(d) && requestExport("concluido", { subtipo: barSub(d) }, barSub(d)!)}>
               {topTipos.map((d, i) => (
                 <Cell key={i} fill={CAT_COLOR[d.categoria] || "#94a3b8"} />
               ))}
             </Bar>
-            <Bar dataKey="emdia" name="Pendentes no prazo" stackId="s" fill="#f59e0b" />
-            <Bar dataKey="atrasado" name="Atrasadas" stackId="s" fill="#e11d48" radius={[0, 4, 4, 0]} />
+            <Bar dataKey="emdia" name="Pendentes no prazo" stackId="s" fill="#f59e0b" cursor="pointer"
+              onClick={(d: any) => barSub(d) && requestExport("pendente", { subtipo: barSub(d) }, barSub(d)!)} />
+            <Bar dataKey="atrasado" name="Atrasadas" stackId="s" fill="#e11d48" radius={[0, 4, 4, 0]} cursor="pointer"
+              onClick={(d: any) => barSub(d) && requestExport("atrasado", { subtipo: barSub(d) }, barSub(d)!)} />
           </BarChart>
         </ResponsiveContainer>
       </ChartCard>
+
+      <AlertDialog open={pendingExport != null} onOpenChange={(o) => !o && setPendingExport(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Baixar este recorte em Excel?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingExport ? `Vai baixar: ${pendingExport.label}.` : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Não</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (pendingExport) handleExport(pendingExport.escopo, pendingExport.extra);
+                setPendingExport(null);
+              }}
+            >
+              Sim, baixar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

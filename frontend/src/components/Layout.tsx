@@ -36,13 +36,14 @@ import {
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "./ui/sheet";
 import { DunaFlowMark } from "./DunaFlowMark";
 
-type Permission = 'canScheduleBatch' | 'canUsePublications' | 'canUsePrazosIniciais' | 'canUseOnerequest' | 'isAdmin';
+type Permission = 'canScheduleBatch' | 'canUsePublications' | 'canUsePrazosIniciais' | 'canUseOnerequest' | 'canUseMinhaEquipe' | 'isAdmin';
 
 interface NavItem {
   to: string;
   icon: React.ElementType;
   label: string;
   requirePermission?: Permission;
+  requireTeam?: string;
 }
 
 interface NavSection {
@@ -58,6 +59,8 @@ export default function Layout({ children }: PropsWithChildren) {
     canUsePublications,
     canUsePrazosIniciais,
     canUseOnerequest,
+    canUseMinhaEquipe,
+    minhaEquipeEquipes,
     isAdmin,
   } = useAuth();
   const navigate = useNavigate();
@@ -90,9 +93,13 @@ export default function Layout({ children }: PropsWithChildren) {
     // Admin vê o item mesmo sem a flag explícita (bypass alinhado com o backend).
     if (perm === 'canUsePrazosIniciais') return canUsePrazosIniciais || isAdmin;
     if (perm === 'canUseOnerequest') return canUseOnerequest || isAdmin;
+    if (perm === 'canUseMinhaEquipe') return canUseMinhaEquipe || isAdmin;
     if (perm === 'isAdmin') return isAdmin;
     return false;
   };
+
+  // Acesso por equipe: admin vê todas; demais precisam ter a chave liberada na árvore do admin.
+  const hasTeam = (team?: string) => !team || isAdmin || minhaEquipeEquipes.includes(team);
 
   const baseSections: NavSection[] = [
     {
@@ -139,7 +146,7 @@ export default function Layout({ children }: PropsWithChildren) {
     {
       title: "Minha Equipe",
       items: [
-        { to: "/minha-equipe/bb-reu", icon: Gauge, label: "BB Réu", requirePermission: 'isAdmin' },
+        { to: "/minha-equipe/bb-reu", icon: Gauge, label: "BB Réu", requirePermission: 'canUseMinhaEquipe', requireTeam: 'bb-reu' },
       ],
     },
     {
@@ -151,9 +158,9 @@ export default function Layout({ children }: PropsWithChildren) {
 
   const visibleSections = useMemo(() => {
     return baseSections
-      .map(sec => ({ ...sec, items: sec.items.filter(it => hasPermission(it.requirePermission)) }))
+      .map(sec => ({ ...sec, items: sec.items.filter(it => hasPermission(it.requirePermission) && hasTeam(it.requireTeam)) }))
       .filter(sec => sec.items.length > 0);
-  }, [canScheduleBatch, canUsePublications, canUsePrazosIniciais, canUseOnerequest, isAdmin]);
+  }, [canScheduleBatch, canUsePublications, canUsePrazosIniciais, canUseOnerequest, canUseMinhaEquipe, minhaEquipeEquipes, isAdmin]);
 
   const handleLogout = () => {
     logout();

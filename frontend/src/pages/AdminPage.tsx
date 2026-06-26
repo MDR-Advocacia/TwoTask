@@ -44,8 +44,13 @@ const PERMISSOES = [
   { key: "can_use_publications", label: "Publicações", abbr: "Pub" },
   { key: "can_use_prazos_iniciais", label: "Prazos Iniciais", abbr: "PI" },
   { key: "can_use_onerequest", label: "OneRequest", abbr: "OR" },
+  { key: "can_use_minha_equipe", label: "Minha Equipe", abbr: "ME" },
   { key: "notify_onerequest_errors", label: "Notificação OneRequest", abbr: "Notif" },
 ] as const;
+
+// Equipes disponíveis no "Minha Equipe" — filhas da permissão can_use_minha_equipe
+// (a árvore: liberar o menu + marcar quais equipes o usuário enxerga).
+const EQUIPES = [{ key: "bb-reu", label: "BB Réu" }] as const;
 
 // --- Tipos de Dados ---
 interface Sector { id: number; name: string; }
@@ -61,6 +66,8 @@ interface AdminUser {
   can_use_publications: boolean;
   can_use_prazos_iniciais: boolean;
   can_use_onerequest: boolean;
+  can_use_minha_equipe: boolean;
+  minha_equipe_equipes: string[];
   notify_onerequest_errors: boolean;
   default_office_id: number | null;
   has_password: boolean;
@@ -1015,6 +1022,33 @@ const UsersAndPermissions = () => {
                                                                 {p.label}
                                                             </DropdownMenuCheckboxItem>
                                                         ))}
+                                                        <DropdownMenuSeparator />
+                                                        <DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">
+                                                            Equipes do Minha Equipe
+                                                        </DropdownMenuLabel>
+                                                        {EQUIPES.map((eq) => {
+                                                            const equipes = (user as AdminUser).minha_equipe_equipes ?? [];
+                                                            return (
+                                                                <DropdownMenuCheckboxItem
+                                                                    key={eq.key}
+                                                                    checked={equipes.includes(eq.key)}
+                                                                    onSelect={(e) => e.preventDefault()}
+                                                                    disabled={updateUserMutation.isPending || !get("can_use_minha_equipe")}
+                                                                    className="pl-7"
+                                                                    onCheckedChange={(c) => {
+                                                                        const next = c
+                                                                            ? Array.from(new Set([...equipes, eq.key]))
+                                                                            : equipes.filter((k) => k !== eq.key);
+                                                                        updateUserMutation.mutate({
+                                                                            userId: user.id,
+                                                                            updates: { minha_equipe_equipes: next } as Partial<AdminUser>,
+                                                                        });
+                                                                    }}
+                                                                >
+                                                                    {eq.label}
+                                                                </DropdownMenuCheckboxItem>
+                                                            );
+                                                        })}
                                                     </DropdownMenuContent>
                                                 </DropdownMenu>
                                             );
