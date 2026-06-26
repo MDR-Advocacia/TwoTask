@@ -9,6 +9,9 @@
 // informa a "fatia operacional" pra deixar claro quanto da leitura é confiável.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useParams } from "react-router-dom";
+
+import { teamLabel } from "@/lib/teams";
 import {
   Activity,
   AlertTriangle,
@@ -170,6 +173,7 @@ function Kpi({
 
 export default function MinhaEquipePage() {
   const { toast } = useToast();
+  const { team = "bb-reu" } = useParams<{ team: string }>();
   const [days, setDays] = useState(30);
   const [cargo, setCargo] = useState<string | null>(null);
   const [cargos, setCargos] = useState<string[]>([]);
@@ -183,9 +187,9 @@ export default function MinhaEquipePage() {
   const [syncing, setSyncing] = useState(false);
 
   useEffect(() => {
-    getCargos().then(setCargos).catch(() => undefined);
+    getCargos(team).then(setCargos).catch(() => undefined);
     getSyncStatus().then(setSyncStatus).catch(() => undefined);
-  }, []);
+  }, [team]);
 
   const handleSyncNow = async () => {
     setSyncing(true);
@@ -225,13 +229,13 @@ export default function MinhaEquipePage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setData(await getEquipe(days, cargo || undefined));
+      setData(await getEquipe(team, days, cargo || undefined));
     } catch (e) {
       toast({ title: "Erro ao carregar a equipe", description: String((e as Error).message), variant: "destructive" });
     } finally {
       setLoading(false);
     }
-  }, [days, cargo, toast]);
+  }, [team, days, cargo, toast]);
 
   useEffect(() => {
     load();
@@ -240,7 +244,7 @@ export default function MinhaEquipePage() {
   const handleRelatorioSetor = async () => {
     setGerandoRel(true);
     try {
-      await criarRelatorio("setor", days);
+      await criarRelatorio("setor", team, days);
       setRelReloadKey((k) => k + 1);
       toast({
         title: "Relatório do setor em geração",
@@ -268,7 +272,7 @@ export default function MinhaEquipePage() {
           </div>
           <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
             <Users className="h-6 w-6 text-[hsl(var(--dunatech-blue))]" />
-            BB Réu
+            {teamLabel(team)}
           </h1>
           <p className="max-w-2xl text-sm text-muted-foreground">
             Desempenho de cada pessoa a partir das tarefas do Legal One — produção, ritmo, prazo e
@@ -336,7 +340,7 @@ export default function MinhaEquipePage() {
       </div>
 
       {/* Painel do setor — gráficos (vazão, pool/atraso, jornada, top tarefas) */}
-      <PainelEquipe days={days} />
+      <PainelEquipe days={days} team={team} />
 
       {/* ───── Equipe (tabela detalhada por pessoa) ───── */}
       <div className="flex items-center gap-2 pt-2">
@@ -474,6 +478,7 @@ export default function MinhaEquipePage() {
 
       <RaioXPessoa
         pessoaId={selected}
+        team={team}
         days={days}
         onClose={() => setSelected(null)}
         onRelatorioCriado={() => setRelReloadKey((k) => k + 1)}

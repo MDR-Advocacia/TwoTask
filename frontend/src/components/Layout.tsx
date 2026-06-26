@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 
 import { useAuth } from "@/hooks/useAuth";
+import { TEAMS } from "@/lib/teams";
 import { Button } from "./ui/button";
 import {
   DropdownMenu,
@@ -145,9 +146,13 @@ export default function Layout({ children }: PropsWithChildren) {
     },
     {
       title: "Minha Equipe",
-      items: [
-        { to: "/minha-equipe/bb-reu", icon: Gauge, label: "BB Réu", requirePermission: 'canUseMinhaEquipe', requireTeam: 'bb-reu' },
-      ],
+      items: TEAMS.map((t) => ({
+        to: `/minha-equipe/${t.key}`,
+        icon: Gauge,
+        label: t.label,
+        requirePermission: 'canUseMinhaEquipe' as Permission,
+        requireTeam: t.key,
+      })),
     },
     {
       items: [

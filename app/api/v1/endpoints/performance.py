@@ -18,47 +18,67 @@ from app.models.legal_one import LegalOneUser
 from app.services.performance import relatorios as rel_jobs
 from app.services.performance.report import build_individual_pdf, build_sector_pdf
 from app.services.performance.service import PerformanceService
+from app.services.performance.teams import TEAM_KEYS
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/performance", tags=["Performance (Minha Equipe)"])
 
 
-_TEAM_KEY = "bb-reu"  # piloto: o Minha Equipe hoje só tem a equipe BB Réu.
+def _user_teams(u) -> list:
+    return [x for x in (getattr(u, "minha_equipe_equipes", None) or "").split(",") if x]
 
 
-def _require_admin(current_user: LegalOneUser = Depends(get_current_user)) -> LegalOneUser:
-    """Acesso ao Minha Equipe: admin OU (permissão do menu + equipe liberada na árvore)."""
+def _require_minha_equipe(current_user: LegalOneUser = Depends(get_current_user)) -> LegalOneUser:
+    """Acesso ao módulo (qualquer time): admin OU permissão do menu."""
     if getattr(current_user, "role", "user") == "admin":
         return current_user
     if not getattr(current_user, "can_use_minha_equipe", False):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sem permissão para o Minha Equipe.")
-    equipes = [x for x in (getattr(current_user, "minha_equipe_equipes", None) or "").split(",") if x]
-    if _TEAM_KEY not in equipes:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sem acesso a esta equipe.")
     return current_user
 
 
+def require_team_access(
+    team: str = Query(..., description="Slug do time (bb-reu, master-reu, ...)"),
+    current_user: LegalOneUser = Depends(get_current_user),
+) -> str:
+    """Gate por time: admin vê todos; demais precisam do time liberado na árvore."""
+    if team not in TEAM_KEYS:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Time inexistente.")
+    if getattr(current_user, "role", "user") == "admin":
+        return team
+    if not getattr(current_user, "can_use_minha_equipe", False):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sem permissão para o Minha Equipe.")
+    if team not in _user_teams(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sem acesso a este time.")
+    return team
+
+
+# Alias do gate de módulo (relatórios-job e sync não são por time).
+_require_admin = _require_minha_equipe
 _admin = Depends(_require_admin)
+_team = Depends(require_team_access)
 
 
-@router.get("/equipe", summary="Lista a equipe com métricas + KPIs", dependencies=[_admin])
+@router.get("/equipe", summary="Lista o time com métricas + KPIs", dependencies=[_team])
 def equipe(
+    team: str = Query(...),
     days: int = Query(30, ge=1, le=365),
-    cargo: Optional[str] = Query(None, description="Filtra por cargo (Advogado(a)/Estagiário(a)/Assistente)"),
+    cargo: Optional[str] = Query(None, description="Filtra por cargo"),
     db: Session = Depends(get_db),
 ):
-    return PerformanceService(db).equipe(days=days, cargo=cargo or None)
+    return PerformanceService(db).equipe(days=days, cargo=cargo or None, team=team)
 
 
-@router.get("/cargos", summary="Cargos distintos (filtro)", dependencies=[_admin])
-def cargos(db: Session = Depends(get_db)):
-    return {"cargos": PerformanceService(db).cargos()}
+@router.get("/cargos", summary="Cargos distintos do time (filtro)", dependencies=[_team])
+def cargos(team: str = Query(...), db: Session = Depends(get_db)):
+    return {"cargos": PerformanceService(db).cargos(team=team)}
 
 
-@router.get("/pessoa/{pessoa_id}", summary="Detalhe de uma pessoa (mix + ritmo/ócio)", dependencies=[_admin])
+@router.get("/pessoa/{pessoa_id}", summary="Detalhe de uma pessoa (mix + ritmo/ócio)", dependencies=[_team])
 def pessoa(
     pessoa_id: int,
+    team: str = Query(...),
     days: int = Query(30, ge=1, le=365),
     db: Session = Depends(get_db),
 ):
@@ -68,32 +88,27 @@ def pessoa(
     return out
 
 
-@router.get("/tipos", summary="Mapa de impacto: volume/cycle/natureza por subtipo", dependencies=[_admin])
-def tipos(
-    days: int = Query(30, ge=1, le=365),
-    db: Session = Depends(get_db),
-):
-    return {"tipos": PerformanceService(db).tipos(days=days)}
+@router.get("/tipos", summary="Mapa de impacto por subtipo (do time)", dependencies=[_team])
+def tipos(team: str = Query(...), days: int = Query(30, ge=1, le=365), db: Session = Depends(get_db)):
+    return {"tipos": PerformanceService(db).tipos(days=days, team=team)}
 
 
-@router.get("/dashboard", summary="Painel do setor: vazão, pool/atrasado, jornada, top tipos", dependencies=[_admin])
-def dashboard(
-    days: int = Query(30, ge=1, le=365),
-    db: Session = Depends(get_db),
-):
-    return PerformanceService(db).dashboard(days=days)
+@router.get("/dashboard", summary="Painel do time: vazão, pool/atrasado, jornada, top tipos", dependencies=[_team])
+def dashboard(team: str = Query(...), days: int = Query(30, ge=1, le=365), db: Session = Depends(get_db)):
+    return PerformanceService(db).dashboard(days=days, team=team)
 
 
-@router.get("/export", summary="Exporta xlsx de um recorte (atrasado/pendente/concluído)", dependencies=[_admin])
+@router.get("/export", summary="Exporta xlsx de um recorte do time", dependencies=[_team])
 def export(
+    team: str = Query(...),
     escopo: str = Query("atrasado", pattern="^(atrasado|pendente|concluido)$"),
     pessoa_id: Optional[int] = Query(None),
     subtipo: Optional[str] = Query(None),
     days: int = Query(30, ge=1, le=365),
     db: Session = Depends(get_db),
 ):
-    data = PerformanceService(db).export_xlsx(escopo=escopo, pessoa_id=pessoa_id, subtipo=subtipo, days=days)
-    fname = f"minha-equipe-{escopo}.xlsx"
+    data = PerformanceService(db).export_xlsx(escopo=escopo, pessoa_id=pessoa_id, subtipo=subtipo, days=days, team=team)
+    fname = f"minha-equipe-{team}-{escopo}.xlsx"
     return Response(
         content=data,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -101,18 +116,18 @@ def export(
     )
 
 
-@router.get("/relatorio-setor", summary="Relatório PDF do setor (Sonnet + fallback)", dependencies=[_admin])
-def relatorio_setor(days: int = Query(30, ge=1, le=365), db: Session = Depends(get_db)):
-    pdf = build_sector_pdf(db, days=days)
+@router.get("/relatorio-setor", summary="Relatório PDF do time (Sonnet + fallback)", dependencies=[_team])
+def relatorio_setor(team: str = Query(...), days: int = Query(30, ge=1, le=365), db: Session = Depends(get_db)):
+    pdf = build_sector_pdf(db, days=days, team=team)
     return Response(
         content=pdf,
         media_type="application/pdf",
-        headers={"Content-Disposition": 'attachment; filename="relatorio-minha-equipe-setor.pdf"'},
+        headers={"Content-Disposition": f'attachment; filename="relatorio-{team}.pdf"'},
     )
 
 
-@router.get("/pessoa/{pessoa_id}/relatorio", summary="Relatório PDF individual (raio-x + intervenções)", dependencies=[_admin])
-def relatorio_pessoa(pessoa_id: int, days: int = Query(30, ge=1, le=365), db: Session = Depends(get_db)):
+@router.get("/pessoa/{pessoa_id}/relatorio", summary="Relatório PDF individual (raio-x + intervenções)", dependencies=[_team])
+def relatorio_pessoa(pessoa_id: int, team: str = Query(...), days: int = Query(30, ge=1, le=365), db: Session = Depends(get_db)):
     pdf = build_individual_pdf(db, pessoa_id, days=days)
     if pdf is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pessoa não encontrada.")
@@ -126,6 +141,7 @@ def relatorio_pessoa(pessoa_id: int, days: int = Query(30, ge=1, le=365), db: Se
 # ── Relatórios como JOB persistente (sobrevivem à navegação) ──────────────
 class CriarRelatorioReq(BaseModel):
     tipo: str = "setor"  # 'setor' | 'pessoa'
+    team: str = "bb-reu"
     days: int = 30
     pessoa_id: Optional[int] = None
 
@@ -134,11 +150,17 @@ class CriarRelatorioReq(BaseModel):
 def criar_relatorio(
     req: CriarRelatorioReq,
     background: BackgroundTasks,
-    current_user: LegalOneUser = Depends(_require_admin),
+    current_user: LegalOneUser = Depends(_require_minha_equipe),
     db: Session = Depends(get_db),
 ):
+    if req.team not in TEAM_KEYS:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Time inexistente.")
+    if getattr(current_user, "role", "user") != "admin" and req.team not in _user_teams(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sem acesso a este time.")
     tipo = "pessoa" if req.tipo == "pessoa" else "setor"
-    rid, label = rel_jobs.criar(db, tipo=tipo, days=req.days, pessoa_id=req.pessoa_id, user_id=current_user.id)
+    rid, label = rel_jobs.criar(
+        db, tipo=tipo, days=req.days, pessoa_id=req.pessoa_id, user_id=current_user.id, team=req.team
+    )
     background.add_task(rel_jobs.gerar, rid)
     return {"id": rid, "label": label, "status": "processando"}
 

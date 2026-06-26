@@ -50,7 +50,14 @@ const PERMISSOES = [
 
 // Equipes disponíveis no "Minha Equipe" — filhas da permissão can_use_minha_equipe
 // (a árvore: liberar o menu + marcar quais equipes o usuário enxerga).
-const EQUIPES = [{ key: "bb-reu", label: "BB Réu" }] as const;
+const EQUIPES = [
+  { key: "bb-reu", label: "BB Réu" },
+  { key: "bb-execucao", label: "BB Execução & Encerramento" },
+  { key: "bb-acordos", label: "BB Acordos" },
+  { key: "bb-estrategico", label: "BB Estratégico" },
+  { key: "master-reu", label: "Master Réu" },
+  { key: "ativos-reu", label: "Ativos Réu" },
+] as const;
 
 // --- Tipos de Dados ---
 interface Sector { id: number; name: string; }

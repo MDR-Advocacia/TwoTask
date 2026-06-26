@@ -106,7 +106,7 @@ function AppContent() {
             <Route path="/onerequest" element={<OnerequestPage />} />
             <Route path="/onerequest/dashboard" element={<OnerequestDashboardPage />} />
             <Route path="/minha-equipe" element={<MinhaEquipePage />} />
-            <Route path="/minha-equipe/bb-reu" element={<MinhaEquipePage />} />
+            <Route path="/minha-equipe/:team" element={<MinhaEquipePage />} />
           </Route>
 
           {/* Rota para página não encontrada */}

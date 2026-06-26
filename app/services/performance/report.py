@@ -123,12 +123,15 @@ _INSTR_SETOR = (
 _SEC_SETOR = ("sumario_executivo", "producao", "prazo_risco", "gargalos", "recomendacoes", "ressalvas")
 
 
-def _sector_metrics(db, days: int) -> dict:
+def _sector_metrics(db, days: int, team=None) -> dict:
+    from app.services.performance.teams import team_label
+
     svc = PerformanceService(db)
-    eq = svc.equipe(days=days)
-    dash = svc.dashboard(days=days)
+    eq = svc.equipe(days=days, team=team)
+    dash = svc.dashboard(days=days, team=team)
     return {
         "periodo_dias": days,
+        "team_label": team_label(team) if team else "Todos os times",
         "kpis_equipe": eq["kpis"],
         "kpis_risco": dash["kpis"],
         "vazao": dash["vazao"][:15],
@@ -187,7 +190,7 @@ def _render_setor(m: dict, nar: dict) -> str:
          "<title>Relatório — Minha Equipe</title>", _STYLE, "</head><body>"]
     o.append(
         '<div class="head"><div><div class="tag">Relatório executivo · uso interno</div>'
-        '<h1>Desempenho da Equipe — BB Réu</h1>'
+        f'<h1>Desempenho da Equipe — {_e(m.get("team_label", ""))}</h1>'
         '<div class="sub">Diagnóstico crítico de produção, prazo e carga</div></div>'
         '<div style="text-align:right"><div class="logo">Duna<span>Flow</span></div>'
         f'<div class="meta">MDR Advocacia</div><div class="meta">Período: últimos {m["periodo_dias"]} dias</div></div></div>'
@@ -425,8 +428,8 @@ def _render_indiv(d: dict, nar: dict) -> str:
 # ══════════════════════════════════════════════════════════════════════
 # API pública
 # ══════════════════════════════════════════════════════════════════════
-def build_sector_pdf(db, days: int = 30) -> bytes:
-    m = _sector_metrics(db, days)
+def build_sector_pdf(db, days: int = 30, team=None) -> bytes:
+    m = _sector_metrics(db, days, team)
     nar = _narrative(_SYS_SETOR, _INSTR_SETOR, m, _SEC_SETOR, _sector_fallback(m))
     return html_to_pdf(_render_setor(m, nar))
 

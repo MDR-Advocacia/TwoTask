@@ -113,23 +113,23 @@ export interface TipoItem {
   densidade: number | null;
 }
 
-export async function getEquipe(days = 30, cargo?: string): Promise<EquipeResponse> {
-  const qs = new URLSearchParams({ days: String(days) });
+export async function getEquipe(team: string, days = 30, cargo?: string): Promise<EquipeResponse> {
+  const qs = new URLSearchParams({ team, days: String(days) });
   if (cargo) qs.set("cargo", cargo);
   return json(await apiFetch(`${BASE}/equipe?${qs.toString()}`));
 }
 
-export async function getCargos(): Promise<string[]> {
-  const r = await json<{ cargos: string[] }>(await apiFetch(`${BASE}/cargos`));
+export async function getCargos(team: string): Promise<string[]> {
+  const r = await json<{ cargos: string[] }>(await apiFetch(`${BASE}/cargos?team=${team}`));
   return r.cargos;
 }
 
-export async function getPessoa(id: number, days = 30): Promise<PessoaDetalhe> {
-  return json(await apiFetch(`${BASE}/pessoa/${id}?days=${days}`));
+export async function getPessoa(id: number, team: string, days = 30): Promise<PessoaDetalhe> {
+  return json(await apiFetch(`${BASE}/pessoa/${id}?team=${team}&days=${days}`));
 }
 
-export async function getTipos(days = 30): Promise<TipoItem[]> {
-  const r = await json<{ tipos: TipoItem[] }>(await apiFetch(`${BASE}/tipos?days=${days}`));
+export async function getTipos(team: string, days = 30): Promise<TipoItem[]> {
+  const r = await json<{ tipos: TipoItem[] }>(await apiFetch(`${BASE}/tipos?team=${team}&days=${days}`));
   return r.tipos;
 }
 
@@ -178,17 +178,18 @@ export interface DashboardData {
   top_tipos: TopTipoItem[];
 }
 
-export async function getDashboard(days = 30): Promise<DashboardData> {
-  return json(await apiFetch(`${BASE}/dashboard?days=${days}`));
+export async function getDashboard(team: string, days = 30): Promise<DashboardData> {
+  return json(await apiFetch(`${BASE}/dashboard?team=${team}&days=${days}`));
 }
 
 export async function downloadExport(params: {
   escopo: "atrasado" | "pendente" | "concluido";
+  team: string;
   days: number;
   pessoa_id?: number;
   subtipo?: string;
 }): Promise<void> {
-  const qs = new URLSearchParams({ escopo: params.escopo, days: String(params.days) });
+  const qs = new URLSearchParams({ escopo: params.escopo, team: params.team, days: String(params.days) });
   if (params.pessoa_id) qs.set("pessoa_id", String(params.pessoa_id));
   if (params.subtipo) qs.set("subtipo", params.subtipo);
   const res = await apiFetch(`${BASE}/export?${qs.toString()}`);
@@ -243,6 +244,7 @@ export interface RelatorioItem {
 
 export async function criarRelatorio(
   tipo: "setor" | "pessoa",
+  team: string,
   days: number,
   pessoa_id?: number,
 ): Promise<{ id: number; label: string; status: string }> {
@@ -250,7 +252,7 @@ export async function criarRelatorio(
     await apiFetch(`${BASE}/relatorios`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tipo, days, pessoa_id }),
+      body: JSON.stringify({ tipo, team, days, pessoa_id }),
     }),
   );
 }

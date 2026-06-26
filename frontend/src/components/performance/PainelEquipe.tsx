@@ -153,7 +153,7 @@ function TopTipoTooltip({ active, payload }: any) {
   );
 }
 
-export default function PainelEquipe({ days }: { days: number }) {
+export default function PainelEquipe({ days, team }: { days: number; team: string }) {
   const { toast } = useToast();
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -163,11 +163,11 @@ export default function PainelEquipe({ days }: { days: number }) {
 
   useEffect(() => {
     setLoading(true);
-    getDashboard(days)
+    getDashboard(team, days)
       .then(setData)
       .catch((e) => toast({ title: "Erro ao carregar o painel", description: String((e as Error).message), variant: "destructive" }))
       .finally(() => setLoading(false));
-  }, [days, toast]);
+  }, [days, team, toast]);
 
   if (!data) {
     return (
@@ -192,7 +192,7 @@ export default function PainelEquipe({ days }: { days: number }) {
     escopo: "atrasado" | "pendente" | "concluido",
     extra: { subtipo?: string; pessoa_id?: number } = {},
   ) => {
-    downloadExport({ escopo, days, ...extra }).catch((e) =>
+    downloadExport({ escopo, days, team, ...extra }).catch((e) =>
       toast({ title: "Erro ao exportar", description: String((e as Error).message), variant: "destructive" }),
     );
   };

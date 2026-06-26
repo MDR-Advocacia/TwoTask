@@ -42,13 +42,17 @@ class PerformanceService:
         return start, now
 
     # ── equipe ────────────────────────────────────────────────────────────
-    def equipe(self, days: int = 30, cargo: str | None = None) -> dict:
+    def equipe(self, days: int = 30, cargo: str | None = None, team: str | None = None) -> dict:
         start, now = self._period(days)
         params = {"start": start, "end": now}
         cargo_clause = ""
         if cargo:
             cargo_clause = "AND p.cargo = :cargo"
             params["cargo"] = cargo
+        team_clause = ""
+        if team:
+            team_clause = "AND p.equipe = :team"
+            params["team"] = team
 
         rows = self.db.execute(
             text(
@@ -68,7 +72,7 @@ class PerformanceService:
                   ON t.pessoa_id = p.id AND t.status = 'Cumprido'
                   AND t.concluido_em >= :start AND t.concluido_em <= :end
                 LEFT JOIN perf_subtipo_categoria c ON c.subtipo = t.subtipo
-                WHERE p.ativo {cargo_clause}
+                WHERE p.ativo {team_clause} {cargo_clause}
                 GROUP BY p.id, p.nome, p.cargo, p.squad, p.posicao
                 ORDER BY concluido DESC, p.nome
                 """
@@ -118,13 +122,13 @@ class PerformanceService:
         }
         return {"periodo_dias": days, "kpis": kpis, "pessoas": pessoas}
 
-    def cargos(self) -> list:
-        return [
-            r[0]
-            for r in self.db.execute(
-                text("SELECT DISTINCT cargo FROM perf_pessoa WHERE cargo IS NOT NULL ORDER BY cargo")
-            ).fetchall()
-        ]
+    def cargos(self, team: str | None = None) -> list:
+        sql = "SELECT DISTINCT cargo FROM perf_pessoa WHERE cargo IS NOT NULL"
+        params: dict = {}
+        if team:
+            sql += " AND equipe = :team"
+            params["team"] = team
+        return [r[0] for r in self.db.execute(text(sql + " ORDER BY cargo"), params).fetchall()]
 
     # ── detalhe da pessoa ─────────────────────────────────────────────────
     def pessoa_detalhe(self, pessoa_id: int, days: int = 30) -> dict | None:
@@ -319,17 +323,23 @@ class PerformanceService:
         }
 
     # ── mapa de impacto por tipo ──────────────────────────────────────────
-    def tipos(self, days: int = 30) -> list:
+    def tipos(self, days: int = 30, team: str | None = None) -> list:
         start, now = self._period(days)
+        params = {"start": start, "end": now}
+        team_join = ""
+        if team:
+            team_join = "JOIN perf_pessoa pp ON pp.id = t.pessoa_id AND pp.equipe = :team"
+            params["team"] = team
         rows = self.db.execute(
             text(
-                """
+                f"""
                 SELECT t.subtipo AS subtipo, COALESCE(c.categoria, 'profundo') AS categoria,
                   COUNT(*) AS vol, COUNT(DISTINCT t.pessoa_id) AS pessoas,
                   percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (t.concluido_em - t.cadastrado_em)))
                     FILTER (WHERE t.cadastrado_em IS NOT NULL) AS cycle_seg,
                   c.densidade AS densidade
                 FROM perf_l1_tarefa t
+                {team_join}
                 LEFT JOIN perf_subtipo_categoria c ON c.subtipo = t.subtipo
                 WHERE t.status = 'Cumprido' AND t.concluido_em >= :start AND t.concluido_em <= :end
                   AND t.subtipo IS NOT NULL
@@ -337,7 +347,7 @@ class PerformanceService:
                 ORDER BY vol DESC
                 """
             ),
-            {"start": start, "end": now},
+            params,
         ).fetchall()
         return [
             {
@@ -352,30 +362,35 @@ class PerformanceService:
         ]
 
     # ── painel do setor (dados pros gráficos) ─────────────────────────────
-    def dashboard(self, days: int = 30) -> dict:
+    def dashboard(self, days: int = 30, team: str | None = None) -> dict:
         """Agrega o setor pros gráficos: vazão, pool pendente/atrasado, jornada
         (início/fim do dia + hands-on), e top tipos. Tudo por pessoa."""
         start, now = self._period(days)
+        tparam = {"team": team} if team else {}
+        team_where = "AND equipe = :team" if team else ""
+        team_t = "AND t.pessoa_id IN (SELECT id FROM perf_pessoa WHERE equipe = :team)" if team else ""
+        team_nb = "AND pessoa_id IN (SELECT id FROM perf_pessoa WHERE equipe = :team)" if team else ""
         pessoas = {
             r.id: r
             for r in self.db.execute(
-                text("SELECT id, nome, cargo, squad FROM perf_pessoa WHERE ativo")
+                text(f"SELECT id, nome, cargo, squad FROM perf_pessoa WHERE ativo {team_where}"),
+                tparam,
             ).fetchall()
         }
         completions = self.db.execute(
             text(
-                """
+                f"""
                 SELECT t.pessoa_id AS pid,
                        (t.concluido_em AT TIME ZONE 'America/Sao_Paulo') AS c,
                        COALESCE(cat.categoria, 'profundo') AS categoria
                 FROM perf_l1_tarefa t
                 LEFT JOIN perf_subtipo_categoria cat ON cat.subtipo = t.subtipo
                 WHERE t.status = 'Cumprido' AND t.pessoa_id IS NOT NULL
-                  AND t.concluido_em >= :start AND t.concluido_em <= :end
+                  AND t.concluido_em >= :start AND t.concluido_em <= :end {team_t}
                 ORDER BY t.pessoa_id, t.concluido_em
                 """
             ),
-            {"start": start, "end": now},
+            {"start": start, "end": now, **tparam},
         ).fetchall()
 
         per = defaultdict(lambda: {"times": [], "oper": 0, "total": 0})
@@ -392,14 +407,15 @@ class PerformanceService:
             pid: (pend, atr)
             for pid, pend, atr in self.db.execute(
                 text(
-                    """
+                    f"""
                     SELECT pessoa_id, COUNT(*) AS pend,
                            COUNT(*) FILTER (WHERE prazo_previsto < now()) AS atr
                     FROM perf_l1_tarefa
-                    WHERE status = 'Pendente' AND pessoa_id IS NOT NULL
+                    WHERE status = 'Pendente' AND pessoa_id IS NOT NULL {team_nb}
                     GROUP BY pessoa_id
                     """
-                )
+                ),
+                tparam,
             ).fetchall()
         }
 
@@ -456,7 +472,7 @@ class PerformanceService:
 
         top = self.db.execute(
             text(
-                """
+                f"""
                 SELECT t.subtipo AS subtipo, COALESCE(c.categoria, 'profundo') AS categoria,
                   COUNT(*) FILTER (
                     WHERE t.status = 'Cumprido' AND t.concluido_em >= :start AND t.concluido_em <= :end
@@ -465,12 +481,12 @@ class PerformanceService:
                   COUNT(*) FILTER (WHERE t.status = 'Pendente' AND t.prazo_previsto < now()) AS atrasado
                 FROM perf_l1_tarefa t
                 LEFT JOIN perf_subtipo_categoria c ON c.subtipo = t.subtipo
-                WHERE t.subtipo IS NOT NULL
+                WHERE t.subtipo IS NOT NULL {team_t}
                 GROUP BY t.subtipo, c.categoria
                 ORDER BY vol DESC LIMIT 12
                 """
             ),
-            {"start": start, "end": now},
+            {"start": start, "end": now, **tparam},
         ).fetchall()
 
         return {
@@ -496,7 +512,7 @@ class PerformanceService:
 
     # ── export Excel de um recorte (tarefas que o operador precisa tratar) ──
     def export_xlsx(self, escopo: str = "atrasado", pessoa_id: int | None = None,
-                    subtipo: str | None = None, days: int = 30) -> bytes:
+                    subtipo: str | None = None, days: int = 30, team: str | None = None) -> bytes:
         """Gera xlsx com as tarefas de um recorte. escopo: atrasado|pendente|concluido."""
         from io import BytesIO
 
@@ -520,6 +536,9 @@ class PerformanceService:
         if subtipo:
             conds.append("t.subtipo = :sub")
             params["sub"] = subtipo
+        if team:
+            conds.append("p.equipe = :team")
+            params["team"] = team
         where = " AND ".join(conds)
 
         rows = self.db.execute(

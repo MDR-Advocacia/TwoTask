@@ -54,6 +54,20 @@ _CARGO_OVERRIDE = {
     "cinthia samylle martins souza da silva": "Advogado(a)",
 }
 
+# Aba (sheet) da planilha de squads → setor (supervisão). Chave = nome da aba
+# normalizado. Várias abas caem no MESMO setor (BB Réu = Defesa + Réu + Recursos).
+# Abas fora deste mapa são ignoradas (ex.: BB CADASTRO vazia).
+TAB_TO_SETOR = {
+    "bb defesa": "bb-reu",
+    "bb reu": "bb-reu",
+    "recursos - reu": "bb-reu",
+    "bb execucao&encerramento": "bb-execucao",
+    "bb acordos": "bb-acordos",
+    "bb estrategico": "bb-estrategico",
+    "master reu": "master-reu",
+    "ativos reu": "ativos-reu",
+}
+
 
 def norm(s) -> str:
     """Minúsculo, sem acento, espaços colapsados — chave de join com o L1."""
@@ -72,29 +86,81 @@ def _aware(dt):
     return dt
 
 
+def _find_col(header, *keys):
+    """Índice da 1ª coluna cujo cabeçalho contém alguma das chaves (abas variam)."""
+    for i, h in enumerate(header or ()):
+        hn = norm(h)
+        if hn and any(k in hn for k in keys):
+            return i
+    return None
+
+
+def _canon_cargo(c):
+    """Normaliza a grafia do cargo (as abas usam variações)."""
+    cn = norm(c)
+    if "advog" in cn:
+        return "Advogado(a)"
+    if "estag" in cn:
+        return "Estagiário(a)"
+    if "assist" in cn:
+        return "Assistente"
+    if "superv" in cn:
+        return "Supervisor(a)"
+    return (c or "").strip() or None
+
+
 def seed_pessoas(db) -> dict:
+    """Lê TODAS as abas da planilha de squads (cada aba → setor), detectando as
+    colunas pelo cabeçalho (os layouts variam entre abas), e popula perf_pessoa
+    com equipe (setor) + is_supervisor. Pessoa em abas do mesmo setor colapsa;
+    em setores diferentes, fica no primeiro (ordem das abas)."""
     wb = openpyxl.load_workbook(SQUADS_XLSX, read_only=True, data_only=True)
-    ws = wb.active
-    rows = ws.iter_rows(values_only=True)
-    next(rows)
     agg: dict = {}
-    for r in rows:
-        if not r or not r[1]:
+    for sheet in wb.sheetnames:
+        equipe = TAB_TO_SETOR.get(norm(sheet))
+        if not equipe:
             continue
-        nm = norm(r[1])
-        cargo = str(r[3]).strip() if len(r) > 3 and r[3] else ""
-        squad = str(r[0]).strip() if r[0] else ""
-        pos = str(r[2]).strip() if len(r) > 2 and r[2] else ""
-        cur = agg.get(nm)
-        if cur is None:
-            agg[nm] = {"nome": str(r[1]).strip(), "cargo": cargo, "squad": squad, "posicao": pos}
-        else:
-            if not cur["cargo"] and cargo:
-                cur["cargo"] = cargo
-            # Prefere a posição "core" (não compartilhada) como squad principal.
-            if cur["posicao"].lower() in _SHARED_POS and pos.lower() not in _SHARED_POS:
-                cur["squad"] = squad
-                cur["posicao"] = pos
+        rows = list(wb[sheet].iter_rows(values_only=True))
+        if not rows:
+            continue
+        header = rows[0]
+        ci_nome = _find_col(header, "nome")
+        if ci_nome is None:
+            continue
+        ci_cargo = _find_col(header, "cargo")
+        ci_squad = _find_col(header, "squad")
+        ci_pos = _find_col(header, "posic")
+
+        def _cell(r, i):
+            return str(r[i]).strip() if i is not None and len(r) > i and r[i] else ""
+
+        for r in rows[1:]:
+            if not r or len(r) <= ci_nome or not r[ci_nome]:
+                continue
+            nome = str(r[ci_nome]).strip()
+            nm = norm(nome)
+            if not nm:
+                continue
+            cargo = _cell(r, ci_cargo)
+            squad = _cell(r, ci_squad)
+            pos = _cell(r, ci_pos)
+            is_sup = "supervisor" in norm(cargo) or "supervisor" in norm(pos)
+            cur = agg.get(nm)
+            if cur is None:
+                agg[nm] = {
+                    "nome": nome, "cargo": cargo, "squad": squad, "posicao": pos,
+                    "equipe": equipe, "is_supervisor": is_sup,
+                }
+            else:
+                if not cur["cargo"] and cargo:
+                    cur["cargo"] = cargo
+                if not cur["squad"] and squad:
+                    cur["squad"] = squad
+                if not cur["posicao"] and pos:
+                    cur["posicao"] = pos
+                if is_sup:
+                    cur["is_supervisor"] = True
+                # equipe: mantém o primeiro setor.
 
     existing = {p.nome_norm: p for p in db.query(PerfPessoa).all()}
     for nm, d in agg.items():
@@ -103,9 +169,11 @@ def seed_pessoas(db) -> dict:
             p = PerfPessoa(nome_norm=nm)
             db.add(p)
         p.nome = d["nome"]
-        p.cargo = _CARGO_OVERRIDE.get(nm) or d["cargo"] or None
+        p.cargo = _CARGO_OVERRIDE.get(nm) or _canon_cargo(d["cargo"])
         p.squad = d["squad"] or None
         p.posicao = d["posicao"] or None
+        p.equipe = d["equipe"]
+        p.is_supervisor = d["is_supervisor"]
         p.ativo = True
     db.commit()
     return {p.nome_norm: p.id for p in db.query(PerfPessoa).all()}

@@ -32,7 +32,9 @@ def _now():
     return datetime.datetime.now(tz=_BRT) if _BRT else datetime.datetime.now()
 
 
-def criar(db, tipo: str, days: int, pessoa_id=None, user_id=None):
+def criar(db, tipo: str, days: int, pessoa_id=None, user_id=None, team=None):
+    from app.services.performance.teams import team_label
+
     if tipo == "pessoa":
         nome = None
         if pessoa_id:
@@ -40,9 +42,9 @@ def criar(db, tipo: str, days: int, pessoa_id=None, user_id=None):
             nome = row[0] if row else None
         label = f"Raio-X — {nome or ('pessoa #' + str(pessoa_id))} · {days}d"
     else:
-        label = f"Setor — BB Réu · {days}d"
+        label = f"Time — {team_label(team) if team else 'todos'} · {days}d"
     rel = PerfRelatorio(
-        tipo=tipo, days=days, pessoa_id=pessoa_id, label=label,
+        tipo=tipo, team=team, days=days, pessoa_id=pessoa_id, label=label,
         status="processando", criado_por_id=user_id,
     )
     db.add(rel)
@@ -64,7 +66,7 @@ def gerar(relatorio_id: int):
                 if pdf is None:
                     raise ValueError("Pessoa não encontrada.")
             else:
-                pdf = build_sector_pdf(db, days=rel.days)
+                pdf = build_sector_pdf(db, days=rel.days, team=rel.team)
             rel.pdf = pdf
             rel.status = "pronto"
             rel.erro = None

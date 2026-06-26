@@ -51,6 +51,9 @@ class PerfPessoa(Base):
     cargo = Column(String, nullable=True)
     squad = Column(String, nullable=True)
     posicao = Column(String, nullable=True)
+    # Setor/supervisão (slug, ex.: 'bb-reu') — agrupa abas da planilha de squads.
+    equipe = Column(String, nullable=True, index=True)
+    is_supervisor = Column(Boolean, nullable=False, server_default="false")
     ativo = Column(Boolean, nullable=False, server_default="true")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -98,6 +101,7 @@ class PerfRelatorio(Base):
 
     id = Column(Integer, primary_key=True)
     tipo = Column(String, nullable=False)  # 'setor' | 'pessoa'
+    team = Column(String, nullable=True)  # slug do time (relatório de setor)
     pessoa_id = Column(Integer, nullable=True)
     label = Column(String, nullable=False)
     days = Column(Integer, nullable=False, server_default="30")

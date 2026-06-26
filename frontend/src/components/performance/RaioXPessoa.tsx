@@ -244,11 +244,13 @@ function FuturoSection({ d, onExport }: { d: PessoaDetalhe; onExport: (escopo: "
 
 export default function RaioXPessoa({
   pessoaId,
+  team,
   days,
   onClose,
   onRelatorioCriado,
 }: {
   pessoaId: number | null;
+  team: string;
   days: number;
   onClose: () => void;
   onRelatorioCriado?: () => void;
@@ -264,15 +266,15 @@ export default function RaioXPessoa({
       return;
     }
     setLoading(true);
-    getPessoa(pessoaId, days)
+    getPessoa(pessoaId, team, days)
       .then(setData)
       .catch((e) => toast({ title: "Erro ao carregar a pessoa", description: String((e as Error).message), variant: "destructive" }))
       .finally(() => setLoading(false));
-  }, [pessoaId, days, toast]);
+  }, [pessoaId, team, days, toast]);
 
   const handleExport = (escopo: "atrasado" | "pendente") => {
     if (pessoaId == null) return;
-    downloadExport({ escopo, days, pessoa_id: pessoaId }).catch((e) =>
+    downloadExport({ escopo, days, team, pessoa_id: pessoaId }).catch((e) =>
       toast({ title: "Erro ao exportar", description: String((e as Error).message), variant: "destructive" }),
     );
   };
@@ -281,7 +283,7 @@ export default function RaioXPessoa({
     if (pessoaId == null) return;
     setGerando(true);
     try {
-      await criarRelatorio("pessoa", days, pessoaId);
+      await criarRelatorio("pessoa", team, days, pessoaId);
       onRelatorioCriado?.();
       toast({
         title: "Relatório individual em geração",
