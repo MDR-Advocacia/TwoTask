@@ -37,7 +37,7 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { InfoHint, MetricLabel } from "@/components/performance/InfoHint";
-import { type Categoria, type PessoaDetalhe, abrirRelatorioPessoa, downloadExport, getPessoa } from "@/services/performance";
+import { type Categoria, type PessoaDetalhe, criarRelatorio, downloadExport, getPessoa } from "@/services/performance";
 import { useToast } from "@/hooks/use-toast";
 
 const CAT_STYLE: Record<Categoria, { label: string; cls: string }> = {
@@ -246,10 +246,12 @@ export default function RaioXPessoa({
   pessoaId,
   days,
   onClose,
+  onRelatorioCriado,
 }: {
   pessoaId: number | null;
   days: number;
   onClose: () => void;
+  onRelatorioCriado?: () => void;
 }) {
   const { toast } = useToast();
   const [data, setData] = useState<PessoaDetalhe | null>(null);
@@ -279,7 +281,12 @@ export default function RaioXPessoa({
     if (pessoaId == null) return;
     setGerando(true);
     try {
-      await abrirRelatorioPessoa(pessoaId, days);
+      await criarRelatorio("pessoa", days, pessoaId);
+      onRelatorioCriado?.();
+      toast({
+        title: "Relatório individual em geração",
+        description: "Roda no servidor — pode fechar. Aparece na seção 'Relatórios' da página quando ficar pronto.",
+      });
     } catch (e) {
       toast({ title: "Erro ao gerar o relatório", description: String((e as Error).message), variant: "destructive" });
     } finally {

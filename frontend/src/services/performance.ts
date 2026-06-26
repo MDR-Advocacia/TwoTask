@@ -204,19 +204,62 @@ export async function downloadExport(params: {
   URL.revokeObjectURL(url);
 }
 
-async function fetchPdfAndOpen(path: string): Promise<void> {
+// Baixa o PDF (download via <a>) em vez de window.open: o open roda DEPOIS dos
+// ~20s de geração (Sonnet), fora do gesto do usuário, e o navegador bloqueia o
+// popup silenciosamente. O download por <a download> funciona após o await.
+async function fetchPdfAndDownload(path: string, filename: string): Promise<void> {
   const res = await apiFetch(path);
   if (!res.ok) throw new Error(`Erro ${res.status} ao gerar o relatório`);
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
-  window.open(url, "_blank");
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
 export async function abrirRelatorioSetor(days: number): Promise<void> {
-  return fetchPdfAndOpen(`${BASE}/relatorio-setor?days=${days}`);
+  return fetchPdfAndDownload(`${BASE}/relatorio-setor?days=${days}`, "relatorio-minha-equipe-setor.pdf");
 }
 
 export async function abrirRelatorioPessoa(id: number, days: number): Promise<void> {
-  return fetchPdfAndOpen(`${BASE}/pessoa/${id}/relatorio?days=${days}`);
+  return fetchPdfAndDownload(`${BASE}/pessoa/${id}/relatorio?days=${days}`, `raio-x-pessoa-${id}.pdf`);
+}
+
+// ── Relatórios como job persistente ──
+export interface RelatorioItem {
+  id: number;
+  tipo: string;
+  label: string;
+  days: number;
+  status: "processando" | "pronto" | "erro";
+  erro: string | null;
+  criado_em: string | null;
+  concluido_em: string | null;
+}
+
+export async function criarRelatorio(
+  tipo: "setor" | "pessoa",
+  days: number,
+  pessoa_id?: number,
+): Promise<{ id: number; label: string; status: string }> {
+  return json(
+    await apiFetch(`${BASE}/relatorios`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tipo, days, pessoa_id }),
+    }),
+  );
+}
+
+export async function listarRelatorios(): Promise<RelatorioItem[]> {
+  const r = await json<{ items: RelatorioItem[] }>(await apiFetch(`${BASE}/relatorios`));
+  return r.items;
+}
+
+export async function downloadRelatorioById(id: number): Promise<void> {
+  return fetchPdfAndDownload(`${BASE}/relatorios/${id}/download`, `relatorio-minha-equipe-${id}.pdf`);
 }

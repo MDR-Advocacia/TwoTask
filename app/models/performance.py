@@ -18,6 +18,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
 )
 from sqlalchemy.sql import func
@@ -84,3 +85,25 @@ class PerfSubtipoCategoria(Base):
     volume = Column(Integer, nullable=True)
     densidade = Column(Float, nullable=True)
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class PerfRelatorio(Base):
+    """Relatório PDF gerado como JOB persistente — sobrevive à navegação/saída.
+
+    Dispara (status=processando) → gera em background → guarda o PDF na linha
+    (status=pronto). Cada usuário vê os seus (criado_por_id).
+    """
+
+    __tablename__ = "perf_relatorio"
+
+    id = Column(Integer, primary_key=True)
+    tipo = Column(String, nullable=False)  # 'setor' | 'pessoa'
+    pessoa_id = Column(Integer, nullable=True)
+    label = Column(String, nullable=False)
+    days = Column(Integer, nullable=False, server_default="30")
+    status = Column(String, nullable=False, server_default="processando")  # processando|pronto|erro
+    pdf = Column(LargeBinary, nullable=True)
+    erro = Column(String, nullable=True)
+    criado_por_id = Column(Integer, nullable=True)
+    criado_em = Column(DateTime(timezone=True), server_default=func.now())
+    concluido_em = Column(DateTime(timezone=True), nullable=True)

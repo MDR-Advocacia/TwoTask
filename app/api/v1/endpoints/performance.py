@@ -8,12 +8,14 @@ Lê das tabelas perf* (populadas pelo seed/ingestão). Ver
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
 from app.core.dependencies import get_db
 from app.models.legal_one import LegalOneUser
+from app.services.performance import relatorios as rel_jobs
 from app.services.performance.report import build_individual_pdf, build_sector_pdf
 from app.services.performance.service import PerformanceService
 
@@ -118,4 +120,48 @@ def relatorio_pessoa(pessoa_id: int, days: int = Query(30, ge=1, le=365), db: Se
         content=pdf,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="raio-x-pessoa-{pessoa_id}.pdf"'},
+    )
+
+
+# ── Relatórios como JOB persistente (sobrevivem à navegação) ──────────────
+class CriarRelatorioReq(BaseModel):
+    tipo: str = "setor"  # 'setor' | 'pessoa'
+    days: int = 30
+    pessoa_id: Optional[int] = None
+
+
+@router.post("/relatorios", summary="Dispara a geração de um relatório (job persistente)")
+def criar_relatorio(
+    req: CriarRelatorioReq,
+    background: BackgroundTasks,
+    current_user: LegalOneUser = Depends(_require_admin),
+    db: Session = Depends(get_db),
+):
+    tipo = "pessoa" if req.tipo == "pessoa" else "setor"
+    rid, label = rel_jobs.criar(db, tipo=tipo, days=req.days, pessoa_id=req.pessoa_id, user_id=current_user.id)
+    background.add_task(rel_jobs.gerar, rid)
+    return {"id": rid, "label": label, "status": "processando"}
+
+
+@router.get("/relatorios", summary="Lista os relatórios do usuário")
+def listar_relatorios(
+    current_user: LegalOneUser = Depends(_require_admin),
+    db: Session = Depends(get_db),
+):
+    return {"items": rel_jobs.listar(db, current_user.id)}
+
+
+@router.get("/relatorios/{relatorio_id}/download", summary="Baixa o PDF de um relatório pronto")
+def baixar_relatorio(
+    relatorio_id: int,
+    current_user: LegalOneUser = Depends(_require_admin),
+    db: Session = Depends(get_db),
+):
+    pdf, _label = rel_jobs.get_pdf(db, relatorio_id, current_user.id)
+    if pdf is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Relatório não está pronto ou não encontrado.")
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="relatorio-minha-equipe-{relatorio_id}.pdf"'},
     )

@@ -51,6 +51,7 @@ import { InfoHint, MetricLabel } from "@/components/performance/InfoHint";
 import PainelEquipe from "@/components/performance/PainelEquipe";
 import CollapsibleSection from "@/components/performance/CollapsibleSection";
 import RaioXPessoa from "@/components/performance/RaioXPessoa";
+import RelatoriosSection from "@/components/performance/RelatoriosSection";
 import {
   CommandDialog,
   CommandEmpty,
@@ -63,7 +64,7 @@ import {
   type Categoria,
   type EquipeResponse,
   type PessoaDetalhe,
-  abrirRelatorioSetor,
+  criarRelatorio,
   getCargos,
   getEquipe,
 } from "@/services/performance";
@@ -173,6 +174,7 @@ export default function MinhaEquipePage() {
   const [selected, setSelected] = useState<number | null>(null);
   const [buscaOpen, setBuscaOpen] = useState(false);
   const [gerandoRel, setGerandoRel] = useState(false);
+  const [relReloadKey, setRelReloadKey] = useState(0);
 
   useEffect(() => {
     getCargos().then(setCargos).catch(() => undefined);
@@ -196,7 +198,12 @@ export default function MinhaEquipePage() {
   const handleRelatorioSetor = async () => {
     setGerandoRel(true);
     try {
-      await abrirRelatorioSetor(days);
+      await criarRelatorio("setor", days);
+      setRelReloadKey((k) => k + 1);
+      toast({
+        title: "Relatório do setor em geração",
+        description: "Roda no servidor — pode sair da tela. Aparece na seção 'Relatórios' quando ficar pronto.",
+      });
     } catch (e) {
       toast({ title: "Erro ao gerar o relatório", description: String((e as Error).message), variant: "destructive" });
     } finally {
@@ -376,6 +383,10 @@ export default function MinhaEquipePage() {
 
       </CollapsibleSection>
 
+      <CollapsibleSection title="Relatórios" subtitle="PDF gerados no servidor (persistem)">
+        <RelatoriosSection reloadKey={relReloadKey} />
+      </CollapsibleSection>
+
       <CommandDialog open={buscaOpen} onOpenChange={setBuscaOpen}>
         <CommandInput placeholder="Buscar pessoa pelo nome…" />
         <CommandList>
@@ -398,7 +409,12 @@ export default function MinhaEquipePage() {
         </CommandList>
       </CommandDialog>
 
-      <RaioXPessoa pessoaId={selected} days={days} onClose={() => setSelected(null)} />
+      <RaioXPessoa
+        pessoaId={selected}
+        days={days}
+        onClose={() => setSelected(null)}
+        onRelatorioCriado={() => setRelReloadKey((k) => k + 1)}
+      />
     </div>
   );
 }
