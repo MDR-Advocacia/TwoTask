@@ -60,6 +60,16 @@ _admin = Depends(_require_admin)
 _team = Depends(require_team_access)
 
 
+def _require_admin_only(current_user: LegalOneUser = Depends(get_current_user)) -> LegalOneUser:
+    """Manutenção do roster é só pra admin (muda atribuição de todos os times)."""
+    if getattr(current_user, "role", "user") != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Restrito a administradores.")
+    return current_user
+
+
+_adminonly = Depends(_require_admin_only)
+
+
 @router.get("/equipe", summary="Lista o time com métricas + KPIs", dependencies=[_team])
 def equipe(
     team: str = Query(...),
@@ -214,3 +224,61 @@ def _run_sync_bg() -> None:
 def sync_now(background: BackgroundTasks):
     background.add_task(_run_sync_bg)
     return {"ok": True, "mensagem": "Ingestão disparada — baixando o relatório do L1 e atualizando os dados."}
+
+
+# ── Manutenção do roster (editor de equipe, admin-only) ───────────────────
+@router.get("/roster", summary="Roster editável do time (manutenção)", dependencies=[_adminonly])
+def roster(team: str = Query(...), db: Session = Depends(get_db)):
+    if team not in TEAM_KEYS:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Time inexistente.")
+    return {"pessoas": PerformanceService(db).roster(team)}
+
+
+class RosterUpdateReq(BaseModel):
+    cargo: Optional[str] = None
+    equipe: Optional[str] = None
+    is_supervisor: Optional[bool] = None
+    ativo: Optional[bool] = None
+
+
+@router.patch("/roster/{pessoa_id}", summary="Atualiza uma pessoa do roster", dependencies=[_adminonly])
+def update_roster(pessoa_id: int, req: RosterUpdateReq, db: Session = Depends(get_db)):
+    if req.equipe is not None and req.equipe not in TEAM_KEYS:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Time inexistente.")
+    out = PerformanceService(db).update_pessoa(
+        pessoa_id, cargo=req.cargo, equipe=req.equipe,
+        is_supervisor=req.is_supervisor, ativo=req.ativo,
+    )
+    if out is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pessoa não encontrada.")
+    return out
+
+
+@router.get("/roster/candidatos", summary="Candidatos a adicionar ao time (usuários do L1)", dependencies=[_adminonly])
+def roster_candidatos(team: str = Query(...), busca: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    if team not in TEAM_KEYS:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Time inexistente.")
+    return {"candidatos": PerformanceService(db).candidatos(team, busca=busca)}
+
+
+class AddPessoaReq(BaseModel):
+    nome: str
+    team: str
+
+
+@router.post("/roster/adicionar", summary="Adiciona uma pessoa ao time", dependencies=[_adminonly])
+def roster_adicionar(req: AddPessoaReq, db: Session = Depends(get_db)):
+    if req.team not in TEAM_KEYS:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Time inexistente.")
+    out = PerformanceService(db).adicionar_pessoa(req.nome, req.team)
+    if out is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Nome inválido.")
+    return out
+
+
+@router.delete("/roster/{pessoa_id}", summary="Exclui a pessoa do sistema (saiu do escritório)", dependencies=[_adminonly])
+def roster_excluir(pessoa_id: int, db: Session = Depends(get_db)):
+    out = PerformanceService(db).excluir_pessoa(pessoa_id)
+    if out is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pessoa não encontrada.")
+    return out

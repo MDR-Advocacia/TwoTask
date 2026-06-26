@@ -19,6 +19,8 @@ from collections import defaultdict
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.models.performance import PerfPessoa, PerfTarefa
+
 try:
     from zoneinfo import ZoneInfo
 
@@ -583,3 +585,107 @@ class PerformanceService:
         buf = BytesIO()
         wb.save(buf)
         return buf.getvalue()
+
+    # ── manutenção do roster (editor de equipe) ───────────────────────────
+    def roster(self, team: str) -> list:
+        """Pessoas do time (visão editável), com contagem de tarefas pra referência."""
+        rows = self.db.execute(
+            text(
+                """
+                SELECT p.id, p.nome, p.cargo, p.equipe, p.is_supervisor, p.ativo, p.squad, p.posicao,
+                  (SELECT COUNT(*) FROM perf_l1_tarefa t WHERE t.pessoa_id = p.id AND t.status = 'Cumprido') AS concluido,
+                  (SELECT COUNT(*) FROM perf_l1_tarefa t WHERE t.pessoa_id = p.id AND t.status = 'Pendente') AS pendente
+                FROM perf_pessoa p
+                WHERE p.equipe = :team
+                ORDER BY
+                  p.is_supervisor DESC,
+                  CASE
+                    WHEN p.cargo ILIKE '%superv%' THEN 0
+                    WHEN p.cargo ILIKE '%advog%' THEN 1
+                    WHEN p.cargo ILIKE '%assist%' THEN 2
+                    WHEN p.cargo ILIKE '%estag%' THEN 3
+                    ELSE 4
+                  END,
+                  p.nome
+                """
+            ),
+            {"team": team},
+        ).fetchall()
+        return [
+            {
+                "id": r.id, "nome": r.nome, "cargo": r.cargo, "equipe": r.equipe,
+                "is_supervisor": r.is_supervisor, "ativo": r.ativo, "squad": r.squad,
+                "posicao": r.posicao, "concluido": r.concluido, "pendente": r.pendente,
+            }
+            for r in rows
+        ]
+
+    def update_pessoa(self, pessoa_id: int, *, cargo=None, equipe=None,
+                      is_supervisor=None, ativo=None):
+        p = self.db.query(PerfPessoa).filter(PerfPessoa.id == pessoa_id).first()
+        if not p:
+            return None
+        if cargo is not None:
+            p.cargo = (cargo or "").strip() or None
+        if equipe is not None:
+            p.equipe = equipe
+        if is_supervisor is not None:
+            p.is_supervisor = bool(is_supervisor)
+        if ativo is not None:
+            p.ativo = bool(ativo)
+        self.db.commit()
+        return {
+            "id": p.id, "nome": p.nome, "cargo": p.cargo, "equipe": p.equipe,
+            "is_supervisor": p.is_supervisor, "ativo": p.ativo,
+        }
+
+    def candidatos(self, team: str, busca: str | None = None, limit: int = 80) -> list:
+        """Pessoas do catálogo de usuários do L1 que NÃO estão neste time (pra adicionar)."""
+        from app.models.legal_one import LegalOneUser
+        from app.services.performance.seed import norm as _norm
+
+        pessoa_eq = {p.nome_norm: p.equipe for p in self.db.query(PerfPessoa).all()}
+        bnorm = _norm(busca) if busca else None
+        out = []
+        for (nome,) in self.db.query(LegalOneUser.name).filter(LegalOneUser.is_active.is_(True)).all():
+            if not nome:
+                continue
+            nm = _norm(nome)
+            if pessoa_eq.get(nm) == team:
+                continue
+            if bnorm and bnorm not in nm:
+                continue
+            out.append({"nome": nome, "equipe_atual": pessoa_eq.get(nm)})
+            if len(out) >= limit:
+                break
+        out.sort(key=lambda x: x["nome"])
+        return out
+
+    def adicionar_pessoa(self, nome: str, team: str):
+        from app.services.performance.seed import norm as _norm
+
+        nm = _norm(nome)
+        if not nm:
+            return None
+        p = self.db.query(PerfPessoa).filter(PerfPessoa.nome_norm == nm).first()
+        if p is None:
+            p = PerfPessoa(nome_norm=nm, nome=nome.strip())
+            self.db.add(p)
+        p.nome = p.nome or nome.strip()
+        p.equipe = team
+        p.ativo = True
+        self.db.commit()
+        return {"id": p.id, "nome": p.nome, "equipe": p.equipe}
+
+    def excluir_pessoa(self, pessoa_id: int):
+        """Exclui a pessoa do sistema (saiu do escritório). Desvincula as tarefas
+        dela (ficam sem responsável) pra não violar a FK, e remove o registro."""
+        p = self.db.query(PerfPessoa).filter(PerfPessoa.id == pessoa_id).first()
+        if not p:
+            return None
+        self.db.query(PerfTarefa).filter(PerfTarefa.pessoa_id == pessoa_id).update(
+            {PerfTarefa.pessoa_id: None}, synchronize_session=False
+        )
+        self.db.delete(p)
+        self.db.commit()
+        return {"id": pessoa_id, "excluido": True}

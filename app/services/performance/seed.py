@@ -158,9 +158,9 @@ def seed_pessoas(db) -> dict:
                     cur["squad"] = squad
                 if not cur["posicao"] and pos:
                     cur["posicao"] = pos
-                if is_sup:
-                    cur["is_supervisor"] = True
-                # equipe: mantém o primeiro setor.
+                # equipe E is_supervisor: mantém os do PRIMEIRO setor — não deixa a
+                # flag de supervisor de uma aba de outro time vazar (ex.: Fernanda,
+                # supervisora em Acordos, aparece como linha "Acordo" em BB Réu).
 
     existing = {p.nome_norm: p for p in db.query(PerfPessoa).all()}
     for nm, d in agg.items():

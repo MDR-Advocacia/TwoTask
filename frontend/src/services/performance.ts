@@ -286,3 +286,60 @@ export async function getSyncStatus(): Promise<SyncStatus> {
 export async function triggerSync(): Promise<{ ok: boolean; mensagem: string }> {
   return json(await apiFetch(`${BASE}/sync`, { method: "POST" }));
 }
+
+// ── Manutenção do roster (editor de equipe) ──
+export interface RosterPessoa {
+  id: number;
+  nome: string;
+  cargo: string | null;
+  equipe: string | null;
+  is_supervisor: boolean;
+  ativo: boolean;
+  squad: string | null;
+  posicao: string | null;
+  concluido: number;
+  pendente: number;
+}
+
+export async function getRoster(team: string): Promise<RosterPessoa[]> {
+  const r = await json<{ pessoas: RosterPessoa[] }>(await apiFetch(`${BASE}/roster?team=${team}`));
+  return r.pessoas;
+}
+
+export async function updateRosterPessoa(
+  id: number,
+  updates: Partial<{ cargo: string; equipe: string; is_supervisor: boolean; ativo: boolean }>,
+): Promise<void> {
+  const res = await apiFetch(`${BASE}/roster/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) throw new Error(`Erro ${res.status} ao salvar`);
+}
+
+export interface Candidato {
+  nome: string;
+  equipe_atual: string | null;
+}
+
+export async function getCandidatos(team: string, busca?: string): Promise<Candidato[]> {
+  const qs = new URLSearchParams({ team });
+  if (busca) qs.set("busca", busca);
+  const r = await json<{ candidatos: Candidato[] }>(await apiFetch(`${BASE}/roster/candidatos?${qs.toString()}`));
+  return r.candidatos;
+}
+
+export async function adicionarPessoa(nome: string, team: string): Promise<void> {
+  const res = await apiFetch(`${BASE}/roster/adicionar`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nome, team }),
+  });
+  if (!res.ok) throw new Error(`Erro ${res.status} ao adicionar`);
+}
+
+export async function excluirPessoa(id: number): Promise<void> {
+  const res = await apiFetch(`${BASE}/roster/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Erro ${res.status} ao excluir`);
+}

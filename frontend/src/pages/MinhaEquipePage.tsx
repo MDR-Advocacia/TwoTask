@@ -24,6 +24,7 @@ import {
   type LucideIcon,
   RefreshCw,
   Search,
+  UserCog,
   Users,
 } from "lucide-react";
 
@@ -56,6 +57,8 @@ import PainelEquipe from "@/components/performance/PainelEquipe";
 import CollapsibleSection from "@/components/performance/CollapsibleSection";
 import RaioXPessoa from "@/components/performance/RaioXPessoa";
 import RelatoriosSection from "@/components/performance/RelatoriosSection";
+import RosterEditor from "@/components/performance/RosterEditor";
+import { useAuth } from "@/hooks/useAuth";
 import {
   CommandDialog,
   CommandEmpty,
@@ -173,6 +176,7 @@ function Kpi({
 
 export default function MinhaEquipePage() {
   const { toast } = useToast();
+  const { isAdmin } = useAuth();
   const { team = "bb-reu" } = useParams<{ team: string }>();
   const [days, setDays] = useState(30);
   const [cargo, setCargo] = useState<string | null>(null);
@@ -185,6 +189,7 @@ export default function MinhaEquipePage() {
   const [relReloadKey, setRelReloadKey] = useState(0);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [rosterOpen, setRosterOpen] = useState(false);
 
   useEffect(() => {
     getCargos(team).then(setCargos).catch(() => undefined);
@@ -305,6 +310,11 @@ export default function MinhaEquipePage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {isAdmin && (
+            <Button variant="outline" className="gap-2" onClick={() => setRosterOpen(true)}>
+              <UserCog className="h-4 w-4" /> Ajustar equipe
+            </Button>
+          )}
           <Button variant="outline" className="gap-2" onClick={() => setBuscaOpen(true)}>
             <Search className="h-4 w-4" /> Análise individual
           </Button>
@@ -483,6 +493,8 @@ export default function MinhaEquipePage() {
         onClose={() => setSelected(null)}
         onRelatorioCriado={() => setRelReloadKey((k) => k + 1)}
       />
+
+      <RosterEditor team={team} open={rosterOpen} onClose={() => setRosterOpen(false)} onChanged={load} />
     </div>
   );
 }
