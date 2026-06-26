@@ -1,0 +1,566 @@
+"""Serviço de métricas do "Minha Equipe".
+
+Lê de perf_l1_tarefa / perf_pessoa / perf_subtipo_categoria e devolve:
+- equipe(days, cargo)      — lista de pessoas com produção/ritmo/prazo/backlog + KPIs.
+- pessoa_detalhe(id, days) — mix de tarefas por subtipo + ritmo/ócio operacional.
+- tipos(days)              — mapa de impacto: volume/cycle/natureza por subtipo.
+- cargos()                 — cargos distintos (filtro).
+
+Filosofia (ver docs/performance-equipes-plano.md): cadência/ócio só são confiáveis
+no segmento operacional (tarefas back-to-back); trabalho profundo mede-se por
+volume + cycle time + cumprimento de prazo. Por isso o detalhe sempre informa a
+"fatia operacional" — quanto do ritmo/ócio é confiável.
+"""
+
+import datetime
+import statistics
+from collections import defaultdict
+
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+try:
+    from zoneinfo import ZoneInfo
+
+    BRT = ZoneInfo("America/Sao_Paulo")
+except Exception:  # pragma: no cover
+    BRT = None
+
+# Gaps acima disso são pausa/intervalo, não "tempo gasto por tarefa".
+_CAP_SEG = 30 * 60
+
+
+class PerformanceService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def _period(self, days: int):
+        now = datetime.datetime.now(tz=BRT) if BRT else datetime.datetime.now()
+        start = (now - datetime.timedelta(days=days)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        return start, now
+
+    # ── equipe ────────────────────────────────────────────────────────────
+    def equipe(self, days: int = 30, cargo: str | None = None) -> dict:
+        start, now = self._period(days)
+        params = {"start": start, "end": now}
+        cargo_clause = ""
+        if cargo:
+            cargo_clause = "AND p.cargo = :cargo"
+            params["cargo"] = cargo
+
+        rows = self.db.execute(
+            text(
+                f"""
+                SELECT p.id, p.nome, p.cargo, p.squad, p.posicao,
+                  COUNT(t.id) AS concluido,
+                  COUNT(DISTINCT date(t.concluido_em AT TIME ZONE 'America/Sao_Paulo')) AS dias_ativos,
+                  COUNT(*) FILTER (WHERE t.prazo_previsto IS NOT NULL AND t.concluido_em <= t.prazo_previsto) AS no_prazo,
+                  COUNT(*) FILTER (WHERE t.prazo_previsto IS NOT NULL) AS com_prazo,
+                  percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (t.concluido_em - t.cadastrado_em)))
+                    FILTER (WHERE t.cadastrado_em IS NOT NULL) AS cycle_seg,
+                  COUNT(*) FILTER (WHERE c.categoria = 'operacional') AS oper_n,
+                  COUNT(*) FILTER (WHERE c.categoria = 'profundo') AS prof_n,
+                  COUNT(*) FILTER (WHERE c.categoria = 'ruido') AS ruido_n
+                FROM perf_pessoa p
+                LEFT JOIN perf_l1_tarefa t
+                  ON t.pessoa_id = p.id AND t.status = 'Cumprido'
+                  AND t.concluido_em >= :start AND t.concluido_em <= :end
+                LEFT JOIN perf_subtipo_categoria c ON c.subtipo = t.subtipo
+                WHERE p.ativo {cargo_clause}
+                GROUP BY p.id, p.nome, p.cargo, p.squad, p.posicao
+                ORDER BY concluido DESC, p.nome
+                """
+            ),
+            params,
+        ).fetchall()
+
+        backlog = {
+            pid: n
+            for pid, n in self.db.execute(
+                text("SELECT pessoa_id, COUNT(*) FROM perf_l1_tarefa WHERE status='Pendente' GROUP BY pessoa_id")
+            ).fetchall()
+        }
+
+        pessoas = []
+        for r in rows:
+            concluido = r.concluido or 0
+            dias = r.dias_ativos or 0
+            pessoas.append(
+                {
+                    "id": r.id,
+                    "nome": r.nome,
+                    "cargo": r.cargo,
+                    "squad": r.squad,
+                    "posicao": r.posicao,
+                    "concluido": concluido,
+                    "dias_ativos": dias,
+                    "throughput_dia": round(concluido / dias, 1) if dias else 0.0,
+                    "no_prazo_pct": round(100.0 * r.no_prazo / r.com_prazo) if r.com_prazo else None,
+                    "cycle_dias": round(r.cycle_seg / 86400.0, 1) if r.cycle_seg is not None else None,
+                    "backlog": int(backlog.get(r.id, 0)),
+                    "operacional_n": r.oper_n or 0,
+                    "profundo_n": r.prof_n or 0,
+                    "ruido_n": r.ruido_n or 0,
+                }
+            )
+
+        total_conc = sum(p["concluido"] for p in pessoas)
+        tot_no = sum((r.no_prazo or 0) for r in rows)
+        tot_com = sum((r.com_prazo or 0) for r in rows)
+        kpis = {
+            "concluido": total_conc,
+            "backlog": sum(p["backlog"] for p in pessoas),
+            "pessoas_ativas": sum(1 for p in pessoas if p["concluido"] > 0),
+            "pessoas_total": len(pessoas),
+            "no_prazo_pct": round(100.0 * tot_no / tot_com) if tot_com else None,
+        }
+        return {"periodo_dias": days, "kpis": kpis, "pessoas": pessoas}
+
+    def cargos(self) -> list:
+        return [
+            r[0]
+            for r in self.db.execute(
+                text("SELECT DISTINCT cargo FROM perf_pessoa WHERE cargo IS NOT NULL ORDER BY cargo")
+            ).fetchall()
+        ]
+
+    # ── detalhe da pessoa ─────────────────────────────────────────────────
+    def pessoa_detalhe(self, pessoa_id: int, days: int = 30) -> dict | None:
+        start, now = self._period(days)
+        p = self.db.execute(
+            text("SELECT id, nome, cargo, squad, posicao FROM perf_pessoa WHERE id = :id"),
+            {"id": pessoa_id},
+        ).fetchone()
+        if not p:
+            return None
+
+        mix = self.db.execute(
+            text(
+                """
+                SELECT t.subtipo AS subtipo, COALESCE(c.categoria, 'profundo') AS categoria,
+                  COUNT(*) AS vol,
+                  percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (t.concluido_em - t.cadastrado_em)))
+                    FILTER (WHERE t.cadastrado_em IS NOT NULL) AS cycle_seg,
+                  COUNT(*) FILTER (WHERE t.prazo_previsto IS NOT NULL AND t.concluido_em <= t.prazo_previsto) AS no_prazo,
+                  COUNT(*) FILTER (WHERE t.prazo_previsto IS NOT NULL) AS com_prazo
+                FROM perf_l1_tarefa t
+                LEFT JOIN perf_subtipo_categoria c ON c.subtipo = t.subtipo
+                WHERE t.pessoa_id = :id AND t.status = 'Cumprido'
+                  AND t.concluido_em >= :start AND t.concluido_em <= :end
+                GROUP BY t.subtipo, c.categoria
+                ORDER BY vol DESC
+                """
+            ),
+            {"id": pessoa_id, "start": start, "end": now},
+        ).fetchall()
+
+        mix_out = [
+            {
+                "subtipo": m.subtipo or "(sem subtipo)",
+                "categoria": m.categoria,
+                "volume": m.vol,
+                "cycle_dias": round(m.cycle_seg / 86400.0, 1) if m.cycle_seg is not None else None,
+                "no_prazo_pct": round(100.0 * m.no_prazo / m.com_prazo) if m.com_prazo else None,
+            }
+            for m in mix
+        ]
+
+        # ── PASSADO: resumo (KPIs do que já foi feito) ──
+        resumo = self.db.execute(
+            text(
+                """
+                SELECT COUNT(*) AS concluido,
+                  COUNT(DISTINCT date(concluido_em AT TIME ZONE 'America/Sao_Paulo')) AS dias,
+                  COUNT(*) FILTER (WHERE prazo_previsto IS NOT NULL AND concluido_em <= prazo_previsto) AS no_prazo,
+                  COUNT(*) FILTER (WHERE prazo_previsto IS NOT NULL) AS com_prazo,
+                  percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (concluido_em - cadastrado_em)))
+                    FILTER (WHERE cadastrado_em IS NOT NULL) AS cycle_seg
+                FROM perf_l1_tarefa
+                WHERE pessoa_id = :id AND status = 'Cumprido'
+                  AND concluido_em >= :start AND concluido_em <= :end
+                """
+            ),
+            {"id": pessoa_id, "start": start, "end": now},
+        ).fetchone()
+        concluido = resumo.concluido or 0
+        dias = resumo.dias or 0
+        passado_kpis = {
+            "concluido": concluido,
+            "dias_ativos": dias,
+            "throughput_dia": round(concluido / dias, 1) if dias else 0.0,
+            "no_prazo_pct": round(100 * resumo.no_prazo / resumo.com_prazo) if resumo.com_prazo else None,
+            "cycle_dias": round(resumo.cycle_seg / 86400.0, 1) if resumo.cycle_seg is not None else None,
+        }
+
+        # ── FUTURO: carga aberta (pendentes/atrasadas), por tipo e próximos prazos ──
+        pend = self.db.execute(
+            text(
+                """
+                SELECT COUNT(*) AS total,
+                  COUNT(*) FILTER (WHERE prazo_previsto < now()) AS atrasado,
+                  COUNT(*) FILTER (WHERE prazo_previsto IS NULL) AS sem_prazo
+                FROM perf_l1_tarefa WHERE pessoa_id = :id AND status = 'Pendente'
+                """
+            ),
+            {"id": pessoa_id},
+        ).fetchone()
+
+        pend_tipo = self.db.execute(
+            text(
+                """
+                SELECT t.subtipo AS subtipo, COALESCE(c.categoria, 'profundo') AS categoria,
+                  COUNT(*) AS total, COUNT(*) FILTER (WHERE t.prazo_previsto < now()) AS atrasado
+                FROM perf_l1_tarefa t LEFT JOIN perf_subtipo_categoria c ON c.subtipo = t.subtipo
+                WHERE t.pessoa_id = :id AND t.status = 'Pendente'
+                GROUP BY t.subtipo, c.categoria
+                ORDER BY total DESC
+                """
+            ),
+            {"id": pessoa_id},
+        ).fetchall()
+
+        urgentes_rows = self.db.execute(
+            text(
+                """
+                SELECT subtipo, prazo_previsto, cnj, pasta
+                FROM perf_l1_tarefa
+                WHERE pessoa_id = :id AND status = 'Pendente' AND prazo_previsto IS NOT NULL
+                ORDER BY prazo_previsto ASC LIMIT 20
+                """
+            ),
+            {"id": pessoa_id},
+        ).fetchall()
+        urgentes = []
+        for u in urgentes_rows:
+            pr = u.prazo_previsto
+            dias_prazo = (pr - now).days if pr else None
+            urgentes.append(
+                {
+                    "subtipo": u.subtipo or "(sem subtipo)",
+                    "prazo": (pr.astimezone(BRT) if BRT else pr).strftime("%d/%m/%Y") if pr else None,
+                    "dias": dias_prazo,
+                    "atrasado": dias_prazo is not None and dias_prazo < 0,
+                    "cnj": u.cnj,
+                    "pasta": u.pasta,
+                }
+            )
+
+        return {
+            "pessoa": {"id": p.id, "nome": p.nome, "cargo": p.cargo, "squad": p.squad, "posicao": p.posicao},
+            "periodo_dias": days,
+            "passado": {
+                "kpis": passado_kpis,
+                "ritmo": self._ritmo_ocio(pessoa_id, start, now),
+                "mix": mix_out,
+            },
+            "futuro": {
+                "pendente": pend.total or 0,
+                "atrasado": pend.atrasado or 0,
+                "sem_prazo": pend.sem_prazo or 0,
+                "por_tipo": [
+                    {"subtipo": r.subtipo or "(sem subtipo)", "categoria": r.categoria, "total": r.total, "atrasado": r.atrasado}
+                    for r in pend_tipo
+                ],
+                "urgentes": urgentes,
+            },
+        }
+
+    def _ritmo_ocio(self, pessoa_id: int, start, end) -> dict:
+        """Ritmo (tempo entre entregas) e ócio a partir das conclusões do período.
+
+        Calculado sobre TODAS as conclusões (operacional + profundo) pra não
+        contar trabalho profundo como ócio. Informa a fatia operacional —
+        quanto maior, mais confiável a leitura de ritmo/ócio.
+        """
+        rows = self.db.execute(
+            text(
+                """
+                SELECT (t.concluido_em AT TIME ZONE 'America/Sao_Paulo') AS c,
+                       COALESCE(cat.categoria, 'profundo') AS categoria
+                FROM perf_l1_tarefa t
+                LEFT JOIN perf_subtipo_categoria cat ON cat.subtipo = t.subtipo
+                WHERE t.pessoa_id = :id AND t.status = 'Cumprido'
+                  AND t.concluido_em >= :start AND t.concluido_em <= :end
+                ORDER BY t.concluido_em
+                """
+            ),
+            {"id": pessoa_id, "start": start, "end": end},
+        ).fetchall()
+
+        times = [(r.c, r.categoria) for r in rows if r.c]
+        total = len(times)
+        if total < 2:
+            return {"volume": total, "cadencia_seg": None, "ocio_pct": None, "dias": 0, "oper_share": None}
+
+        oper = sum(1 for _, cat in times if cat == "operacional")
+        by_day = defaultdict(list)
+        for ts, _ in times:
+            by_day[ts.date()].append(ts)
+
+        gaps, hands_on, window = [], 0.0, 0.0
+        for _, ts in by_day.items():
+            ts.sort()
+            for i in range(1, len(ts)):
+                g = (ts[i] - ts[i - 1]).total_seconds()
+                if 0 < g <= _CAP_SEG:
+                    gaps.append(g)
+                    hands_on += g
+            if len(ts) >= 2:
+                window += (ts[-1] - ts[0]).total_seconds()
+
+        return {
+            "volume": total,
+            "cadencia_seg": round(statistics.median(gaps)) if gaps else None,
+            "ocio_pct": round(100.0 * (1 - hands_on / window)) if window > 0 else None,
+            "dias": len(by_day),
+            "oper_share": round(100.0 * oper / total),
+        }
+
+    # ── mapa de impacto por tipo ──────────────────────────────────────────
+    def tipos(self, days: int = 30) -> list:
+        start, now = self._period(days)
+        rows = self.db.execute(
+            text(
+                """
+                SELECT t.subtipo AS subtipo, COALESCE(c.categoria, 'profundo') AS categoria,
+                  COUNT(*) AS vol, COUNT(DISTINCT t.pessoa_id) AS pessoas,
+                  percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (t.concluido_em - t.cadastrado_em)))
+                    FILTER (WHERE t.cadastrado_em IS NOT NULL) AS cycle_seg,
+                  c.densidade AS densidade
+                FROM perf_l1_tarefa t
+                LEFT JOIN perf_subtipo_categoria c ON c.subtipo = t.subtipo
+                WHERE t.status = 'Cumprido' AND t.concluido_em >= :start AND t.concluido_em <= :end
+                  AND t.subtipo IS NOT NULL
+                GROUP BY t.subtipo, c.categoria, c.densidade
+                ORDER BY vol DESC
+                """
+            ),
+            {"start": start, "end": now},
+        ).fetchall()
+        return [
+            {
+                "subtipo": r.subtipo,
+                "categoria": r.categoria,
+                "volume": r.vol,
+                "pessoas": r.pessoas,
+                "cycle_dias": round(r.cycle_seg / 86400.0, 1) if r.cycle_seg is not None else None,
+                "densidade": r.densidade,
+            }
+            for r in rows
+        ]
+
+    # ── painel do setor (dados pros gráficos) ─────────────────────────────
+    def dashboard(self, days: int = 30) -> dict:
+        """Agrega o setor pros gráficos: vazão, pool pendente/atrasado, jornada
+        (início/fim do dia + hands-on), e top tipos. Tudo por pessoa."""
+        start, now = self._period(days)
+        pessoas = {
+            r.id: r
+            for r in self.db.execute(
+                text("SELECT id, nome, cargo, squad FROM perf_pessoa WHERE ativo")
+            ).fetchall()
+        }
+        completions = self.db.execute(
+            text(
+                """
+                SELECT t.pessoa_id AS pid,
+                       (t.concluido_em AT TIME ZONE 'America/Sao_Paulo') AS c,
+                       COALESCE(cat.categoria, 'profundo') AS categoria
+                FROM perf_l1_tarefa t
+                LEFT JOIN perf_subtipo_categoria cat ON cat.subtipo = t.subtipo
+                WHERE t.status = 'Cumprido' AND t.pessoa_id IS NOT NULL
+                  AND t.concluido_em >= :start AND t.concluido_em <= :end
+                ORDER BY t.pessoa_id, t.concluido_em
+                """
+            ),
+            {"start": start, "end": now},
+        ).fetchall()
+
+        per = defaultdict(lambda: {"times": [], "oper": 0, "total": 0})
+        for r in completions:
+            if not r.c:
+                continue
+            d = per[r.pid]
+            d["times"].append(r.c)
+            d["total"] += 1
+            if r.categoria == "operacional":
+                d["oper"] += 1
+
+        backlog_map = {
+            pid: (pend, atr)
+            for pid, pend, atr in self.db.execute(
+                text(
+                    """
+                    SELECT pessoa_id, COUNT(*) AS pend,
+                           COUNT(*) FILTER (WHERE prazo_previsto < now()) AS atr
+                    FROM perf_l1_tarefa
+                    WHERE status = 'Pendente' AND pessoa_id IS NOT NULL
+                    GROUP BY pessoa_id
+                    """
+                )
+            ).fetchall()
+        }
+
+        vazao, backlog, jornada = [], [], []
+        for pid, p in pessoas.items():
+            pend, atr = backlog_map.get(pid, (0, 0))
+            backlog.append(
+                {"id": pid, "nome": p.nome, "cargo": p.cargo, "backlog": int(pend), "atrasado": int(atr)}
+            )
+            d = per.get(pid)
+            if not d or d["total"] == 0:
+                continue
+            by_day = defaultdict(list)
+            for t in d["times"]:
+                by_day[t.date()].append(t)
+            starts, ends, hands = [], [], []
+            window_total, hands_total = 0.0, 0.0
+            for _, ts in by_day.items():
+                ts.sort()
+                starts.append(ts[0].hour + ts[0].minute / 60.0)
+                ends.append(ts[-1].hour + ts[-1].minute / 60.0)
+                ho = 0.0
+                for i in range(1, len(ts)):
+                    g = (ts[i] - ts[i - 1]).total_seconds()
+                    if 0 < g <= _CAP_SEG:
+                        ho += g
+                hands.append(ho / 3600.0)
+                if len(ts) >= 2:
+                    window_total += (ts[-1] - ts[0]).total_seconds()
+                    hands_total += ho
+            dias = len(by_day)
+            concluido = d["total"]
+            vazao.append(
+                {
+                    "id": pid, "nome": p.nome, "cargo": p.cargo, "concluido": concluido,
+                    "throughput_dia": round(concluido / dias, 1) if dias else 0.0,
+                }
+            )
+            jornada.append(
+                {
+                    "id": pid, "nome": p.nome, "cargo": p.cargo,
+                    "inicio_h": round(statistics.median(starts), 2),
+                    "fim_h": round(statistics.median(ends), 2),
+                    "hands_on_h": round(statistics.median(hands), 1),
+                    "ocio_pct": round(100 * (1 - hands_total / window_total)) if window_total > 0 else None,
+                    "dias": dias,
+                    "oper_share": round(100 * d["oper"] / concluido) if concluido else 0,
+                }
+            )
+
+        vazao.sort(key=lambda x: -x["concluido"])
+        backlog.sort(key=lambda x: (-x["atrasado"], -x["backlog"]))
+        jornada.sort(key=lambda x: x["inicio_h"])
+
+        top = self.db.execute(
+            text(
+                """
+                SELECT t.subtipo AS subtipo, COALESCE(c.categoria, 'profundo') AS categoria,
+                  COUNT(*) FILTER (
+                    WHERE t.status = 'Cumprido' AND t.concluido_em >= :start AND t.concluido_em <= :end
+                  ) AS vol,
+                  COUNT(*) FILTER (WHERE t.status = 'Pendente') AS pendente,
+                  COUNT(*) FILTER (WHERE t.status = 'Pendente' AND t.prazo_previsto < now()) AS atrasado
+                FROM perf_l1_tarefa t
+                LEFT JOIN perf_subtipo_categoria c ON c.subtipo = t.subtipo
+                WHERE t.subtipo IS NOT NULL
+                GROUP BY t.subtipo, c.categoria
+                ORDER BY vol DESC LIMIT 12
+                """
+            ),
+            {"start": start, "end": now},
+        ).fetchall()
+
+        return {
+            "periodo_dias": days,
+            "kpis": {
+                "atrasado_total": sum(b["atrasado"] for b in backlog),
+                "backlog_total": sum(b["backlog"] for b in backlog),
+            },
+            "vazao": vazao,
+            "backlog": backlog,
+            "jornada": jornada,
+            "top_tipos": [
+                {
+                    "subtipo": r.subtipo,
+                    "categoria": r.categoria,
+                    "volume": r.vol,
+                    "pendente": r.pendente,
+                    "atrasado": r.atrasado,
+                }
+                for r in top
+            ],
+        }
+
+    # ── export Excel de um recorte (tarefas que o operador precisa tratar) ──
+    def export_xlsx(self, escopo: str = "atrasado", pessoa_id: int | None = None,
+                    subtipo: str | None = None, days: int = 30) -> bytes:
+        """Gera xlsx com as tarefas de um recorte. escopo: atrasado|pendente|concluido."""
+        from io import BytesIO
+
+        import openpyxl
+        from openpyxl.utils import get_column_letter
+
+        start, now = self._period(days)
+        conds: list = []
+        params: dict = {}
+        if escopo == "concluido":
+            conds.append("t.status = 'Cumprido' AND t.concluido_em >= :start AND t.concluido_em <= :end")
+            params["start"] = start
+            params["end"] = now
+        elif escopo == "pendente":
+            conds.append("t.status = 'Pendente'")
+        else:  # atrasado
+            conds.append("t.status = 'Pendente' AND t.prazo_previsto < now()")
+        if pessoa_id:
+            conds.append("t.pessoa_id = :pid")
+            params["pid"] = pessoa_id
+        if subtipo:
+            conds.append("t.subtipo = :sub")
+            params["sub"] = subtipo
+        where = " AND ".join(conds)
+
+        rows = self.db.execute(
+            text(
+                f"""
+                SELECT p.nome AS responsavel, p.cargo AS cargo, t.l1_task_id AS l1_id,
+                  t.pasta, t.cnj, t.uf, t.subtipo, t.status,
+                  t.cadastrado_em, t.concluido_em, t.prazo_previsto
+                FROM perf_l1_tarefa t
+                LEFT JOIN perf_pessoa p ON p.id = t.pessoa_id
+                WHERE {where}
+                ORDER BY t.prazo_previsto ASC NULLS LAST, p.nome
+                """
+            ),
+            params,
+        ).fetchall()
+
+        def _dt(dt, only_date=False):
+            if not dt:
+                return None
+            d = dt.astimezone(BRT) if BRT else dt
+            return d.strftime("%d/%m/%Y") if only_date else d.strftime("%d/%m/%Y %H:%M")
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = {"atrasado": "Atrasadas", "pendente": "Pendentes", "concluido": "Concluidas"}.get(escopo, "Tarefas")[:31]
+        headers = ["Responsável", "Cargo", "ID L1", "Pasta", "CNJ", "UF", "Subtipo", "Status",
+                   "Cadastro", "Conclusão", "Prazo", "Situação"]
+        ws.append(headers)
+        for r in rows:
+            sit = ""
+            if r.prazo_previsto:
+                dd = (r.prazo_previsto - now).days
+                sit = f"atrasada há {abs(dd)}d" if dd < 0 else ("vence hoje" if dd == 0 else f"vence em {dd}d")
+            ws.append([
+                r.responsavel, r.cargo, r.l1_id, r.pasta, r.cnj, r.uf, r.subtipo, r.status,
+                _dt(r.cadastrado_em), _dt(r.concluido_em), _dt(r.prazo_previsto, only_date=True), sit,
+            ])
+        for i, w in enumerate([26, 14, 9, 14, 24, 6, 36, 10, 17, 17, 12, 16], start=1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+        ws.freeze_panes = "A2"
+        buf = BytesIO()
+        wb.save(buf)
+        return buf.getvalue()

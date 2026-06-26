@@ -27,6 +27,7 @@ from app.api.v1.endpoints import (
     ged_legalone,
     offices,
     onerequest,
+    performance,
     prazos_iniciais,
     prazos_iniciais_legacy_tasks,
     prazos_iniciais_scheduling,
@@ -412,6 +413,11 @@ app.include_router(onerequest.intake_router, prefix="/api/v1")
 # UI do operador OneRequest (tratamento + agendar): JWT + permissão onerequest.
 app.include_router(
     onerequest.router, prefix="/api/v1", tags=["OneRequest"], dependencies=protected_dependencies
+)
+# Minha Equipe (Performance de Equipes): JWT + admin (checado no router). Monitora
+# desempenho dos colaboradores a partir das tarefas do L1 (tabelas perf*).
+app.include_router(
+    performance.router, prefix="/api/v1", tags=["Performance"], dependencies=protected_dependencies
 )
 # Endpoints internos de prazos iniciais (UI do operador): JWT obrigatório.
 app.include_router(prazos_iniciais.router, prefix="/api/v1", dependencies=protected_dependencies)

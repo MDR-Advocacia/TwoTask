@@ -1,0 +1,86 @@
+"""Modelos do módulo "Minha Equipe" (Performance de Equipes).
+
+Dashboard de desempenho por pessoa a partir das tarefas do Legal One. As métricas
+são lidas dessas tabelas (sem re-bater a API a cada acesso). Ver
+`docs/performance-equipes-plano.md`.
+
+Tabelas (prefixo perf*):
+- perf_pessoa            — roster (nome/cargo/squad/posição).
+- perf_l1_tarefa         — uma linha por tarefa do L1.
+- perf_subtipo_categoria — natureza de cada subtipo (operacional/profundo/ruído).
+"""
+
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+)
+from sqlalchemy.sql import func
+
+from app.db.session import Base
+
+
+# Cargos (CARGO na planilha) — definem o conjunto de tarefas e o benchmark.
+CARGO_ADVOGADO = "Advogado(a)"
+CARGO_ESTAGIARIO = "Estagiário(a)"
+CARGO_ASSISTENTE = "Assistente"
+
+# Natureza do subtipo — define QUAL métrica vale:
+#   operacional -> cadência/ócio/throughput (tarefa de alta frequência, em lote);
+#   profundo    -> volume/cycle time/prazo  (tarefa pesada e esparsa);
+#   ruido       -> cauda longa rara (fora das métricas finas, vira "Outros").
+CAT_OPERACIONAL = "operacional"
+CAT_PROFUNDO = "profundo"
+CAT_RUIDO = "ruido"
+
+
+class PerfPessoa(Base):
+    __tablename__ = "perf_pessoa"
+
+    id = Column(Integer, primary_key=True)
+    nome = Column(String, nullable=False)
+    # Nome normalizado (minúsculo, sem acento, espaços colapsados) — chave de
+    # join com o "Cumprido por"/"Envolvido" do L1, que varia em acento.
+    nome_norm = Column(String, nullable=False, unique=True, index=True)
+    cargo = Column(String, nullable=True)
+    squad = Column(String, nullable=True)
+    posicao = Column(String, nullable=True)
+    ativo = Column(Boolean, nullable=False, server_default="true")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class PerfTarefa(Base):
+    __tablename__ = "perf_l1_tarefa"
+
+    id = Column(Integer, primary_key=True)
+    l1_task_id = Column(BigInteger, nullable=True)
+    pessoa_id = Column(Integer, ForeignKey("perf_pessoa.id"), nullable=True, index=True)
+    cumprido_por_nome = Column(String, nullable=True)
+    envolvido_nome = Column(String, nullable=True)
+    escritorio = Column(String, nullable=True)
+    tipo = Column(String, nullable=True)
+    subtipo = Column(String, nullable=True, index=True)
+    status = Column(String, nullable=True, index=True)
+    cadastrado_em = Column(DateTime(timezone=True), nullable=True)
+    concluido_em = Column(DateTime(timezone=True), nullable=True, index=True)
+    prazo_previsto = Column(DateTime(timezone=True), nullable=True)
+    pasta = Column(String, nullable=True)
+    cnj = Column(String, nullable=True)
+    uf = Column(String, nullable=True)
+    ingested_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class PerfSubtipoCategoria(Base):
+    __tablename__ = "perf_subtipo_categoria"
+
+    subtipo = Column(String, primary_key=True)
+    categoria = Column(String, nullable=False, server_default=CAT_PROFUNDO)
+    volume = Column(Integer, nullable=True)
+    densidade = Column(Float, nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())

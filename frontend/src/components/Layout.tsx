@@ -8,6 +8,7 @@ import {
   Contact,
   FileUp,
   Gavel,
+  Gauge,
   BarChart3,
   Inbox,
   LayoutDashboard,
@@ -133,6 +134,12 @@ export default function Layout({ children }: PropsWithChildren) {
       items: [
         { to: "/onerequest", icon: Inbox, label: "DMIs Banco do Brasil", requirePermission: 'canUseOnerequest' },
         { to: "/onerequest/dashboard", icon: BarChart3, label: "DMIs — Dashboard", requirePermission: 'canUseOnerequest' },
+      ],
+    },
+    {
+      title: "Minha Equipe",
+      items: [
+        { to: "/minha-equipe/bb-reu", icon: Gauge, label: "BB Réu", requirePermission: 'isAdmin' },
       ],
     },
     {

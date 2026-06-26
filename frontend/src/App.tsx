@@ -39,6 +39,7 @@ import GedLegalOnePage from './pages/GedLegalOnePage';
 import ContatosLegalOnePage from './pages/ContatosLegalOnePage';
 import OnerequestPage from './pages/OnerequestPage';
 import OnerequestDashboardPage from './pages/OnerequestDashboardPage';
+import MinhaEquipePage from './pages/MinhaEquipePage';
 
 // Contexto de Autenticação
 import { AuthProvider, AuthContext } from './contexts/AuthContext';
@@ -104,6 +105,8 @@ function AppContent() {
             <Route path="/contatos-legalone" element={<ContatosLegalOnePage />} />
             <Route path="/onerequest" element={<OnerequestPage />} />
             <Route path="/onerequest/dashboard" element={<OnerequestDashboardPage />} />
+            <Route path="/minha-equipe" element={<MinhaEquipePage />} />
+            <Route path="/minha-equipe/bb-reu" element={<MinhaEquipePage />} />
           </Route>
 
           {/* Rota para página não encontrada */}
