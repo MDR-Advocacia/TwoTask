@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Loader2, Save, Pencil, RefreshCw, AlertCircle, Copy, Shield, ShieldCheck, CheckCircle2, XCircle, Clock, Database, Building2, FileText, Link2 } from "lucide-react";
+import { Loader2, Save, Pencil, RefreshCw, AlertCircle, Copy, Shield, ShieldCheck, CheckCircle2, XCircle, Clock, Database, Building2, FileText, Link2, ChevronDown } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,6 +20,14 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogC
 import { MultiSelect } from "@/components/ui/MultiSelect";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { BaseProcessualPage } from "@/pages/BaseProcessualPage";
@@ -29,6 +37,15 @@ import { Trash2, Crown, Star } from "lucide-react";
 import TaxonomiaAdminTab from "@/components/TaxonomiaAdminTab";
 import { AdminNoticesManager } from "@/components/AdminNoticesManager";
 import { UserFeedbackManager } from "@/components/UserFeedbackManager";
+
+// Permissões de módulo exibidas no dropdown condensado da tabela de usuários.
+const PERMISSOES = [
+  { key: "can_schedule_batch", label: "LegalOne", abbr: "L1" },
+  { key: "can_use_publications", label: "Publicações", abbr: "Pub" },
+  { key: "can_use_prazos_iniciais", label: "Prazos Iniciais", abbr: "PI" },
+  { key: "can_use_onerequest", label: "OneRequest", abbr: "OR" },
+  { key: "notify_onerequest_errors", label: "Notificação OneRequest", abbr: "Notif" },
+] as const;
 
 // --- Tipos de Dados ---
 interface Sector { id: number; name: string; }
@@ -867,7 +884,13 @@ const UsersAndPermissions = () => {
     };
 
     const handleSave = (userId: number) => {
-        updateUserMutation.mutate({ userId, updates: editingData });
+        // Edit-mode agora cuida SÓ de papel + escritório; as permissões são
+        // togladas direto no dropdown (salvam na hora), pra não haver conflito
+        // (senão Salvar enviaria o snapshot antigo e reverteria o toggle).
+        updateUserMutation.mutate({
+            userId,
+            updates: { role: editingData.role, default_office_id: editingData.default_office_id },
+        });
     };
 
     const filteredUsers = users.filter(u =>
@@ -909,11 +932,7 @@ const UsersAndPermissions = () => {
                                 <TableHead>Status</TableHead>
                                 <TableHead>Acesso</TableHead>
                                 <TableHead>Papel</TableHead>
-                                <TableHead>LegalOne</TableHead>
-                                <TableHead>Publicações</TableHead>
-                                <TableHead>Prazos Iniciais</TableHead>
-                                <TableHead>OneRequest</TableHead>
-                                <TableHead>Notificação OneRequest</TableHead>
+                                <TableHead>Permissões</TableHead>
                                 <TableHead>Escritório</TableHead>
                                 <TableHead>Ações</TableHead>
                             </TableRow>
@@ -953,54 +972,53 @@ const UsersAndPermissions = () => {
                                         )}
                                     </TableCell>
                                     <TableCell>
-                                        {editingUserId === user.id ? (
-                                            <Checkbox
-                                                checked={editingData.can_schedule_batch ?? false}
-                                                onCheckedChange={(c) => setEditingData({ ...editingData, can_schedule_batch: !!c })}
-                                            />
-                                        ) : (
-                                            <Checkbox checked={user.can_schedule_batch} disabled />
-                                        )}
-                                    </TableCell>
-                                    <TableCell>
-                                        {editingUserId === user.id ? (
-                                            <Checkbox
-                                                checked={editingData.can_use_publications ?? false}
-                                                onCheckedChange={(c) => setEditingData({ ...editingData, can_use_publications: !!c })}
-                                            />
-                                        ) : (
-                                            <Checkbox checked={user.can_use_publications} disabled />
-                                        )}
-                                    </TableCell>
-                                    <TableCell>
-                                        {editingUserId === user.id ? (
-                                            <Checkbox
-                                                checked={editingData.can_use_prazos_iniciais ?? false}
-                                                onCheckedChange={(c) => setEditingData({ ...editingData, can_use_prazos_iniciais: !!c })}
-                                            />
-                                        ) : (
-                                            <Checkbox checked={user.can_use_prazos_iniciais} disabled />
-                                        )}
-                                    </TableCell>
-                                    <TableCell>
-                                        {editingUserId === user.id ? (
-                                            <Checkbox
-                                                checked={editingData.can_use_onerequest ?? false}
-                                                onCheckedChange={(c) => setEditingData({ ...editingData, can_use_onerequest: !!c })}
-                                            />
-                                        ) : (
-                                            <Checkbox checked={user.can_use_onerequest} disabled />
-                                        )}
-                                    </TableCell>
-                                    <TableCell>
-                                        {editingUserId === user.id ? (
-                                            <Checkbox
-                                                checked={editingData.notify_onerequest_errors ?? false}
-                                                onCheckedChange={(c) => setEditingData({ ...editingData, notify_onerequest_errors: !!c })}
-                                            />
-                                        ) : (
-                                            <Checkbox checked={user.notify_onerequest_errors} disabled />
-                                        )}
+                                        {(() => {
+                                            const get = (k: string) => !!(user as unknown as Record<string, boolean>)[k];
+                                            const ativas = PERMISSOES.filter((p) => get(p.key));
+                                            return (
+                                                <DropdownMenu>
+                                                    <DropdownMenuTrigger asChild>
+                                                        <Button variant="outline" size="sm" className="h-8 gap-1.5">
+                                                            <span className="flex flex-wrap items-center gap-1">
+                                                                {ativas.length === 0 ? (
+                                                                    <span className="text-xs text-muted-foreground">Nenhuma</span>
+                                                                ) : (
+                                                                    ativas.map((p) => (
+                                                                        <span
+                                                                            key={p.key}
+                                                                            className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+                                                                        >
+                                                                            {p.abbr}
+                                                                        </span>
+                                                                    ))
+                                                                )}
+                                                            </span>
+                                                            <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                                                        </Button>
+                                                    </DropdownMenuTrigger>
+                                                    <DropdownMenuContent align="start" className="w-56">
+                                                        <DropdownMenuLabel>Permissões de acesso</DropdownMenuLabel>
+                                                        <DropdownMenuSeparator />
+                                                        {PERMISSOES.map((p) => (
+                                                            <DropdownMenuCheckboxItem
+                                                                key={p.key}
+                                                                checked={get(p.key)}
+                                                                onSelect={(e) => e.preventDefault()}
+                                                                disabled={updateUserMutation.isPending}
+                                                                onCheckedChange={(c) =>
+                                                                    updateUserMutation.mutate({
+                                                                        userId: user.id,
+                                                                        updates: { [p.key]: !!c } as Partial<AdminUser>,
+                                                                    })
+                                                                }
+                                                            >
+                                                                {p.label}
+                                                            </DropdownMenuCheckboxItem>
+                                                        ))}
+                                                    </DropdownMenuContent>
+                                                </DropdownMenu>
+                                            );
+                                        })()}
                                     </TableCell>
                                     <TableCell>
                                         {editingUserId === user.id ? (
