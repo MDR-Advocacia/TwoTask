@@ -1,7 +1,8 @@
-import { PropsWithChildren, useMemo } from "react";
+import { PropsWithChildren, useMemo, useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import {
   CalendarClock,
+  ChevronDown,
   CircleUser,
   Clock,
   Contact,
@@ -59,6 +60,27 @@ export default function Layout({ children }: PropsWithChildren) {
     isAdmin,
   } = useAuth();
   const navigate = useNavigate();
+
+  // Seções recolhíveis da sidebar — estado por seção, persistido em localStorage
+  // (cada usuário lembra o que deixou fechado). Default: tudo aberto.
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("flowSidebarCollapsed") || "{}");
+    } catch {
+      return {};
+    }
+  });
+  const toggleSection = (key: string) => {
+    setCollapsed((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      try {
+        localStorage.setItem("flowSidebarCollapsed", JSON.stringify(next));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  };
 
   const hasPermission = (perm?: Permission) => {
     if (!perm) return true;
@@ -133,29 +155,42 @@ export default function Layout({ children }: PropsWithChildren) {
 
   const NavContent = () => (
     <nav className="grid items-start px-2 text-sm font-medium lg:px-4">
-      {visibleSections.map((section, idx) => (
-        <div key={section.title ?? `sec-${idx}`} className={idx > 0 ? "mt-4" : ""}>
-          {section.title && (
-            <div className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70">
-              {section.title}
-            </div>
-          )}
-          {section.items.map(({ to, icon: Icon, label }) => (
-            <NavLink
-              key={to}
-              to={to}
-              className={({ isActive }) =>
-                `flex items-center gap-3 rounded-lg px-3 py-2 text-muted-foreground transition-all hover:text-primary ${
-                  isActive ? "bg-muted !text-primary" : ""
-                }`
-              }
-            >
-              <Icon className="h-4 w-4" />
-              {label}
-            </NavLink>
-          ))}
-        </div>
-      ))}
+      {visibleSections.map((section, idx) => {
+        const key = section.title ?? `sec-${idx}`;
+        const isCollapsed = section.title ? !!collapsed[key] : false;
+        return (
+          <div key={key} className={idx > 0 ? "mt-2" : ""}>
+            {section.title && (
+              <button
+                type="button"
+                onClick={() => toggleSection(key)}
+                aria-expanded={!isCollapsed}
+                className="flex w-full items-center justify-between rounded-md px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 transition-colors hover:text-muted-foreground"
+              >
+                <span>{section.title}</span>
+                <ChevronDown
+                  className={`h-3.5 w-3.5 shrink-0 transition-transform ${isCollapsed ? "-rotate-90" : ""}`}
+                />
+              </button>
+            )}
+            {!isCollapsed &&
+              section.items.map(({ to, icon: Icon, label }) => (
+                <NavLink
+                  key={to}
+                  to={to}
+                  className={({ isActive }) =>
+                    `flex items-center gap-3 rounded-lg px-3 py-2 text-muted-foreground transition-all hover:text-primary ${
+                      isActive ? "bg-muted !text-primary" : ""
+                    }`
+                  }
+                >
+                  <Icon className="h-4 w-4" />
+                  {label}
+                </NavLink>
+              ))}
+          </div>
+        );
+      })}
     </nav>
   );
 
