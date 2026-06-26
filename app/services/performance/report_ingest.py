@@ -21,14 +21,22 @@ import requests
 logger = logging.getLogger(__name__)
 
 _REPORT_PATH = "/tmp/perf_agenda_latest.xlsx"
-_LIST_URL = "/agenda/reportagenda/Search"
+_TITULO = "Agenda Analytics"
+# Busca AVANÇADA filtrada por título: o L1 devolve só os "Agenda Analytics"
+# (um por dia), em vez da lista geral. Sem o filtro, relatórios ad-hoc gerados
+# pelos operadores durante o dia empurram o do dia pra fora da 1ª página e o
+# sync falha com "relatorio_nao_encontrado" (já aconteceu em prod 2026-06-26).
+_LIST_URL = (
+    "/agenda/reportagenda/Search?Titulo=Agenda+Analytics"
+    "&ShowAdvancedFilters=True&IsSearchExecutedByUser=true"
+)
 SETTING_LAST_SYNC = "perf_minha_equipe_last_sync"
 
-# Linha do relatório na lista: id do GetFile + título + 1ª data (dd/mm/aaaa) logo após.
-_ROW_RE = re.compile(
-    r'GetFile/(\d+)">([^<]*Agenda Analytics[^<]*)</a>.{0,200}?(\d{2}/\d{2}/\d{4})',
-    re.DOTALL,
-)
+# Cada linha tem 2 links GetFile (o do nome + o "Download") com o MESMO id; a
+# data de geração é a coluna "Data" (1ª dd/mm/aaaa da linha).
+_ROW_TR = re.compile(r"<tr\b.*?</tr>", re.DOTALL)
+_GETFILE_RE = re.compile(r"GetFile/(\d+)[^>]*>([^<]+)<")
+_DATE_RE = re.compile(r"\d{2}/\d{2}/\d{4}")
 
 try:
     from zoneinfo import ZoneInfo
@@ -60,12 +68,37 @@ def _session() -> requests.Session:
     return s
 
 
-def _find_latest(session: requests.Session, base: str):
-    html = session.get(base + _LIST_URL, timeout=60).text
-    m = _ROW_RE.search(html)
-    if not m:
+def _parse_data(s: str):
+    try:
+        return datetime.datetime.strptime(s, "%d/%m/%Y").date()
+    except (ValueError, TypeError):
         return None
-    return {"id": m.group(1), "title": m.group(2).strip(), "data": m.group(3)}
+
+
+def _find_latest(session: requests.Session, base: str):
+    """Acha o 'Agenda Analytics' de MAIOR data de geração na lista já filtrada
+    por título. Não confia na ordem/paginação: percorre todas as linhas e fica
+    com a de data mais recente (empate → a 1ª, que o L1 mostra como mais nova)."""
+    html = session.get(base + _LIST_URL, timeout=60).text
+    best = None
+    for tr in _ROW_TR.findall(html):
+        gid = name = None
+        for i, txt in _GETFILE_RE.findall(tr):
+            if txt.strip().lower() != "download":
+                gid, name = i, txt.strip()
+                break
+        if not gid or _TITULO not in name:
+            continue
+        md = _DATE_RE.search(tr)
+        d = _parse_data(md.group(0)) if md else None
+        if d is None:
+            continue
+        if best is None or d > best["_d"]:
+            best = {"id": gid, "title": name, "data": md.group(0), "_d": d}
+    if not best:
+        return None
+    best.pop("_d", None)
+    return best
 
 
 def baixar_e_ingerir(db, *, force: bool = False) -> dict:
