@@ -21,6 +21,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
 from app.db.session import Base
@@ -111,3 +112,24 @@ class PerfRelatorio(Base):
     criado_por_id = Column(Integer, nullable=True)
     criado_em = Column(DateTime(timezone=True), server_default=func.now())
     concluido_em = Column(DateTime(timezone=True), nullable=True)
+
+
+class BalanceadorLog(Base):
+    """Log de uma redistribuição executada — o que foi movido, de quem pra quem,
+    quais tarefas. Gerado no 'Aplicar' e listado na aba Relatórios.
+
+    MOCK: origem='mock' (sem escrita no L1). Na versão real, origem='l1' e o
+    detalhe carrega o resultado por tarefa (reatribuída via API/Workflow).
+    """
+
+    __tablename__ = "balanceador_log"
+
+    id = Column(Integer, primary_key=True)
+    team = Column(String, nullable=True, index=True)
+    criado_por_id = Column(Integer, nullable=True)
+    criado_por_nome = Column(String, nullable=True)
+    total_movimentos = Column(Integer, nullable=False, server_default="0")
+    total_tarefas = Column(Integer, nullable=False, server_default="0")
+    origem = Column(String, nullable=False, server_default="mock")
+    detalhe = Column(JSONB, nullable=True)  # lista de movimentos (from/to/subtipo/qtd/tasks)
+    criado_em = Column(DateTime(timezone=True), server_default=func.now())

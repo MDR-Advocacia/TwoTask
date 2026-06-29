@@ -58,6 +58,8 @@ import CollapsibleSection from "@/components/performance/CollapsibleSection";
 import RaioXPessoa from "@/components/performance/RaioXPessoa";
 import RelatoriosSection from "@/components/performance/RelatoriosSection";
 import RosterEditor from "@/components/performance/RosterEditor";
+import BalanceadorSection from "@/components/performance/BalanceadorSection";
+import RedistribuicoesLog from "@/components/balanceador/RedistribuicoesLog";
 import { useAuth } from "@/hooks/useAuth";
 import {
   CommandDialog,
@@ -460,8 +462,13 @@ export default function MinhaEquipePage() {
 
       </CollapsibleSection>
 
-      <CollapsibleSection title="Relatórios" subtitle="PDF gerados no servidor (persistem)">
+      <CollapsibleSection title="Balanceamento de agenda" subtitle="Diagnóstico de carga + redistribuição" defaultOpen={false}>
+        <BalanceadorSection team={team} onAplicado={() => setRelReloadKey((k) => k + 1)} />
+      </CollapsibleSection>
+
+      <CollapsibleSection title="Relatórios" subtitle="PDF do servidor + log de redistribuições">
         <RelatoriosSection reloadKey={relReloadKey} />
+        <RedistribuicoesLog team={team} reloadKey={relReloadKey} />
       </CollapsibleSection>
 
       <CommandDialog open={buscaOpen} onOpenChange={setBuscaOpen}>

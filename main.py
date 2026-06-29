@@ -23,6 +23,7 @@ from app.api.v1.endpoints import (
     classifier,
     classificador,
     contatos_legalone,
+    balanceador,
     dashboard,
     ged_legalone,
     offices,
@@ -427,6 +428,10 @@ app.include_router(
 # desempenho dos colaboradores a partir das tarefas do L1 (tabelas perf*).
 app.include_router(
     performance.router, prefix="/api/v1", tags=["Performance"], dependencies=protected_dependencies
+)
+# Balanceador de Agenda (supervisor redistribui tarefas): reusa gate por time do Minha Equipe.
+app.include_router(
+    balanceador.router, prefix="/api/v1", tags=["Balanceador de Agenda"], dependencies=protected_dependencies
 )
 # Endpoints internos de prazos iniciais (UI do operador): JWT obrigatório.
 app.include_router(prazos_iniciais.router, prefix="/api/v1", dependencies=protected_dependencies)
