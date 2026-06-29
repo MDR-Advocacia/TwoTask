@@ -57,6 +57,11 @@ const EQUIPES = [
   { key: "bb-estrategico", label: "BB Estratégico" },
   { key: "master-reu", label: "Master Réu" },
   { key: "ativos-reu", label: "Ativos Réu" },
+  { key: "bb-autor-processual", label: "BB Autor — Processual" },
+  { key: "ativos-autor", label: "Ativos Autor" },
+  { key: "autor-recursal", label: "Autor — Recursal" },
+  { key: "ajuizamento", label: "Ajuizamento" },
+  { key: "estrategico-autor", label: "Estratégico Autor" },
 ] as const;
 
 // --- Tipos de Dados ---
