@@ -48,12 +48,14 @@ export default function RedistribuicaoModal({
   team,
   pessoas,
   dias,
+  incluirAtrasadas = true,
   onClose,
   onAplicado,
 }: {
   team: string;
   pessoas: Pessoa[];
   dias: number;
+  incluirAtrasadas?: boolean;
   onClose: () => void;
   onAplicado?: () => void;
 }) {
@@ -87,7 +89,7 @@ export default function RedistribuicaoModal({
       const p = pessoas[i];
       setProgresso({ done: i, total: pessoas.length, nome: p.nome });
       try {
-        const lp = await getLivePessoa(team, p.id, dias);
+        const lp = await getLivePessoa(team, p.id, dias, incluirAtrasadas);
         if (!lp.resolvido) naoRes.push(p.nome);
         for (const s of lp.subtipos) {
           mat.push({ pessoa_id: p.id, subtipo: s.subtipo, total: s.total, atrasado: s.atrasado, fatal_hoje: s.fatal_hoje });
@@ -104,7 +106,7 @@ export default function RedistribuicaoModal({
     setNaoResolvidos(naoRes);
     setProgresso(null);
     setLoading(false);
-  }, [team, pessoas, dias]);
+  }, [team, pessoas, dias, incluirAtrasadas]);
 
   useEffect(() => {
     load();
@@ -433,6 +435,7 @@ export default function RedistribuicaoModal({
       {/* distribuição em fila (round-robin) */}
       {filaCtx && (
         <DistribuicaoFilaDialog
+          team={team}
           fromPessoa={filaCtx.fromPessoa}
           subtipo={filaCtx.subtipo}
           max={filaCtx.max}

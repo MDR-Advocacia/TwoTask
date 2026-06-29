@@ -68,8 +68,28 @@ export interface LivePessoa {
   subtipos: LivePessoaSub[];
   tarefas: TarefaDetalhe[];
 }
-export async function getLivePessoa(team: string, pessoaId: number, dias: number): Promise<LivePessoa> {
-  const qs = new URLSearchParams({ team, pessoa_id: String(pessoaId), dias: String(dias) });
+// Busca leve de colaboradores (só id+nome) — destinos da fila, SEM carregar as
+// tarefas deles (a economia que importa: alvo de fila só recebe).
+export async function getUsuarios(team: string, busca: string): Promise<{ id: number; nome: string }[]> {
+  const qs = new URLSearchParams({ team, busca });
+  const r = await json<{ usuarios: { id: number; nome: string }[] }>(
+    await apiFetch(`${BASE}/usuarios?${qs.toString()}`),
+  );
+  return r.usuarios;
+}
+
+export async function getLivePessoa(
+  team: string,
+  pessoaId: number,
+  dias: number,
+  incluirAtrasadas = true,
+): Promise<LivePessoa> {
+  const qs = new URLSearchParams({
+    team,
+    pessoa_id: String(pessoaId),
+    dias: String(dias),
+    incluir_atrasadas: String(incluirAtrasadas),
+  });
   return json(await apiFetch(`${BASE}/live-pessoa?${qs.toString()}`));
 }
 

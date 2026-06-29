@@ -53,6 +53,7 @@ export default function BalanceadorSection({ team, onAplicado }: { team: string;
   const [loading, setLoading] = useState(false);
   const [sel, setSel] = useState<Set<number>>(new Set());
   const [dias, setDias] = useState(0);
+  const [incluirAtrasadas, setIncluirAtrasadas] = useState(true);
   const [cargo, setCargo] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
 
@@ -127,6 +128,9 @@ export default function BalanceadorSection({ team, onAplicado }: { team: string;
           {sel.size > 0 ? `${sel.size} colaborador(es) selecionado(s)` : "Selecione colaboradores na tabela"}
         </span>
         <div className="flex items-center gap-2">
+          <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground" title="Inclui as vencidas junto com o período escolhido">
+            <Checkbox checked={incluirAtrasadas} onCheckedChange={(c) => setIncluirAtrasadas(!!c)} /> Incluir atrasadas
+          </label>
           <Select value={String(dias)} onValueChange={(v) => setDias(Number(v))}>
             <SelectTrigger className="h-8 w-44 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -223,6 +227,7 @@ export default function BalanceadorSection({ team, onAplicado }: { team: string;
           team={team}
           pessoas={selecionados}
           dias={dias}
+          incluirAtrasadas={incluirAtrasadas}
           onClose={() => setModalOpen(false)}
           onAplicado={onAplicado}
         />

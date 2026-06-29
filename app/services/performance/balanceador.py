@@ -32,21 +32,26 @@ def _hoje_brt() -> _dt.date:
     return (_dt.datetime.now(tz=_TZ) if _TZ else _dt.datetime.now()).date()
 
 
-# Cache (vida do processo) do mapa nome_norm -> contact_id do L1. Usuários mudam
-# raramente; evita bater get_all_users (~310, ~6s) a cada chamada live.
-_USER_MAP: dict = {}
+# Cache (vida do processo) do catálogo de usuários do L1. Usuários mudam
+# raramente; evita bater get_all_users (~310, ~6s) a cada chamada.
+_USERS: list = []  # [{id, name, norm}]
 
 
-def _user_map() -> dict:
-    if not _USER_MAP:
+def _users() -> list:
+    if not _USERS:
         from app.services.legal_one_client import LegalOneApiClient
         from app.services.performance.seed import norm
 
         for u in LegalOneApiClient().get_all_users():
-            nome = u.get("name")
-            if nome and u.get("id"):
-                _USER_MAP[norm(nome)] = u["id"]
-    return _USER_MAP
+            nome, uid = u.get("name"), u.get("id")
+            if nome and uid:
+                _USERS.append({"id": uid, "name": nome, "norm": norm(nome)})
+    return _USERS
+
+
+def _user_map() -> dict:
+    """nome_norm -> contact_id (deriva do cache de usuários)."""
+    return {u["norm"]: u["id"] for u in _users()}
 
 
 def _periodo_clause(dias: int) -> str:
@@ -188,6 +193,22 @@ class BalanceadorService:
         self.db.refresh(log)
         return {"id": log.id, "total_movimentos": log.total_movimentos, "total_tarefas": log.total_tarefas}
 
+    def buscar_usuarios(self, busca: str, limit: int = 30) -> list:
+        """Busca colaboradores no catálogo de usuários do L1 — destinos externos
+        da distribuição em fila (além dos selecionados na tabela)."""
+        from app.services.performance.seed import norm
+
+        b = norm(busca)
+        out = []
+        for u in _users():
+            if b and b not in u["norm"]:
+                continue
+            out.append({"id": u["id"], "nome": u["name"]})
+            if len(out) >= limit:
+                break
+        out.sort(key=lambda x: x["nome"])
+        return out
+
     def listar_logs(self, team: str, limit: int = 50) -> list:
         from app.models.performance import BalanceadorLog
 
@@ -212,7 +233,7 @@ class BalanceadorService:
         ]
 
     # ── LIVE: pendentes não-iniciadas de uma pessoa, direto do L1 ──
-    def live_pessoa(self, team: str, pessoa_id: int, dias: int) -> dict:
+    def live_pessoa(self, team: str, pessoa_id: int, dias: int, incluir_atrasadas: bool = True) -> dict:
         """Pendentes NÃO iniciadas (statusId=0) da pessoa, AO VIVO do L1 (filtro
         por participante). Agrupa por subtipo (nome via catálogo local
         LegalOneTaskSubType) + devolve os detalhes. Base da redistribuição em
@@ -232,9 +253,15 @@ class BalanceadorService:
 
         client = LegalOneApiClient()
         # Só tarefas COM prazo (a agenda), ordenadas da mais urgente, com TETO de
-        # páginas — o L1 limita a ~1,2 req/s, então buscar tudo de quem tem
-        # centenas de pendentes trava a tela. O total real vem no @odata.count.
+        # páginas — o L1 limita a ~1,2 req/s. O recorte de data é feito NO L1
+        # (deadLine ge/le), senão o teto comeria as atrasadas e esconderia o futuro.
+        hoje = _hoje_brt()
         flt = f"participants/any(pp: pp/contact/id eq {cid}) and statusId eq 0 and deadLine ne null"
+        if not incluir_atrasadas:
+            flt += f" and deadLine ge {hoje.isoformat()}T00:00:00-03:00"
+        if dias and dias > 0:
+            teto = hoje + _dt.timedelta(days=dias)
+            flt += f" and deadLine le {teto.isoformat()}T23:59:59-03:00"
         raw, skip, total_real, capado = [], 0, None, False
         MAX_TAREFAS = 180  # ~6 páginas; cobre a maioria e capa os backlogs gigantes
         while skip < MAX_TAREFAS:
@@ -261,9 +288,6 @@ class BalanceadorService:
             s.external_id: s.name
             for s in self.db.query(LegalOneTaskSubType).filter(LegalOneTaskSubType.external_id.in_(sub_ids)).all()
         }
-        hoje = _hoje_brt()
-        teto = hoje + _dt.timedelta(days=dias) if dias and dias > 0 else None
-
         tarefas = []
         for t in raw:
             sub = nomes.get(t.get("subTypeId")) or f"subtipo {t.get('subTypeId')}"
@@ -284,8 +308,6 @@ class BalanceadorService:
                 sit = "fatal_hoje"
             else:
                 sit = "futuro"
-            if teto is not None and d is not None and d > teto:
-                continue  # fora do período
             tarefas.append(
                 {
                     "l1_task_id": t.get("id"), "subtipo": sub, "descricao": t.get("description"),
