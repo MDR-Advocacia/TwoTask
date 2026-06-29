@@ -145,8 +145,18 @@ export default function Layout({ children }: PropsWithChildren) {
       ],
     },
     {
-      title: "Minha Equipe",
-      items: TEAMS.map((t) => ({
+      title: "Contencioso Passivo",
+      items: TEAMS.filter((t) => t.grupo === "Contencioso Passivo").map((t) => ({
+        to: `/minha-equipe/${t.key}`,
+        icon: Gauge,
+        label: t.label,
+        requirePermission: 'canUseMinhaEquipe' as Permission,
+        requireTeam: t.key,
+      })),
+    },
+    {
+      title: "Recuperação de Crédito",
+      items: TEAMS.filter((t) => t.grupo === "Recuperação de Crédito").map((t) => ({
         to: `/minha-equipe/${t.key}`,
         icon: Gauge,
         label: t.label,

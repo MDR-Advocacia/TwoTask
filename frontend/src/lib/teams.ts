@@ -1,18 +1,21 @@
 // Times (setores/supervisões) do Minha Equipe — espelha app/services/performance/teams.py.
 // Cada time é um item de menu + uma permissão (árvore do admin) + o slug da rota.
 
+export const GRUPO_PASSIVO = "Contencioso Passivo";
+export const GRUPO_CREDITO = "Recuperação de Crédito";
+
 export const TEAMS = [
-  { key: "bb-reu", label: "BB Réu" },
-  { key: "bb-execucao", label: "BB Execução & Encerramento" },
-  { key: "bb-acordos", label: "BB Acordos" },
-  { key: "bb-estrategico", label: "BB Estratégico" },
-  { key: "master-reu", label: "Master Réu" },
-  { key: "ativos-reu", label: "Ativos Réu" },
-  { key: "bb-autor-processual", label: "BB Autor — Processual" },
-  { key: "ativos-autor", label: "Ativos Autor" },
-  { key: "autor-recursal", label: "Autor — Recursal" },
-  { key: "ajuizamento", label: "Ajuizamento" },
-  { key: "estrategico-autor", label: "Estratégico Autor" },
+  { key: "bb-reu", label: "BB Réu", grupo: GRUPO_PASSIVO },
+  { key: "bb-execucao", label: "BB Execução & Encerramento", grupo: GRUPO_PASSIVO },
+  { key: "bb-acordos", label: "BB Acordos", grupo: GRUPO_PASSIVO },
+  { key: "bb-estrategico", label: "BB Estratégico", grupo: GRUPO_PASSIVO },
+  { key: "master-reu", label: "Master Réu", grupo: GRUPO_PASSIVO },
+  { key: "ativos-reu", label: "Ativos Réu", grupo: GRUPO_PASSIVO },
+  { key: "bb-autor-processual", label: "BB Autor — Processual", grupo: GRUPO_CREDITO },
+  { key: "ativos-autor", label: "Ativos Autor", grupo: GRUPO_CREDITO },
+  { key: "autor-recursal", label: "Autor — Recursal", grupo: GRUPO_CREDITO },
+  { key: "ajuizamento", label: "Ajuizamento", grupo: GRUPO_CREDITO },
+  { key: "estrategico-autor", label: "Estratégico Autor", grupo: GRUPO_CREDITO },
 ] as const;
 
 export const TEAM_KEYS = TEAMS.map((t) => t.key);
