@@ -62,6 +62,9 @@ export interface LivePessoa {
   pessoa_id: number;
   nome: string | null;
   resolvido: boolean;
+  total_real?: number | null; // total de pendentes COM prazo no L1 (pode ser > carregadas)
+  carregadas?: number; // quantas vieram (teto das mais urgentes)
+  capado?: boolean; // true = estourou o teto; há mais além das mais urgentes
   subtipos: LivePessoaSub[];
   tarefas: TarefaDetalhe[];
 }

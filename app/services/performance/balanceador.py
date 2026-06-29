@@ -231,19 +231,30 @@ class BalanceadorService:
             return {"pessoa_id": pessoa_id, "nome": p.nome, "resolvido": False, "subtipos": [], "tarefas": []}
 
         client = LegalOneApiClient()
-        flt = f"participants/any(pp: pp/contact/id eq {cid}) and statusId eq 0"
-        raw, skip = [], 0
-        while skip < 900:  # teto de segurança (~30 páginas de 30)
-            r = client._request_with_retry(
-                "GET",
-                f"{client.base_url}/Tasks",
-                params={"$filter": flt, "$top": "30", "$skip": str(skip), "$select": "id,subTypeId,deadLine,description"},
-            )
-            batch = r.json().get("value", [])
+        # Só tarefas COM prazo (a agenda), ordenadas da mais urgente, com TETO de
+        # páginas — o L1 limita a ~1,2 req/s, então buscar tudo de quem tem
+        # centenas de pendentes trava a tela. O total real vem no @odata.count.
+        flt = f"participants/any(pp: pp/contact/id eq {cid}) and statusId eq 0 and deadLine ne null"
+        raw, skip, total_real, capado = [], 0, None, False
+        MAX_TAREFAS = 180  # ~6 páginas; cobre a maioria e capa os backlogs gigantes
+        while skip < MAX_TAREFAS:
+            params = {
+                "$filter": flt, "$top": "30", "$skip": str(skip),
+                "$orderby": "deadLine", "$select": "id,subTypeId,deadLine,description",
+            }
+            if skip == 0:
+                params["$count"] = "true"
+            r = client._request_with_retry("GET", f"{client.base_url}/Tasks", params=params)
+            j = r.json()
+            if total_real is None:
+                total_real = j.get("@odata.count")
+            batch = j.get("value", [])
             raw.extend(batch)
             if len(batch) < 30:
                 break
             skip += 30
+        else:
+            capado = True  # estourou o teto de páginas — há mais além das mais urgentes
 
         sub_ids = {t.get("subTypeId") for t in raw if t.get("subTypeId")}
         nomes = {
@@ -291,4 +302,8 @@ class BalanceadorService:
             elif t["situacao"] == "fatal_hoje":
                 a["fatal_hoje"] += 1
         subtipos = [{"subtipo": k, **v} for k, v in sorted(agg.items(), key=lambda x: -x[1]["total"])]
-        return {"pessoa_id": pessoa_id, "nome": p.nome, "resolvido": True, "subtipos": subtipos, "tarefas": tarefas}
+        return {
+            "pessoa_id": pessoa_id, "nome": p.nome, "resolvido": True,
+            "total_real": total_real, "carregadas": len(tarefas), "capado": capado,
+            "subtipos": subtipos, "tarefas": tarefas,
+        }

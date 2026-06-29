@@ -4,7 +4,7 @@
 // MOCK: a aplicação é simulada (não escreve no L1 ainda).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Check, Info, Loader2, RotateCcw, Trash2, Users } from "lucide-react";
+import { ArrowRight, Check, Info, Loader2, RotateCcw, Split, Trash2, Users } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -25,6 +25,7 @@ import {
   registrarLog,
 } from "@/services/balanceador";
 import DetalheSubtipoModal from "@/components/balanceador/DetalheSubtipoModal";
+import DistribuicaoFilaDialog from "@/components/balanceador/DistribuicaoFilaDialog";
 import ExecProgressOverlay, { type ExecState } from "@/components/balanceador/ExecProgressOverlay";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -60,12 +61,14 @@ export default function RedistribuicaoModal({
   const [matriz, setMatriz] = useState<MatrizItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [tarefas, setTarefas] = useState<Record<number, TarefaDetalhe[]>>({});
+  const [totais, setTotais] = useState<Record<number, { carregadas: number; total: number | null; capado: boolean }>>({});
   const [progresso, setProgresso] = useState<{ done: number; total: number; nome: string } | null>(null);
   const [naoResolvidos, setNaoResolvidos] = useState<string[]>([]);
   const [moves, setMoves] = useState<MovePendente[]>([]);
   const [dropCtx, setDropCtx] = useState<DropCtx>(null);
   const [qtd, setQtd] = useState<number>(0);
   const [detalhe, setDetalhe] = useState<{ fromPessoa: Pessoa; subtipo: string } | null>(null);
+  const [filaCtx, setFilaCtx] = useState<{ fromPessoa: Pessoa; subtipo: string; max: number } | null>(null);
   const [exec, setExec] = useState<ExecState | null>(null);
   const dragged = useRef<Dragged>(null);
 
@@ -78,6 +81,7 @@ export default function RedistribuicaoModal({
     setProgresso({ done: 0, total: pessoas.length, nome: "" });
     const mat: MatrizItem[] = [];
     const tar: Record<number, TarefaDetalhe[]> = {};
+    const tot: Record<number, { carregadas: number; total: number | null; capado: boolean }> = {};
     const naoRes: string[] = [];
     for (let i = 0; i < pessoas.length; i++) {
       const p = pessoas[i];
@@ -89,12 +93,14 @@ export default function RedistribuicaoModal({
           mat.push({ pessoa_id: p.id, subtipo: s.subtipo, total: s.total, atrasado: s.atrasado, fatal_hoje: s.fatal_hoje });
         }
         tar[p.id] = lp.tarefas;
+        tot[p.id] = { carregadas: lp.carregadas ?? lp.tarefas.length, total: lp.total_real ?? null, capado: lp.capado ?? false };
       } catch {
         naoRes.push(p.nome);
       }
     }
     setMatriz(mat);
     setTarefas(tar);
+    setTotais(tot);
     setNaoResolvidos(naoRes);
     setProgresso(null);
     setLoading(false);
@@ -109,8 +115,8 @@ export default function RedistribuicaoModal({
   // pointer-events:none e travar os cliques. Restaura sempre que não há modal
   // aninhado aberto, e também no unmount.
   useEffect(() => {
-    if (!detalhe && !dropCtx) document.body.style.pointerEvents = "";
-  }, [detalhe, dropCtx]);
+    if (!detalhe && !dropCtx && !filaCtx) document.body.style.pointerEvents = "";
+  }, [detalhe, dropCtx, filaCtx]);
   useEffect(() => () => {
     document.body.style.pointerEvents = "";
   }, []);
@@ -256,7 +262,12 @@ export default function RedistribuicaoModal({
                     >
                       <div className="sticky top-0 rounded-t-lg border-b bg-background/95 px-3 py-2">
                         <div className="truncate text-sm font-semibold" title={p.nome}>{p.nome}</div>
-                        <div className="text-[11px] text-muted-foreground">{totalP} tarefa(s) · {cards.length} tipos</div>
+                        <div className="text-[11px] text-muted-foreground">
+                          {totalP} tarefa(s) · {cards.length} tipos
+                          {totais[p.id]?.capado && (
+                            <span className="text-amber-700"> · mais urgentes (de {totais[p.id]!.total} c/ prazo)</span>
+                          )}
+                        </div>
                       </div>
                       <div className="flex-1 space-y-1.5 overflow-y-auto p-2">
                         {cards.length === 0 && (
@@ -273,13 +284,22 @@ export default function RedistribuicaoModal({
                               <span className="text-xs font-medium leading-tight" title={c.subtipo}>
                                 {c.subtipo}
                               </span>
-                              <button
-                                className="shrink-0 text-muted-foreground hover:text-[hsl(var(--dunatech-blue))]"
-                                title="Detalhar / escolher tarefas"
-                                onClick={() => setDetalhe({ fromPessoa: p, subtipo: c.subtipo })}
-                              >
-                                <Info className="h-3.5 w-3.5" />
-                              </button>
+                              <div className="flex shrink-0 items-center gap-1">
+                                <button
+                                  className="text-muted-foreground hover:text-[hsl(var(--dunatech-blue))]"
+                                  title="Distribuir em fila (round-robin) entre vários"
+                                  onClick={() => setFilaCtx({ fromPessoa: p, subtipo: c.subtipo, max: c.total })}
+                                >
+                                  <Split className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  className="text-muted-foreground hover:text-[hsl(var(--dunatech-blue))]"
+                                  title="Detalhar / escolher tarefas"
+                                  onClick={() => setDetalhe({ fromPessoa: p, subtipo: c.subtipo })}
+                                >
+                                  <Info className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
                             </div>
                             <div className="mt-1 flex items-center gap-1.5">
                               <span className="text-lg font-bold leading-none tabular-nums">{c.total}</span>
@@ -407,6 +427,26 @@ export default function RedistribuicaoModal({
               subtipo: detalhe.subtipo, qtd: taskIds.length, individual: true, taskIds,
             })
           }
+        />
+      )}
+
+      {/* distribuição em fila (round-robin) */}
+      {filaCtx && (
+        <DistribuicaoFilaDialog
+          fromPessoa={filaCtx.fromPessoa}
+          subtipo={filaCtx.subtipo}
+          max={filaCtx.max}
+          alvos={pessoas}
+          onClose={() => setFilaCtx(null)}
+          onConfirm={(dist) => {
+            dist.forEach((d) =>
+              registrar({
+                fromId: filaCtx.fromPessoa.id, fromNome: filaCtx.fromPessoa.nome,
+                toId: d.toId, toNome: d.toNome, subtipo: filaCtx.subtipo, qtd: d.qtd, individual: false,
+              }),
+            );
+            setFilaCtx(null);
+          }}
         />
       )}
 
