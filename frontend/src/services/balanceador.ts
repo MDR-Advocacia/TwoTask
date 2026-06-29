@@ -70,11 +70,14 @@ export interface LivePessoa {
 }
 // Busca leve de colaboradores (só id+nome) — destinos da fila, SEM carregar as
 // tarefas deles (a economia que importa: alvo de fila só recebe).
-export async function getUsuarios(team: string, busca: string): Promise<{ id: number; nome: string }[]> {
+export interface UsuarioBusca {
+  id: number;
+  nome: string;
+  setor: boolean; // true = roster do time; false = externo (catálogo L1)
+}
+export async function getUsuarios(team: string, busca: string): Promise<UsuarioBusca[]> {
   const qs = new URLSearchParams({ team, busca });
-  const r = await json<{ usuarios: { id: number; nome: string }[] }>(
-    await apiFetch(`${BASE}/usuarios?${qs.toString()}`),
-  );
+  const r = await json<{ usuarios: UsuarioBusca[] }>(await apiFetch(`${BASE}/usuarios?${qs.toString()}`));
   return r.usuarios;
 }
 

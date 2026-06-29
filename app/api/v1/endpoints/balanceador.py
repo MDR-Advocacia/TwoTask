@@ -63,9 +63,9 @@ def live_pessoa(
     return BalanceadorService(db).live_pessoa(team, pessoa_id, dias, incluir_atrasadas)
 
 
-@router.get("/usuarios", summary="Busca colaboradores no L1 (destinos externos da fila)", dependencies=[_team])
+@router.get("/usuarios", summary="Destinos da fila: setor primeiro + busca externa no L1", dependencies=[_team])
 def usuarios(team: str = Query(...), busca: str = Query(""), db: Session = Depends(get_db)):
-    return {"usuarios": BalanceadorService(db).buscar_usuarios(busca)}
+    return {"usuarios": BalanceadorService(db).buscar_usuarios(team, busca)}
 
 
 class RegistrarLogReq(BaseModel):

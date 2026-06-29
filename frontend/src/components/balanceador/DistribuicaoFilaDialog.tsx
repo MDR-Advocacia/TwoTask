@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { getUsuarios } from "@/services/balanceador";
+import { type UsuarioBusca, getUsuarios } from "@/services/balanceador";
 
 type Pessoa = { id: number; nome: string };
 export type DistItem = { toId: number; toNome: string; qtd: number };
@@ -53,7 +53,7 @@ export default function DistribuicaoFilaDialog({
   const [externos, setExternos] = useState<Pessoa[]>([]);
   const [searchOpen, setSearchOpen] = useState(false);
   const [busca, setBusca] = useState("");
-  const [cand, setCand] = useState<Pessoa[]>([]);
+  const [cand, setCand] = useState<UsuarioBusca[]>([]);
 
   useEffect(() => {
     if (!searchOpen) return;
@@ -66,7 +66,7 @@ export default function DistribuicaoFilaDialog({
   const n = todos ? max : Math.max(1, Math.min(qtd || 0, max));
   const targets = pool.filter((o) => sel.has(o.id));
 
-  const addExterno = (u: Pessoa) => {
+  const addExterno = (u: UsuarioBusca) => {
     setSearchOpen(false);
     setBusca("");
     if (u.id === fromPessoa.id) return; // não distribui pra própria origem
@@ -144,8 +144,9 @@ export default function DistribuicaoFilaDialog({
                     <CommandEmpty>Ninguém encontrado.</CommandEmpty>
                     <CommandGroup>
                       {cand.map((u) => (
-                        <CommandItem key={u.id} value={u.nome} onSelect={() => addExterno(u)}>
-                          {u.nome}
+                        <CommandItem key={`${u.setor ? "s" : "x"}-${u.id}`} value={u.nome} onSelect={() => addExterno(u)}>
+                          <span className="truncate">{u.nome}</span>
+                          {!u.setor && <span className="ml-auto shrink-0 text-[10px] text-amber-700">fora do setor</span>}
                         </CommandItem>
                       ))}
                     </CommandGroup>

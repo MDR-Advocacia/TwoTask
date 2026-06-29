@@ -193,20 +193,35 @@ class BalanceadorService:
         self.db.refresh(log)
         return {"id": log.id, "total_movimentos": log.total_movimentos, "total_tarefas": log.total_tarefas}
 
-    def buscar_usuarios(self, busca: str, limit: int = 30) -> list:
-        """Busca colaboradores no catálogo de usuários do L1 — destinos externos
-        da distribuição em fila (além dos selecionados na tabela)."""
+    def buscar_usuarios(self, team: str, busca: str, limit_externos: int = 20) -> list:
+        """Destinos da distribuição em fila. PRIORIZA o roster do setor (aparece
+        primeiro, e sem busca já mostra o time todo); só vai no catálogo do L1
+        (externos) quando há texto de busca. `setor=True/False` distingue."""
+        from app.models.performance import PerfPessoa
         from app.services.performance.seed import norm
 
         b = norm(busca)
-        out = []
-        for u in _users():
-            if b and b not in u["norm"]:
+        out, vistos = [], set()
+        rows = (
+            self.db.query(PerfPessoa)
+            .filter(PerfPessoa.equipe == team, PerfPessoa.ativo.is_(True))
+            .order_by(PerfPessoa.is_supervisor.desc(), PerfPessoa.nome)
+            .all()
+        )
+        for p in rows:
+            if b and b not in p.nome_norm:
                 continue
-            out.append({"id": u["id"], "nome": u["name"]})
-            if len(out) >= limit:
-                break
-        out.sort(key=lambda x: x["nome"])
+            out.append({"id": p.id, "nome": p.nome, "setor": True})
+            vistos.add(p.nome_norm)
+        if b:  # externos só sob busca, sem repetir quem já é do setor
+            ext = 0
+            for u in _users():
+                if u["norm"] in vistos or b not in u["norm"]:
+                    continue
+                out.append({"id": u["id"], "nome": u["name"], "setor": False})
+                ext += 1
+                if ext >= limit_externos:
+                    break
         return out
 
     def listar_logs(self, team: str, limit: int = 50) -> list:
