@@ -68,6 +68,27 @@ def usuarios(team: str = Query(...), busca: str = Query(""), db: Session = Depen
     return {"usuarios": BalanceadorService(db).buscar_usuarios(team, busca)}
 
 
+@router.get("/fila-pref", summary="Destinos recorrentes da fila p/ (origem, subtipo)", dependencies=[_team])
+def fila_pref_sugestoes(
+    team: str = Query(...),
+    origem_pessoa_id: int = Query(...),
+    subtipo: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    return {"sugestoes": BalanceadorService(db).sugestoes_fila(team, origem_pessoa_id, subtipo)}
+
+
+class FilaPrefReq(BaseModel):
+    origem_pessoa_id: int
+    subtipo: str
+    alvos: list  # [{id, nome}]
+
+
+@router.post("/fila-pref", summary="Aprende os destinos da fila (origem, subtipo)", dependencies=[_team])
+def fila_pref_registrar(team: str = Query(...), req: FilaPrefReq = ..., db: Session = Depends(get_db)):
+    return BalanceadorService(db).registrar_fila_pref(team, req.origem_pessoa_id, req.subtipo, req.alvos)
+
+
 class RegistrarLogReq(BaseModel):
     movimentos: list
 

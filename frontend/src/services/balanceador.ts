@@ -68,6 +68,35 @@ export interface LivePessoa {
   subtipos: LivePessoaSub[];
   tarefas: TarefaDetalhe[];
 }
+// Destinos recorrentes (preferência aprendida) p/ (origem, subtipo) da fila.
+export interface SugestaoFila {
+  id: number | null;
+  nome: string;
+  vezes: number;
+}
+export async function getSugestoesFila(
+  team: string,
+  origemPessoaId: number,
+  subtipo: string,
+): Promise<SugestaoFila[]> {
+  const qs = new URLSearchParams({ team, origem_pessoa_id: String(origemPessoaId), subtipo });
+  const r = await json<{ sugestoes: SugestaoFila[] }>(await apiFetch(`${BASE}/fila-pref?${qs.toString()}`));
+  return r.sugestoes;
+}
+export async function registrarFilaPref(
+  team: string,
+  origemPessoaId: number,
+  subtipo: string,
+  alvos: { id: number; nome: string }[],
+): Promise<void> {
+  const res = await apiFetch(`${BASE}/fila-pref?team=${team}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ origem_pessoa_id: origemPessoaId, subtipo, alvos }),
+  });
+  if (!res.ok) throw new Error(`Erro ${res.status} ao salvar recorrência`);
+}
+
 // Busca leve de colaboradores (só id+nome) — destinos da fila, SEM carregar as
 // tarefas deles (a economia que importa: alvo de fila só recebe).
 export interface UsuarioBusca {

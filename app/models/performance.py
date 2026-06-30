@@ -20,6 +20,7 @@ from sqlalchemy import (
     Integer,
     LargeBinary,
     String,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
@@ -133,3 +134,26 @@ class BalanceadorLog(Base):
     origem = Column(String, nullable=False, server_default="mock")
     detalhe = Column(JSONB, nullable=True)  # lista de movimentos (from/to/subtipo/qtd/tasks)
     criado_em = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class BalanceadorFilaPref(Base):
+    """Destinos RECORRENTES da distribuição em fila, por (origem, subtipo).
+
+    Aprende com cada 'Distribuir' (incrementa `vezes`) e, nas próximas vezes que o
+    supervisor for distribuir aquele subtipo daquela origem, sugere os habituais
+    no topo da lista. Identidade do alvo por NOME (estável entre id-spaces)."""
+
+    __tablename__ = "balanceador_fila_pref"
+
+    id = Column(Integer, primary_key=True)
+    team = Column(String, nullable=True, index=True)
+    origem_pessoa_id = Column(Integer, nullable=False, index=True)
+    subtipo = Column(String, nullable=False)
+    alvo_id = Column(Integer, nullable=True)
+    alvo_nome = Column(String, nullable=False)
+    vezes = Column(Integer, nullable=False, server_default="0")
+    ultimo_uso = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("origem_pessoa_id", "subtipo", "alvo_nome", name="uq_fila_pref"),
+    )

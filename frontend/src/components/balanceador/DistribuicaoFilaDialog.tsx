@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { type UsuarioBusca, getUsuarios } from "@/services/balanceador";
+import { type UsuarioBusca, getSugestoesFila, getUsuarios, registrarFilaPref } from "@/services/balanceador";
 
 type Pessoa = { id: number; nome: string };
 export type DistItem = { toId: number; toNome: string; qtd: number };
@@ -54,6 +54,7 @@ export default function DistribuicaoFilaDialog({
   const [searchOpen, setSearchOpen] = useState(false);
   const [busca, setBusca] = useState("");
   const [cand, setCand] = useState<UsuarioBusca[]>([]);
+  const [recorrentes, setRecorrentes] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     if (!searchOpen) return;
@@ -62,7 +63,41 @@ export default function DistribuicaoFilaDialog({
       .catch(() => undefined);
   }, [searchOpen, busca, team]);
 
-  const pool = useMemo(() => [...outros, ...externos], [outros, externos]);
+  // Sugere os destinos RECORRENTES (origem+subtipo) no topo, já marcados.
+  useEffect(() => {
+    getSugestoesFila(team, fromPessoa.id, subtipo)
+      .then((sugs) => {
+        if (!sugs.length) return;
+        const recIds = new Set<number>();
+        const novos: Pessoa[] = [];
+        const selNovos: number[] = [];
+        for (const s of sugs) {
+          const naTabela = outros.find((o) => o.nome.toLowerCase() === s.nome.toLowerCase());
+          if (naTabela) {
+            recIds.add(naTabela.id);
+            selNovos.push(naTabela.id);
+          } else if (s.id != null) {
+            novos.push({ id: s.id, nome: s.nome });
+            recIds.add(s.id);
+            selNovos.push(s.id);
+          }
+        }
+        setExternos((prev) => [...novos.filter((n) => !prev.some((p) => p.id === n.id)), ...prev]);
+        setRecorrentes(recIds);
+        setSel((prev) => {
+          const n = new Set(prev);
+          selNovos.forEach((id) => n.add(id));
+          return n;
+        });
+      })
+      .catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const pool = useMemo(
+    () => [...outros, ...externos].sort((a, b) => Number(recorrentes.has(b.id)) - Number(recorrentes.has(a.id))),
+    [outros, externos, recorrentes],
+  );
   const n = todos ? max : Math.max(1, Math.min(qtd || 0, max));
   const targets = pool.filter((o) => sel.has(o.id));
 
@@ -166,9 +201,11 @@ export default function DistribuicaoFilaDialog({
                 <label key={o.id} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-muted/50">
                   <Checkbox checked={sel.has(o.id)} onCheckedChange={() => toggle(o.id)} />
                   <span className="flex-1">{o.nome}</span>
-                  {externos.some((e) => e.id === o.id) && (
+                  {recorrentes.has(o.id) ? (
+                    <span className="text-[10px] font-medium text-indigo-600">★ recorrente</span>
+                  ) : externos.some((e) => e.id === o.id) ? (
                     <span className="text-[10px] text-muted-foreground">buscado</span>
-                  )}
+                  ) : null}
                 </label>
               ))}
             </div>
@@ -191,7 +228,20 @@ export default function DistribuicaoFilaDialog({
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancelar</Button>
-          <Button className="gap-1.5" disabled={dist.length === 0} onClick={() => onConfirm(dist)}>
+          <Button
+            className="gap-1.5"
+            disabled={dist.length === 0}
+            onClick={() => {
+              // aprende os destinos dessa (origem, subtipo) pra sugerir no topo depois
+              registrarFilaPref(
+                team,
+                fromPessoa.id,
+                subtipo,
+                dist.map((d) => ({ id: d.toId, nome: d.toNome })),
+              ).catch(() => undefined);
+              onConfirm(dist);
+            }}
+          >
             Distribuir <ArrowRight className="h-4 w-4" />
           </Button>
         </DialogFooter>

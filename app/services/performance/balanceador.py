@@ -247,6 +247,50 @@ class BalanceadorService:
             for r in rows
         ]
 
+    # ── Destinos recorrentes da distribuição em fila (preferência aprendida) ──
+    def sugestoes_fila(self, team: str, origem_pessoa_id: int, subtipo: str, limit: int = 8) -> list:
+        from app.models.performance import BalanceadorFilaPref
+
+        rows = (
+            self.db.query(BalanceadorFilaPref)
+            .filter(
+                BalanceadorFilaPref.origem_pessoa_id == origem_pessoa_id,
+                BalanceadorFilaPref.subtipo == subtipo,
+            )
+            .order_by(BalanceadorFilaPref.vezes.desc(), BalanceadorFilaPref.ultimo_uso.desc())
+            .limit(limit)
+            .all()
+        )
+        return [{"id": r.alvo_id, "nome": r.alvo_nome, "vezes": r.vezes} for r in rows]
+
+    def registrar_fila_pref(self, team: str, origem_pessoa_id: int, subtipo: str, alvos: list) -> dict:
+        """+1 vez por alvo distribuído nessa (origem, subtipo) — alimenta as sugestões."""
+        from sqlalchemy.sql import func as _func
+
+        from app.models.performance import BalanceadorFilaPref
+
+        for a in alvos or []:
+            nome = (a.get("nome") or "").strip()
+            if not nome:
+                continue
+            row = (
+                self.db.query(BalanceadorFilaPref)
+                .filter_by(origem_pessoa_id=origem_pessoa_id, subtipo=subtipo, alvo_nome=nome)
+                .first()
+            )
+            if row is None:
+                row = BalanceadorFilaPref(
+                    team=team, origem_pessoa_id=origem_pessoa_id, subtipo=subtipo,
+                    alvo_id=a.get("id"), alvo_nome=nome, vezes=0,
+                )
+                self.db.add(row)
+            row.vezes = (row.vezes or 0) + 1
+            row.alvo_id = a.get("id") or row.alvo_id
+            row.team = team
+            row.ultimo_uso = _func.now()
+        self.db.commit()
+        return {"ok": True, "registrados": len(alvos or [])}
+
     # ── LIVE: pendentes não-iniciadas de uma pessoa, direto do L1 ──
     def live_pessoa(self, team: str, pessoa_id: int, dias: int, incluir_atrasadas: bool = True) -> dict:
         """Pendentes NÃO iniciadas (statusId=0) da pessoa, AO VIVO do L1 (filtro

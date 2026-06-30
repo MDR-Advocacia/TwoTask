@@ -47,9 +47,15 @@ interface NavItem {
   requireTeam?: string;
 }
 
+interface NavSubgroup {
+  title: string;
+  items: NavItem[];
+}
+
 interface NavSection {
   title?: string;
-  items: NavItem[];
+  items?: NavItem[];
+  subgroups?: NavSubgroup[];
 }
 
 export default function Layout({ children }: PropsWithChildren) {
@@ -145,23 +151,16 @@ export default function Layout({ children }: PropsWithChildren) {
       ],
     },
     {
-      title: "Contencioso Passivo",
-      items: TEAMS.filter((t) => t.grupo === "Contencioso Passivo").map((t) => ({
-        to: `/minha-equipe/${t.key}`,
-        icon: Gauge,
-        label: t.label,
-        requirePermission: 'canUseMinhaEquipe' as Permission,
-        requireTeam: t.key,
-      })),
-    },
-    {
-      title: "Recuperação de Crédito",
-      items: TEAMS.filter((t) => t.grupo === "Recuperação de Crédito").map((t) => ({
-        to: `/minha-equipe/${t.key}`,
-        icon: Gauge,
-        label: t.label,
-        requirePermission: 'canUseMinhaEquipe' as Permission,
-        requireTeam: t.key,
+      title: "Minha Equipe",
+      subgroups: ["Contencioso Passivo", "Recuperação de Crédito"].map((grupo) => ({
+        title: grupo,
+        items: TEAMS.filter((t) => t.grupo === grupo).map((t) => ({
+          to: `/minha-equipe/${t.key}`,
+          icon: Gauge,
+          label: t.label,
+          requirePermission: 'canUseMinhaEquipe' as Permission,
+          requireTeam: t.key,
+        })),
       })),
     },
     {
@@ -172,15 +171,39 @@ export default function Layout({ children }: PropsWithChildren) {
   ];
 
   const visibleSections = useMemo(() => {
+    const okItem = (it: NavItem) => hasPermission(it.requirePermission) && hasTeam(it.requireTeam);
     return baseSections
-      .map(sec => ({ ...sec, items: sec.items.filter(it => hasPermission(it.requirePermission) && hasTeam(it.requireTeam)) }))
-      .filter(sec => sec.items.length > 0);
+      .map((sec) => {
+        if (sec.subgroups) {
+          const subgroups = sec.subgroups
+            .map((sg) => ({ ...sg, items: sg.items.filter(okItem) }))
+            .filter((sg) => sg.items.length > 0);
+          return { ...sec, subgroups, items: [] as NavItem[] };
+        }
+        return { ...sec, items: (sec.items ?? []).filter(okItem) };
+      })
+      .filter((sec) => (sec.subgroups ? sec.subgroups.length > 0 : (sec.items?.length ?? 0) > 0));
   }, [canScheduleBatch, canUsePublications, canUsePrazosIniciais, canUseOnerequest, canUseMinhaEquipe, minhaEquipeEquipes, isAdmin]);
 
   const handleLogout = () => {
     logout();
     navigate("/login");
   };
+
+  const renderLink = ({ to, icon: Icon, label }: NavItem, indent = false) => (
+    <NavLink
+      key={to}
+      to={to}
+      className={({ isActive }) =>
+        `flex items-center gap-3 rounded-lg py-2 text-muted-foreground transition-all hover:text-primary ${
+          indent ? "pl-7 pr-3" : "px-3"
+        } ${isActive ? "bg-muted !text-primary" : ""}`
+      }
+    >
+      <Icon className="h-4 w-4" />
+      {label}
+    </NavLink>
+  );
 
   const NavContent = () => (
     <nav className="grid items-start px-2 text-sm font-medium lg:px-4">
@@ -203,20 +226,27 @@ export default function Layout({ children }: PropsWithChildren) {
               </button>
             )}
             {!isCollapsed &&
-              section.items.map(({ to, icon: Icon, label }) => (
-                <NavLink
-                  key={to}
-                  to={to}
-                  className={({ isActive }) =>
-                    `flex items-center gap-3 rounded-lg px-3 py-2 text-muted-foreground transition-all hover:text-primary ${
-                      isActive ? "bg-muted !text-primary" : ""
-                    }`
-                  }
-                >
-                  <Icon className="h-4 w-4" />
-                  {label}
-                </NavLink>
-              ))}
+              section.subgroups?.map((sg) => {
+                const sgKey = `${key}::${sg.title}`;
+                const sgCollapsed = !!collapsed[sgKey];
+                return (
+                  <div key={sgKey} className="mt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => toggleSection(sgKey)}
+                      aria-expanded={!sgCollapsed}
+                      className="flex w-full items-center justify-between rounded-md py-1 pl-4 pr-3 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60 transition-colors hover:text-muted-foreground"
+                    >
+                      <span>{sg.title}</span>
+                      <ChevronDown
+                        className={`h-3 w-3 shrink-0 transition-transform ${sgCollapsed ? "-rotate-90" : ""}`}
+                      />
+                    </button>
+                    {!sgCollapsed && sg.items.map((it) => renderLink(it, true))}
+                  </div>
+                );
+              })}
+            {!isCollapsed && section.items?.map((it) => renderLink(it, false))}
           </div>
         );
       })}
