@@ -190,6 +190,16 @@ def _cancel_batch(db, job, ids: list, c) -> None:
             db.commit()
         pendentes = [t for t in pendentes if t not in confirmados]
 
+    # Espelha no snapshot local: as confirmadas viram 'Cancelado' → somem de
+    # pendente/atrasado no board (que lê do snapshot), deixando o gráfico coerente
+    # com o que foi cancelado de verdade — sem esperar o próximo ingest.
+    if confirmados:
+        ids_sql = ",".join(str(int(t)) for t in confirmados)
+        db.execute(
+            text(f"UPDATE perf_l1_tarefa SET status = 'Cancelado' WHERE l1_task_id IN ({ids_sql})")
+        )
+        db.commit()
+
     job.falhas = (job.falhas or 0) + len(pendentes)
     job.feito = job.total
     db.commit()
