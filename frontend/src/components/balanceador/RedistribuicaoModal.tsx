@@ -208,7 +208,7 @@ export default function RedistribuicaoModal({
   return (
     <>
       <Dialog open onOpenChange={(o) => { if (!o && !exec) onClose(); }}>
-        <DialogContent className="flex max-h-[92vh] w-[94vw] max-w-[1400px] flex-col overflow-hidden">
+        <DialogContent className="flex max-h-[92vh] w-[94vw] max-w-[1400px] flex-col overflow-hidden" style={{ pointerEvents: "auto" }}>
           <DialogHeader>
             <DialogTitle className="flex flex-wrap items-center gap-2">
               <Users className="h-5 w-5 text-[hsl(var(--dunatech-blue))]" />
@@ -379,7 +379,7 @@ export default function RedistribuicaoModal({
 
       {/* dialog de quantidade no drop */}
       <Dialog open={dropCtx != null} onOpenChange={(o) => !o && setDropCtx(null)}>
-        <DialogContent className="max-w-sm">
+        <DialogContent className="max-w-sm" style={{ pointerEvents: "auto" }}>
           <DialogHeader>
             <DialogTitle className="text-base">Mover quantas?</DialogTitle>
           </DialogHeader>

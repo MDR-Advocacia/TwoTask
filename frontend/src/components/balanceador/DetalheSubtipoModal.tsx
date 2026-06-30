@@ -117,7 +117,7 @@ export default function DetalheSubtipoModal({
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-h-[88vh] max-w-3xl overflow-y-auto">
+      <DialogContent className="max-h-[88vh] max-w-3xl overflow-y-auto" style={{ pointerEvents: "auto" }}>
         <DialogHeader>
           <DialogTitle className="text-base">
             {subtipo}

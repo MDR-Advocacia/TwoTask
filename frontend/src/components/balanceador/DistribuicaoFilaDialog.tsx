@@ -132,7 +132,7 @@ export default function DistribuicaoFilaDialog({
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-h-[88vh] max-w-lg overflow-y-auto">
+      <DialogContent className="max-h-[88vh] max-w-lg overflow-y-auto" style={{ pointerEvents: "auto" }}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
             <Split className="h-4 w-4 text-[hsl(var(--dunatech-blue))]" /> Distribuir em fila
