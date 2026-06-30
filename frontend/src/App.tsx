@@ -12,6 +12,7 @@ import FeedbackButton from './components/FeedbackButton';
 
 // Páginas
 import AdminPage from './pages/AdminPage';
+import CancelamentoDuplicadasPage from './pages/CancelamentoDuplicadasPage';
 import NotFound from './pages/NotFound';
 import LandingPage from './pages/LandingPage';
 import PublicationsDashboardPage from './pages/PublicationsDashboardPage';
@@ -72,6 +73,7 @@ function AppContent() {
             <Route path="/me" element={<ProfilePage />} />
             <Route path="/tasks/template-batch" element={<CreateTaskByTemplatePage />} />
             <Route path="/tasks/spreadsheet-batch" element={<CreateTaskFromSpreadsheetPage />} />
+            <Route path="/cancelamento-duplicadas" element={<CancelamentoDuplicadasPage />} />
             <Route path="/publications" element={<PublicationsPage />} />
             <Route path="/publications/dashboard" element={<PublicationsDashboardPage />} />
             <Route path="/publications/lookup" element={<LookupByCnjPage />} />

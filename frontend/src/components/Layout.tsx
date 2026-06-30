@@ -6,6 +6,7 @@ import {
   CircleUser,
   Clock,
   Contact,
+  CopyX,
   FileUp,
   Gavel,
   Gauge,
@@ -115,6 +116,7 @@ export default function Layout({ children }: PropsWithChildren) {
         { to: "/tasks/spreadsheet-batch", icon: FileUp, label: "Tarefas por Planilha", requirePermission: 'canScheduleBatch' },
         { to: "/ged-legalone", icon: Upload, label: "Envio em Lote ao GED", requirePermission: 'canScheduleBatch' },
         { to: "/contatos-legalone", icon: Contact, label: "Atualização de Contatos", requirePermission: 'canScheduleBatch' },
+        { to: "/cancelamento-duplicadas", icon: CopyX, label: "Cancelar Duplicadas", requirePermission: 'isAdmin' },
       ],
     },
     {
