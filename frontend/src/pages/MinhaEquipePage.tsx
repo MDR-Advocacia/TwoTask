@@ -293,8 +293,17 @@ export default function MinhaEquipePage() {
             <Database className="h-3.5 w-3.5" />
             {syncStatus?.last_sync ? (
               <span>
-                Dados de <span className="font-medium text-foreground">{syncStatus.last_sync.data}</span> ·{" "}
-                {syncStatus.last_sync.tarefas.toLocaleString("pt-BR")} tarefas
+                Atualizado{" "}
+                <span className="font-medium text-foreground">
+                  {syncStatus.last_sync.data}
+                  {syncStatus.last_sync.em
+                    ? ` ${new Date(syncStatus.last_sync.em).toLocaleTimeString("pt-BR", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}`
+                    : ""}
+                </span>{" "}
+                · {syncStatus.last_sync.tarefas.toLocaleString("pt-BR")} tarefas
               </span>
             ) : (
               <span>Sincronização automática diária (9h)</span>
