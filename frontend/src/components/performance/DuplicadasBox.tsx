@@ -15,6 +15,14 @@ import {
 } from "@/services/performance";
 import { useToast } from "@/hooks/use-toast";
 
+const fmtEta = (sec: number): string => {
+  if (!isFinite(sec) || sec <= 0) return "";
+  if (sec < 60) return `~${Math.round(sec)}s`;
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec % 60);
+  return s ? `~${m}min ${s}s` : `~${m}min`;
+};
+
 export default function DuplicadasBox({
   team,
   dups,
@@ -29,6 +37,8 @@ export default function DuplicadasBox({
   const [job, setJob] = useState<CancelStatus | null>(null);
   const jobIdRef = useRef<string | null>(null);
   const pollRef = useRef<number | null>(null);
+  const startedAtRef = useRef<number>(0); // p/ ETA observado (ms)
+  const cancelStartRef = useRef<number>(0);
 
   useEffect(() => {
     return () => {
@@ -38,6 +48,8 @@ export default function DuplicadasBox({
 
   const start = async () => {
     setConfirming(false);
+    startedAtRef.current = Date.now();
+    cancelStartRef.current = 0;
     setJob({
       job_id: "",
       status: "running",
@@ -57,6 +69,7 @@ export default function DuplicadasBox({
       const tick = async () => {
         try {
           const st = await getCancelStatus(team, job_id);
+          if (st.fase === "cancelling" && !cancelStartRef.current) cancelStartRef.current = Date.now();
           setJob(st);
           if (st.status === "done") {
             if (pollRef.current) window.clearInterval(pollRef.current);
@@ -102,6 +115,18 @@ export default function DuplicadasBox({
           : 0
       : 0;
 
+  // ETA pelo ritmo REAL observado (auto-calibra): ms/pasta na varredura, ms/tarefa no cancelamento.
+  let eta = "";
+  if (job && !done) {
+    if (scanning && job.scan_feito >= 2 && startedAtRef.current) {
+      const rate = (Date.now() - startedAtRef.current) / job.scan_feito;
+      eta = fmtEta(((job.scan_total - job.scan_feito) * rate) / 1000);
+    } else if (!scanning && job.feito >= 2 && cancelStartRef.current && job.total) {
+      const rate = (Date.now() - cancelStartRef.current) / job.feito;
+      eta = fmtEta(((job.total - job.feito) * rate) / 1000);
+    }
+  }
+
   return (
     <div className="rounded-lg border border-rose-300 bg-rose-50/60 p-2.5">
       <div className="flex items-center justify-between gap-2">
@@ -134,7 +159,11 @@ export default function DuplicadasBox({
               {done ? "Concluído" : scanning ? "Varrendo o L1…" : "Cancelando no L1…"}
             </span>
             <span className="tabular-nums text-muted-foreground">
-              {done ? "" : scanning ? `${job.scan_feito}/${job.scan_total} pastas` : `${job.feito}/${job.total}`}
+              {done
+                ? ""
+                : scanning
+                  ? `${job.scan_feito}/${job.scan_total} pastas${eta ? ` · ${eta} restantes` : ""}`
+                  : `${job.feito}/${job.total}${eta ? ` · ${eta} restantes` : ""}`}
             </span>
           </div>
           <div className="h-2 overflow-hidden rounded bg-rose-100">
