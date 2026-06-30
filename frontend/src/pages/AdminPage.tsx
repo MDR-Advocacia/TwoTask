@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import CancelamentoAutomaticoSection from "@/components/performance/CancelamentoAutomaticoSection";
 import { BaseProcessualPage } from "@/pages/BaseProcessualPage";
 import UserSelector from "@/components/ui/UserSelector";
 import { apiFetch } from "@/lib/api-client";
@@ -1393,6 +1394,7 @@ const AdminPage = () => {
                     <TabsTrigger value="notices">Avisos</TabsTrigger>
                     <TabsTrigger value="feedback">Feedback</TabsTrigger>
                     <TabsTrigger value="base-processual">Base Banco Master</TabsTrigger>
+                    <TabsTrigger value="duplicadas">Duplicadas</TabsTrigger>
                 </TabsList>
                 <TabsContent value="sync" className="space-y-6">
                     <SyncManager />
@@ -1417,6 +1419,9 @@ const AdminPage = () => {
                 </TabsContent>
             <TabsContent value="base-processual" className="space-y-6">
                     <BaseProcessualPage />
+                </TabsContent>
+                <TabsContent value="duplicadas" className="space-y-6">
+                    <CancelamentoAutomaticoSection />
                 </TabsContent>
             </Tabs>
         </div>
