@@ -51,7 +51,7 @@ export default function DuplicadasBox({
       const { job_id } = await startCancelarDuplicadas(team, dups.subtipo, cancelIds);
       const tick = async () => {
         try {
-          const st = await getCancelStatus(job_id);
+          const st = await getCancelStatus(team, job_id);
           setJob(st);
           if (st.status === "done") {
             if (pollRef.current) window.clearInterval(pollRef.current);

@@ -254,8 +254,9 @@ export async function startCancelarDuplicadas(
     }),
   );
 }
-export async function getCancelStatus(jobId: string): Promise<CancelStatus> {
-  return json(await apiFetch(`${BASE}/duplicadas/cancelar/status?job_id=${jobId}`));
+export async function getCancelStatus(team: string, jobId: string): Promise<CancelStatus> {
+  const qs = new URLSearchParams({ team, job_id: jobId });
+  return json(await apiFetch(`${BASE}/duplicadas/cancelar/status?${qs.toString()}`));
 }
 
 // Curadoria do board "Tarefas mais importantes".
