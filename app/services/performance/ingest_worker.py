@@ -49,9 +49,11 @@ def _tick() -> None:
             db.close()
 
 
-def _tick_gerar() -> None:
+def _tick_gerar(cancelar_massa: bool = False) -> None:
     """Madrugada + meio-dia: FORÇA a geração de um relatório fresco no L1 e ingere
-    (não espera a geração matinal do L1). Mantém o pool fresco 2x/dia."""
+    (não espera a geração matinal do L1). Mantém o pool fresco 2x/dia. Na
+    madrugada (cancelar_massa=True), na sequência do pool fresco, roda o
+    cancelamento em massa de duplicadas dos subtipos da whitelist."""
     from app.db.session import SessionLocal
     from app.services.onerequest._concurrency import single_worker_lock
     from app.services.performance.report_ingest import gerar_e_ingerir
@@ -68,8 +70,19 @@ def _tick_gerar() -> None:
                     "Minha Equipe geração sob demanda: OK — %s tarefas (report %s).",
                     res.get("tarefas"), res.get("relatorio"),
                 )
+                if cancelar_massa:
+                    from app.services.performance.cancel_duplicadas import cancelar_em_massa
+
+                    r = cancelar_em_massa(db, dry_run=False, origem="scheduler")
+                    logger.info(
+                        "Cancelamento em massa pós-geração: %s candidatos -> %s canceladas, %s preservadas, %s falhas.",
+                        r.get("total_candidatos"), r.get("cancelled"), r.get("preservadas"), r.get("falhas"),
+                    )
             else:
-                logger.warning("Minha Equipe geração sob demanda: falhou — %s.", res.get("motivo"))
+                logger.warning(
+                    "Minha Equipe geração sob demanda: falhou — %s (cancelamento em massa pulado).",
+                    res.get("motivo"),
+                )
         except Exception:
             logger.exception("Minha Equipe geração sob demanda: erro inesperado.")
         finally:
@@ -86,9 +99,11 @@ def register_perf_ingest_job(scheduler) -> None:
         max_instances=1,
         coalesce=True,
     )
-    # Geração SOB DEMANDA (pool fresco): madrugada (4h) + meio-dia (13h).
+    # Geração SOB DEMANDA (pool fresco): madrugada (4h, + cancelamento em massa
+    # de duplicadas) e meio-dia (13h, só refresca o pool).
     scheduler.add_job(
         _tick_gerar,
+        args=[True],  # madrugada: gera o pool fresco E cancela duplicadas em massa
         trigger=CronTrigger(hour="4", minute="0", timezone="America/Sao_Paulo"),
         id="perf_minha_equipe_gerar_madrugada",
         replace_existing=True,
@@ -97,6 +112,7 @@ def register_perf_ingest_job(scheduler) -> None:
     )
     scheduler.add_job(
         _tick_gerar,
+        args=[False],  # meio-dia: só refresca o pool
         trigger=CronTrigger(hour="13", minute="0", timezone="America/Sao_Paulo"),
         id="perf_minha_equipe_gerar_meiodia",
         replace_existing=True,
@@ -104,5 +120,5 @@ def register_perf_ingest_job(scheduler) -> None:
         coalesce=True,
     )
     logger.info(
-        "Minha Equipe: jobs registrados — download matinal (9h-12h30) + geração sob demanda (4h e 13h BRT)."
+        "Minha Equipe: jobs registrados — download matinal (9h-12h30) + geração 4h (pool+cancelamento massa) e 13h (pool) BRT."
     )

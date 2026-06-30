@@ -263,3 +263,199 @@ def status(job_id: str) -> dict | None:
         }
     finally:
         db.close()
+
+
+# ══════════ Cancelamento de duplicadas EM MASSA (rotina da madrugada) ══════════
+# Só atua nos subtipos da WHITELIST (perf_cancel_whitelist, incrementável pela
+# UI). Roda sobre o pool FRESCO (após gerar_e_ingerir). Auditoria total por run.
+
+
+def _dup_ids_global(db, subtipo: str) -> list:
+    """IDs canceláveis de um subtipo em TODAS as carteiras (mesma pasta com >1
+    pendente → mantém a mais antiga, devolve as demais). Lido do snapshot."""
+    from collections import defaultdict
+
+    rows = db.execute(
+        text(
+            """
+            SELECT pasta, l1_task_id FROM perf_l1_tarefa
+            WHERE subtipo = :s AND status = 'Pendente' AND pasta IS NOT NULL AND l1_task_id IS NOT NULL
+              AND pasta IN (
+                SELECT pasta FROM perf_l1_tarefa
+                WHERE subtipo = :s AND status = 'Pendente' AND pasta IS NOT NULL AND l1_task_id IS NOT NULL
+                GROUP BY pasta HAVING count(*) > 1
+              )
+            ORDER BY pasta, cadastrado_em ASC NULLS FIRST, l1_task_id ASC
+            """
+        ),
+        {"s": subtipo},
+    ).fetchall()
+    by_pasta: dict = defaultdict(list)
+    for r in rows:
+        by_pasta[r.pasta].append(int(r.l1_task_id))
+    ids: list = []
+    for lst in by_pasta.values():
+        ids.extend(lst[1:])  # mantém a mais antiga (1ª)
+    return ids
+
+
+def whitelist_listar(db) -> list:
+    from app.models.performance import PerfCancelWhitelist
+
+    rows = db.query(PerfCancelWhitelist).order_by(PerfCancelWhitelist.subtipo).all()
+    return [
+        {"id": r.id, "subtipo": r.subtipo, "ativo": r.ativo, "criado_em": r.criado_em, "criado_por": r.criado_por}
+        for r in rows
+    ]
+
+
+def whitelist_add(db, subtipo: str, por: str | None = None) -> list:
+    from app.models.performance import PerfCancelWhitelist
+
+    ex = db.query(PerfCancelWhitelist).filter_by(subtipo=subtipo).first()
+    if ex:
+        ex.ativo = True
+    else:
+        db.add(PerfCancelWhitelist(subtipo=subtipo, ativo=True, criado_por=por))
+    db.commit()
+    return whitelist_listar(db)
+
+
+def whitelist_remover(db, subtipo: str) -> list:
+    from app.models.performance import PerfCancelWhitelist
+
+    db.query(PerfCancelWhitelist).filter_by(subtipo=subtipo).delete()
+    db.commit()
+    return whitelist_listar(db)
+
+
+def whitelist_toggle(db, subtipo: str, ativo: bool) -> list:
+    from app.models.performance import PerfCancelWhitelist
+
+    ex = db.query(PerfCancelWhitelist).filter_by(subtipo=subtipo).first()
+    if ex:
+        ex.ativo = bool(ativo)
+        db.commit()
+    return whitelist_listar(db)
+
+
+def massa_logs(db, limit: int = 20) -> list:
+    from app.models.performance import PerfCancelMassaLog
+
+    rows = (
+        db.query(PerfCancelMassaLog)
+        .order_by(PerfCancelMassaLog.iniciado_em.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "iniciado_em": r.iniciado_em,
+            "terminado_em": r.terminado_em,
+            "status": r.status,
+            "dry_run": r.dry_run,
+            "origem": r.origem,
+            "total_candidatos": r.total_candidatos,
+            "cancelled": r.cancelled,
+            "preservadas": r.preservadas,
+            "falhas": r.falhas,
+            "detalhe": r.detalhe or {},
+        }
+        for r in rows
+    ]
+
+
+def cancelar_em_massa(db, dry_run: bool = False, origem: str = "manual") -> dict:
+    """Rotina em massa: pra cada subtipo da whitelist ativo, acha as duplicadas
+    de TODAS as carteiras (mantém a mais antiga) e cancela EM LOTE (real). Grava
+    auditoria total (perf_cancel_massa_log) com breakdown por subtipo.
+    dry_run=True só conta os candidatos (sem cancelar)."""
+    from app.models.performance import PerfCancelMassaLog, PerfCancelWhitelist
+
+    log = PerfCancelMassaLog(status="running", dry_run=dry_run, origem=origem)
+    db.add(log)
+    db.commit()
+    log_id = log.id
+
+    subtipos = [r.subtipo for r in db.query(PerfCancelWhitelist).filter_by(ativo=True).all()]
+    detalhe: dict = {}
+    tot_cand = tot_canc = tot_pres = tot_fal = 0
+    c = None
+    if not dry_run:
+        from app.services.legal_one_client import LegalOneApiClient
+
+        c = LegalOneApiClient()
+
+    try:
+        for sub in subtipos:
+            ids = _dup_ids_global(db, sub)
+            tot_cand += len(ids)
+            if dry_run:
+                detalhe[sub] = {"candidatos": len(ids), "dry_run": True}
+                continue
+            if not ids:
+                detalhe[sub] = {"candidatos": 0, "cancelled": 0, "preservadas": 0, "falhas": 0}
+                continue
+            job = PerfCancelJob(
+                id=uuid.uuid4().hex[:12], team="massa", subtipo=sub,
+                status="running", fase="cancelling", erros=[],
+            )
+            db.add(job)
+            db.commit()
+            _cancel_batch(db, job, ids, c)
+            job.status = "done"
+            job.fase = "done"
+            job.terminado_em = func.now()
+            db.commit()
+            detalhe[sub] = {
+                "candidatos": len(ids),
+                "cancelled": job.cancelled or 0,
+                "preservadas": job.preservadas or 0,
+                "falhas": job.falhas or 0,
+            }
+            tot_canc += job.cancelled or 0
+            tot_pres += job.preservadas or 0
+            tot_fal += job.falhas or 0
+        status_final = "done"
+    except Exception:  # noqa: BLE001
+        logger.exception("cancelamento em massa estourou")
+        status_final = "erro"
+
+    log = db.get(PerfCancelMassaLog, log_id)
+    log.total_candidatos = tot_cand
+    log.cancelled = tot_canc
+    log.preservadas = tot_pres
+    log.falhas = tot_fal
+    log.detalhe = detalhe
+    log.status = status_final
+    log.terminado_em = func.now()
+    db.commit()
+    logger.info(
+        "Cancelamento em massa (%s): %s subtipos, %s candidatos -> %s canceladas, %s preservadas, %s falhas%s.",
+        origem, len(subtipos), tot_cand, tot_canc, tot_pres, tot_fal, " [DRY-RUN]" if dry_run else "",
+    )
+    return {
+        "log_id": log_id,
+        "dry_run": dry_run,
+        "subtipos": len(subtipos),
+        "total_candidatos": tot_cand,
+        "cancelled": tot_canc,
+        "preservadas": tot_pres,
+        "falhas": tot_fal,
+        "detalhe": detalhe,
+    }
+
+
+def subtipos_catalogo(db, busca: str = "", limit: int = 50) -> list:
+    """Catálogo GLOBAL de subtipos (por volume) pro combobox da whitelist."""
+    like = "AND subtipo ILIKE :b" if busca.strip() else ""
+    params = {"b": f"%{busca.strip()}%"} if busca.strip() else {}
+    rows = db.execute(
+        text(
+            f"SELECT subtipo, count(*) n FROM perf_l1_tarefa "
+            f"WHERE subtipo IS NOT NULL {like} GROUP BY subtipo ORDER BY n DESC LIMIT {int(limit)}"
+        ),
+        params,
+    ).fetchall()
+    return [{"subtipo": r.subtipo, "volume": r.n} for r in rows]

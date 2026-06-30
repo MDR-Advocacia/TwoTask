@@ -175,6 +175,72 @@ def cancelar_duplicadas_status(team: str = Query(...), job_id: str = Query(...))
     return st
 
 
+# ── Whitelist + rotina em massa de cancelamento de duplicadas (admin) ──
+class WhitelistReq(BaseModel):
+    subtipo: str
+    ativo: bool | None = None
+
+
+@router.get("/cancel-whitelist", summary="Subtipos liberados pro cancelamento automático", dependencies=[_admin])
+def cancel_whitelist(db: Session = Depends(get_db)):
+    from app.services.performance import cancel_duplicadas
+
+    return {"whitelist": cancel_duplicadas.whitelist_listar(db)}
+
+
+@router.get("/cancel-whitelist/catalogo", summary="Catálogo global de subtipos (combobox)", dependencies=[_admin])
+def cancel_whitelist_catalogo(busca: str = Query(""), db: Session = Depends(get_db)):
+    from app.services.performance import cancel_duplicadas
+
+    return {"subtipos": cancel_duplicadas.subtipos_catalogo(db, busca)}
+
+
+@router.post("/cancel-whitelist", summary="Adiciona subtipo à whitelist", dependencies=[_admin])
+def cancel_whitelist_add(req: WhitelistReq, db: Session = Depends(get_db)):
+    from app.services.performance import cancel_duplicadas
+
+    return {"whitelist": cancel_duplicadas.whitelist_add(db, req.subtipo, "admin")}
+
+
+@router.post("/cancel-whitelist/toggle", summary="Liga/desliga subtipo da whitelist", dependencies=[_admin])
+def cancel_whitelist_toggle(req: WhitelistReq, db: Session = Depends(get_db)):
+    from app.services.performance import cancel_duplicadas
+
+    return {"whitelist": cancel_duplicadas.whitelist_toggle(db, req.subtipo, bool(req.ativo))}
+
+
+@router.delete("/cancel-whitelist", summary="Remove subtipo da whitelist", dependencies=[_admin])
+def cancel_whitelist_remove(subtipo: str = Query(...), db: Session = Depends(get_db)):
+    from app.services.performance import cancel_duplicadas
+
+    return {"whitelist": cancel_duplicadas.whitelist_remover(db, subtipo)}
+
+
+@router.get("/cancel-massa/logs", summary="Auditoria das rotinas de cancelamento em massa", dependencies=[_admin])
+def cancel_massa_logs(db: Session = Depends(get_db)):
+    from app.services.performance import cancel_duplicadas
+
+    return {"logs": cancel_duplicadas.massa_logs(db)}
+
+
+@router.post("/cancel-massa/run", summary="Dispara o cancelamento em massa agora (background)", dependencies=[_admin])
+def cancel_massa_run(dry_run: bool = Query(False)):
+    import threading
+
+    from app.db.session import SessionLocal
+    from app.services.performance import cancel_duplicadas
+
+    def _bg():
+        d = SessionLocal()
+        try:
+            cancel_duplicadas.cancelar_em_massa(d, dry_run=dry_run, origem="manual")
+        finally:
+            d.close()
+
+    threading.Thread(target=_bg, daemon=True).start()
+    return {"started": True, "dry_run": dry_run}
+
+
 @router.get("/export", summary="Exporta xlsx de um recorte do time", dependencies=[_team])
 def export(
     team: str = Query(...),

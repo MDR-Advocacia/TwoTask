@@ -132,6 +132,41 @@ class PerfCancelJob(Base):
     terminado_em = Column(DateTime(timezone=True), nullable=True)
 
 
+class PerfCancelWhitelist(Base):
+    """Subtipos liberados pro cancelamento AUTOMÁTICO de duplicadas (rotina da
+    madrugada). Incrementável pela UI. Começa só com 'Agendar Prazos - Banco
+    Master' (o desvio de fluxo conhecido) — cancelar dup de qualquer tipo seria
+    arriscado (2 pendentes do mesmo tipo pode ser legítimo)."""
+
+    __tablename__ = "perf_cancel_whitelist"
+
+    id = Column(Integer, primary_key=True)
+    subtipo = Column(String, nullable=False, unique=True)
+    ativo = Column(Boolean, nullable=False, server_default="true")
+    criado_em = Column(DateTime(timezone=True), server_default=func.now())
+    criado_por = Column(String, nullable=True)
+
+
+class PerfCancelMassaLog(Base):
+    """Auditoria de cada execução da rotina de cancelamento em massa de
+    duplicadas (madrugada, sobre o pool fresco). LOG TOTAL: contadores +
+    breakdown por subtipo em `detalhe`."""
+
+    __tablename__ = "perf_cancel_massa_log"
+
+    id = Column(Integer, primary_key=True)
+    iniciado_em = Column(DateTime(timezone=True), server_default=func.now())
+    terminado_em = Column(DateTime(timezone=True), nullable=True)
+    status = Column(String, nullable=False, server_default="running")  # running|done|erro
+    dry_run = Column(Boolean, nullable=False, server_default="false")
+    origem = Column(String, nullable=True)  # scheduler | manual
+    total_candidatos = Column(Integer, nullable=False, server_default="0")
+    cancelled = Column(Integer, nullable=False, server_default="0")
+    preservadas = Column(Integer, nullable=False, server_default="0")
+    falhas = Column(Integer, nullable=False, server_default="0")
+    detalhe = Column(JSONB, nullable=True)
+
+
 class PerfRelatorio(Base):
     """Relatório PDF gerado como JOB persistente — sobrevive à navegação/saída.
 
