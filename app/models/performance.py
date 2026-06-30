@@ -92,6 +92,22 @@ class PerfSubtipoCategoria(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class PerfBoardTarefa(Base):
+    """Curadoria do board 'Tarefas mais importantes' por time. Quando há linhas
+    pra um time, o board mostra EXATAMENTE esses subtipos (na ordem); sem linhas,
+    cai no default top-N por volume."""
+
+    __tablename__ = "perf_board_tarefa"
+
+    id = Column(Integer, primary_key=True)
+    team = Column(String, nullable=False, index=True)
+    subtipo = Column(String, nullable=False)
+    ordem = Column(Integer, nullable=False, server_default="0")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (UniqueConstraint("team", "subtipo", name="uq_board_tarefa"),)
+
+
 class PerfRelatorio(Base):
     """Relatório PDF gerado como JOB persistente — sobrevive à navegação/saída.
 

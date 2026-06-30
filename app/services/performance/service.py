@@ -490,7 +490,7 @@ class PerformanceService:
         backlog.sort(key=lambda x: (-x["atrasado"], -x["backlog"]))
         jornada.sort(key=lambda x: x["inicio_h"])
 
-        top = self.db.execute(
+        rows = self.db.execute(
             text(
                 f"""
                 SELECT t.subtipo AS subtipo, COALESCE(c.categoria, 'profundo') AS categoria,
@@ -503,11 +503,37 @@ class PerformanceService:
                 LEFT JOIN perf_subtipo_categoria c ON c.subtipo = t.subtipo
                 WHERE t.subtipo IS NOT NULL {team_t}
                 GROUP BY t.subtipo, c.categoria
-                ORDER BY vol DESC LIMIT 12
                 """
             ),
             {"start": start, "end": now, **tparam},
         ).fetchall()
+        by_sub = {
+            r.subtipo: {
+                "subtipo": r.subtipo,
+                "categoria": r.categoria,
+                "volume": r.vol,
+                "pendente": r.pendente,
+                "atrasado": r.atrasado,
+            }
+            for r in rows
+        }
+        # Board curado por time (perf_board_tarefa); sem curadoria → top-12 por volume.
+        board_cfg: list = []
+        if team:
+            board_cfg = [
+                row.subtipo
+                for row in self.db.execute(
+                    text("SELECT subtipo FROM perf_board_tarefa WHERE team = :team ORDER BY ordem, id"),
+                    {"team": team},
+                ).fetchall()
+            ]
+        if board_cfg:
+            top_list = [
+                by_sub.get(s, {"subtipo": s, "categoria": "profundo", "volume": 0, "pendente": 0, "atrasado": 0})
+                for s in board_cfg
+            ]
+        else:
+            top_list = sorted(by_sub.values(), key=lambda d: -d["volume"])[:12]
 
         return {
             "periodo_dias": days,
@@ -518,16 +544,8 @@ class PerformanceService:
             "vazao": vazao,
             "backlog": backlog,
             "jornada": jornada,
-            "top_tipos": [
-                {
-                    "subtipo": r.subtipo,
-                    "categoria": r.categoria,
-                    "volume": r.vol,
-                    "pendente": r.pendente,
-                    "atrasado": r.atrasado,
-                }
-                for r in top
-            ],
+            "top_tipos": top_list,
+            "board_curado": bool(board_cfg),
         }
 
     # ── detalhe de UM subtipo do board (capacity) ──
@@ -689,6 +707,69 @@ class PerformanceService:
             "total_cancelar": total_cancelar,
             "grupos": grupos,
         }
+
+    # ── curadoria do board 'Tarefas mais importantes' ──
+    def board_listar(self, team: str) -> dict:
+        rows = self.db.execute(
+            text("SELECT subtipo FROM perf_board_tarefa WHERE team = :team ORDER BY ordem, id"),
+            {"team": team},
+        ).fetchall()
+        return {"curado": bool(rows), "subtipos": [r.subtipo for r in rows]}
+
+    def board_catalogo(self, team: str, busca: str = "") -> list:
+        """Subtipos que o time tem (pra adicionar ao board), com volume, já sem os
+        curados. Ordena por volume desc."""
+        ja = {
+            r.subtipo
+            for r in self.db.execute(
+                text("SELECT subtipo FROM perf_board_tarefa WHERE team = :team"), {"team": team}
+            ).fetchall()
+        }
+        params: dict = {"team": team}
+        like = ""
+        if busca.strip():
+            like = "AND t.subtipo ILIKE :busca"
+            params["busca"] = f"%{busca.strip()}%"
+        rows = self.db.execute(
+            text(
+                f"""
+                SELECT t.subtipo AS subtipo, COUNT(*) AS vol
+                FROM perf_l1_tarefa t
+                WHERE t.subtipo IS NOT NULL {like}
+                  AND t.pessoa_id IN (SELECT id FROM perf_pessoa WHERE equipe = :team)
+                GROUP BY t.subtipo
+                ORDER BY vol DESC
+                LIMIT 100
+                """
+            ),
+            params,
+        ).fetchall()
+        return [{"subtipo": r.subtipo, "volume": r.vol} for r in rows if r.subtipo not in ja]
+
+    def board_adicionar(self, team: str, subtipo: str) -> dict:
+        existe = self.db.execute(
+            text("SELECT 1 FROM perf_board_tarefa WHERE team = :team AND subtipo = :sub"),
+            {"team": team, "sub": subtipo},
+        ).scalar()
+        if not existe:
+            nxt = self.db.execute(
+                text("SELECT COALESCE(MAX(ordem), 0) + 1 FROM perf_board_tarefa WHERE team = :team"),
+                {"team": team},
+            ).scalar()
+            self.db.execute(
+                text("INSERT INTO perf_board_tarefa (team, subtipo, ordem) VALUES (:team, :sub, :ord)"),
+                {"team": team, "sub": subtipo, "ord": nxt or 1},
+            )
+            self.db.commit()
+        return self.board_listar(team)
+
+    def board_remover(self, team: str, subtipo: str) -> dict:
+        self.db.execute(
+            text("DELETE FROM perf_board_tarefa WHERE team = :team AND subtipo = :sub"),
+            {"team": team, "sub": subtipo},
+        )
+        self.db.commit()
+        return self.board_listar(team)
 
     # ── export Excel de um recorte (tarefas que o operador precisa tratar) ──
     def export_xlsx(self, escopo: str = "atrasado", pessoa_id: int | None = None,

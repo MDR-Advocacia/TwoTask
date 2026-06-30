@@ -123,6 +123,30 @@ def duplicadas(team: str = Query(...), subtipo: str = Query(...), db: Session = 
     return PerformanceService(db).duplicadas_subtipo(subtipo, team=team)
 
 
+@router.get("/board-tarefas", summary="Curadoria do board (subtipos exibidos)", dependencies=[_team])
+def board_tarefas(team: str = Query(...), db: Session = Depends(get_db)):
+    return PerformanceService(db).board_listar(team)
+
+
+@router.get("/board-tarefas/catalogo", summary="Subtipos disponíveis pra adicionar ao board", dependencies=[_team])
+def board_catalogo(team: str = Query(...), busca: str = Query(""), db: Session = Depends(get_db)):
+    return {"subtipos": PerformanceService(db).board_catalogo(team, busca)}
+
+
+class BoardTarefaReq(BaseModel):
+    subtipo: str
+
+
+@router.post("/board-tarefas", summary="Adiciona um subtipo ao board", dependencies=[_team])
+def board_adicionar(team: str = Query(...), req: BoardTarefaReq = ..., db: Session = Depends(get_db)):
+    return PerformanceService(db).board_adicionar(team, req.subtipo)
+
+
+@router.delete("/board-tarefas", summary="Remove um subtipo do board", dependencies=[_team])
+def board_remover(team: str = Query(...), subtipo: str = Query(...), db: Session = Depends(get_db)):
+    return PerformanceService(db).board_remover(team, subtipo)
+
+
 @router.get("/export", summary="Exporta xlsx de um recorte do time", dependencies=[_team])
 def export(
     team: str = Query(...),

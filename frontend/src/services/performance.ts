@@ -179,6 +179,7 @@ export interface DashboardData {
   backlog: BacklogItem[];
   jornada: JornadaItem[];
   top_tipos: TopTipoItem[];
+  board_curado?: boolean; // true = board com seleção fixa do supervisor; false/ausente = top-12 automático
 }
 
 export async function getDashboard(team: string, days = 30): Promise<DashboardData> {
@@ -227,6 +228,39 @@ export interface DuplicadasResp {
 export async function getDuplicadas(team: string, subtipo: string): Promise<DuplicadasResp> {
   const qs = new URLSearchParams({ team, subtipo });
   return json(await apiFetch(`${BASE}/duplicadas?${qs.toString()}`));
+}
+
+// Curadoria do board "Tarefas mais importantes".
+export interface BoardConfig {
+  curado: boolean;
+  subtipos: string[];
+}
+export interface BoardCatalogoItem {
+  subtipo: string;
+  volume: number;
+}
+export async function getBoardTarefas(team: string): Promise<BoardConfig> {
+  return json(await apiFetch(`${BASE}/board-tarefas?team=${team}`));
+}
+export async function getBoardCatalogo(team: string, busca = ""): Promise<BoardCatalogoItem[]> {
+  const qs = new URLSearchParams({ team, busca });
+  const r = await json<{ subtipos: BoardCatalogoItem[] }>(
+    await apiFetch(`${BASE}/board-tarefas/catalogo?${qs.toString()}`),
+  );
+  return r.subtipos;
+}
+export async function addBoardTarefa(team: string, subtipo: string): Promise<BoardConfig> {
+  return json(
+    await apiFetch(`${BASE}/board-tarefas?team=${team}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subtipo }),
+    }),
+  );
+}
+export async function removeBoardTarefa(team: string, subtipo: string): Promise<BoardConfig> {
+  const qs = new URLSearchParams({ team, subtipo });
+  return json(await apiFetch(`${BASE}/board-tarefas?${qs.toString()}`, { method: "DELETE" }));
 }
 
 export async function downloadExport(params: {

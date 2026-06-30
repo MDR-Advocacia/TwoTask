@@ -19,7 +19,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { AlertTriangle, Clock, Download, type LucideIcon, TrendingUp } from "lucide-react";
+import { AlertTriangle, Clock, Download, type LucideIcon, Settings2, TrendingUp } from "lucide-react";
 
 import {
   AlertDialog,
@@ -45,6 +45,7 @@ import {
   getSubtipoDetalhe,
 } from "@/services/performance";
 import { useToast } from "@/hooks/use-toast";
+import EditarBoardDialog from "@/components/performance/EditarBoardDialog";
 
 const cargoColor = (cargo: string | null): string => {
   const c = (cargo || "").toLowerCase();
@@ -193,6 +194,8 @@ export default function PainelEquipe({ days, team }: { days: number; team: strin
   const { toast } = useToast();
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [reload, setReload] = useState(0);
+  const [editBoard, setEditBoard] = useState(false);
   const [pendingExport, setPendingExport] = useState<
     { escopo: "atrasado" | "pendente" | "concluido"; extra: { subtipo?: string; pessoa_id?: number }; label: string } | null
   >(null);
@@ -219,7 +222,7 @@ export default function PainelEquipe({ days, team }: { days: number; team: strin
       .then(setData)
       .catch((e) => toast({ title: "Erro ao carregar o painel", description: String((e as Error).message), variant: "destructive" }))
       .finally(() => setLoading(false));
-  }, [days, team, toast]);
+  }, [days, team, toast, reload]);
 
   if (!data) {
     return (
@@ -371,7 +374,17 @@ export default function PainelEquipe({ days, team }: { days: number; team: strin
           </div>
         }
       >
-        <p className="mb-1 text-[10px] text-muted-foreground">Clique numa barra para exportar as tarefas daquele tipo em Excel — vermelho = atrasadas (campanha focada), âmbar = pendentes, colorido = concluídas. Clique no <span className="font-semibold text-[hsl(var(--dunatech-blue))]">ⓘ</span> ao lado do nome pra abrir o detalhe e o tempo de capacity do tipo.</p>
+        <div className="mb-1 flex items-start justify-between gap-3">
+          <p className="text-[10px] text-muted-foreground">Clique numa barra para exportar as tarefas daquele tipo em Excel — vermelho = atrasadas (campanha focada), âmbar = pendentes, colorido = concluídas. Clique no <span className="font-semibold text-[hsl(var(--dunatech-blue))]">ⓘ</span> ao lado do nome pra abrir o detalhe e o tempo de capacity do tipo.</p>
+          <div className="flex shrink-0 items-center gap-2">
+            <span className="whitespace-nowrap text-[10px] text-muted-foreground">
+              {data.board_curado ? "seleção fixa" : "top-12 automático"}
+            </span>
+            <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={() => setEditBoard(true)}>
+              <Settings2 className="h-3.5 w-3.5" /> Editar tarefas
+            </Button>
+          </div>
+        </div>
         <ResponsiveContainer width="100%" height={Math.max(300, topTipos.length * 30)}>
           <BarChart data={topTipos} layout="vertical" margin={{ left: 8, right: 28, top: 4 }}>
             <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="hsl(var(--border))" />
@@ -526,6 +539,14 @@ export default function PainelEquipe({ days, team }: { days: number; team: strin
           )}
         </DialogContent>
       </Dialog>
+
+      {editBoard && (
+        <EditarBoardDialog
+          team={team}
+          onClose={() => setEditBoard(false)}
+          onChanged={() => setReload((x) => x + 1)}
+        />
+      )}
     </div>
   );
 }
