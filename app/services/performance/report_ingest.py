@@ -168,3 +168,128 @@ def get_last_sync():
 def ja_sincronizou_hoje() -> bool:
     ls = get_last_sync()
     return bool(ls and ls.get("ok") and ls.get("data") == _hoje_str())
+
+
+# ── Geração SOB DEMANDA do relatório (via runner Playwright) ──
+# O POST headless NÃO conclui (a página "Gerando" depende do SignalR do browser).
+# VALIDADO 2026-06-30: clicar "Gerar" num browser real (runner generate-report.js)
+# dispara um job SERVER-SIDE que completa sozinho (~45s) mesmo após o browser
+# fechar. Modelo "Agenda Analytics" = id 627 no L1.
+AGENDA_ANALYTICS_MODEL_ID = 627
+
+
+def _report_ids(session, base) -> list:
+    """GetFile ids dos 'Agenda Analytics' na lista (filtrada por título)."""
+    html = session.get(base + _LIST_URL, timeout=60).text
+    return sorted(set(int(x) for x in re.findall(r"GetFile/(\d+)", html)))
+
+
+def disparar_geracao(model_id: int = AGENDA_ANALYTICS_MODEL_ID, timeout_s: int = 240) -> bool:
+    """Dispara a geração clicando 'Gerar' num browser real (runner Playwright). O
+    job roda server-side e completa sozinho após o browser fechar — o caller faz
+    o poll/download. True se o runner confirmou o disparo."""
+    import os
+    import subprocess
+
+    from app.services.prazos_iniciais.legacy_task_helpers import (
+        resolve_node_binary,
+        resolve_runner_script,
+        resolve_web_credentials,
+    )
+
+    script = resolve_runner_script().parent / "generate-report.js"
+    if not script.exists():
+        logger.error("Minha Equipe: runner generate-report.js não encontrado em %s.", script)
+        return False
+    cmd = [resolve_node_binary(), str(script), "--id", str(model_id), "--timeout-min", "3"]
+    try:
+        completed = subprocess.run(
+            cmd,
+            cwd=str(script.parent),
+            env={**os.environ, **resolve_web_credentials()},
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("Minha Equipe: runner de geração estourou o timeout (%ss).", timeout_s)
+        return False
+    ok = completed.returncode == 0
+    logger.info(
+        "Minha Equipe: disparo de geração (runner) modelo %s -> %s (exit %s) | %s",
+        model_id, "OK" if ok else "FALHOU", completed.returncode, (completed.stdout or "").strip()[-300:],
+    )
+    return ok
+
+
+def gerar_e_ingerir(
+    db,
+    model_id: int = AGENDA_ANALYTICS_MODEL_ID,
+    espera_max_s: int = 1500,
+    intervalo_s: int = 30,
+) -> dict:
+    """Dispara a geração de um relatório FRESCO, espera ficar pronto e ingere.
+    Pras rotinas (madrugada/meio-dia) e pro 'Atualizar pool agora' — não depende
+    da geração matinal do L1."""
+    import time as _t
+
+    from app.services.prazos_iniciais.legacy_task_helpers import web_base_url
+
+    base = web_base_url()
+    baseline = max(_report_ids(_session(), base) or [0])
+    if not disparar_geracao(model_id):
+        return {"ok": False, "motivo": "disparo_falhou"}
+
+    # O login do runner ROTACIONA o cookie .ASPXAUTH (o L1 troca a sessão a cada
+    # login) → a sessão anterior fica inválida. Invalida o cache e reloga pra ter
+    # um cookie VÁLIDO pro poll/download (senão o poll nunca acha o relatório).
+    from app.services.prazos_iniciais.legacy_task_http_cancellation_service import (
+        LegacyTaskHttpCancellationService,
+    )
+
+    LegacyTaskHttpCancellationService()._invalidate_session()
+    session = _session()
+
+    novo = None
+    esperou = 0
+    while esperou < espera_max_s:
+        _t.sleep(intervalo_s)
+        esperou += intervalo_s
+        try:
+            maiores = [i for i in _report_ids(session, base) if i > baseline]
+        except Exception:  # noqa: BLE001
+            continue
+        if maiores:
+            novo = max(maiores)
+            break
+    if not novo:
+        logger.warning("Minha Equipe gerar_e_ingerir: timeout (%ss) esperando o relatório.", esperou)
+        return {"ok": False, "motivo": "timeout_geracao", "esperou_s": esperou}
+
+    resp = session.get(f"{base}/shared/ReportShared/GetFile/{novo}", timeout=300)
+    resp.raise_for_status()
+    with open(_REPORT_PATH, "wb") as f:
+        f.write(resp.content)
+
+    from app.models.performance import PerfPessoa
+    from app.services.performance.seed import classify_subtipos, seed_tarefas
+
+    name_to_id = {p.nome_norm: p.id for p in db.query(PerfPessoa).all()}
+    n = seed_tarefas(db, name_to_id, agenda_path=_REPORT_PATH)
+    classify_subtipos(db)
+    info = {
+        "ok": True,
+        "tarefas": n,
+        "relatorio": str(novo),
+        "data": _hoje_str(),
+        "bytes": len(resp.content),
+        "em": _now().isoformat(),
+        "gerado_sob_demanda": True,
+    }
+    _set_last_sync(info)
+    logger.info(
+        "Minha Equipe gerar_e_ingerir: %s tarefas (report %s, gerado sob demanda em ~%ss).",
+        n, novo, esperou,
+    )
+    return info

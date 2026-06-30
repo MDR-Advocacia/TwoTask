@@ -49,7 +49,35 @@ def _tick() -> None:
             db.close()
 
 
+def _tick_gerar() -> None:
+    """Madrugada + meio-dia: FORÇA a geração de um relatório fresco no L1 e ingere
+    (não espera a geração matinal do L1). Mantém o pool fresco 2x/dia."""
+    from app.db.session import SessionLocal
+    from app.services.onerequest._concurrency import single_worker_lock
+    from app.services.performance.report_ingest import gerar_e_ingerir
+
+    with single_worker_lock(_LOCK_KEY) as got:
+        if not got:
+            logger.info("Minha Equipe geração: outro worker já rodando — pulando.")
+            return
+        db = SessionLocal()
+        try:
+            res = gerar_e_ingerir(db)
+            if res.get("ok"):
+                logger.info(
+                    "Minha Equipe geração sob demanda: OK — %s tarefas (report %s).",
+                    res.get("tarefas"), res.get("relatorio"),
+                )
+            else:
+                logger.warning("Minha Equipe geração sob demanda: falhou — %s.", res.get("motivo"))
+        except Exception:
+            logger.exception("Minha Equipe geração sob demanda: erro inesperado.")
+        finally:
+            db.close()
+
+
 def register_perf_ingest_job(scheduler) -> None:
+    # Fallback matinal: baixa a geração que o L1 faz de manhã (9h-12h30, retry).
     scheduler.add_job(
         _tick,
         trigger=CronTrigger(hour="9-12", minute="0,30", timezone="America/Sao_Paulo"),
@@ -58,4 +86,23 @@ def register_perf_ingest_job(scheduler) -> None:
         max_instances=1,
         coalesce=True,
     )
-    logger.info("Minha Equipe: job de ingestão diária (9h-12h30 BRT, 30/30min) registrado.")
+    # Geração SOB DEMANDA (pool fresco): madrugada (4h) + meio-dia (13h).
+    scheduler.add_job(
+        _tick_gerar,
+        trigger=CronTrigger(hour="4", minute="0", timezone="America/Sao_Paulo"),
+        id="perf_minha_equipe_gerar_madrugada",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        _tick_gerar,
+        trigger=CronTrigger(hour="13", minute="0", timezone="America/Sao_Paulo"),
+        id="perf_minha_equipe_gerar_meiodia",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info(
+        "Minha Equipe: jobs registrados — download matinal (9h-12h30) + geração sob demanda (4h e 13h BRT)."
+    )
