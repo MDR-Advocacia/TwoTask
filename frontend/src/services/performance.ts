@@ -233,26 +233,28 @@ export async function getDuplicadas(team: string, subtipo: string): Promise<Dupl
 // Cancelamento em lote de duplicadas (fase B): job persistido + polling.
 export interface CancelStatus {
   job_id: string;
-  status: "running" | "done";
-  total: number;
+  status: "running" | "aborting" | "done";
+  fase: "scanning" | "cancelling" | "done"; // varredura ao vivo → cancelamento
+  scan_total: number; // pastas-candidatas a varrer
+  scan_feito: number;
+  total: number; // tarefas reais a cancelar (definido após a varredura)
   feito: number;
   cancelled: number;
   preservadas: number;
   falhas: number;
   erros: { task_id: number; reason: string | null }[];
 }
-export async function startCancelarDuplicadas(
-  team: string,
-  subtipo: string,
-  taskIds: number[],
-): Promise<{ job_id: string }> {
+export async function startCancelarDuplicadas(team: string, subtipo: string): Promise<{ job_id: string }> {
   return json(
     await apiFetch(`${BASE}/duplicadas/cancelar?team=${team}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ subtipo, task_ids: taskIds }),
+      body: JSON.stringify({ subtipo }),
     }),
   );
+}
+export async function abortCancelarDuplicadas(team: string, jobId: string): Promise<void> {
+  await apiFetch(`${BASE}/duplicadas/cancelar/abort?team=${team}&job_id=${jobId}`, { method: "POST" });
 }
 export async function getCancelStatus(team: string, jobId: string): Promise<CancelStatus> {
   const qs = new URLSearchParams({ team, job_id: jobId });

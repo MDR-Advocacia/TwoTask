@@ -118,8 +118,11 @@ class PerfCancelJob(Base):
     id = Column(String, primary_key=True)  # uuid hex
     team = Column(String, nullable=True)
     subtipo = Column(String, nullable=True)
-    status = Column(String, nullable=False, server_default="running")  # running|done
-    total = Column(Integer, nullable=False, server_default="0")
+    status = Column(String, nullable=False, server_default="running")  # running|aborting|done
+    fase = Column(String, nullable=False, server_default="scanning")  # scanning|cancelling|done
+    scan_total = Column(Integer, nullable=False, server_default="0")  # pastas-candidatas a varrer
+    scan_feito = Column(Integer, nullable=False, server_default="0")
+    total = Column(Integer, nullable=False, server_default="0")  # tarefas reais a cancelar (pós-varredura)
     feito = Column(Integer, nullable=False, server_default="0")
     cancelled = Column(Integer, nullable=False, server_default="0")
     preservadas = Column(Integer, nullable=False, server_default="0")  # já encerradas/canceladas
