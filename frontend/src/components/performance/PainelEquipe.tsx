@@ -46,6 +46,7 @@ import {
 } from "@/services/performance";
 import { useToast } from "@/hooks/use-toast";
 import EditarBoardDialog from "@/components/performance/EditarBoardDialog";
+import DuplicadasBox from "@/components/performance/DuplicadasBox";
 
 const cargoColor = (cargo: string | null): string => {
   const c = (cargo || "").toLowerCase();
@@ -497,44 +498,9 @@ export default function PainelEquipe({ days, team }: { days: number; team: strin
                 </div>
               </div>
 
-              {detalhe.dups &&
-                (detalhe.dups.total_cancelar > 0 ? (
-                  <div className="rounded-lg border border-rose-300 bg-rose-50/60 p-2.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="text-[11px] font-semibold text-rose-700">Tarefas duplicadas</div>
-                      <div className="text-sm font-bold tabular-nums text-rose-700">
-                        {detalhe.dups.total_cancelar} a cancelar · {detalhe.dups.total_grupos} pasta(s)
-                      </div>
-                    </div>
-                    <div className="mt-0.5 text-[10px] leading-snug text-muted-foreground">
-                      Mesma pasta + mesmo subtipo (desvio de fluxo). Mantém a mais antiga (original) e cancela as criadas
-                      depois.
-                    </div>
-                    <details className="mt-1.5">
-                      <summary className="cursor-pointer text-[11px] text-rose-700">Ver pastas</summary>
-                      <div className="mt-1 max-h-36 space-y-1 overflow-y-auto">
-                        {detalhe.dups.grupos.map((g) => (
-                          <div key={g.pasta} className="rounded border bg-background px-2 py-1 text-[11px]">
-                            <span className="font-medium">{g.pasta}</span>
-                            {g.cnj ? <span className="text-muted-foreground"> · {g.cnj}</span> : null}
-                            <span className="ml-1 font-medium text-rose-700">— cancela {g.cancelar.length}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </details>
-                    <Button
-                      size="sm"
-                      variant="destructive"
-                      className="mt-2 h-7 gap-1 text-xs"
-                      disabled
-                      title="Cancelamento em lote entra na próxima entrega (fase B)"
-                    >
-                      Cancelar {detalhe.dups.total_cancelar} duplicadas (em breve)
-                    </Button>
-                  </div>
-                ) : (
-                  <p className="text-[11px] font-medium text-emerald-700">✓ Sem duplicadas neste tipo.</p>
-                ))}
+              {detalhe.dups && (
+                <DuplicadasBox team={team} dups={detalhe.dups} onDone={() => setReload((x) => x + 1)} />
+              )}
             </div>
           )}
         </DialogContent>

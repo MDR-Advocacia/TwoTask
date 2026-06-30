@@ -147,6 +147,28 @@ def board_remover(team: str = Query(...), subtipo: str = Query(...), db: Session
     return PerformanceService(db).board_remover(team, subtipo)
 
 
+class CancelarDupReq(BaseModel):
+    subtipo: str
+    task_ids: list[int]
+
+
+@router.post("/duplicadas/cancelar", summary="Inicia o cancelamento em lote de duplicadas (fase B)", dependencies=[_team])
+def cancelar_duplicadas(team: str = Query(...), req: CancelarDupReq = ...):
+    from app.services.performance import cancel_duplicadas
+
+    return {"job_id": cancel_duplicadas.iniciar(team, req.subtipo, req.task_ids)}
+
+
+@router.get("/duplicadas/cancelar/status", summary="Progresso do lote de cancelamento", dependencies=[_team])
+def cancelar_duplicadas_status(job_id: str = Query(...)):
+    from app.services.performance import cancel_duplicadas
+
+    st = cancel_duplicadas.status(job_id)
+    if not st:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job não encontrado.")
+    return st
+
+
 @router.get("/export", summary="Exporta xlsx de um recorte do time", dependencies=[_team])
 def export(
     team: str = Query(...),

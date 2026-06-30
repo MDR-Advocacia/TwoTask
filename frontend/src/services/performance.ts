@@ -230,6 +230,34 @@ export async function getDuplicadas(team: string, subtipo: string): Promise<Dupl
   return json(await apiFetch(`${BASE}/duplicadas?${qs.toString()}`));
 }
 
+// Cancelamento em lote de duplicadas (fase B): job persistido + polling.
+export interface CancelStatus {
+  job_id: string;
+  status: "running" | "done";
+  total: number;
+  feito: number;
+  cancelled: number;
+  preservadas: number;
+  falhas: number;
+  erros: { task_id: number; reason: string | null }[];
+}
+export async function startCancelarDuplicadas(
+  team: string,
+  subtipo: string,
+  taskIds: number[],
+): Promise<{ job_id: string }> {
+  return json(
+    await apiFetch(`${BASE}/duplicadas/cancelar?team=${team}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subtipo, task_ids: taskIds }),
+    }),
+  );
+}
+export async function getCancelStatus(jobId: string): Promise<CancelStatus> {
+  return json(await apiFetch(`${BASE}/duplicadas/cancelar/status?job_id=${jobId}`));
+}
+
 // Curadoria do board "Tarefas mais importantes".
 export interface BoardConfig {
   curado: boolean;

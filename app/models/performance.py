@@ -108,6 +108,27 @@ class PerfBoardTarefa(Base):
     __table_args__ = (UniqueConstraint("team", "subtipo", name="uq_board_tarefa"),)
 
 
+class PerfCancelJob(Base):
+    """Job de cancelamento em lote de duplicadas (fase B). Status PERSISTIDO pra
+    o polling enxergar o progresso mesmo com vários workers do uvicorn — a thread
+    que cancela roda num worker; qualquer worker lê o status desta tabela."""
+
+    __tablename__ = "perf_cancel_job"
+
+    id = Column(String, primary_key=True)  # uuid hex
+    team = Column(String, nullable=True)
+    subtipo = Column(String, nullable=True)
+    status = Column(String, nullable=False, server_default="running")  # running|done
+    total = Column(Integer, nullable=False, server_default="0")
+    feito = Column(Integer, nullable=False, server_default="0")
+    cancelled = Column(Integer, nullable=False, server_default="0")
+    preservadas = Column(Integer, nullable=False, server_default="0")  # já encerradas/canceladas
+    falhas = Column(Integer, nullable=False, server_default="0")
+    erros = Column(JSONB, nullable=True)
+    iniciado_em = Column(DateTime(timezone=True), server_default=func.now())
+    terminado_em = Column(DateTime(timezone=True), nullable=True)
+
+
 class PerfRelatorio(Base):
     """Relatório PDF gerado como JOB persistente — sobrevive à navegação/saída.
 
