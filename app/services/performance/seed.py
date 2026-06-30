@@ -180,50 +180,57 @@ def seed_pessoas(db) -> dict:
 
 
 def seed_tarefas(db, name_to_id: dict, agenda_path: str = AGENDA_XLSX) -> int:
-    db.query(PerfTarefa).delete()
-    db.commit()
+    """Replace total ATÔMICO: o delete e TODOS os inserts vão numa transação só,
+    com commit ÚNICO no fim. Se cair no meio (container morto por redeploy, erro
+    de parse), faz rollback e mantém os dados ANTIGOS completos — em vez de deixar
+    a tabela parcial. (Já aconteceu: redeploy no meio do ingest = snapshot truncado
+    com 78k de ~224k linhas e last_sync não gravado.)"""
     wb = openpyxl.load_workbook(agenda_path, read_only=True, data_only=True)
     ws = wb.active
     rows = ws.iter_rows(values_only=True)
     next(rows)
-    batch = []
     n = 0
-    for r in rows:
-        status = r[STATUS] if len(r) > STATUS else None
-        if status not in ("Cumprido", "Pendente"):
-            continue
-        cumpr = norm(r[CUMPRIU]) if len(r) > CUMPRIU else ""
-        env = norm(r[ENV]) if len(r) > ENV else ""
-        # Cumprido -> executor (Cumprido por); Pendente -> responsável (Envolvido).
-        pid = name_to_id.get(cumpr) if status == "Cumprido" else name_to_id.get(env)
-        if not pid:
-            continue  # fora do roster = ruído (escopo: só a planilha)
-        batch.append(
-            PerfTarefa(
-                pessoa_id=pid,
-                cumprido_por_nome=(str(r[CUMPRIU]).strip() if len(r) > CUMPRIU and r[CUMPRIU] else None),
-                envolvido_nome=(str(r[ENV]).strip() if len(r) > ENV and r[ENV] else None),
-                escritorio=(str(r[ESC]).strip() if len(r) > ESC and r[ESC] else None),
-                tipo=(str(r[TIPO]).strip() if len(r) > TIPO and r[TIPO] else None),
-                subtipo=(str(r[SUBTIPO]).strip() if len(r) > SUBTIPO and r[SUBTIPO] else None),
-                status=status,
-                concluido_em=_aware(r[CONCL]) if len(r) > CONCL else None,
-                cadastrado_em=_aware(r[CAD]) if len(r) > CAD else None,
-                prazo_previsto=_aware(r[PRAZO]) if len(r) > PRAZO else None,
-                l1_task_id=(int(r[ID]) if len(r) > ID and isinstance(r[ID], (int, float)) else None),
-                pasta=(str(r[PASTA]).strip() if len(r) > PASTA and r[PASTA] else None),
-                cnj=(str(r[CNJ]).strip() if len(r) > CNJ and r[CNJ] else None),
-                uf=(str(r[UF]).strip() if len(r) > UF and r[UF] else None),
+    try:
+        db.query(PerfTarefa).delete()
+        batch = []
+        for r in rows:
+            status = r[STATUS] if len(r) > STATUS else None
+            if status not in ("Cumprido", "Pendente"):
+                continue
+            cumpr = norm(r[CUMPRIU]) if len(r) > CUMPRIU else ""
+            env = norm(r[ENV]) if len(r) > ENV else ""
+            # Cumprido -> executor (Cumprido por); Pendente -> responsável (Envolvido).
+            pid = name_to_id.get(cumpr) if status == "Cumprido" else name_to_id.get(env)
+            if not pid:
+                continue  # fora do roster = ruído (escopo: só a planilha)
+            batch.append(
+                PerfTarefa(
+                    pessoa_id=pid,
+                    cumprido_por_nome=(str(r[CUMPRIU]).strip() if len(r) > CUMPRIU and r[CUMPRIU] else None),
+                    envolvido_nome=(str(r[ENV]).strip() if len(r) > ENV and r[ENV] else None),
+                    escritorio=(str(r[ESC]).strip() if len(r) > ESC and r[ESC] else None),
+                    tipo=(str(r[TIPO]).strip() if len(r) > TIPO and r[TIPO] else None),
+                    subtipo=(str(r[SUBTIPO]).strip() if len(r) > SUBTIPO and r[SUBTIPO] else None),
+                    status=status,
+                    concluido_em=_aware(r[CONCL]) if len(r) > CONCL else None,
+                    cadastrado_em=_aware(r[CAD]) if len(r) > CAD else None,
+                    prazo_previsto=_aware(r[PRAZO]) if len(r) > PRAZO else None,
+                    l1_task_id=(int(r[ID]) if len(r) > ID and isinstance(r[ID], (int, float)) else None),
+                    pasta=(str(r[PASTA]).strip() if len(r) > PASTA and r[PASTA] else None),
+                    cnj=(str(r[CNJ]).strip() if len(r) > CNJ and r[CNJ] else None),
+                    uf=(str(r[UF]).strip() if len(r) > UF and r[UF] else None),
+                )
             )
-        )
-        n += 1
-        if len(batch) >= 2000:
+            n += 1
+            if len(batch) >= 2000:
+                db.bulk_save_objects(batch)  # insere DENTRO da transação (sem commit)
+                batch = []
+        if batch:
             db.bulk_save_objects(batch)
-            db.commit()
-            batch = []
-    if batch:
-        db.bulk_save_objects(batch)
-        db.commit()
+        db.commit()  # único commit: delete + todos os inserts juntos (atômico)
+    except Exception:
+        db.rollback()
+        raise
     return n
 
 
