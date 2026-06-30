@@ -530,6 +530,166 @@ class PerformanceService:
             ],
         }
 
+    # ── detalhe de UM subtipo do board (capacity) ──
+    def subtipo_setor_detalhe(self, subtipo: str, days: int = 30, team: str | None = None) -> dict:
+        """Detalhe de um subtipo pro (i) do board 'Tarefas mais importantes':
+        contagens (concluído no período / pendente / atrasado), % no prazo,
+        quantas pessoas o executam, e os DOIS tempos que medem capacity:
+
+          • tempo_conclusao_seg — mediana de (conclusão − cadastro): a LATÊNCIA da
+            tarefa, quanto ela leva do cadastro até ser concluída;
+          • tempo_trabalho_seg — mediana do gap entre conclusões consecutivas do
+            tipo (por pessoa/dia, capado em 30min): o ESFORÇO efetivo por tarefa,
+            o número que entra na conta de quantas cabem num dia de trabalho.
+        """
+        import statistics
+        from collections import defaultdict
+
+        start, now = self._period(days)
+        team_t = "AND t.pessoa_id IN (SELECT id FROM perf_pessoa WHERE equipe = :team)" if team else ""
+        tp: dict = {"sub": subtipo, "start": start, "end": now}
+        if team:
+            tp["team"] = team
+
+        r = self.db.execute(
+            text(
+                f"""
+                SELECT
+                  COUNT(*) FILTER (WHERE t.status='Cumprido' AND t.concluido_em BETWEEN :start AND :end) AS concluido,
+                  COUNT(*) FILTER (WHERE t.status='Pendente') AS pendente,
+                  COUNT(*) FILTER (WHERE t.status='Pendente' AND t.prazo_previsto < now()) AS atrasado,
+                  COUNT(*) FILTER (WHERE t.status='Cumprido' AND t.prazo_previsto IS NOT NULL
+                                   AND t.concluido_em <= t.prazo_previsto
+                                   AND t.concluido_em BETWEEN :start AND :end) AS no_prazo,
+                  COUNT(*) FILTER (WHERE t.status='Cumprido' AND t.prazo_previsto IS NOT NULL
+                                   AND t.concluido_em BETWEEN :start AND :end) AS com_prazo,
+                  COUNT(DISTINCT t.pessoa_id) FILTER (WHERE t.status='Cumprido'
+                                   AND t.concluido_em BETWEEN :start AND :end) AS pessoas,
+                  percentile_cont(0.5) WITHIN GROUP (
+                      ORDER BY EXTRACT(EPOCH FROM (t.concluido_em - t.cadastrado_em))
+                  ) FILTER (WHERE t.status='Cumprido' AND t.cadastrado_em IS NOT NULL
+                            AND t.concluido_em >= t.cadastrado_em
+                            AND t.concluido_em BETWEEN :start AND :end) AS cycle_seg
+                FROM perf_l1_tarefa t
+                WHERE t.subtipo = :sub {team_t}
+                """
+            ),
+            tp,
+        ).fetchone()
+
+        comps = self.db.execute(
+            text(
+                f"""
+                SELECT t.pessoa_id AS pid, (t.concluido_em AT TIME ZONE 'America/Sao_Paulo') AS c
+                FROM perf_l1_tarefa t
+                WHERE t.subtipo = :sub AND t.status='Cumprido'
+                  AND t.concluido_em BETWEEN :start AND :end {team_t}
+                ORDER BY t.pessoa_id, t.concluido_em
+                """
+            ),
+            tp,
+        ).fetchall()
+        by_pd: dict = defaultdict(list)
+        for x in comps:
+            if x.c:
+                by_pd[(x.pid, x.c.date())].append(x.c)
+        gaps: list = []
+        for lst in by_pd.values():
+            lst.sort()
+            for i in range(1, len(lst)):
+                g = (lst[i] - lst[i - 1]).total_seconds()
+                if 0 < g <= _CAP_SEG:
+                    gaps.append(g)
+
+        cat = self.db.execute(
+            text("SELECT categoria FROM perf_subtipo_categoria WHERE subtipo = :sub"),
+            {"sub": subtipo},
+        ).scalar()
+
+        return {
+            "subtipo": subtipo,
+            "categoria": cat or "profundo",
+            "concluido": r.concluido or 0,
+            "pendente": r.pendente or 0,
+            "atrasado": r.atrasado or 0,
+            "pessoas": r.pessoas or 0,
+            "no_prazo_pct": round(100.0 * r.no_prazo / r.com_prazo) if r.com_prazo else None,
+            "tempo_conclusao_seg": round(r.cycle_seg) if r.cycle_seg is not None else None,
+            "tempo_trabalho_seg": round(statistics.median(gaps)) if gaps else None,
+            "amostra_trabalho": len(gaps),
+            "periodo_dias": days,
+        }
+
+    # ── duplicadas: mesma pasta + mesmo subtipo (preview) ──
+    def duplicadas_subtipo(self, subtipo: str, team: str | None = None) -> dict:
+        """Pastas com MAIS DE UMA tarefa PENDENTE do mesmo subtipo — as duplicadas
+        geradas pelo desvio de fluxo. Mantém a MAIS ANTIGA (original) e marca as
+        criadas depois como canceláveis. Preview lido do snapshot; a cancelação
+        real (fase B) reverifica cada tarefa ao vivo no L1 (pré-check de terminal).
+        """
+        from collections import defaultdict
+
+        team_t = "AND t.pessoa_id IN (SELECT id FROM perf_pessoa WHERE equipe = :team)" if team else ""
+        team_nb = "AND pessoa_id IN (SELECT id FROM perf_pessoa WHERE equipe = :team)" if team else ""
+        tp: dict = {"sub": subtipo}
+        if team:
+            tp["team"] = team
+
+        rows = self.db.execute(
+            text(
+                f"""
+                SELECT t.pasta AS pasta, t.l1_task_id AS tid, t.cnj AS cnj,
+                       t.cadastrado_em AS cad, t.prazo_previsto AS prazo, p.nome AS pessoa
+                FROM perf_l1_tarefa t
+                LEFT JOIN perf_pessoa p ON p.id = t.pessoa_id
+                WHERE t.subtipo = :sub AND t.status = 'Pendente'
+                  AND t.pasta IS NOT NULL AND t.l1_task_id IS NOT NULL {team_t}
+                  AND t.pasta IN (
+                    SELECT pasta FROM perf_l1_tarefa
+                    WHERE subtipo = :sub AND status = 'Pendente' AND pasta IS NOT NULL
+                      AND l1_task_id IS NOT NULL {team_nb}
+                    GROUP BY pasta HAVING COUNT(*) > 1
+                  )
+                ORDER BY t.pasta, t.cadastrado_em ASC NULLS FIRST, t.l1_task_id ASC
+                """
+            ),
+            tp,
+        ).fetchall()
+
+        grupos_map: dict = defaultdict(list)
+        for r in rows:
+            grupos_map[r.pasta].append(r)
+
+        grupos: list = []
+        total_cancelar = 0
+        for pasta, lst in grupos_map.items():
+            manter = lst[0]  # mais antiga = original
+            cancelar = lst[1:]
+            total_cancelar += len(cancelar)
+            grupos.append(
+                {
+                    "pasta": pasta,
+                    "cnj": manter.cnj,
+                    "manter": {
+                        "task_id": manter.tid,
+                        "cadastrado_em": manter.cad,
+                        "pessoa": manter.pessoa,
+                        "prazo": manter.prazo,
+                    },
+                    "cancelar": [
+                        {"task_id": x.tid, "cadastrado_em": x.cad, "pessoa": x.pessoa, "prazo": x.prazo}
+                        for x in cancelar
+                    ],
+                }
+            )
+        grupos.sort(key=lambda g: -len(g["cancelar"]))
+        return {
+            "subtipo": subtipo,
+            "total_grupos": len(grupos),
+            "total_cancelar": total_cancelar,
+            "grupos": grupos,
+        }
+
     # ── export Excel de um recorte (tarefas que o operador precisa tratar) ──
     def export_xlsx(self, escopo: str = "atrasado", pessoa_id: int | None = None,
                     subtipo: str | None = None, days: int = 30, team: str | None = None) -> bytes:

@@ -185,6 +185,50 @@ export async function getDashboard(team: string, days = 30): Promise<DashboardDa
   return json(await apiFetch(`${BASE}/dashboard?team=${team}&days=${days}`));
 }
 
+// Detalhe (capacity) de UM subtipo do board "Tarefas mais importantes".
+export interface SubtipoDetalhe {
+  subtipo: string;
+  categoria: Categoria;
+  concluido: number;
+  pendente: number;
+  atrasado: number;
+  pessoas: number;
+  no_prazo_pct: number | null;
+  tempo_conclusao_seg: number | null; // latência: cadastro → conclusão (mediana)
+  tempo_trabalho_seg: number | null; // esforço: gap entre conclusões do tipo (mediana, capado 30min)
+  amostra_trabalho: number;
+  periodo_dias: number;
+}
+
+export async function getSubtipoDetalhe(team: string, subtipo: string, days = 30): Promise<SubtipoDetalhe> {
+  const qs = new URLSearchParams({ team, subtipo, days: String(days) });
+  return json(await apiFetch(`${BASE}/subtipo-detalhe?${qs.toString()}`));
+}
+
+// Preview de duplicadas (mesma pasta + mesmo subtipo): mantém a mais antiga.
+export interface DupTarefa {
+  task_id: number;
+  cadastrado_em: string | null;
+  pessoa: string | null;
+  prazo: string | null;
+}
+export interface DupGrupo {
+  pasta: string;
+  cnj: string | null;
+  manter: DupTarefa;
+  cancelar: DupTarefa[];
+}
+export interface DuplicadasResp {
+  subtipo: string;
+  total_grupos: number;
+  total_cancelar: number;
+  grupos: DupGrupo[];
+}
+export async function getDuplicadas(team: string, subtipo: string): Promise<DuplicadasResp> {
+  const qs = new URLSearchParams({ team, subtipo });
+  return json(await apiFetch(`${BASE}/duplicadas?${qs.toString()}`));
+}
+
 export async function downloadExport(params: {
   escopo: "atrasado" | "pendente" | "concluido";
   team: string;

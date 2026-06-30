@@ -33,8 +33,17 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { InfoHint } from "@/components/performance/InfoHint";
-import { type DashboardData, downloadExport, getDashboard } from "@/services/performance";
+import {
+  type DashboardData,
+  type DuplicadasResp,
+  type SubtipoDetalhe,
+  downloadExport,
+  getDashboard,
+  getDuplicadas,
+  getSubtipoDetalhe,
+} from "@/services/performance";
 import { useToast } from "@/hooks/use-toast";
 
 const cargoColor = (cargo: string | null): string => {
@@ -64,6 +73,33 @@ const fmtH = (h: number): string => {
   return `${hh}:${String(mm).padStart(2, "0")}`;
 };
 const truncTipo = (s: string): string => (s.length > 24 ? s.slice(0, 24) + "…" : s);
+
+// Duração legível a partir de segundos: s → min → h → dias, conforme a grandeza.
+const fmtSeg = (s: number | null | undefined): string => {
+  if (s == null) return "—";
+  if (s < 90) return `${Math.round(s)}s`;
+  if (s < 5400) return `${Math.round(s / 60)} min`;
+  if (s < 86400 * 2) return `${(s / 3600).toFixed(1)} h`;
+  return `${(s / 86400).toFixed(1)} dias`;
+};
+
+// Tick do YAxis do board: rótulo do subtipo + (i) clicável que abre o detalhe.
+function TipoTick(props: any) {
+  const { x, y, payload, onPick } = props;
+  const sub: string = payload?.value ?? "";
+  return (
+    <g transform={`translate(${x},${y})`} style={{ cursor: "pointer" }} onClick={() => onPick?.(sub)}>
+      <title>Ver detalhe e capacity deste tipo</title>
+      <text x={-16} dy={3} textAnchor="end" fontSize={10} fill="#475569">
+        {truncTipo(sub)}
+      </text>
+      <circle cx={-7} cy={0} r={5} fill="none" stroke="hsl(var(--dunatech-blue))" strokeWidth={1} />
+      <text x={-7} dy={2.6} textAnchor="middle" fontSize={7.5} fontWeight={700} fill="hsl(var(--dunatech-blue))">
+        i
+      </text>
+    </g>
+  );
+}
 
 function ChartCard({
   title,
@@ -160,6 +196,22 @@ export default function PainelEquipe({ days, team }: { days: number; team: strin
   const [pendingExport, setPendingExport] = useState<
     { escopo: "atrasado" | "pendente" | "concluido"; extra: { subtipo?: string; pessoa_id?: number }; label: string } | null
   >(null);
+  const [detalhe, setDetalhe] = useState<{
+    subtipo: string;
+    loading: boolean;
+    data: SubtipoDetalhe | null;
+    dups: DuplicadasResp | null;
+  } | null>(null);
+
+  const abrirDetalhe = (subtipo: string) => {
+    setDetalhe({ subtipo, loading: true, data: null, dups: null });
+    Promise.all([getSubtipoDetalhe(team, subtipo, days), getDuplicadas(team, subtipo).catch(() => null)])
+      .then(([d, dups]) => setDetalhe({ subtipo, loading: false, data: d, dups }))
+      .catch((e) => {
+        setDetalhe(null);
+        toast({ title: "Erro ao carregar o detalhe", description: String((e as Error).message), variant: "destructive" });
+      });
+  };
 
   useEffect(() => {
     setLoading(true);
@@ -319,12 +371,20 @@ export default function PainelEquipe({ days, team }: { days: number; team: strin
           </div>
         }
       >
-        <p className="mb-1 text-[10px] text-muted-foreground">Clique numa barra para exportar as tarefas daquele tipo em Excel — vermelho = atrasadas (campanha focada), âmbar = pendentes, colorido = concluídas.</p>
+        <p className="mb-1 text-[10px] text-muted-foreground">Clique numa barra para exportar as tarefas daquele tipo em Excel — vermelho = atrasadas (campanha focada), âmbar = pendentes, colorido = concluídas. Clique no <span className="font-semibold text-[hsl(var(--dunatech-blue))]">ⓘ</span> ao lado do nome pra abrir o detalhe e o tempo de capacity do tipo.</p>
         <ResponsiveContainer width="100%" height={Math.max(300, topTipos.length * 30)}>
           <BarChart data={topTipos} layout="vertical" margin={{ left: 8, right: 28, top: 4 }}>
             <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="hsl(var(--border))" />
             <XAxis type="number" fontSize={11} allowDecimals={false} />
-            <YAxis type="category" dataKey="subtipo" width={170} fontSize={10} tickFormatter={truncTipo} tickLine={false} axisLine={false} />
+            <YAxis
+              type="category"
+              dataKey="subtipo"
+              width={185}
+              tickLine={false}
+              axisLine={false}
+              interval={0}
+              tick={<TipoTick onPick={abrirDetalhe} />}
+            />
             <RTooltip content={<TopTipoTooltip />} cursor={{ fill: "hsl(var(--muted))", opacity: 0.4 }} />
             <Bar dataKey="volume" name="Concluídas" stackId="s" cursor="pointer"
               onClick={(d: any) => barSub(d) && requestExport("concluido", { subtipo: barSub(d) }, barSub(d)!)}>
@@ -361,6 +421,111 @@ export default function PainelEquipe({ days, team }: { days: number; team: strin
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog open={detalhe != null} onOpenChange={(o) => !o && setDetalhe(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <span
+                className="h-2.5 w-2.5 shrink-0 rounded-full"
+                style={{ background: CAT_COLOR[detalhe?.data?.categoria ?? "profundo"] || "#94a3b8" }}
+              />
+              <span className="truncate">{detalhe?.subtipo}</span>
+            </DialogTitle>
+          </DialogHeader>
+          {!detalhe || detalhe.loading || !detalhe.data ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">Calculando…</p>
+          ) : (
+            <div className="space-y-3 text-sm">
+              <p className="text-xs text-muted-foreground">
+                Natureza <b>{NAT_LABEL[detalhe.data.categoria] ?? detalhe.data.categoria}</b> · últimos{" "}
+                {detalhe.data.periodo_dias} dias · {detalhe.data.pessoas} pessoa(s) executando
+              </p>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { label: "Concluídas", value: detalhe.data.concluido, color: "#1D9E75" },
+                  { label: "Pendentes", value: detalhe.data.pendente, color: "#f59e0b" },
+                  { label: "Atrasadas", value: detalhe.data.atrasado, color: "#e11d48" },
+                ].map((s) => (
+                  <div key={s.label} className="rounded-lg border p-2.5 text-center">
+                    <div className="text-lg font-semibold tabular-nums" style={{ color: s.color }}>
+                      {s.value}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">{s.label}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-lg border p-2.5">
+                  <div className="text-[11px] text-muted-foreground">No prazo</div>
+                  <div className="text-lg font-semibold tabular-nums">
+                    {detalhe.data.no_prazo_pct == null ? "—" : `${detalhe.data.no_prazo_pct}%`}
+                  </div>
+                </div>
+                <div className="rounded-lg border p-2.5">
+                  <div className="text-[11px] text-muted-foreground">Tempo de conclusão</div>
+                  <div className="text-lg font-semibold tabular-nums">{fmtSeg(detalhe.data.tempo_conclusao_seg)}</div>
+                  <div className="text-[10px] text-muted-foreground">cadastro → conclusão (latência)</div>
+                </div>
+              </div>
+              <div className="rounded-lg border border-[hsl(var(--dunatech-blue))]/30 bg-[hsl(var(--dunatech-blue))]/5 p-2.5">
+                <div className="flex items-baseline justify-between gap-2">
+                  <div className="text-[11px] font-medium text-muted-foreground">Tempo de trabalho / tarefa (capacity)</div>
+                  <div className="text-xl font-bold tabular-nums text-[hsl(var(--dunatech-blue))]">
+                    {fmtSeg(detalhe.data.tempo_trabalho_seg)}
+                  </div>
+                </div>
+                <div className="mt-1 text-[10px] leading-snug text-muted-foreground">
+                  Esforço efetivo por tarefa — mediana do intervalo entre conclusões do tipo, descontadas pausas &gt;
+                  30min. É o número que entra no cálculo de quantas cabem num dia.{" "}
+                  {detalhe.data.amostra_trabalho > 0
+                    ? `Amostra: ${detalhe.data.amostra_trabalho} intervalos.`
+                    : "Amostra insuficiente no período."}
+                </div>
+              </div>
+
+              {detalhe.dups &&
+                (detalhe.dups.total_cancelar > 0 ? (
+                  <div className="rounded-lg border border-rose-300 bg-rose-50/60 p-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-[11px] font-semibold text-rose-700">Tarefas duplicadas</div>
+                      <div className="text-sm font-bold tabular-nums text-rose-700">
+                        {detalhe.dups.total_cancelar} a cancelar · {detalhe.dups.total_grupos} pasta(s)
+                      </div>
+                    </div>
+                    <div className="mt-0.5 text-[10px] leading-snug text-muted-foreground">
+                      Mesma pasta + mesmo subtipo (desvio de fluxo). Mantém a mais antiga (original) e cancela as criadas
+                      depois.
+                    </div>
+                    <details className="mt-1.5">
+                      <summary className="cursor-pointer text-[11px] text-rose-700">Ver pastas</summary>
+                      <div className="mt-1 max-h-36 space-y-1 overflow-y-auto">
+                        {detalhe.dups.grupos.map((g) => (
+                          <div key={g.pasta} className="rounded border bg-background px-2 py-1 text-[11px]">
+                            <span className="font-medium">{g.pasta}</span>
+                            {g.cnj ? <span className="text-muted-foreground"> · {g.cnj}</span> : null}
+                            <span className="ml-1 font-medium text-rose-700">— cancela {g.cancelar.length}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      className="mt-2 h-7 gap-1 text-xs"
+                      disabled
+                      title="Cancelamento em lote entra na próxima entrega (fase B)"
+                    >
+                      Cancelar {detalhe.dups.total_cancelar} duplicadas (em breve)
+                    </Button>
+                  </div>
+                ) : (
+                  <p className="text-[11px] font-medium text-emerald-700">✓ Sem duplicadas neste tipo.</p>
+                ))}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

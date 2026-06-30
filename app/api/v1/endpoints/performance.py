@@ -108,6 +108,21 @@ def dashboard(team: str = Query(...), days: int = Query(30, ge=1, le=365), db: S
     return PerformanceService(db).dashboard(days=days, team=team)
 
 
+@router.get("/subtipo-detalhe", summary="Detalhe (capacity) de um subtipo do board", dependencies=[_team])
+def subtipo_detalhe(
+    team: str = Query(...),
+    subtipo: str = Query(...),
+    days: int = Query(30, ge=1, le=365),
+    db: Session = Depends(get_db),
+):
+    return PerformanceService(db).subtipo_setor_detalhe(subtipo, days=days, team=team)
+
+
+@router.get("/duplicadas", summary="Preview de duplicadas (mesma pasta + subtipo) de um tipo", dependencies=[_team])
+def duplicadas(team: str = Query(...), subtipo: str = Query(...), db: Session = Depends(get_db)):
+    return PerformanceService(db).duplicadas_subtipo(subtipo, team=team)
+
+
 @router.get("/export", summary="Exporta xlsx de um recorte do time", dependencies=[_team])
 def export(
     team: str = Query(...),
