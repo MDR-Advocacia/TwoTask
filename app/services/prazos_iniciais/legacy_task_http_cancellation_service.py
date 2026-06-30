@@ -459,6 +459,78 @@ class LegacyTaskHttpCancellationService:
             category="runner_error",
         )
 
+    def _build_post_body_batch(
+        self, *, task_ids: list[int], target_status_id: int
+    ) -> list[tuple[str, str]]:
+        body: list[tuple[str, str]] = list(_BASE_BODY_FIELDS)
+        body.append(("StatusId", str(int(target_status_id))))
+        for tid in task_ids:
+            body.append(("selectionViewModel[SelectedIds][]", str(int(tid))))
+        return body
+
+    def post_cancel_batch(
+        self,
+        *,
+        task_ids: list[int],
+        target_status_id: int = DEFAULT_CANCELLED_STATUS_ID,
+    ) -> dict[str, Any]:
+        """POST de cancelamento em LOTE: N ids num único request (doc §5 — o
+        endpoint ModalEnvolvimentoEmLote aceita N `selectionViewModel[SelectedIds][]`).
+        NÃO faz pré-check nem verify por tarefa — o caller faz isso EM LOTE pela
+        API REST (muito mais rápido que 1 POST+verify por tarefa). 200 = fila
+        aceita; a confirmação real é a verificação de statusId via API. Reusa a
+        mesma sessão/retry de re-login do `_post_cancel`."""
+        if not task_ids:
+            return {"ok": True, "count": 0, "raw": None}
+        url = f"{self._web_base_url()}{CANCEL_ENDPOINT_PATH}?parentId=0&tipoVinculo=1"
+        headers = {"X-Requested-With": "XMLHttpRequest", "Accept": "*/*"}
+        for attempt in range(2):
+            cookies = self._ensure_session()
+            body = self._build_post_body_batch(
+                task_ids=task_ids, target_status_id=target_status_id
+            )
+            try:
+                response = self._http.post(
+                    url, data=body, cookies=cookies, headers=headers, timeout=30
+                )
+            except requests.exceptions.RequestException as exc:
+                raise _CancelHttpError(
+                    f"erro de rede no POST batch: {exc}", category="timeout"
+                ) from exc
+            if self._is_session_invalid(response):
+                self._invalidate_session()
+                if attempt == 0:
+                    logger.info("legacy_task_http.session_invalid: re-login (batch n=%s)", len(task_ids))
+                    continue
+                raise _CancelHttpError(
+                    "sessao invalida persistente apos re-login (403)", category="auth_failure"
+                )
+            if response.status_code >= 500:
+                raise _CancelHttpError(
+                    f"L1 retornou {response.status_code}", category="timeout"
+                )
+            if response.status_code != 200:
+                raise _CancelHttpError(
+                    f"L1 retornou {response.status_code}: {(response.text or '')[:256]}",
+                    category="runner_error",
+                )
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise _CancelHttpError(
+                    f"resposta L1 nao e JSON: {(response.text or '')[:256]}",
+                    category="runner_error",
+                ) from exc
+            if not payload.get("Success"):
+                err = payload.get("ErrorMessage") or payload.get("Message") or "Success=false"
+                raise _CancelHttpError(f"L1 rejeitou batch: {err}", category="runner_error")
+            logger.info(
+                "legacy_task_http.post_batch_ok n=%s elapsed_ms=%s",
+                len(task_ids), int(response.elapsed.total_seconds() * 1000),
+            )
+            return {"ok": True, "count": len(task_ids), "raw": payload}
+        raise _CancelHttpError("loop de retry HTTP (batch) esgotado", category="runner_error")
+
     # ── Interface publica (compat com LegacyTaskHelper (legacy_task_helpers)) ──
 
     def cancel_task(

@@ -1,21 +1,25 @@
-"""Cancelamento em lote de tarefas duplicadas do board (fase B) — LIVE.
+"""Cancelamento em lote de tarefas duplicadas do board (fase B) — LIVE + BATCH.
 
-Antes de cancelar, VARRE o L1 ao vivo: pra cada processo-candidato (vindo do
-snapshot só pra escopar) busca as tarefas PENDENTES REAIS daquele subtipo agora
-(`find_tasks_for_lawsuit`), mantém a mais antiga e marca as outras pra cancelar.
-Assim não depende da frescura do snapshot — duplicada já resolvida não entra na
-conta (era o que inflava as "preservadas").
+Fluxo do job (2 fases, em THREAD daemon, progresso persistido em perf_cancel_job
+pro polling funcionar com vários workers):
 
-Depois cancela via `LegacyTaskHttpCancellationService.cancel_task` (método B:
-POST web + verify API; cobre Workflow; pré-check de terminal; idempotente).
+  ① VARREDURA LIVE — pra cada processo-candidato (snapshot só escopa), resolve o
+     lawsuit e busca AO VIVO as pendentes reais do subtipo (`find_tasks_for_lawsuit`),
+     mantém a mais antiga e monta a lista real a cancelar. Não depende da frescura
+     do snapshot (duplicada já resolvida não entra).
 
-Roda em THREAD daemon e grava o progresso (2 fases: scanning → cancelling) em
-`perf_cancel_job`, pro polling funcionar com vários workers. Suporta abort
-(status 'aborting', checado a cada item).
+  ② CANCELAMENTO EM LOTE — em vez de 1 POST+verify por tarefa (~3s/tarefa), faz:
+     pré-check de status EM LOTE (chunks de 28 via OR filter — preserva terminais,
+     nunca toca Cumprida) → POST EM LOTE (N ids num request, doc §5) → espera o
+     backend assíncrono do L1 → verify EM LOTE (statusId via API), com 1 retry pros
+     que não refletiram. Corta de ~minutos pra ~dezenas de segundos.
+
+Suporta abort (status 'aborting', checado entre etapas).
 """
 
 import logging
 import threading
+import time
 import uuid
 
 from sqlalchemy import func, text
@@ -26,6 +30,17 @@ from app.models.performance import PerfCancelJob
 logger = logging.getLogger(__name__)
 
 _MAX = 5000  # trava de segurança por lote
+_TERMINAL = {1, 2, 3}  # Cumprido / Não cumprido / Cancelado — nunca cancelar
+_TARGET = 3  # Cancelado
+_POST_CHUNK = 50  # ids por POST em lote
+_FETCH_CHUNK = 28  # ids por GET de status (OR filter; /Tasks tem $top=30)
+
+
+def _to_int(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def iniciar(team: str, subtipo: str) -> str:
@@ -44,7 +59,7 @@ def iniciar(team: str, subtipo: str) -> str:
 
 
 def solicitar_abort(job_id: str) -> bool:
-    """Pede pra thread parar — ela checa a cada item e encerra."""
+    """Pede pra thread parar — ela checa entre etapas e encerra."""
     db = SessionLocal()
     try:
         j = db.get(PerfCancelJob, job_id)
@@ -63,12 +78,23 @@ def _abortado(db, job_id: str) -> bool:
     ).scalar() == "aborting"
 
 
-def _scan_live(db, job, team: str, subtipo: str) -> list:
+def _statuses(c, ids: list) -> dict:
+    """statusId atual de N tarefas, EM LOTE (chunks de 28 via OR filter na API)."""
+    out: dict = {}
+    for i in range(0, len(ids), _FETCH_CHUNK):
+        chunk = ids[i : i + _FETCH_CHUNK]
+        flt = " or ".join(f"id eq {int(x)}" for x in chunk)
+        try:
+            for r in c.search_tasks(filter_expression=flt, select="id,statusId", top=30):
+                out[int(r["id"])] = _to_int(r.get("statusId"))
+        except Exception:  # noqa: BLE001
+            logger.exception("busca de status em lote falhou (offset %s)", i)
+    return out
+
+
+def _scan_live(db, job, team: str, subtipo: str, c) -> list:
     """Varre o L1 ao vivo e devolve os task_ids reais a cancelar (mantém a mais
     antiga por processo). Atualiza scan_feito/scan_total no job."""
-    from app.services.legal_one_client import LegalOneApiClient
-
-    c = LegalOneApiClient()
     sample = db.execute(
         text("SELECT l1_task_id FROM perf_l1_tarefa WHERE subtipo = :s AND l1_task_id IS NOT NULL LIMIT 1"),
         {"s": subtipo},
@@ -116,46 +142,76 @@ def _scan_live(db, job, team: str, subtipo: str) -> list:
     return task_ids[:_MAX]
 
 
-def _run(job_id: str, team: str, subtipo: str) -> None:
+def _cancel_batch(db, job, ids: list, c) -> None:
+    """Cancela EM LOTE: pré-check de status (preserva terminais) → POST em lote →
+    verify em lote, com 1 retry pros não confirmados."""
     from app.services.prazos_iniciais.legacy_task_http_cancellation_service import (
         LegacyTaskHttpCancellationService,
     )
 
+    svc = LegacyTaskHttpCancellationService()
+
+    # 1. pré-check em lote — só cancela status CONFIRMADO cancelável (0/4/5).
+    # Terminal (1/2/3) ou status que o pré-check não conseguiu confirmar (None,
+    # ex.: chunk perdido em 429) são pulados — NUNCA arrisca tocar Cumprida.
+    st = _statuses(c, ids)
+    alvo = [i for i in ids if st.get(i) in (0, 4, 5)]
+    job.preservadas = (job.preservadas or 0) + (len(ids) - len(alvo))
+    job.total = len(alvo)
+    db.commit()
+    if not alvo:
+        job.feito = 0
+        db.commit()
+        return
+
+    confirmados: set = set()
+    pendentes = list(alvo)
+    for rodada in range(2):  # POST + verify, com 1 retry pros que não refletiram
+        if not pendentes or _abortado(db, job.id):
+            break
+        # POST em lotes de _POST_CHUNK
+        for i in range(0, len(pendentes), _POST_CHUNK):
+            if _abortado(db, job.id):
+                break
+            try:
+                svc.post_cancel_batch(task_ids=pendentes[i : i + _POST_CHUNK], target_status_id=_TARGET)
+            except Exception:  # noqa: BLE001
+                logger.exception("POST batch falhou (rodada %s)", rodada)
+        time.sleep(8 if rodada == 0 else 6)  # backend assíncrono do L1 reflete
+        # verify em lote (atualiza progresso por chunk)
+        for i in range(0, len(pendentes), _FETCH_CHUNK):
+            if _abortado(db, job.id):
+                break
+            chunk = pendentes[i : i + _FETCH_CHUNK]
+            ver = _statuses(c, chunk)
+            confirmados.update(t for t in chunk if ver.get(t) == _TARGET)
+            job.cancelled = len(confirmados)
+            job.feito = len(confirmados)
+            db.commit()
+        pendentes = [t for t in pendentes if t not in confirmados]
+
+    job.falhas = (job.falhas or 0) + len(pendentes)
+    job.feito = job.total
+    db.commit()
+
+
+def _run(job_id: str, team: str, subtipo: str) -> None:
+    from app.services.legal_one_client import LegalOneApiClient
+
     db = SessionLocal()
     try:
+        c = LegalOneApiClient()
         job = db.get(PerfCancelJob, job_id)
 
         # FASE 1 — varredura ao vivo
-        ids = _scan_live(db, job, team, subtipo)
+        ids = _scan_live(db, job, team, subtipo, c)
         job.total = len(ids)
         job.fase = "cancelling"
         db.commit()
 
-        # FASE 2 — cancelamento (só dos ids reais)
-        if not _abortado(db, job_id):
-            svc = LegacyTaskHttpCancellationService()
-            erros: list = []
-            for tid in ids:
-                if _abortado(db, job_id):
-                    break
-                reason = None
-                try:
-                    r = svc.cancel_task(task_id=tid)
-                    reason = r.get("reason")
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("cancelamento de duplicada (task %s) falhou", tid)
-                    reason = f"exc: {e}"
-                job.feito = (job.feito or 0) + 1
-                if reason == "cancelled":
-                    job.cancelled = (job.cancelled or 0) + 1
-                elif reason in ("already_in_target_status", "already_in_terminal_state"):
-                    job.preservadas = (job.preservadas or 0) + 1
-                else:
-                    job.falhas = (job.falhas or 0) + 1
-                    if len(erros) < 50:
-                        erros.append({"task_id": tid, "reason": reason})
-                job.erros = list(erros)
-                db.commit()
+        # FASE 2 — cancelamento em lote
+        if ids and not _abortado(db, job_id):
+            _cancel_batch(db, job, ids, c)
 
         job.status = "done"
         job.fase = "done"
