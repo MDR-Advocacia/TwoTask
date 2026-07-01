@@ -121,7 +121,8 @@ class AnaliseRecursal(Base):
     fundamentacao = Column(Text, nullable=True)             # justificativa da conclusão
     valor_causa = Column(Numeric(14, 2), nullable=True)
     valor_condenacao = Column(String, nullable=True)        # texto ou "Ilíquido"
-    prazo_fatal = Column(Date, nullable=True)               # data fatal do recurso
+    data_intimacao = Column(Date, nullable=True)            # intimação/publicação da decisão
+    prazo_fatal = Column(Date, nullable=True)               # +N dias úteis (computado)
     # Custo do preparo — DETERMINÍSTICO (lookup na tabela), não da IA.
     custo_estimado = Column(Numeric(14, 2), nullable=True)
     custo_detalhe = Column(JSON, nullable=True)             # breakdown do cálculo

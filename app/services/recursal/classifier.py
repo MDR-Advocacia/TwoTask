@@ -294,7 +294,12 @@ class RecursalBatchClassifier:
         an.fundamentacao = verdict.fundamentacao
         an.valor_causa = verdict.valor_causa
         an.valor_condenacao = verdict.valor_condenacao
-        an.prazo_fatal = verdict.prazo_fatal
+        an.data_intimacao = verdict.data_intimacao
+        # Prazo fatal DETERMINÍSTICO: +N dias úteis a partir da intimação
+        # (15 apelação/agravo/RESP/RE; 5 embargos de declaração).
+        an.prazo_fatal = self._calc_prazo_fatal(
+            verdict.data_intimacao, verdict.tipo_recurso, verdict.prazo_fatal
+        )
         an.confianca = verdict.confianca
 
         # UF: respeita a que o operador já setou; senão deriva do CNJ.
@@ -315,6 +320,20 @@ class RecursalBatchClassifier:
         an.custo_detalhe = detalhe
 
     # ── Helpers ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _calc_prazo_fatal(data_intimacao, tipo_recurso, fallback):
+        """+N dias úteis a partir da intimação (feriados nacionais). Sem
+        intimação, cai no que a IA achou pronto (fallback)."""
+        if data_intimacao is None:
+            return fallback
+        from app.services.prazos_iniciais.prazo_calculator import add_business_days
+
+        dias = 5 if tipo_recurso == "EMB_DECLARACAO" else 15
+        try:
+            return add_business_days(data_intimacao, dias)
+        except Exception:
+            return fallback
 
     @staticmethod
     def _analise_id_from_custom(custom_id: str) -> Optional[int]:

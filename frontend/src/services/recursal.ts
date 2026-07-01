@@ -53,6 +53,7 @@ export interface RecursalAnalise {
   fundamentacao: string | null;
   valor_causa: number | null;
   valor_condenacao: string | null;
+  data_intimacao: string | null;
   prazo_fatal: string | null;
   custo_estimado: number | null;
   custo_detalhe: Record<string, unknown> | null;

@@ -120,6 +120,7 @@ def _analise_to_dict(an: AnaliseRecursal, db: Optional[Session] = None) -> dict[
         "fundamentacao": an.fundamentacao,
         "valor_causa": _num(an.valor_causa),
         "valor_condenacao": an.valor_condenacao,
+        "data_intimacao": an.data_intimacao.isoformat() if an.data_intimacao else None,
         "prazo_fatal": an.prazo_fatal.isoformat() if an.prazo_fatal else None,
         "custo_estimado": custo,
         "custo_detalhe": an.custo_detalhe,

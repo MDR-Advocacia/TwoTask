@@ -101,9 +101,13 @@ CUSTO/PRAZO:
   estimar o custo do preparo FORA daqui — apenas extraia.
 - valor_condenacao: valor da condenação em texto. Se for ilíquido, escreva
   "Ilíquido (a ser apurado em liquidação de sentença)". null se não houver.
-- prazo_fatal: data fatal do recurso (YYYY-MM-DD) SOMENTE se houver elemento
-  claro na íntegra (data de intimação/publicação + prazo). Em dúvida, null —
-  o operador confirma.
+- data_intimacao: data (YYYY-MM-DD) em que o BANCO RÉU foi intimado da decisão
+  ou em que ela foi publicada/disponibilizada no DJe — é o GATILHO do prazo
+  recursal. Procure na certidão de publicação/intimação. Extraia com atenção;
+  é a partir DELA que o prazo é contado. null se não encontrar.
+- prazo_fatal: NÃO calcule — deixe null. O sistema computa +15 dias úteis
+  (ou 5 para embargos) a partir de data_intimacao. Só preencha se a própria
+  decisão/certidão já trouxer a data-limite explícita.
 
 CONFIANÇA:
 - confianca: ALTA | MEDIA | BAIXA. Use BAIXA se a íntegra estiver truncada ou
@@ -129,7 +133,8 @@ formato EXATO:
   "fundamentacao": "justificativa objetiva da conclusão",
   "valor_causa": 12345.67 | null,
   "valor_condenacao": "..." | null,
-  "prazo_fatal": "YYYY-MM-DD" | null,
+  "data_intimacao": "YYYY-MM-DD" | null,
+  "prazo_fatal": null,
   "confianca": "ALTA|MEDIA|BAIXA"
 }
 """

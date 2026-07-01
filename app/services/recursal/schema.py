@@ -80,7 +80,11 @@ class RecursalVerdict(BaseModel):
     valor_causa: Optional[float] = None
     # Valor da condenação — texto livre (número ou "Ilíquido").
     valor_condenacao: Optional[str] = None
-    # Data fatal do recurso, se extraível com segurança.
+    # Data em que o RÉU foi intimado / a decisão foi publicada (DJe). O código
+    # calcula o prazo fatal = +N dias úteis a partir daqui (determinístico).
+    data_intimacao: Optional[date] = None
+    # Prazo fatal — só como FALLBACK se a IA achar a data pronta na íntegra;
+    # o normal é o código computar a partir de data_intimacao.
     prazo_fatal: Optional[date] = None
     confianca: Optional[str] = None
 
@@ -126,7 +130,7 @@ class RecursalVerdict(BaseModel):
             return []
         return [str(x).strip() for x in v if str(x).strip()]
 
-    @field_validator("prazo_fatal", mode="before")
+    @field_validator("prazo_fatal", "data_intimacao", mode="before")
     @classmethod
     def _v_prazo(cls, v):
         if v is None or v == "":
