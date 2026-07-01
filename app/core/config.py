@@ -145,6 +145,10 @@ class Settings(BaseSettings):
     # Reusa o extractor mecânico de Prazos Iniciais (capa+integra).
     recursal_classifier_model: str = "claude-sonnet-4-6"
     recursal_classifier_max_tokens: int = 4096
+    # Worker de background: auto-submete pendentes e auto-aplica batches
+    # prontos (fire-and-forget; não depende do operador ficar na tela).
+    recursal_auto_worker_enabled: bool = True
+    recursal_auto_worker_interval_seconds: int = 180
 
     # ─── Classificador — motor dormente (cla003) ───────────────────────
     # API keys aceitas no endpoint publico POST /classificador/intake/pdf

@@ -350,6 +350,15 @@ async def lifespan(_: FastAPI):
     except Exception:
         logger.exception("Falha ao registrar job de ingestão do Minha Equipe no startup.")
 
+    # Análise Recursal: worker fire-and-forget — auto-submete os PDFs subidos e
+    # auto-aplica os vereditos quando o batch termina (sem depender da tela).
+    try:
+        from app.services.recursal.worker import register_recursal_worker
+
+        register_recursal_worker(scheduler)
+    except Exception:
+        logger.exception("Falha ao registrar o auto-worker da Análise Recursal no startup.")
+
     try:
         yield
     finally:

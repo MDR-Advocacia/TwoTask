@@ -293,6 +293,18 @@ export default function AnaliseRecursalPage() {
     loadAnalises();
   }, [loadAnalises]);
 
+  // Auto-atualiza enquanto houver processo em andamento. O servidor (worker
+  // de background) submete e aplica os vereditos sozinho — a tela so precisa
+  // refletir. Nao depende de voce ficar aqui: pode fechar e voltar depois.
+  useEffect(() => {
+    const emAndamento = analises.some(
+      (a) => a.status === "RECEBIDO" || a.status === "EM_ANALISE",
+    );
+    if (!emAndamento) return;
+    const id = setInterval(() => loadAnalises(), 20000);
+    return () => clearInterval(id);
+  }, [analises, loadAnalises]);
+
   // Carrega o lote mais recente ainda não aplicado (sobrevive a reload).
   useEffect(() => {
     listRecursalBatches({ limit: 1 })
@@ -361,7 +373,7 @@ export default function AnaliseRecursalPage() {
       setBatch(r.batch);
       toast({
         title: "Lote enviado",
-        description: `${r.submetidos} processo(s) em análise. O resultado fica pronto em alguns minutos a algumas horas — clique em "Atualizar resultado".`,
+        description: `${r.submetidos} processo(s) em análise. O resultado aparece sozinho aqui quando ficar pronto (alguns minutos) — pode fechar a tela.`,
       });
       loadAnalises();
     } catch (e) {
@@ -481,7 +493,9 @@ export default function AnaliseRecursalPage() {
         <CardHeader className="pb-3">
           <CardTitle className="text-base">2. Analisar</CardTitle>
           <CardDescription>
-            Dispara a análise dos processos aguardando (~R$0,17 por processo, em lote).
+            A análise roda sozinha em background (o servidor submete e aplica os
+            vereditos, ~R$0,17 por processo) — pode fechar a tela. Use o botão só
+            se quiser disparar na hora.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap items-center gap-3">
