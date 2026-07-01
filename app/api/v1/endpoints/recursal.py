@@ -33,6 +33,7 @@ from fastapi import (
     status,
 )
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core import auth as auth_security
@@ -332,6 +333,39 @@ def list_analises(
         .all()
     )
     return {"total": total, "items": [_analise_to_dict(r, db) for r in rows]}
+
+
+@router.get("/progresso", summary="Contagem por status (barra de progresso).")
+def progresso(
+    db: Session = Depends(get_db),
+    _: LegalOneUser = Depends(auth_security.require_permission("prazos_iniciais")),
+):
+    rows = (
+        db.query(AnaliseRecursal.status, func.count(AnaliseRecursal.id))
+        .group_by(AnaliseRecursal.status)
+        .all()
+    )
+    c = {status: n for status, n in rows}
+    recebido = c.get("RECEBIDO", 0)
+    em_analise = c.get("EM_ANALISE", 0)
+    analisado = c.get("ANALISADO", 0)
+    erro = c.get("ERRO_ANALISE", 0)
+    sem_texto = c.get("SEM_TEXTO", 0)
+    # "em jogo" = tudo que é analisável (exclui os sem texto).
+    em_jogo = recebido + em_analise + analisado + erro
+    terminados = analisado + erro
+    return {
+        "total": sum(c.values()),
+        "recebido": recebido,
+        "em_analise": em_analise,
+        "analisado": analisado,
+        "erro": erro,
+        "sem_texto": sem_texto,
+        "em_jogo": em_jogo,
+        "terminados": terminados,
+        "processando": recebido + em_analise,
+        "pct": round(100 * terminados / em_jogo) if em_jogo else 0,
+    }
 
 
 @router.get("/{analise_id}", summary="Detalhe de uma análise recursal.")

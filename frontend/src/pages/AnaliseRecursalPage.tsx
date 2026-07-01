@@ -31,7 +31,9 @@ import { useToast } from "@/hooks/use-toast";
 import {
   RecursalAnalise,
   RecursalBatch,
+  RecursalProgresso,
   deleteRecursalAnalise,
+  getRecursalProgresso,
   listRecursalAnalises,
   listRecursalBatches,
   refreshRecursalBatch,
@@ -263,6 +265,7 @@ export default function AnaliseRecursalPage() {
   const [page, setPage] = useState(0);
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [loading, setLoading] = useState(false);
+  const [progresso, setProgresso] = useState<RecursalProgresso | null>(null);
 
   const [batch, setBatch] = useState<RecursalBatch | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -271,13 +274,17 @@ export default function AnaliseRecursalPage() {
   const loadAnalises = useCallback(async () => {
     setLoading(true);
     try {
-      const resp = await listRecursalAnalises({
-        status: statusFilter || undefined,
-        limit: PAGE_SIZE,
-        offset: page * PAGE_SIZE,
-      });
+      const [resp, prog] = await Promise.all([
+        listRecursalAnalises({
+          status: statusFilter || undefined,
+          limit: PAGE_SIZE,
+          offset: page * PAGE_SIZE,
+        }),
+        getRecursalProgresso().catch(() => null),
+      ]);
       setAnalises(resp.items);
       setTotal(resp.total);
+      if (prog) setProgresso(prog);
     } catch (e) {
       toast({
         variant: "destructive",
@@ -297,13 +304,10 @@ export default function AnaliseRecursalPage() {
   // de background) submete e aplica os vereditos sozinho — a tela so precisa
   // refletir. Nao depende de voce ficar aqui: pode fechar e voltar depois.
   useEffect(() => {
-    const emAndamento = analises.some(
-      (a) => a.status === "RECEBIDO" || a.status === "EM_ANALISE",
-    );
-    if (!emAndamento) return;
-    const id = setInterval(() => loadAnalises(), 20000);
+    if (!progresso || progresso.processando <= 0) return;
+    const id = setInterval(() => loadAnalises(), 15000);
     return () => clearInterval(id);
-  }, [analises, loadAnalises]);
+  }, [progresso, loadAnalises]);
 
   // Carrega o lote mais recente ainda não aplicado (sobrevive a reload).
   useEffect(() => {
@@ -452,6 +456,48 @@ export default function AnaliseRecursalPage() {
           </p>
         </div>
       </div>
+
+      {/* Barra de progresso */}
+      {progresso && progresso.em_jogo > 0 && (
+        <Card>
+          <CardContent className="py-3.5">
+            <div className="mb-1.5 flex items-center justify-between text-sm">
+              <span className="font-medium text-slate-700">
+                {progresso.processando > 0 ? (
+                  <span className="flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+                    Analisando processos…
+                  </span>
+                ) : (
+                  "Análise concluída"
+                )}
+              </span>
+              <span className="text-slate-500">
+                {progresso.terminados} de {progresso.em_jogo} ({progresso.pct}%)
+              </span>
+            </div>
+            <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-100">
+              <div
+                className="h-full rounded-full bg-emerald-500 transition-all duration-500"
+                style={{ width: `${progresso.pct}%` }}
+              />
+            </div>
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
+              {progresso.recebido > 0 && <span>{progresso.recebido} aguardando</span>}
+              {progresso.em_analise > 0 && (
+                <span className="text-blue-600">{progresso.em_analise} em análise</span>
+              )}
+              <span className="text-emerald-600">{progresso.analisado} analisado(s)</span>
+              {progresso.erro > 0 && (
+                <span className="text-red-600">{progresso.erro} com erro</span>
+              )}
+              {progresso.sem_texto > 0 && (
+                <span className="text-amber-600">{progresso.sem_texto} sem texto</span>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Upload */}
       <Card>

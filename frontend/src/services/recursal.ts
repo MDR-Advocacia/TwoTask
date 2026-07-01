@@ -163,6 +163,23 @@ export async function submitRecursal(): Promise<RecursalSubmitResponse> {
   return parse<RecursalSubmitResponse>(res);
 }
 
+export interface RecursalProgresso {
+  total: number;
+  recebido: number;
+  em_analise: number;
+  analisado: number;
+  erro: number;
+  sem_texto: number;
+  em_jogo: number;
+  terminados: number;
+  processando: number;
+  pct: number;
+}
+
+export async function getRecursalProgresso(): Promise<RecursalProgresso> {
+  return parse<RecursalProgresso>(await apiFetch(`${BASE}/progresso`));
+}
+
 export async function listRecursalAnalises(params: {
   status?: string;
   limit?: number;
