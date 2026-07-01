@@ -46,6 +46,7 @@ export interface RecursalAnalise {
   resumo_topicos: string[];
   destaque: string | null;
   fundamentacao_juiz: string | null;
+  contestacao_com_documentos: boolean | null;
   pontos_analise: string[];
   probabilidade_reversao: string | null;
   recorrer: string | null;

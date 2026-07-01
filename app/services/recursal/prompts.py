@@ -69,6 +69,12 @@ ANÁLISE:
   ___" — escreva SÓ a continuação, começando em MINÚSCULA e sem repetir "a
   decisão fundamenta-se". Ex.: "na ausência de comprovação técnica independente
   da contratação, com inversão do ônus da prova...". 1-3 frases.
+- contestacao_com_documentos: PONTO CRÍTICO — a contestação do banco foi
+  juntada COM documentos anexados? true / false / null (se não houver
+  contestação ou não der pra saber). NÃO avalie a QUALIDADE dos documentos,
+  só a PRESENÇA. Se houver documentos anexados, isso é PONTO POSITIVO para o
+  banco — mencione em pontos_analise (ex.: "A contestação foi instruída com
+  documentos, o que reforça a defesa do banco").
 - pontos_analise: lista de observações técnicas sobre a viabilidade. Cada item
   é uma frase DIRETA e NÃO deve começar com "Observa-se que" (o template já
   escreve "observa-se que:" antes da lista). Ex.: "Os elementos probatórios já
@@ -83,16 +89,26 @@ ANÁLISE:
   Se a decisão foi FAVORÁVEL ao banco, deixe probabilidade_reversao = null e
   recorrer = "NAO".
 
-RECOMENDAÇÃO:
-- recorrer: SIGA a probabilidade_reversao:
-    reversão REMOTA   → "NAO" (não recomendar recurso, mesmo que existam
-                        pontos secundários questionáveis — cite-os na
-                        fundamentação, mas a recomendação é NÃO recorrer).
-    reversão POSSIVEL → "LIMITROFE" (ou "SIM" se o valor em jogo for alto).
-    reversão PROVAVEL → "SIM".
-    banco já venceu   → "NAO".
-- tipo_recurso: APELACAO (contra sentença), AGRAVO (contra interlocutória),
-  EMB_DECLARACAO, RESP, RE. null se recorrer = "NAO" ou não couber.
+RECOMENDAÇÃO — a REGRA GERAL do Banco Master é NÃO RECORRER. Só fuja disso com
+fundamento forte. Aplique:
+- recorrer:
+    • Padrão → "NAO" (regra geral do Master).
+    • APELAÇÃO / RECURSO INOMINADO (contra sentença): "SIM" APENAS quando a
+      reversão do mérito for PROVÁVEL (erro claro na decisão, prova/tese forte
+      a favor do banco). Documentos juntados na contestação reforçam a tese.
+      Reversão apenas possível → "LIMITROFE"; reversão remota → "NAO".
+    • AGRAVO DE INSTRUMENTO (contra liminar/interlocutória): "SIM" SOMENTE
+      quando a decisão gerar dano de difícil/impossível reversão ao banco —
+      ex.: desaverbação de operações, cancelamento de operações em liminar, ou
+      qualquer dano irreversível. Fora dessas hipóteses → "NAO".
+- tipo_recurso: o recurso cabível (ver abaixo). null se recorrer = "NAO".
+    APELACAO          → sentença em VARA CÍVEL comum.
+    RECURSO_INOMINADO → sentença em JUIZADO ESPECIAL (JEC). Confira a
+                        classe/vara na capa: "Juizado Especial" → recurso
+                        inominado; "Procedimento Comum / Vara Cível" → apelação.
+    AGRAVO            → decisão interlocutória (liminar/tutela).
+    RESP / RE         → acórdão (instância superior).
+  NUNCA recomende embargos de declaração.
 - fundamentacao: justificativa OBJETIVA da conclusão (1-2 frases que entram
   no "considerando ..." da conclusão).
 
@@ -126,10 +142,11 @@ formato EXATO:
   "resumo_topicos": ["...", "..."],
   "destaque": "..." | null,
   "fundamentacao_juiz": "..." | null,
+  "contestacao_com_documentos": true | false | null,
   "pontos_analise": ["...", "..."],
   "probabilidade_reversao": "REMOTA|POSSIVEL|PROVAVEL" | null,
   "recorrer": "SIM|NAO|LIMITROFE",
-  "tipo_recurso": "APELACAO|AGRAVO|EMB_DECLARACAO|RESP|RE" | null,
+  "tipo_recurso": "APELACAO|RECURSO_INOMINADO|AGRAVO|RESP|RE" | null,
   "fundamentacao": "justificativa objetiva da conclusão",
   "valor_causa": 12345.67 | null,
   "valor_condenacao": "..." | null,

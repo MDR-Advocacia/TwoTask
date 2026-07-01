@@ -287,6 +287,7 @@ class RecursalBatchClassifier:
         an.resumo_topicos = verdict.resumo_topicos or None
         an.destaque = verdict.destaque
         an.fundamentacao_juiz = verdict.fundamentacao_juiz
+        an.contestacao_com_documentos = verdict.contestacao_com_documentos
         an.pontos_analise = verdict.pontos_analise or None
         an.probabilidade_reversao = verdict.probabilidade_reversao
         an.recorrer = verdict.recorrer
@@ -329,7 +330,8 @@ class RecursalBatchClassifier:
             return fallback
         from app.services.prazos_iniciais.prazo_calculator import add_business_days
 
-        dias = 5 if tipo_recurso == "EMB_DECLARACAO" else 15
+        # Recurso inominado (JEC) = 10 dias; demais recursos cíveis = 15.
+        dias = 10 if tipo_recurso == "RECURSO_INOMINADO" else 15
         try:
             return add_business_days(data_intimacao, dias)
         except Exception:

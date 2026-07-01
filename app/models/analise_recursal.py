@@ -62,7 +62,7 @@ RESULTADO_DECISAO_VALIDOS = {"PROCEDENTE", "IMPROCEDENTE", "PARCIAL", "EXTINTO"}
 TIPO_DECISAO_VALIDOS = {"SENTENCA", "ACORDAO", "DECISAO_INTERLOCUTORIA"}
 PROBABILIDADE_REVERSAO_VALIDOS = {"REMOTA", "POSSIVEL", "PROVAVEL"}
 RECORRER_VALIDOS = {"SIM", "NAO", "LIMITROFE"}
-TIPO_RECURSO_VALIDOS = {"APELACAO", "AGRAVO", "EMB_DECLARACAO", "RESP", "RE"}
+TIPO_RECURSO_VALIDOS = {"APELACAO", "RECURSO_INOMINADO", "AGRAVO", "RESP", "RE"}
 CONFIANCA_VALIDOS = {"ALTA", "MEDIA", "BAIXA"}
 
 
@@ -114,6 +114,8 @@ class AnaliseRecursal(Base):
     resumo_topicos = Column(JSON, nullable=True)            # list[str] (determinações)
     destaque = Column(Text, nullable=True)                  # ex.: "não houve dano moral"
     fundamentacao_juiz = Column(Text, nullable=True)        # síntese do juízo
+    # Contestação juntada COM documentos? (presença, não qualidade) — positivo.
+    contestacao_com_documentos = Column(Boolean, nullable=True)
     pontos_analise = Column(JSON, nullable=True)            # list[str] ("observa-se que")
     probabilidade_reversao = Column(String, nullable=True)  # REMOTA|POSSIVEL|PROVAVEL
     recorrer = Column(String, nullable=True)                # SIM|NAO|LIMITROFE

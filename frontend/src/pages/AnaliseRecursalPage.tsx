@@ -72,8 +72,8 @@ const RESULTADO_LABEL: Record<string, string> = {
 
 const TIPO_RECURSO_LABEL: Record<string, string> = {
   APELACAO: "Apelação",
-  AGRAVO: "Agravo",
-  EMB_DECLARACAO: "Emb. de Declaração",
+  RECURSO_INOMINADO: "Recurso Inominado",
+  AGRAVO: "Agravo de Instrumento",
   RESP: "Recurso Especial",
   RE: "Recurso Extraordinário",
 };
@@ -167,6 +167,11 @@ function VerdictCard({
               )}
               {an.tipo_recurso && (
                 <Badge variant="outline">{TIPO_RECURSO_LABEL[an.tipo_recurso] ?? an.tipo_recurso}</Badge>
+              )}
+              {an.contestacao_com_documentos === true && (
+                <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700">
+                  Contestação c/ documentos
+                </span>
               )}
               {an.confianca && (
                 <span className="text-xs text-slate-400">confiança {an.confianca.toLowerCase()}</span>

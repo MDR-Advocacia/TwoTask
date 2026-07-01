@@ -23,7 +23,10 @@ RESULTADO_DECISAO_VALIDOS = {"PROCEDENTE", "IMPROCEDENTE", "PARCIAL", "EXTINTO"}
 TIPO_DECISAO_VALIDOS = {"SENTENCA", "ACORDAO", "DECISAO_INTERLOCUTORIA"}
 PROBABILIDADE_REVERSAO_VALIDOS = {"REMOTA", "POSSIVEL", "PROVAVEL"}
 RECORRER_VALIDOS = {"SIM", "NAO", "LIMITROFE"}
-TIPO_RECURSO_VALIDOS = {"APELACAO", "AGRAVO", "EMB_DECLARACAO", "RESP", "RE"}
+# Recursos cíveis relevantes pro Master. NÃO recomendamos embargos de
+# declaração (fora da lista). Recurso inominado = recurso da sentença nos
+# Juizados Especiais (JEC); apelação = Vara Cível comum.
+TIPO_RECURSO_VALIDOS = {"APELACAO", "RECURSO_INOMINADO", "AGRAVO", "RESP", "RE"}
 CONFIANCA_VALIDOS = {"ALTA", "MEDIA", "BAIXA"}
 
 
@@ -67,6 +70,9 @@ class RecursalVerdict(BaseModel):
     destaque: Optional[str] = None
     # Síntese da fundamentação do juízo.
     fundamentacao_juiz: Optional[str] = None
+    # CRÍTICO: a contestação foi juntada COM documentos anexados? (só presença,
+    # não qualidade). Documentos anexados = ponto POSITIVO para o banco.
+    contestacao_com_documentos: Optional[bool] = None
     # Bullets da análise técnica ("observa-se que ...").
     pontos_analise: List[str] = Field(default_factory=list)
     # Chance de REVERTER a decisão desfavorável no recurso (puro mérito).
@@ -129,6 +135,20 @@ class RecursalVerdict(BaseModel):
         if not isinstance(v, (list, tuple)):
             return []
         return [str(x).strip() for x in v if str(x).strip()]
+
+    @field_validator("contestacao_com_documentos", mode="before")
+    @classmethod
+    def _v_bool(cls, v):
+        if v is None or v == "":
+            return None
+        if isinstance(v, bool):
+            return v
+        s = _normalize(v)
+        if s in {"SIM", "TRUE", "1", "S", "VERDADEIRO"}:
+            return True
+        if s in {"NAO", "FALSE", "0", "N", "FALSO"}:
+            return False
+        return None
 
     @field_validator("prazo_fatal", "data_intimacao", mode="before")
     @classmethod

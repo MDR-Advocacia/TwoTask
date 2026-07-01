@@ -113,6 +113,7 @@ def _analise_to_dict(an: AnaliseRecursal, db: Optional[Session] = None) -> dict[
         "resumo_topicos": an.resumo_topicos or [],
         "destaque": an.destaque,
         "fundamentacao_juiz": an.fundamentacao_juiz,
+        "contestacao_com_documentos": an.contestacao_com_documentos,
         "pontos_analise": an.pontos_analise or [],
         "probabilidade_reversao": an.probabilidade_reversao,
         "recorrer": an.recorrer,
