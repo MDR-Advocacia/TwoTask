@@ -58,9 +58,10 @@ def _dash(v: Optional[str]) -> str:
 def render_assunto(an) -> str:
     """Linha de assunto do e-mail."""
     tribunal = an.tribunal or an.uf or "—"
+    numero = an.cnj_number or an.processo_numero  # prefere o CNJ limpo
     return (
         f"({_dash(an.produto)}) – {_dash(an.objeto)} – {_dash(an.nome_autor)} "
-        f"({_dash(an.cpf)}) – Proc. {an.processo_numero} – {tribunal}"
+        f"({_dash(an.cpf)}) – Proc. {numero} – {tribunal}"
     )
 
 
@@ -84,7 +85,7 @@ def render_parecer(an, custo_estimado: Optional[float]) -> str:
     linhas: list[str] = []
     linhas.append("Prezados, bom dia.")
     linhas.append("📌 Parecer recursal")
-    linhas.append(f"Processo: {an.processo_numero}")
+    linhas.append(f"Processo: {an.cnj_number or an.processo_numero}")
     linhas.append(f"Autor: {_dash(an.nome_autor)}")
     linhas.append(f"CPF: {_dash(an.cpf)}")
     linhas.append(f"Produto: {_dash(an.produto)}")
@@ -95,7 +96,10 @@ def render_parecer(an, custo_estimado: Optional[float]) -> str:
     for t in topicos:
         linhas.append(f"• {t}")
     if an.destaque and an.destaque.strip():
-        linhas.append(f"Registra-se que {an.destaque.strip()}.")
+        d = an.destaque.strip().rstrip(".")
+        if d:
+            d = d[0].lower() + d[1:]  # "Não houve..." -> "não houve..."
+            linhas.append(f"Registra-se que {d}.")
     linhas.append("")
 
     linhas.append("⚖️ Análise de viabilidade recursal")

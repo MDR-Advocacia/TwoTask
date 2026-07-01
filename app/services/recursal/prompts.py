@@ -13,12 +13,20 @@ embasa a decisão do operador. O custo do preparo é calculado FORA da IA
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Optional
 
-# Limite de caracteres da íntegra enviada ao modelo. Mantém o custo por
-# análise em ~R$0,17 (Sonnet, batch) e evita estourar contexto. ~30k
-# chars ≈ ~8-10k tokens.
-MAX_INTEGRA_CHARS = 30_000
+# A íntegra de um processo pode ter centenas de milhares de chars (timeline
+# com dezenas de documentos, incluindo anexos gigantes). Em vez de cortar
+# cego, FATIAMOS: os documentos MAIS RECENTES (sentença/acórdão/despachos) +
+# a PETIÇÃO INICIAL (pedidos, qualificação/CPF), com cap POR documento pra
+# um anexo enorme não engolir o orçamento. ~55k chars ≈ ~14k tokens.
+MAX_INTEGRA_CHARS = 45_000   # orçamento total da íntegra montada (~11k tokens)
+PER_ENTRY_CHARS = 12_000     # cap por documento (a decisão precisa caber inteira;
+                             # corta só a cauda de anexo gigante)
+N_RECENTES = 6               # documentos recentes (topo da timeline reverso-cron)
+N_PETICAO = 2                # documentos mais antigos (petição inicial, no fim)
+_CPF_RE = r"\d{3}\.\d{3}\.\d{3}-\d{2}"
 
 
 SYSTEM_PROMPT = """\
@@ -30,7 +38,9 @@ escreve os CAMPOS abaixo (não monte o e-mail).
 
 IDENTIFICAÇÃO:
 - nome_autor: nome do AUTOR (parte ativa; o consumidor que processa o banco).
-- cpf: CPF do autor (formato 000.000.000-00 se constar).
+- cpf: CPF do AUTOR (formato 000.000.000-00). Procure na qualificação da
+  petição inicial e no cabeçalho das peças. É dado importante — não deixe
+  null se houver qualquer CPF de pessoa física do autor no texto.
 - objeto: o tema/pedido principal da ação (a CAUSA DE PEDIR), curto. Ex.:
   "Negativa de Contratação", "Superendividamento", "Negativação",
   "Cobrança Indevida", "Fraude", "Revisão Contratual", "Indébito".
@@ -55,11 +65,15 @@ DECISÃO:
   ao pagamento de danos morais"). null se não houver.
 
 ANÁLISE:
-- fundamentacao_juiz: síntese (1-3 frases) da fundamentação adotada pelo
-  juízo (em que o juiz se baseou para decidir).
-- pontos_analise: lista de observações técnicas sobre a viabilidade
-  ("observa-se que ..."): situação probatória, possibilidade de prova nova,
-  aderência da decisão à jurisprudência, etc.
+- fundamentacao_juiz: complete a frase "A decisão fundamenta-se, em síntese,
+  ___" — escreva SÓ a continuação, começando em MINÚSCULA e sem repetir "a
+  decisão fundamenta-se". Ex.: "na ausência de comprovação técnica independente
+  da contratação, com inversão do ônus da prova...". 1-3 frases.
+- pontos_analise: lista de observações técnicas sobre a viabilidade. Cada item
+  é uma frase DIRETA e NÃO deve começar com "Observa-se que" (o template já
+  escreve "observa-se que:" antes da lista). Ex.: "Os elementos probatórios já
+  foram juntados aos autos." Cobrir: situação probatória, possibilidade de
+  prova nova, aderência à jurisprudência dominante, pontos favoráveis ao banco.
 - probabilidade_reversao: chance de REVERTER uma decisão DESFAVORÁVEL ao
   banco em grau de recurso:
     REMOTA   → tese frágil, prova robusta contra o banco, jurisprudência
@@ -70,8 +84,13 @@ ANÁLISE:
   recorrer = "NAO".
 
 RECOMENDAÇÃO:
-- recorrer: "SIM" (vale recorrer), "NAO" (não vale / banco venceu),
-  "LIMITROFE" (fronteira — operador decide).
+- recorrer: SIGA a probabilidade_reversao:
+    reversão REMOTA   → "NAO" (não recomendar recurso, mesmo que existam
+                        pontos secundários questionáveis — cite-os na
+                        fundamentação, mas a recomendação é NÃO recorrer).
+    reversão POSSIVEL → "LIMITROFE" (ou "SIM" se o valor em jogo for alto).
+    reversão PROVAVEL → "SIM".
+    banco já venceu   → "NAO".
 - tipo_recurso: APELACAO (contra sentença), AGRAVO (contra interlocutória),
   EMB_DECLARACAO, RESP, RE. null se recorrer = "NAO" ou não couber.
 - fundamentacao: justificativa OBJETIVA da conclusão (1-2 frases que entram
@@ -119,7 +138,63 @@ formato EXATO:
 def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
-    return text[:limit] + "\n\n[...TRUNCADO — íntegra maior que o limite...]"
+    return text[:limit] + "\n\n[...TRUNCADO...]"
+
+
+def _doc_block(e: dict) -> Optional[str]:
+    texto = (e.get("document_text") or "").strip()
+    if not texto:
+        return None
+    texto = texto[:PER_ENTRY_CHARS]  # corta cauda de anexo gigante
+    data = e.get("protocol_date") or e.get("timeline_date") or ""
+    label = e.get("label") or e.get("document_id") or ""
+    return f"--- [{data}] {label} ---\n{texto}"
+
+
+def _montar_integra(integra_json: Optional[dict]) -> str:
+    """Fatia a timeline: documentos RECENTES (decisões) + PETIÇÃO INICIAL (fim),
+    com cap por documento. Fallback pro dump cru se não houver timeline."""
+    timeline = (integra_json or {}).get("timeline") if integra_json else None
+    if not isinstance(timeline, list) or not timeline:
+        return _truncate(
+            json.dumps(integra_json or {}, ensure_ascii=False, indent=2),
+            MAX_INTEGRA_CHARS,
+        )
+    n = len(timeline)
+    # timeline é reverso-cronológica: recentes no topo, petição inicial no fim.
+    idxs: list[int] = list(range(min(N_RECENTES, n)))
+    for j in range(max(0, n - N_PETICAO), n):
+        if j not in idxs:
+            idxs.append(j)
+
+    partes: list[str] = []
+    total = 0
+    for i in idxs:
+        bloco = _doc_block(timeline[i])
+        if not bloco:
+            continue
+        if total + len(bloco) > MAX_INTEGRA_CHARS:
+            bloco = bloco[: max(0, MAX_INTEGRA_CHARS - total)]
+        if not bloco:
+            break
+        partes.append(bloco)
+        total += len(bloco)
+        if total >= MAX_INTEGRA_CHARS:
+            break
+    return "\n\n".join(partes)
+
+
+def _cpfs_detectados(integra_json: Optional[dict]) -> list[str]:
+    """CPFs (pessoa física) da íntegra INTEIRA, RANKEADOS POR FREQUÊNCIA.
+    Injetados na mensagem pra a IA não perder o CPF do autor por truncamento.
+    O réu é o Banco Master (CNPJ); o CPF do AUTOR recorre em toda peça (dezenas
+    de vezes), enquanto CPFs de anexos/terceiros aparecem 1x — então o mais
+    frequente é, com altíssima confiança, o do autor."""
+    from collections import Counter
+
+    blob = json.dumps(integra_json or {}, ensure_ascii=False)
+    cnt = Counter(re.findall(_CPF_RE, blob))
+    return [c for c, _ in cnt.most_common(4)]
 
 
 def build_user_message(
@@ -129,19 +204,27 @@ def build_user_message(
     capa_json: Optional[dict[str, Any]],
     integra_json: Optional[dict[str, Any]],
 ) -> str:
-    """Monta a mensagem do usuário (capa + íntegra) para o veredito."""
+    """Monta a mensagem do usuário (capa + íntegra fatiada) para o veredito."""
     capa_txt = json.dumps(capa_json or {}, ensure_ascii=False, indent=2)
-    integra_txt = json.dumps(integra_json or {}, ensure_ascii=False, indent=2)
-    integra_txt = _truncate(integra_txt, MAX_INTEGRA_CHARS)
+    integra_txt = _montar_integra(integra_json)
+    cnj_line = f"CNJ: {cnj_number}\n" if cnj_number else ""
 
-    cnj_line = f"CNJ (da capa): {cnj_number}\n" if cnj_number else ""
+    cpfs = _cpfs_detectados(integra_json)
+    cpf_line = (
+        f"CPF(s) detectado(s) no processo, do MAIS ao MENOS recorrente — o do "
+        f"AUTOR é tipicamente o PRIMEIRO (mais frequente); os demais podem ser "
+        f"de anexos/terceiros: {', '.join(cpfs)}\n"
+        if cpfs
+        else ""
+    )
 
     return (
-        f"PROCESSO: {processo_numero}\n"
+        f"PROCESSO: {cnj_number or processo_numero}\n"
         f"{cnj_line}"
+        f"{cpf_line}"
         "\n=== CAPA ===\n"
         f"{capa_txt}\n"
-        "\n=== ÍNTEGRA (movimentações/decisões com data) ===\n"
+        "\n=== ÍNTEGRA (documentos recentes + petição inicial, com data) ===\n"
         f"{integra_txt}\n"
         "\nAvalie a viabilidade recursal e responda apenas com o JSON."
     )
