@@ -19,10 +19,34 @@ from typing import List
 
 logger = logging.getLogger(__name__)
 
-# Página com menos que isso de texto = imagem (candidata a OCR).
-_MIN_TEXT_CHARS = 20
+# Página escaneada = POUCO texto E uma imagem cobrindo boa parte da folha.
+# O limiar de texto é alto porque o PJe carimba um banner (id do doc,
+# "assinado eletronicamente", nº da página) em TODA página — inclusive nas
+# escaneadas (~20-350 chars só de banner). Por isso não basta "sem texto".
+_MAX_TEXT_FOR_IMAGE = 600
+_MIN_IMAGE_COVER = 0.40   # maior imagem cobre >40% da página
 # Resolução de render pro OCR (equilíbrio qualidade x tempo).
 _DPI = 220
+
+
+def _maior_cobertura_imagem(page) -> float:
+    """Fração da página coberta pela MAIOR imagem (0..1). Distingue página
+    escaneada (imagem grande) de página de texto com logo pequeno no banner."""
+    try:
+        import fitz
+
+        pa = page.rect.width * page.rect.height
+        if pa <= 0:
+            return 0.0
+        cover = 0.0
+        for info in page.get_image_info():
+            bb = info.get("bbox")
+            if bb:
+                r = fitz.Rect(bb)
+                cover = max(cover, (r.width * r.height) / pa)
+        return cover
+    except Exception:  # noqa: BLE001
+        return 0.0
 
 
 def ocr_paginas_imagem(
@@ -58,10 +82,10 @@ def ocr_paginas_imagem(
                 break
             page = doc.load_page(i)
             texto = (page.get_text() or "").strip()
-            if len(texto) >= _MIN_TEXT_CHARS:
-                continue  # página já tem texto — pdfplumber já pegou
-            if not page.get_images():
-                continue  # sem texto e sem imagem = página em branco
+            if len(texto) >= _MAX_TEXT_FOR_IMAGE:
+                continue  # página com texto de verdade — pdfplumber já pegou
+            if _maior_cobertura_imagem(page) < _MIN_IMAGE_COVER:
+                continue  # sem imagem grande = texto esparso ou página em branco
             try:
                 pix = page.get_pixmap(dpi=_DPI)
                 img = Image.open(io.BytesIO(pix.tobytes("png")))
