@@ -260,7 +260,7 @@ export default function Layout({ children }: PropsWithChildren) {
   return (
     <div className="grid min-h-screen w-full md:grid-cols-[220px_1fr] lg:grid-cols-[280px_1fr]">
       <div className="hidden border-r bg-muted/40 md:block">
-        <div className="flex h-full max-h-screen flex-col gap-2">
+        <div className="sticky top-0 max-h-screen overflow-y-auto">
           <div className="flex h-14 items-center border-b px-4 lg:h-[60px] lg:px-6">
             <Link
               to="/"
@@ -270,17 +270,15 @@ export default function Layout({ children }: PropsWithChildren) {
               <DunaFlowMark size="md" />
             </Link>
           </div>
-          <div className="flex-1 overflow-y-auto">
-            <NavContent />
-            <div className="flex flex-col items-center gap-2 border-t px-4 py-4 mt-4">
-              <img
-                src="/brand/dunaflow-logo.png"
-                alt="DUNATECH"
-                className="h-6 w-auto object-contain opacity-85"
-              />
-              <div className="text-[0.65rem] tracking-wider text-muted-foreground text-center">
-                © 2026 Duna.Tech
-              </div>
+          <NavContent />
+          <div className="flex flex-col items-center gap-2 border-t px-4 py-4">
+            <img
+              src="/brand/dunaflow-logo.png"
+              alt="DUNATECH"
+              className="h-6 w-auto object-contain opacity-85"
+            />
+            <div className="text-[0.65rem] tracking-wider text-muted-foreground text-center">
+              © 2026 Duna.Tech
             </div>
           </div>
         </div>
