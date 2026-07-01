@@ -17,6 +17,7 @@ import {
   LogOut,
   Menu,
   Newspaper,
+  Scale,
   ScanSearch,
   Settings,
   Upload,
@@ -131,10 +132,11 @@ export default function Layout({ children }: PropsWithChildren) {
       ],
     },
     {
-      title: "Prazos Iniciais",
+      title: "Prazos Processuais",
       items: [
         { to: "/prazos-iniciais", icon: CalendarClock, label: "Agendar Prazos Iniciais", requirePermission: 'canUsePrazosIniciais' },
         { to: "/prazos-iniciais/treatment", icon: ListChecks, label: "Tratamento Web Agendamentos Iniciais", requirePermission: 'canUsePrazosIniciais' },
+        { to: "/prazos-iniciais/analise-recursal", icon: Scale, label: "Análise Recursal", requirePermission: 'canUsePrazosIniciais' },
         { to: "/prazos-iniciais/templates", icon: Settings, label: "Templates de Prazos Iniciais", requirePermission: 'isAdmin' },
         { to: "/ajus", icon: Workflow, label: "AJUS — Andamentos", requirePermission: 'canUsePrazosIniciais' },
       ],

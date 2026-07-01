@@ -32,6 +32,7 @@ from app.api.v1.endpoints import (
     prazos_iniciais,
     prazos_iniciais_legacy_tasks,
     prazos_iniciais_scheduling,
+    recursal,
     publication_treatment,
     publications,
     publications_performance,
@@ -445,6 +446,8 @@ app.include_router(
     prefix="/api/v1",
     dependencies=protected_dependencies,
 )
+# Análise Recursal (dentro de Prazos Processuais): JWT + permissão prazos_iniciais.
+app.include_router(recursal.router, prefix="/api/v1", dependencies=protected_dependencies)
 app.include_router(task_templates.router, prefix="/api/v1/task-templates", tags=["Templates de Tarefa"], dependencies=protected_dependencies)
 app.include_router(ajus.router, prefix="/api/v1", tags=["AJUS"], dependencies=protected_dependencies)
 # GED LegalOne — envio em lote de arquivos pro GED (ECM) de processos do L1.

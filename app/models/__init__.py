@@ -69,3 +69,8 @@ from .citacoes_bm import (
     CitacaoBMProcesso,
 )
 from .onerequest import OnerequestAnotacao, OnerequestSolicitacao
+from .analise_recursal import (
+    AnaliseRecursal,
+    AnaliseRecursalBatch,
+    RecursalCustaTabela,
+)

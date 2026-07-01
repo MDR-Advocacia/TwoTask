@@ -33,6 +33,7 @@ import PrazosIniciaisPage from './pages/PrazosIniciaisPage';
 import PrazosIniciaisTreatmentPage from './pages/PrazosIniciaisTreatmentPage';
 import PrazosIniciaisTreatmentPageOperator from './pages/PrazosIniciaisTreatmentPageOperator';
 import PrazosIniciaisTemplatesAdminPage from './pages/PrazosIniciaisTemplatesAdminPage';
+import AnaliseRecursalPage from './pages/AnaliseRecursalPage';
 import PatrocinioRelatorioPage from './pages/PatrocinioRelatorioPage';
 import AjusPage from './pages/AjusPage';
 import ClassificadorPage from './pages/ClassificadorPage';
@@ -96,6 +97,10 @@ function AppContent() {
             <Route
               path="/prazos-iniciais/templates"
               element={<PrazosIniciaisTemplatesAdminPage />}
+            />
+            <Route
+              path="/prazos-iniciais/analise-recursal"
+              element={<AnaliseRecursalPage />}
             />
             <Route
               path="/prazos-iniciais/patrocinio/relatorio"

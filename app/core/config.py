@@ -140,6 +140,12 @@ class Settings(BaseSettings):
     prazos_iniciais_classifier_model: str = "claude-sonnet-4-6"
     prazos_iniciais_classifier_max_tokens: int = 4096
 
+    # ── Análise Recursal (dentro de Prazos Processuais) ───────────────
+    # 1 chamada Sonnet por processo, via Batches (custo ~R$0,17/processo).
+    # Reusa o extractor mecânico de Prazos Iniciais (capa+integra).
+    recursal_classifier_model: str = "claude-sonnet-4-6"
+    recursal_classifier_max_tokens: int = 4096
+
     # ─── Classificador — motor dormente (cla003) ───────────────────────
     # API keys aceitas no endpoint publico POST /classificador/intake/pdf
     # (separadas por virgula no .env). Vazio = endpoint desativado.
