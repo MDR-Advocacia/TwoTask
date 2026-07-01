@@ -19,9 +19,12 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 RUN mkdir -p /app/data
 
-# Base utilities needed to fetch Node and run Chromium
+# Base utilities needed to fetch Node and run Chromium.
+# tesseract-ocr(+por): OCR das páginas-imagem/escaneadas na Análise Recursal
+# (só roda nos documentos que saem sem texto do pdfplumber). ~80MB.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates gnupg \
+        tesseract-ocr tesseract-ocr-por \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js 20 (LTS) via NodeSource — needed by the Playwright runner

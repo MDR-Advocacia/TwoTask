@@ -254,6 +254,27 @@ def _manifesto(integra_json: Optional[dict]) -> str:
     return "\n".join(linhas)
 
 
+def _ocr_section(integra_json: Optional[dict]) -> str:
+    """Texto recuperado por OCR das páginas-imagem (subsídio escaneado que o
+    pdfplumber não leu). Vazio se não houve OCR."""
+    ocr = (integra_json or {}).get("ocr_paginas") if integra_json else None
+    if not isinstance(ocr, list) or not ocr:
+        return ""
+    partes = []
+    for o in ocr:
+        txt = (o.get("texto") or "").strip()
+        if txt:
+            partes.append(f"[pág. {o.get('pagina')}]\n{txt}")
+    if not partes:
+        return ""
+    return (
+        "\n=== TEXTO RECUPERADO DE DOCUMENTOS-IMAGEM (via OCR — pode conter "
+        "erros de leitura; trate como subsídio, confirme o crítico) ===\n"
+        + "\n\n".join(partes)
+        + "\n"
+    )
+
+
 def build_user_message(
     *,
     processo_numero: str,
@@ -261,9 +282,10 @@ def build_user_message(
     capa_json: Optional[dict[str, Any]],
     integra_json: Optional[dict[str, Any]],
 ) -> str:
-    """Monta a mensagem do usuário (capa + manifesto + íntegra fatiada)."""
+    """Monta a mensagem do usuário (capa + manifesto + íntegra + OCR)."""
     capa_txt = json.dumps(capa_json or {}, ensure_ascii=False, indent=2)
     integra_txt = _montar_integra(integra_json)
+    ocr_sec = _ocr_section(integra_json)
     manifesto = _manifesto(integra_json)
     manifesto_sec = (
         "\n=== TODOS OS DOCUMENTOS JUNTADOS (manifesto — inclui os que são "
@@ -291,5 +313,6 @@ def build_user_message(
         f"{manifesto_sec}"
         "\n=== ÍNTEGRA (documentos recentes + petição inicial, com data) ===\n"
         f"{integra_txt}\n"
+        f"{ocr_sec}"
         "\nAvalie a viabilidade recursal e responda apenas com o JSON."
     )

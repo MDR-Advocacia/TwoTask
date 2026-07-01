@@ -149,6 +149,11 @@ class Settings(BaseSettings):
     # prontos (fire-and-forget; não depende do operador ficar na tela).
     recursal_auto_worker_enabled: bool = True
     recursal_auto_worker_interval_seconds: int = 180
+    # OCR dos documentos-imagem (Tesseract). Só roda nas páginas sem texto.
+    # Capado pra não estourar o tempo de upload nem o custo de token.
+    recursal_ocr_enabled: bool = True
+    recursal_ocr_max_pages: int = 15
+    recursal_ocr_max_chars: int = 18_000
 
     # ─── Classificador — motor dormente (cla003) ───────────────────────
     # API keys aceitas no endpoint publico POST /classificador/intake/pdf

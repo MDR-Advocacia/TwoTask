@@ -17,6 +17,7 @@ Tudo atrás de JWT + permissão `prazos_iniciais` (mesmo grupo do módulo).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -50,6 +51,7 @@ from app.services.recursal.classifier import RecursalBatchClassifier
 from app.services.recursal.cost_calculator import calcular_custo, derive_uf_from_cnj
 from app.services.recursal.parecer import render_assunto, render_parecer
 from app.services.recursal.produtos import categoria_de
+from app.services.recursal.ocr import ocr_paginas_imagem
 from app.services.prazos_iniciais.pdf_extractor import extract as pdf_extract
 from app.services.prazos_iniciais.storage import (
     PdfValidationError,
@@ -232,11 +234,31 @@ async def upload_processo(
     # Extração mecânica (reusa o motor de Prazos Iniciais).
     extraction = pdf_extract(pdf_bytes)
 
-    integra = extraction.integra_json or {}
+    integra = dict(extraction.integra_json or {})
     integra_has_content = bool(
         integra.get("timeline") or (integra.get("texto_cru") or "").strip()
     )
-    useful = bool(extraction.success and integra_has_content)
+
+    # OCR dos documentos-IMAGEM (só as páginas sem texto, capado). Enriquece a
+    # íntegra pra a IA ver subsídio documental escaneado. Bônus: se o processo
+    # era TODO imagem (extração vazia) e o OCR recuperou conteúdo, dá pra
+    # analisar mesmo assim. Roda em threadpool pra não travar o event loop.
+    if settings.recursal_ocr_enabled:
+        try:
+            ocr_pags = await asyncio.to_thread(
+                ocr_paginas_imagem,
+                pdf_bytes,
+                settings.recursal_ocr_max_pages,
+                settings.recursal_ocr_max_chars,
+            )
+        except Exception:
+            logger.exception("Recursal upload: OCR falhou — segue sem.")
+            ocr_pags = []
+        if ocr_pags:
+            integra["ocr_paginas"] = ocr_pags
+
+    ocr_has_content = bool(integra.get("ocr_paginas"))
+    useful = bool((extraction.success and integra_has_content) or ocr_has_content)
 
     an_status = RCR_STATUS_RECEBIDO if useful else RCR_STATUS_SEM_TEXTO
     cnj = extraction.cnj_number
@@ -247,7 +269,7 @@ async def upload_processo(
         cnj_number=cnj,
         uf=uf,
         capa_json=extraction.capa_json or {},
-        integra_json=extraction.integra_json or {},
+        integra_json=integra,
         extractor_used=extraction.extractor_used,
         extraction_confidence=extraction.confidence,
         extraction_failed=not extraction.success,

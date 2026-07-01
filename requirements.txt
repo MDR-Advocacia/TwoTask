@@ -41,6 +41,14 @@ anthropic==0.40.0
 # ─── Extração de PDF (intake USER_UPLOAD) ─────────
 pdfplumber==0.11.4
 
+# ─── OCR de documentos-imagem (Análise Recursal) ─────────
+# pymupdf renderiza a página-imagem em PNG (sem poppler); pytesseract chama
+# o binário tesseract-ocr (instalado via apt no Dockerfile). Roda SÓ nas
+# páginas escaneadas/foto que o pdfplumber não conseguiu ler. Pillow já vem
+# via pdfplumber.
+pymupdf==1.24.14
+pytesseract==0.3.13
+
 # ─── Compressão de PDF (Classificador motor de compressão) ─────
 # pikepdf = wrapper Python de qpdf; wheels já incluem qpdf, não precisa
 # de apt-get no Dockerfile. Reduz 15-40% recomprimindo streams + dedup.
