@@ -90,7 +90,7 @@ export default function EditarBoardDialog({
         <p className="text-xs text-muted-foreground">
           {curado
             ? "O board mostra exatamente os tipos abaixo, nesta ordem. Remova todos pra voltar ao automático (top-12 por volume)."
-            : "Hoje o board mostra o top-12 automático por volume. Adicione tipos pra fixar a sua própria seleção."}
+            : "O board está no automático (top-12 por volume, abaixo). Remova os que não quiser ou adicione outros — ao editar, sua seleção passa a ser fixa."}
         </p>
 
         <div className="space-y-1.5">

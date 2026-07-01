@@ -709,12 +709,37 @@ class PerformanceService:
         }
 
     # ── curadoria do board 'Tarefas mais importantes' ──
-    def board_listar(self, team: str) -> dict:
+    def board_listar(self, team: str, days: int = 30) -> dict:
         rows = self.db.execute(
             text("SELECT subtipo FROM perf_board_tarefa WHERE team = :team ORDER BY ordem, id"),
             {"team": team},
         ).fetchall()
-        return {"curado": bool(rows), "subtipos": [r.subtipo for r in rows]}
+        if rows:
+            return {"curado": True, "subtipos": [r.subtipo for r in rows]}
+        # Automático: devolve o top-12 EFETIVO (o que está no board hoje) pra
+        # que o supervisor possa REMOVER qualquer um deles — a remoção
+        # materializa a lista automática como fixa (ver board_remover).
+        top = [t["subtipo"] for t in self.dashboard(days, team).get("top_tipos", [])]
+        return {"curado": False, "subtipos": top}
+
+    def _materializar_automatico(self, team: str, days: int = 30) -> None:
+        """Se o board está no automático (sem curadoria), grava o top-12 atual
+        em perf_board_tarefa pra virar lista fixa — assim add/remove passam a
+        operar sobre a seleção que o supervisor está vendo. No-op se já curado."""
+        ja = self.db.execute(
+            text("SELECT 1 FROM perf_board_tarefa WHERE team = :team LIMIT 1"),
+            {"team": team},
+        ).scalar()
+        if ja:
+            return
+        top = [t["subtipo"] for t in self.dashboard(days, team).get("top_tipos", [])]
+        for i, sub in enumerate(top, start=1):
+            self.db.execute(
+                text("INSERT INTO perf_board_tarefa (team, subtipo, ordem) VALUES (:team, :sub, :ord)"),
+                {"team": team, "sub": sub, "ord": i},
+            )
+        if top:
+            self.db.commit()
 
     def board_catalogo(self, team: str, busca: str = "") -> list:
         """Subtipos que o time tem (pra adicionar ao board), com volume, já sem os
@@ -746,7 +771,10 @@ class PerformanceService:
         ).fetchall()
         return [{"subtipo": r.subtipo, "volume": r.vol} for r in rows if r.subtipo not in ja]
 
-    def board_adicionar(self, team: str, subtipo: str) -> dict:
+    def board_adicionar(self, team: str, subtipo: str, days: int = 30) -> dict:
+        # Se está no automático, fixa o top-12 atual antes de adicionar — assim
+        # a seleção visível é preservada e o novo tipo entra ao lado dela.
+        self._materializar_automatico(team, days)
         existe = self.db.execute(
             text("SELECT 1 FROM perf_board_tarefa WHERE team = :team AND subtipo = :sub"),
             {"team": team, "sub": subtipo},
@@ -761,15 +789,18 @@ class PerformanceService:
                 {"team": team, "sub": subtipo, "ord": nxt or 1},
             )
             self.db.commit()
-        return self.board_listar(team)
+        return self.board_listar(team, days)
 
-    def board_remover(self, team: str, subtipo: str) -> dict:
+    def board_remover(self, team: str, subtipo: str, days: int = 30) -> dict:
+        # No automático, materializa o top-12 atual e então remove o tipo
+        # pedido — o resultado é o board visível menos aquele tipo (vira fixo).
+        self._materializar_automatico(team, days)
         self.db.execute(
             text("DELETE FROM perf_board_tarefa WHERE team = :team AND subtipo = :sub"),
             {"team": team, "sub": subtipo},
         )
         self.db.commit()
-        return self.board_listar(team)
+        return self.board_listar(team, days)
 
     # ── export Excel de um recorte (tarefas que o operador precisa tratar) ──
     def export_xlsx(self, escopo: str = "atrasado", pessoa_id: int | None = None,
