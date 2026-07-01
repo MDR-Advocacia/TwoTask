@@ -270,17 +270,17 @@ export default function Layout({ children }: PropsWithChildren) {
               <DunaFlowMark size="md" />
             </Link>
           </div>
-          <div className="flex-1">
+          <div className="flex-1 overflow-y-auto">
             <NavContent />
-          </div>
-          <div className="flex flex-col items-center gap-2 border-t px-4 py-4">
-            <img
-              src="/brand/dunaflow-logo.png"
-              alt="DUNATECH"
-              className="h-6 w-auto object-contain opacity-85"
-            />
-            <div className="text-[0.65rem] tracking-wider text-muted-foreground text-center">
-              © 2026 Duna.Tech
+            <div className="flex flex-col items-center gap-2 border-t px-4 py-4 mt-4">
+              <img
+                src="/brand/dunaflow-logo.png"
+                alt="DUNATECH"
+                className="h-6 w-auto object-contain opacity-85"
+              />
+              <div className="text-[0.65rem] tracking-wider text-muted-foreground text-center">
+                © 2026 Duna.Tech
+              </div>
             </div>
           </div>
         </div>
