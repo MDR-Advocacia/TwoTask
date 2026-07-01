@@ -126,6 +126,7 @@ def _analise_to_dict(an: AnaliseRecursal, db: Optional[Session] = None) -> dict[
         "custo_estimado": custo,
         "custo_detalhe": an.custo_detalhe,
         "confianca": an.confianca,
+        "pontos_de_atencao": an.pontos_de_atencao or [],
         # parecer renderizado (pronto pra copiar)
         "assunto": render_assunto(an),
         "parecer_texto": render_parecer(an, custo) if analisado else None,

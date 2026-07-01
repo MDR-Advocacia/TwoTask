@@ -86,6 +86,10 @@ class RecursalVerdict(BaseModel):
     valor_causa: Optional[float] = None
     # Valor da condenação — texto livre (número ou "Ilíquido").
     valor_condenacao: Optional[str] = None
+    # Dicas INCISIVAS pro advogado revisar no caso concreto quando o
+    # diagnóstico NÃO é seguro (confiança baixa/média, íntegra truncada,
+    # decisão ambígua, dado faltando). Guia INTERNO — não vai no parecer.
+    pontos_de_atencao: List[str] = Field(default_factory=list)
     # Data em que o RÉU foi intimado / a decisão foi publicada (DJe). O código
     # calcula o prazo fatal = +N dias úteis a partir daqui (determinístico).
     data_intimacao: Optional[date] = None
@@ -125,7 +129,7 @@ class RecursalVerdict(BaseModel):
     def _v_confianca(cls, v):
         return _coerce(v, CONFIANCA_VALIDOS)
 
-    @field_validator("pontos_analise", "resumo_topicos", mode="before")
+    @field_validator("pontos_analise", "resumo_topicos", "pontos_de_atencao", mode="before")
     @classmethod
     def _v_lista(cls, v):
         if v is None:

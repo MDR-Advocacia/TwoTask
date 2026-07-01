@@ -297,11 +297,12 @@ class RecursalBatchClassifier:
         an.valor_condenacao = verdict.valor_condenacao
         an.data_intimacao = verdict.data_intimacao
         # Prazo fatal DETERMINÍSTICO: +N dias úteis a partir da intimação
-        # (15 apelação/agravo/RESP/RE; 5 embargos de declaração).
+        # (10 recurso inominado; 15 demais recursos cíveis).
         an.prazo_fatal = self._calc_prazo_fatal(
             verdict.data_intimacao, verdict.tipo_recurso, verdict.prazo_fatal
         )
         an.confianca = verdict.confianca
+        an.pontos_de_atencao = verdict.pontos_de_atencao or None
 
         # UF: respeita a que o operador já setou; senão deriva do CNJ.
         uf = an.uf or derive_uf_from_cnj(an.cnj_number)

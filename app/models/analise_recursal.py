@@ -129,6 +129,8 @@ class AnaliseRecursal(Base):
     custo_estimado = Column(Numeric(14, 2), nullable=True)
     custo_detalhe = Column(JSON, nullable=True)             # breakdown do cálculo
     confianca = Column(String, nullable=True)               # ALTA|MEDIA|BAIXA
+    # Checklist INTERNO pro advogado revisar quando o diagnóstico não é seguro.
+    pontos_de_atencao = Column(JSON, nullable=True)         # list[str]
 
     # Auditoria.
     uploaded_by_user_id = Column(Integer, nullable=True)

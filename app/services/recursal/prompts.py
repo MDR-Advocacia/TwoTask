@@ -128,6 +128,16 @@ CUSTO/PRAZO:
 CONFIANÇA:
 - confianca: ALTA | MEDIA | BAIXA. Use BAIXA se a íntegra estiver truncada ou
   a decisão estiver ausente/ambígua.
+- pontos_de_atencao: quando você NÃO conseguir diagnosticar com segurança
+  (confiança MÉDIA/BAIXA, íntegra truncada, decisão ambígua, dado faltando,
+  recorrer limítrofe), liste dicas INCISIVAS e ACIONÁVEIS pro advogado do que
+  OLHAR e AVALIAR no caso concreto — nunca genéricas. Ex.: "Confira no DJe a
+  data exata da intimação — o prazo depende disso.", "Verifique nos anexos da
+  contestação se há prova da contratação (contrato assinado, biometria, log
+  de aceite).", "Avalie se o valor da causa reflete a real extensão da
+  condenação em dobro.", "Confirme se é Juizado (recurso inominado) ou Vara
+  Cível (apelação) pela classe processual." Lista VAZIA quando o diagnóstico
+  for seguro (confiança ALTA).
 
 Responda SOMENTE com um objeto JSON, sem markdown, sem comentários, no
 formato EXATO:
@@ -152,7 +162,8 @@ formato EXATO:
   "valor_condenacao": "..." | null,
   "data_intimacao": "YYYY-MM-DD" | null,
   "prazo_fatal": null,
-  "confianca": "ALTA|MEDIA|BAIXA"
+  "confianca": "ALTA|MEDIA|BAIXA",
+  "pontos_de_atencao": ["...", "..."]
 }
 """
 

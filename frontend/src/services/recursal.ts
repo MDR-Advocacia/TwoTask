@@ -59,6 +59,7 @@ export interface RecursalAnalise {
   custo_estimado: number | null;
   custo_detalhe: Record<string, unknown> | null;
   confianca: string | null;
+  pontos_de_atencao: string[];
   // parecer renderizado (pronto pra copiar)
   assunto: string | null;
   parecer_texto: string | null;

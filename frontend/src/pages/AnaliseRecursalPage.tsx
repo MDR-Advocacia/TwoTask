@@ -213,6 +213,20 @@ function VerdictCard({
               </div>
             </div>
 
+            {an.pontos_de_atencao?.length > 0 && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 p-3">
+                <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-amber-800">
+                  <AlertTriangle className="h-4 w-4" />
+                  Pontos de atenção — revise no caso concreto antes de enviar
+                </p>
+                <ul className="list-disc list-inside space-y-0.5 text-sm text-amber-900">
+                  {an.pontos_de_atencao.map((p, i) => (
+                    <li key={i}>{p}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {an.assunto && (
               <div className="rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-600 break-words">
                 <span className="font-medium text-slate-500">Assunto: </span>
