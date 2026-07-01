@@ -75,6 +75,12 @@ ANÁLISE:
   só a PRESENÇA. Se houver documentos anexados, isso é PONTO POSITIVO para o
   banco — mencione em pontos_analise (ex.: "A contestação foi instruída com
   documentos, o que reforça a defesa do banco").
+  ATENÇÃO: muitos subsídios são IMAGEM/escaneados e aparecem no MANIFESTO acima
+  SEM texto legível (contrato assinado, biometria, print de aceite). CONTE-OS
+  como documentos juntados — a PRESENÇA vale, não o teor. Se houver documentos
+  em imagem relevantes que você não conseguiu ler, registre em
+  pontos_de_atencao (ex.: "Há documentos anexados em imagem não lidos pelo
+  sistema — confira manualmente o teor das provas do banco").
 - pontos_analise: lista de observações técnicas sobre a viabilidade. Cada item
   é uma frase DIRETA e NÃO deve começar com "Observa-se que" (o template já
   escreve "observa-se que:" antes da lista). Ex.: "Os elementos probatórios já
@@ -230,6 +236,24 @@ def _cpfs_detectados(integra_json: Optional[dict]) -> list[str]:
     return [c for c, _ in cnt.most_common(4)]
 
 
+def _manifesto(integra_json: Optional[dict]) -> str:
+    """Lista TODOS os documentos juntados (label + data), INCLUSIVE os que são
+    imagem/escaneado e saíram sem texto (o pdfplumber não lê imagem). Assim a
+    IA sabe que o subsídio documental EXISTE mesmo sem conseguir ler o teor —
+    crítico pra detectar contestação/prova juntada como foto."""
+    timeline = (integra_json or {}).get("timeline") if integra_json else None
+    if not isinstance(timeline, list) or not timeline:
+        return ""
+    linhas = []
+    for e in timeline:
+        data = e.get("protocol_date") or e.get("timeline_date") or "?"
+        label = (e.get("label") or f"Documento {e.get('document_id', '')}").strip()
+        texto = (e.get("document_text") or "").strip()
+        marca = "com texto" if texto else "IMAGEM/escaneado — SEM texto extraível"
+        linhas.append(f"[{data}] {label[:80]} ({marca})")
+    return "\n".join(linhas)
+
+
 def build_user_message(
     *,
     processo_numero: str,
@@ -237,9 +261,16 @@ def build_user_message(
     capa_json: Optional[dict[str, Any]],
     integra_json: Optional[dict[str, Any]],
 ) -> str:
-    """Monta a mensagem do usuário (capa + íntegra fatiada) para o veredito."""
+    """Monta a mensagem do usuário (capa + manifesto + íntegra fatiada)."""
     capa_txt = json.dumps(capa_json or {}, ensure_ascii=False, indent=2)
     integra_txt = _montar_integra(integra_json)
+    manifesto = _manifesto(integra_json)
+    manifesto_sec = (
+        "\n=== TODOS OS DOCUMENTOS JUNTADOS (manifesto — inclui os que são "
+        "imagem/escaneados, sem texto legível) ===\n" + manifesto + "\n"
+        if manifesto
+        else ""
+    )
     cnj_line = f"CNJ: {cnj_number}\n" if cnj_number else ""
 
     cpfs = _cpfs_detectados(integra_json)
@@ -257,6 +288,7 @@ def build_user_message(
         f"{cpf_line}"
         "\n=== CAPA ===\n"
         f"{capa_txt}\n"
+        f"{manifesto_sec}"
         "\n=== ÍNTEGRA (documentos recentes + petição inicial, com data) ===\n"
         f"{integra_txt}\n"
         "\nAvalie a viabilidade recursal e responda apenas com o JSON."
